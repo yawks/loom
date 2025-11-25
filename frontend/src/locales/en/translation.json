@@ -1,0 +1,14 @@
+{
+  "contacts": "Contacts",
+  "messages": "Messages",
+  "threads": "Threads",
+  "type_a_message": "Type a message...",
+  "send": "Send",
+  "participants": "Participants",
+  "switch_protocol": "Switch to {{protocol}}",
+  "loading": "Loading...",
+  "disconnect": "Disconnect",
+  "message_layout": "Message Layout",
+  "messages_bubble": "Messages Bubble",
+  "irc": "IRC"
+}
