@@ -38,5 +38,11 @@
   "search_modal_title": "Rechercher une conversation",
   "search_modal_placeholder": "Rechercher un contact ou un groupe...",
   "search_modal_no_results": "Aucun résultat trouvé",
-  "search_modal_start_typing": "Commencez à taper pour rechercher"
+  "search_modal_start_typing": "Commencez à taper pour rechercher",
+  "unread_indicator": "Non lu",
+  "unread_message_label": "Message non lu",
+  "new_messages_separator": "Nouveaux messages",
+  "single_reply": "réponse",
+  "multiple_replies": "{{count}} réponses",
+  "unread_badge_aria": "{{count}} messages non lus"
 }

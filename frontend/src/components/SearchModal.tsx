@@ -6,20 +6,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
-import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetMetaContacts } from "../../wailsjs/go/main/App";
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-
-const fetchMetaContacts = async () => {
-  return GetMetaContacts();
-};
 
 interface SearchModalProps {
   open: boolean;
@@ -34,26 +27,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
   const selectedItemRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
-  const queryClient = useQueryClient();
-
-  const { data: contacts } = useSuspenseQuery<models.MetaContact[], Error>({
-    queryKey: ["metaContacts"],
-    queryFn: fetchMetaContacts,
-  });
-
-  // Listen for contact refresh events
-  useEffect(() => {
-    const unsubscribe = EventsOn("contacts-refresh", () => {
-      // Invalidate and refetch contacts when sync completes
-      queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
-    });
-
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, [queryClient]);
+  const contacts = useAppStore((state) => state.metaContacts);
 
   // Filter contacts based on search query
   const filteredContacts = useMemo(() => {
@@ -142,7 +116,11 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto px-6 pb-6 min-h-0"
         >
-          {filteredContacts.length === 0 ? (
+          {contacts.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              {t("loading")}
+            </div>
+          ) : filteredContacts.length === 0 ? (
             <div className="py-8 text-center text-muted-foreground">
               {searchQuery.trim()
                 ? t("search_modal_no_results")

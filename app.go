@@ -90,12 +90,13 @@ func (a *App) startup(ctx context.Context) {
 		providerConfig := config
 		fmt.Printf("App.startup: Attempting to restore provider %s (IsActive: %v)\n", providerConfig.ProviderID, providerConfig.IsActive)
 
+		fmt.Printf("App.startup: About to call RestoreProvider for %s\n", providerConfig.ProviderID)
 		provider, err := a.providerManager.RestoreProvider(providerConfig)
 		if err != nil {
 			fmt.Printf("App.startup: ERROR - Failed to restore provider %s: %v\n", providerConfig.ProviderID, err)
 			continue
 		}
-		fmt.Printf("App.startup: Successfully restored provider %s from database\n", providerConfig.ProviderID)
+		fmt.Printf("App.startup: Successfully restored provider %s from database, provider is nil: %v\n", providerConfig.ProviderID, provider == nil)
 
 		// Only connect the provider if it's already authenticated
 		// Providers that need authentication (like WhatsApp) should only be connected
@@ -215,6 +216,15 @@ func (a *App) startup(ctx context.Context) {
 		log.Printf("Warning: No active provider found, event listener will not start")
 	}
 	a.startEventListener(ctx)
+
+	// Test event emission after a short delay to ensure frontend is ready
+	go func() {
+		time.Sleep(2 * time.Second)
+		if a.ctx != nil {
+			log.Printf("App: Sending test event to verify event system works")
+			runtime.EventsEmit(a.ctx, "test-event", `{"message": "Event system test"}`)
+		}
+	}()
 }
 
 // startEventListener starts listening to provider events and sends them to the frontend.
@@ -260,6 +270,7 @@ func (a *App) startEventListener(ctx context.Context) {
 				}
 				switch e := event.(type) {
 				case core.MessageEvent:
+					log.Printf("App: Received MessageEvent for conversation %s, message ID: %s", e.Message.ProtocolConvID, e.Message.ProtocolMsgID)
 					// Convert avatar path to base64 data URL if present
 					if e.Message.SenderAvatarURL != "" {
 						avatarURL := a.GetAvatar(e.Message.SenderAvatarURL)
@@ -273,8 +284,19 @@ func (a *App) startEventListener(ctx context.Context) {
 						log.Printf("Failed to marshal message: %v", err)
 						continue
 					}
-					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "new-message", string(msgJSON))
+					// Emit the event to the frontend using the app context
+					log.Printf("App: Emitting new-message event to frontend for message %s", e.Message.ProtocolMsgID)
+					previewLen := 100
+					if len(msgJSON) < previewLen {
+						previewLen = len(msgJSON)
+					}
+					log.Printf("App: Message JSON length: %d bytes, first %d chars: %s", len(msgJSON), previewLen, string(msgJSON[:previewLen]))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
+						log.Printf("App: Event emitted (no error returned)")
+					} else {
+						log.Printf("App: ERROR - a.ctx is nil, cannot emit event")
+					}
 
 				case core.ReactionEvent:
 					// Serialize the reaction to JSON
@@ -284,7 +306,9 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "reaction", string(reactionJSON))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "reaction", string(reactionJSON))
+					}
 
 				case core.TypingEvent:
 					// Serialize the typing indicator to JSON
@@ -294,7 +318,9 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "typing", string(typingJSON))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
+					}
 
 				case core.ContactStatusEvent:
 					// Serialize the contact status to JSON
@@ -304,10 +330,12 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "contact-status", string(statusJSON))
-					// If this is a refresh event, also invalidate the contacts query
-					if e.UserID == "refresh" && e.Status == "sync_complete" {
-						runtime.EventsEmit(ctx, "contacts-refresh", "{}")
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
+						// If this is a refresh event, also invalidate the contacts query
+						if e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received") {
+							runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+						}
 					}
 
 				case core.GroupChangeEvent:
@@ -318,7 +346,9 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "group-change", string(groupChangeJSON))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "group-change", string(groupChangeJSON))
+					}
 
 				case core.ReceiptEvent:
 					// Serialize the receipt to JSON
@@ -328,7 +358,11 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "receipt", string(receiptJSON))
+					log.Printf("App: Received ReceiptEvent for conversation %s, message %s, type: %s", e.ConversationID, e.MessageID, e.ReceiptType)
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "receipt", string(receiptJSON))
+						log.Printf("App: Emitted receipt event to frontend")
+					}
 
 				case core.RetryReceiptEvent:
 					// Serialize the retry receipt to JSON
@@ -338,7 +372,9 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "retry-receipt", string(retryReceiptJSON))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "retry-receipt", string(retryReceiptJSON))
+					}
 				case core.SyncStatusEvent:
 					// Serialize the sync status to JSON
 					syncStatusJSON, err := json.Marshal(e)
@@ -347,7 +383,9 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
-					runtime.EventsEmit(ctx, "sync-status", string(syncStatusJSON))
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+					}
 				}
 			case <-eventCtx.Done():
 				log.Printf("Event listener stopped")
@@ -553,6 +591,21 @@ func (a *App) SendMessage(conversationID string, text string) (*models.Message, 
 // GetThreads returns all messages in a thread for a given parent message ID.
 func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	return a.provider.GetThreads(parentMessageID)
+}
+
+// MarkMessageAsRead sends a read receipt for a specific message.
+func (a *App) MarkMessageAsRead(conversationID string, messageID string) error {
+	log.Printf("App: MarkMessageAsRead called for conversation %s, message %s", conversationID, messageID)
+	if a.provider == nil {
+		return fmt.Errorf("no active provider")
+	}
+	err := a.provider.MarkMessageAsRead(conversationID, messageID)
+	if err != nil {
+		log.Printf("App: Failed to mark message as read: %v", err)
+		return err
+	}
+	log.Printf("App: Successfully marked message %s as read in conversation %s", messageID, conversationID)
+	return nil
 }
 
 // GetAvatar returns the avatar image as a base64 data URL.
