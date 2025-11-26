@@ -806,7 +806,7 @@ func (a *App) ConnectProvider(providerID string) error {
 	return nil
 }
 
-// RemoveProvider removes a provider.
+// RemoveProvider removes a provider and deletes its config directory.
 func (a *App) RemoveProvider(providerID string) error {
 	// Cancel event listener if this is the active provider
 	if a.provider != nil {
@@ -820,6 +820,17 @@ func (a *App) RemoveProvider(providerID string) error {
 	// Remove provider (this will disconnect it and delete all associated data)
 	if err := a.providerManager.RemoveProvider(providerID); err != nil {
 		return err
+	}
+
+	// Delete provider's config directory
+	configDir, err := os.UserConfigDir()
+	if err == nil {
+		providerConfigDir := filepath.Join(configDir, "Loom", providerID)
+		if err := os.RemoveAll(providerConfigDir); err != nil {
+			log.Printf("Warning: Failed to delete provider config directory %s: %v", providerConfigDir, err)
+		} else {
+			log.Printf("Deleted provider config directory: %s", providerConfigDir)
+		}
 	}
 
 	// If this was the active provider, clear it and switch to MockProvider if available

@@ -1,6 +1,3 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Settings, Trash2, RefreshCw, Wine, MessageCircle } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,17 +8,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ProviderConfigForm } from "@/components/ProviderConfigForm";
-import type { core } from "../../wailsjs/go/models";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   GetAvailableProviders,
   GetConfiguredProviders,
   RemoveProvider,
-  SyncProvider,
 } from "../../wailsjs/go/main/App";
+import { MessageCircle, Settings, Trash2, Wine } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { ProviderConfigForm } from "@/components/ProviderConfigForm";
+import type { core } from "../../wailsjs/go/models";
+import { useTranslation } from "react-i18next";
 
 interface ProvidersModalProps {
   open: boolean;
@@ -36,6 +37,7 @@ interface SyncStatusPayload {
 }
 
 export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
+  const { t } = useTranslation();
   const [view, setView] = useState<ViewState>("list");
   const [availableProviders, setAvailableProviders] = useState<core.ProviderInfo[]>([]);
   const [configuredProviders, setConfiguredProviders] = useState<core.ProviderInfo[]>([]);
@@ -43,7 +45,6 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isRemoving, setIsRemoving] = useState<string | null>(null);
-  const [isSyncing, setIsSyncing] = useState<string | null>(null);
   const [providerToDelete, setProviderToDelete] = useState<string | null>(null);
 
   const refreshProviders = useCallback(async () => {
@@ -58,11 +59,11 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       setConfiguredProviders(configured);
     } catch (err) {
       console.error("Failed to load providers:", err);
-      setError("Failed to load providers. Please try again.");
+      setError(t("providers_modal_load_error"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (open) {
@@ -123,7 +124,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       setProviderToDelete(null);
     } catch (err) {
       console.error("Failed to remove provider:", err);
-      setError("Failed to remove provider. Please try again.");
+      setError(t("providers_modal_remove_error"));
     } finally {
       setIsRemoving(null);
     }
@@ -160,18 +161,18 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       <AlertDialog open={providerToDelete !== null} onOpenChange={(open) => !open && handleRemoveCancel()}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Provider</AlertDialogTitle>
+            <AlertDialogTitle>{t("providers_modal_delete_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete the provider "{providerToDeleteName}"? This will permanently delete all associated conversations and messages. This action cannot be undone.
+              {t("providers_modal_delete_description", { name: providerToDeleteName })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={handleRemoveCancel}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={handleRemoveCancel}>{t("providers_modal_cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleRemoveConfirm}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {t("providers_modal_delete_button")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -182,9 +183,9 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
         {view === "list" && (
           <div className="space-y-6 max-h-[80vh] overflow-y-auto pr-2">
             <DialogHeader>
-              <DialogTitle>Providers</DialogTitle>
+              <DialogTitle>{t("providers_modal_title")}</DialogTitle>
               <DialogDescription>
-                Manage configured providers and add new ones to connect your platforms.
+                {t("providers_modal_description")}
               </DialogDescription>
             </DialogHeader>
 
@@ -192,10 +193,10 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
 
             <section className="space-y-3">
               <div>
-                <h3 className="text-sm font-semibold text-muted-foreground">Configured Providers</h3>
+                <h3 className="text-sm font-semibold text-muted-foreground">{t("providers_modal_configured_title")}</h3>
               </div>
               {configuredProviders.length === 0 && !loading ? (
-                <p className="text-sm text-muted-foreground">No providers configured yet.</p>
+                <p className="text-sm text-muted-foreground">{t("providers_modal_no_configured")}</p>
               ) : (
                 <div className="space-y-3">
                   {configuredProviders.map((provider) => (
@@ -209,33 +210,13 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                           </div>
                         </div>
                         {provider.isActive && (
-                          <span className="text-xs font-medium text-green-600">Active</span>
+                          <span className="text-xs font-medium text-green-600">{t("providers_modal_active")}</span>
                         )}
                       </CardHeader>
                       <CardContent className="flex gap-2">
                         <Button variant="outline" className="flex items-center gap-2" onClick={() => handleEdit(provider)}>
                           <Settings className="h-4 w-4" />
-                          Edit
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="flex items-center gap-2"
-                          onClick={async () => {
-                            setIsSyncing(provider.id);
-                            try {
-                              await SyncProvider(provider.id);
-                              await refreshProviders();
-                            } catch (err) {
-                              console.error("Failed to sync provider:", err);
-                              setError("Failed to sync provider. Please try again.");
-                            } finally {
-                              setIsSyncing(null);
-                            }
-                          }}
-                          disabled={isSyncing === provider.id}
-                        >
-                          <RefreshCw className={`h-4 w-4 ${isSyncing === provider.id ? "animate-spin" : ""}`} />
-                          {isSyncing === provider.id ? "Syncing..." : "Sync"}
+                          {t("providers_modal_edit")}
                         </Button>
                         <Button
                           variant="ghost"
@@ -244,7 +225,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                           disabled={isRemoving === provider.id}
                         >
                           <Trash2 className="h-4 w-4" />
-                          {isRemoving === provider.id ? "Removing..." : "Remove"}
+                          {isRemoving === provider.id ? t("providers_modal_removing") : t("providers_modal_remove")}
                         </Button>
                       </CardContent>
                     </Card>
@@ -255,9 +236,9 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
 
             <section className="space-y-3">
               <div>
-                <h3 className="text-sm font-semibold text-muted-foreground">Available Providers</h3>
+                <h3 className="text-sm font-semibold text-muted-foreground">{t("providers_modal_available_title")}</h3>
                 <p className="text-xs text-muted-foreground">
-                  Click on a provider to configure it.
+                  {t("providers_modal_available_description")}
                 </p>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
@@ -272,7 +253,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                         {getProviderIcon(provider.id)}
                         <span className="flex-1">{provider.name}</span>
                         {configuredIds.has(provider.id) && (
-                          <span className="text-xs text-muted-foreground">Configured</span>
+                          <span className="text-xs text-muted-foreground">{t("providers_modal_configured_badge")}</span>
                         )}
                       </CardTitle>
                       <CardDescription>{provider.description}</CardDescription>
