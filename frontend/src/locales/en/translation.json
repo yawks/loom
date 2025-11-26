@@ -44,5 +44,22 @@
   "new_messages_separator": "New messages",
   "single_reply": "reply",
   "multiple_replies": "{{count}} replies",
-  "unread_badge_aria": "{{count}} unread messages"
+  "unread_badge_aria": "{{count}} unread messages",
+  "providers_modal_title": "Providers",
+  "providers_modal_description": "Manage configured providers and add new ones to connect your platforms.",
+  "providers_modal_configured_title": "Configured Providers",
+  "providers_modal_no_configured": "No providers configured yet.",
+  "providers_modal_active": "Active",
+  "providers_modal_edit": "Edit",
+  "providers_modal_remove": "Remove",
+  "providers_modal_removing": "Removing...",
+  "providers_modal_available_title": "Available Providers",
+  "providers_modal_available_description": "Click on a provider to configure it.",
+  "providers_modal_configured_badge": "Configured",
+  "providers_modal_delete_title": "Delete Provider",
+  "providers_modal_delete_description": "Are you sure you want to delete the provider \"{{name}}\"? This will permanently delete all associated conversations, messages, and the provider's configuration directory. This action cannot be undone.",
+  "providers_modal_delete_button": "Delete",
+  "providers_modal_cancel": "Cancel",
+  "providers_modal_load_error": "Failed to load providers. Please try again.",
+  "providers_modal_remove_error": "Failed to remove provider. Please try again."
 }

@@ -44,5 +44,22 @@
   "new_messages_separator": "Nouveaux messages",
   "single_reply": "réponse",
   "multiple_replies": "{{count}} réponses",
-  "unread_badge_aria": "{{count}} messages non lus"
+  "unread_badge_aria": "{{count}} messages non lus",
+  "providers_modal_title": "Fournisseurs",
+  "providers_modal_description": "Gérez les fournisseurs configurés et ajoutez-en de nouveaux pour connecter vos plateformes.",
+  "providers_modal_configured_title": "Fournisseurs configurés",
+  "providers_modal_no_configured": "Aucun fournisseur configuré pour le moment.",
+  "providers_modal_active": "Actif",
+  "providers_modal_edit": "Modifier",
+  "providers_modal_remove": "Supprimer",
+  "providers_modal_removing": "Suppression...",
+  "providers_modal_available_title": "Fournisseurs disponibles",
+  "providers_modal_available_description": "Cliquez sur un fournisseur pour le configurer.",
+  "providers_modal_configured_badge": "Configuré",
+  "providers_modal_delete_title": "Supprimer le fournisseur",
+  "providers_modal_delete_description": "Êtes-vous sûr de vouloir supprimer le fournisseur \"{{name}}\" ? Cela supprimera définitivement toutes les conversations associées, les messages et le répertoire de configuration du fournisseur. Cette action est irréversible.",
+  "providers_modal_delete_button": "Supprimer",
+  "providers_modal_cancel": "Annuler",
+  "providers_modal_load_error": "Échec du chargement des fournisseurs. Veuillez réessayer.",
+  "providers_modal_remove_error": "Échec de la suppression du fournisseur. Veuillez réessayer."
 }
