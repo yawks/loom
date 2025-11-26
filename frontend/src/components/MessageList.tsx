@@ -1,13 +1,12 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useEffect, useMemo, useRef } from "react";
 
-import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
 import { GetMessagesForConversation } from "../../wailsjs/go/main/App";
-import { MessageSquare } from "lucide-react";
-import { ProtocolSwitcher } from "./ProtocolSwitcher";
+import { MessageAttachments } from "./MessageAttachments";
+import { MessageHeader } from "./MessageHeader";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
-import { useEffect, useMemo, useRef } from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -30,12 +29,35 @@ function getColorFromString(str: string): string {
 function getSenderDisplayName(
   senderName: string | undefined,
   senderId: string,
-  isFromMe: boolean
+  isFromMe: boolean,
+  t: (key: string) => string
 ): string {
-  if (isFromMe) return "You";
+  if (isFromMe) return t("you") || "You";
   if (senderName && senderName.trim().length > 0) {
     return senderName;
   }
+  
+  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
+  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
+  if (whatsappMatch) {
+    const phoneNumber = whatsappMatch[1];
+    // Format phone number: add spaces every 2 digits (French format)
+    // Example: 33631207926 -> +33 6 31 20 79 26
+    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
+      // French number: +33 followed by 9 digits (without leading 0)
+      const countryCode = phoneNumber.substring(0, 2);
+      const rest = phoneNumber.substring(2);
+      // Format as +33 X XX XX XX XX
+      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
+      return formatted;
+    } else {
+      // Other format: just add spaces every 2 digits
+      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
+      return `+${formatted}`;
+    }
+  }
+  
+  // Fallback for other ID formats
   return senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
@@ -131,26 +153,36 @@ export function MessageList({
     setSelectedThreadId(parentMsgId);
   };
 
+  const showConversationDetails = useAppStore(
+    (state) => state.showConversationDetails
+  );
+  const setShowConversationDetails = useAppStore(
+    (state) => state.setShowConversationDetails
+  );
+  const setSelectedAvatarUrl = useAppStore(
+    (state) => state.setSelectedAvatarUrl
+  );
+
+  const handleToggleDetails = () => {
+    setShowConversationDetails(!showConversationDetails);
+  };
+
+  const handleAvatarClick = (avatarUrl: string | undefined, displayName?: string) => {
+    // Use avatar URL if available, otherwise use a placeholder based on display name
+    const urlToShow = avatarUrl || (displayName ? `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}` : null);
+    if (urlToShow) {
+      setSelectedAvatarUrl(urlToShow);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="p-4 border-b flex justify-between items-center shrink-0">
-        <h2 className="text-lg font-semibold">
-          {selectedConversation.displayName}
-        </h2>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleToggleThreads}
-            title={t("threads")}
-          >
-            <MessageSquare className="h-4 w-4" />
-          </Button>
-          <ProtocolSwitcher
-            linkedAccounts={selectedConversation.linkedAccounts}
-          />
-        </div>
-      </div>
+      <MessageHeader
+        displayName={selectedConversation.displayName}
+        linkedAccounts={selectedConversation.linkedAccounts}
+        onToggleThreads={handleToggleThreads}
+        onToggleDetails={handleToggleDetails}
+      />
       <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area" ref={scrollContainerRef}>
         {messageLayout === "bubble" ? (
           <div className="space-y-4">
@@ -161,7 +193,8 @@ export function MessageList({
               const displayName = getSenderDisplayName(
                 message.senderName,
                 message.senderId,
-                message.isFromMe
+                message.isFromMe,
+                t
               );
 
               return (
@@ -172,12 +205,17 @@ export function MessageList({
                     }`}
                   >
                     {!message.isFromMe && (
-                      <Avatar>
-                        <AvatarImage src="" />
-                        <AvatarFallback>
-                          {displayName.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
+                      <button
+                        onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
+                        className="shrink-0"
+                      >
+                        <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                          <AvatarImage src={message.senderAvatarUrl} />
+                          <AvatarFallback>
+                            {displayName.substring(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </button>
                     )}
                     <div
                       className={`rounded-lg p-3 ${
@@ -186,7 +224,17 @@ export function MessageList({
                           : "bg-muted text-foreground"
                       }`}
                     >
-                      <p>{message.body}</p>
+                      {message.body && message.body.trim() !== "" && <p>{message.body}</p>}
+                      {message.attachments && message.attachments.trim() !== "" && (
+                        <MessageAttachments
+                          attachments={message.attachments}
+                          isFromMe={message.isFromMe}
+                        />
+                      )}
+                      {(!message.body || message.body.trim() === "") && 
+                       (!message.attachments || message.attachments.trim() === "") && (
+                        <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
+                      )}
                       <p className={`text-xs mt-1 ${
                         message.isFromMe
                           ? "text-blue-100"
@@ -196,10 +244,15 @@ export function MessageList({
                       </p>
                     </div>
                     {message.isFromMe && (
-                      <Avatar>
-                        <AvatarImage src="" />
-                        <AvatarFallback>ME</AvatarFallback>
-                      </Avatar>
+                      <button
+                        onClick={() => handleAvatarClick("", t("you"))}
+                        className="shrink-0"
+                      >
+                        <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                          <AvatarImage src="" />
+                          <AvatarFallback>{t("me")}</AvatarFallback>
+                        </Avatar>
+                      </button>
                     )}
                   </div>
                   {hasThread && lastThreadMsg && (
@@ -209,18 +262,32 @@ export function MessageList({
                         message.isFromMe ? "ml-auto max-w-[80%]" : "mr-auto max-w-[80%]"
                       }`}
                     >
-                      <Avatar className="h-5 w-5 shrink-0">
-                        <AvatarImage src="" />
-                        <AvatarFallback className="text-xs">
-                        {getSenderDisplayName(
-                          lastThreadMsg.senderName,
-                          lastThreadMsg.senderId,
-                          lastThreadMsg.isFromMe
-                        )
-                          .substring(0, 2)
-                          .toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
+                      <button
+                        onClick={() => handleAvatarClick(
+                          lastThreadMsg.senderAvatarUrl,
+                          getSenderDisplayName(
+                            lastThreadMsg.senderName,
+                            lastThreadMsg.senderId,
+                            lastThreadMsg.isFromMe,
+                            t
+                          )
+                        )}
+                        className="shrink-0"
+                      >
+                        <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
+                          <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
+                          <AvatarFallback className="text-xs">
+                          {getSenderDisplayName(
+                            lastThreadMsg.senderName,
+                            lastThreadMsg.senderId,
+                            lastThreadMsg.isFromMe,
+                            t
+                          )
+                            .substring(0, 2)
+                            .toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </button>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-muted-foreground truncate">
                           {lastThreadMsg.body.length > 50
@@ -264,7 +331,8 @@ export function MessageList({
               const displayName = getSenderDisplayName(
                 message.senderName,
                 message.senderId,
-                message.isFromMe
+                message.isFromMe,
+                t
               );
               const senderColor = getColorFromString(message.senderId);
               const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
@@ -276,14 +344,19 @@ export function MessageList({
                     <div className="flex flex-col items-center min-w-[60px]">
                       {showSender ? (
                         <>
-                          <Avatar className="h-6 w-6 mt-2.5">
-                            <AvatarImage src="" />
-                            <AvatarFallback className="text-xs">
-                              {message.isFromMe
-                                ? "ME"
-                                : displayName.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
+                          <button
+                            onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
+                            className="shrink-0"
+                          >
+                            <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
+                              <AvatarImage src={message.senderAvatarUrl} />
+                              <AvatarFallback className="text-xs">
+                                {message.isFromMe
+                                  ? t("me")
+                                  : displayName.substring(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                          </button>
                           <span className="text-xs text-muted-foreground mt-1">{timeString}</span>
                         </>
                       ) : (
@@ -300,10 +373,24 @@ export function MessageList({
                           >
                             {displayName}
                           </span>
-                          <p className="text-foreground text-left m-0">{message.body}</p>
+                          {message.body && message.body.trim() !== "" && (
+                            <p className="text-foreground text-left m-0">{message.body}</p>
+                          )}
+                          {message.attachments && message.attachments.trim() !== "" && (
+                            <MessageAttachments
+                              attachments={message.attachments}
+                              isFromMe={message.isFromMe}
+                            />
+                          )}
                         </>
                       ) : (
-                        <p className="text-foreground text-left m-0 leading-none" style={{ marginTop: '10px' }}>{message.body}</p>
+                        <>
+                          {message.body && <p className="text-foreground text-left m-0 leading-none" style={{ marginTop: '10px' }}>{message.body}</p>}
+                          <MessageAttachments
+                            attachments={message.attachments || ""}
+                            isFromMe={message.isFromMe}
+                          />
+                        </>
                       )}
                     </div>
                   </div>
@@ -312,18 +399,32 @@ export function MessageList({
                       onClick={() => handleThreadClick(message.protocolMsgId)}
                       className="ml-[80px] flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%]"
                     >
-                      <Avatar className="h-5 w-5 shrink-0">
-                        <AvatarImage src="" />
-                        <AvatarFallback className="text-xs">
-                          {getSenderDisplayName(
+                      <button
+                        onClick={() => handleAvatarClick(
+                          lastThreadMsg.senderAvatarUrl,
+                          getSenderDisplayName(
                             lastThreadMsg.senderName,
                             lastThreadMsg.senderId,
-                            lastThreadMsg.isFromMe
+                            lastThreadMsg.isFromMe,
+                            t
                           )
-                            .substring(0, 2)
-                            .toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
+                        )}
+                        className="shrink-0"
+                      >
+                        <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
+                          <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
+                          <AvatarFallback className="text-xs">
+                            {getSenderDisplayName(
+                              lastThreadMsg.senderName,
+                              lastThreadMsg.senderId,
+                              lastThreadMsg.isFromMe,
+                              t
+                            )
+                              .substring(0, 2)
+                              .toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </button>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-muted-foreground truncate">
                           {lastThreadMsg.body.length > 50

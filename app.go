@@ -7,12 +7,19 @@ import (
 	"Loom/pkg/models"
 	"Loom/pkg/providers"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"gorm.io/gorm"
 )
 
 // App struct
@@ -41,6 +48,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Initialize provider manager
 	a.providerManager = core.NewProviderManager()
+	fmt.Printf("App.startup: ProviderManager initialized\n")
 
 	// Register available providers
 	a.providerManager.RegisterProvider("mock", core.ProviderInfo{
@@ -70,30 +78,36 @@ func (a *App) startup(ctx context.Context) {
 	// Load and restore providers from database
 	configs, err := a.providerManager.LoadProviderConfigs()
 	if err != nil {
-		log.Printf("Warning: Failed to load provider configs: %v", err)
+		fmt.Printf("App.startup: Warning: Failed to load provider configs: %v\n", err)
 		configs = []models.ProviderConfiguration{}
 	}
+	fmt.Printf("App.startup: Loaded %d provider configs from database\n", len(configs))
 
 	// Restore providers from database
 	var activeProvider core.Provider
 	for _, config := range configs {
 		// Capture config for goroutine
 		providerConfig := config
+		fmt.Printf("App.startup: Attempting to restore provider %s (IsActive: %v)\n", providerConfig.ProviderID, providerConfig.IsActive)
 
 		provider, err := a.providerManager.RestoreProvider(providerConfig)
 		if err != nil {
-			log.Printf("Warning: Failed to restore provider %s: %v", providerConfig.ProviderID, err)
+			fmt.Printf("App.startup: ERROR - Failed to restore provider %s: %v\n", providerConfig.ProviderID, err)
 			continue
 		}
+		fmt.Printf("App.startup: Successfully restored provider %s from database\n", providerConfig.ProviderID)
 
 		// Only connect the provider if it's already authenticated
 		// Providers that need authentication (like WhatsApp) should only be connected
 		// when the user explicitly requests it via the UI
-		if provider.IsAuthenticated() {
+		isAuth := provider.IsAuthenticated()
+		fmt.Printf("App.startup: Provider %s IsAuthenticated: %v\n", providerConfig.ProviderID, isAuth)
+		if isAuth {
 			if err := provider.Connect(); err != nil {
 				log.Printf("Warning: Failed to connect provider %s: %v", providerConfig.ProviderID, err)
 				continue
 			}
+			log.Printf("Provider %s connected successfully", providerConfig.ProviderID)
 		} else {
 			log.Printf("Provider %s is not authenticated yet, skipping auto-connect. User must configure it first.", providerConfig.ProviderID)
 			// Don't set as active if not authenticated
@@ -125,9 +139,12 @@ func (a *App) startup(ctx context.Context) {
 				}(provider, providerConfig.ProviderID, *providerConfig.LastSyncAt)
 			}
 		} else {
-			// First time sync - sync last 24 hours
+			// First time sync - sync last 1 year to get all conversations
+			// WhatsApp will automatically sync via HistorySync events, but we trigger a manual sync
+			// with a long period to ensure we get all available conversations
 			go func(p core.Provider, providerID string) {
-				since := time.Now().Add(-24 * time.Hour)
+				since := time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
+				fmt.Printf("App.startup: First time sync for provider %s, syncing since %s\n", providerID, since.Format("2006-01-02 15:04:05"))
 				if err := p.SyncHistory(since); err != nil {
 					log.Printf("Warning: Failed to sync history for provider %s: %v", providerID, err)
 				} else {
@@ -144,8 +161,12 @@ func (a *App) startup(ctx context.Context) {
 		if providerConfig.IsActive {
 			activeProvider = provider
 			a.provider = provider
+			fmt.Printf("App.startup: Set provider %s as active provider\n", providerConfig.ProviderID)
 		}
 	}
+
+	fmt.Printf("App.startup: Finished restoring providers. Active provider: %v\n", activeProvider != nil)
+	fmt.Printf("App.startup: a.provider is nil: %v\n", a.provider == nil)
 
 	// If no active provider was restored, check if MockProvider exists in database
 	// Only create it if it doesn't exist (wasn't explicitly deleted by user)
@@ -188,6 +209,11 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Start event listener for the active provider
+	if a.provider != nil {
+		log.Printf("Starting event listener for active provider: %T", a.provider)
+	} else {
+		log.Printf("Warning: No active provider found, event listener will not start")
+	}
 	a.startEventListener(ctx)
 }
 
@@ -200,9 +226,15 @@ func (a *App) startEventListener(ctx context.Context) {
 
 	// Check if provider is initialized
 	if a.provider == nil {
-		log.Printf("Warning: No provider available, skipping event stream setup")
+		fmt.Printf("App.startEventListener: Warning: No provider available, skipping event stream setup\n")
+		fmt.Printf("App.startEventListener: a.provider is nil, a.providerManager is nil: %v\n", a.providerManager == nil)
+		if a.providerManager != nil {
+			active, err := a.providerManager.GetActiveProvider()
+			fmt.Printf("App.startEventListener: GetActiveProvider() returned: provider=%v, error=%v\n", active != nil, err)
+		}
 		return
 	}
+	fmt.Printf("App.startEventListener: Starting event listener for active provider\n")
 
 	// Create context for this listener
 	eventCtx, cancel := context.WithCancel(ctx)
@@ -228,6 +260,13 @@ func (a *App) startEventListener(ctx context.Context) {
 				}
 				switch e := event.(type) {
 				case core.MessageEvent:
+					// Convert avatar path to base64 data URL if present
+					if e.Message.SenderAvatarURL != "" {
+						avatarURL := a.GetAvatar(e.Message.SenderAvatarURL)
+						if avatarURL != "" {
+							e.Message.SenderAvatarURL = avatarURL
+						}
+					}
 					// Serialize the message to JSON
 					msgJSON, err := json.Marshal(e.Message)
 					if err != nil {
@@ -363,20 +402,71 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 	metaContactsMap := make(map[string]*models.MetaContact)
 
 	for _, acc := range linkedAccounts {
+		// Use Username, but if empty, try to format UserID nicely
 		displayName := acc.Username
-		if _, exists := metaContactsMap[displayName]; !exists {
-			metaContactsMap[displayName] = &models.MetaContact{
+		if displayName == "" {
+			// Try to format UserID as a display name
+			// For WhatsApp IDs like "33631207926@s.whatsapp.net", extract phone number
+			if whatsappMatch := regexp.MustCompile(`^(\d+)@s\.whatsapp\.net$`).FindStringSubmatch(acc.UserID); whatsappMatch != nil {
+				phoneNumber := whatsappMatch[1]
+				if phoneNumber != "" {
+					displayName = phoneNumber
+				}
+			}
+			if displayName == "" {
+				// Fallback to UserID
+				displayName = acc.UserID
+			}
+		}
+
+		// Use UserID as the key to avoid collisions when multiple accounts have same display name
+		key := acc.UserID
+		if _, exists := metaContactsMap[key]; !exists {
+			// Use avatar from LinkedAccount if available, otherwise fallback to dicebear
+			avatarURL := acc.AvatarURL
+			if avatarURL == "" {
+				avatarURL = fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", displayName)
+			} else {
+				// Check if file exists before trying to convert
+				if _, err := os.Stat(avatarURL); err == nil {
+					// Convert local file path to base64 data URL
+					avatarURL = a.GetAvatar(avatarURL)
+					if avatarURL == "" {
+						// If GetAvatar failed, fallback to dicebear
+						avatarURL = fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", displayName)
+					}
+				} else {
+					// File doesn't exist, use dicebear fallback
+					avatarURL = fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", displayName)
+				}
+			}
+			metaContactsMap[key] = &models.MetaContact{
 				ID:             uint(len(metaContactsMap) + 1),
 				DisplayName:    displayName,
-				AvatarURL:      fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", displayName),
+				AvatarURL:      avatarURL,
 				LinkedAccounts: []models.LinkedAccount{},
 			}
 		}
 
-		meta := metaContactsMap[displayName]
+		meta := metaContactsMap[key]
+		// Update avatar if the LinkedAccount has one and MetaContact doesn't
+		if acc.AvatarURL != "" {
+			// Check if current avatar is dicebear fallback
+			isDicebear := strings.HasPrefix(meta.AvatarURL, "https://api.dicebear.com/") || meta.AvatarURL == ""
+			if isDicebear {
+				// Check if file exists before trying to convert
+				if _, err := os.Stat(acc.AvatarURL); err == nil {
+					// Convert local file path to base64 data URL
+					avatarURL := a.GetAvatar(acc.AvatarURL)
+					if avatarURL != "" {
+						meta.AvatarURL = avatarURL
+					}
+				}
+			}
+		}
 		meta.LinkedAccounts = append(meta.LinkedAccounts, acc)
 
-		if acc.CreatedAt.IsZero() == false {
+		if !acc.CreatedAt.IsZero() {
 			if meta.CreatedAt.IsZero() || acc.CreatedAt.Before(meta.CreatedAt) {
 				meta.CreatedAt = acc.CreatedAt
 			}
@@ -386,9 +476,36 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 		if candidateUpdated.IsZero() {
 			candidateUpdated = acc.CreatedAt
 		}
-		if candidateUpdated.IsZero() == false {
+		if !candidateUpdated.IsZero() {
 			if meta.UpdatedAt.IsZero() || candidateUpdated.After(meta.UpdatedAt) {
 				meta.UpdatedAt = candidateUpdated
+			}
+		}
+	}
+
+	// Load contact aliases from database
+	aliasMap := make(map[string]string)
+	if db.DB != nil {
+		var aliases []models.ContactAlias
+		if err := db.DB.Find(&aliases).Error; err == nil {
+			for _, alias := range aliases {
+				aliasMap[alias.UserID] = alias.Alias
+			}
+		}
+	}
+
+	// Apply aliases to meta contacts
+	for _, contact := range metaContactsMap {
+		// Check if any linked account has an alias
+		for i := range contact.LinkedAccounts {
+			if alias, exists := aliasMap[contact.LinkedAccounts[i].UserID]; exists {
+				// Use the alias as display name
+				// Only update avatar if it's a dicebear fallback (preserve real avatars)
+				if strings.HasPrefix(contact.AvatarURL, "https://api.dicebear.com/") {
+					contact.AvatarURL = fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", alias)
+				}
+				contact.DisplayName = alias
+				break // Use first alias found
 			}
 		}
 	}
@@ -410,7 +527,22 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	if err != nil || activeProvider == nil {
 		return nil, fmt.Errorf("no active provider available")
 	}
-	return activeProvider.GetConversationHistory(conversationID, 100)
+	messages, err := activeProvider.GetConversationHistory(conversationID, 100)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert avatar paths to base64 data URLs
+	for i := range messages {
+		if messages[i].SenderAvatarURL != "" {
+			avatarURL := a.GetAvatar(messages[i].SenderAvatarURL)
+			if avatarURL != "" {
+				messages[i].SenderAvatarURL = avatarURL
+			}
+		}
+	}
+
+	return messages, nil
 }
 
 // SendMessage sends a text message.
@@ -423,16 +555,128 @@ func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	return a.provider.GetThreads(parentMessageID)
 }
 
+// GetAvatar returns the avatar image as a base64 data URL.
+// GetAttachmentData returns the base64-encoded data of an attachment file.
+func (a *App) GetAttachmentData(filePath string) (string, error) {
+	if filePath == "" {
+		return "", fmt.Errorf("file path is empty")
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("file does not exist: %s", filePath)
+	}
+
+	// Read the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Read file content
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Determine MIME type from file extension
+	mimeType := "application/octet-stream"
+	ext := filepath.Ext(filePath)
+	switch ext {
+	case ".jpg", ".jpeg":
+		mimeType = "image/jpeg"
+	case ".png":
+		mimeType = "image/png"
+	case ".gif":
+		mimeType = "image/gif"
+	case ".webp":
+		mimeType = "image/webp"
+	case ".mp4":
+		mimeType = "video/mp4"
+	case ".mp3":
+		mimeType = "audio/mpeg"
+	case ".pdf":
+		mimeType = "application/pdf"
+	case ".xls", ".xlsx":
+		mimeType = "application/vnd.ms-excel"
+	}
+
+	// Encode to base64
+	base64Data := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
+}
+
+// GetAvatar reads an avatar file and returns it as a base64 data URL.
+// If the path is empty or the file doesn't exist, returns empty string.
+func (a *App) GetAvatar(filePath string) string {
+	if filePath == "" {
+		return ""
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return ""
+	}
+
+	// Read the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Printf("Failed to open avatar file %s: %v", filePath, err)
+		return ""
+	}
+	defer file.Close()
+
+	// Read file content
+	data, err := io.ReadAll(file)
+	if err != nil {
+		log.Printf("Failed to read avatar file %s: %v", filePath, err)
+		return ""
+	}
+
+	// Determine MIME type based on file extension
+	mimeType := "image/jpeg"
+	if len(filePath) > 4 {
+		ext := filePath[len(filePath)-4:]
+		switch ext {
+		case ".png":
+			mimeType = "image/png"
+		case ".gif":
+			mimeType = "image/gif"
+		case ".webp":
+			mimeType = "image/webp"
+		}
+	}
+
+	// Encode to base64
+	base64Data := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data)
+}
+
 // --- Provider Management Methods ---
 
 // GetAvailableProviders returns a list of all available providers.
 func (a *App) GetAvailableProviders() ([]core.ProviderInfo, error) {
-	return a.providerManager.GetAvailableProviders(), nil
+	fmt.Printf("App.GetAvailableProviders: called\n")
+	if a.providerManager == nil {
+		fmt.Printf("App.GetAvailableProviders: providerManager is nil\n")
+		return []core.ProviderInfo{}, nil
+	}
+	providers := a.providerManager.GetAvailableProviders()
+	fmt.Printf("App.GetAvailableProviders: returning %d providers\n", len(providers))
+	return providers, nil
 }
 
 // GetConfiguredProviders returns a list of configured providers.
 func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
-	return a.providerManager.GetConfiguredProviders(), nil
+	fmt.Printf("App.GetConfiguredProviders: called\n")
+	if a.providerManager == nil {
+		fmt.Printf("App.GetConfiguredProviders: providerManager is nil\n")
+		return []core.ProviderInfo{}, nil
+	}
+	providers := a.providerManager.GetConfiguredProviders()
+	fmt.Printf("App.GetConfiguredProviders: returning %d providers\n", len(providers))
+	return providers, nil
 }
 
 // CreateProvider creates a new provider instance.
@@ -574,8 +818,30 @@ func (a *App) SyncProvider(providerID string) error {
 		}
 	}
 
-	// Sync last 24 hours
-	since := time.Now().Add(-24 * time.Hour)
+	// Check if this is the first sync (no LastSyncAt in database)
+	var providerConfig models.ProviderConfiguration
+	isFirstSync := false
+	if db.DB != nil {
+		if err := db.DB.Where("provider_id = ?", providerID).First(&providerConfig).Error; err != nil {
+			// Provider not found, treat as first sync
+			isFirstSync = true
+		} else if providerConfig.LastSyncAt == nil {
+			// First sync - sync last 1 year
+			isFirstSync = true
+		}
+	}
+
+	var since time.Time
+	if isFirstSync {
+		// First time sync - sync last 1 year to get all conversations
+		since = time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
+		fmt.Printf("App.SyncProvider: First time sync for provider %s, syncing since %s\n", providerID, since.Format("2006-01-02 15:04:05"))
+	} else {
+		// Regular sync - sync last 24 hours
+		since = time.Now().Add(-24 * time.Hour)
+		fmt.Printf("App.SyncProvider: Regular sync for provider %s, syncing since %s\n", providerID, since.Format("2006-01-02 15:04:05"))
+	}
+
 	if err := provider.SyncHistory(since); err != nil {
 		return fmt.Errorf("failed to sync history: %w", err)
 	}
@@ -597,4 +863,54 @@ func (a *App) SyncProvider(providerID string) error {
 	}
 
 	return nil
+}
+
+// SetContactAlias sets a custom name (alias) for a contact identified by userID.
+func (a *App) SetContactAlias(userID string, alias string) error {
+	if db.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	if alias == "" {
+		// If alias is empty, delete the alias
+		return db.DB.Where("user_id = ?", userID).Delete(&models.ContactAlias{}).Error
+	}
+
+	contactAlias := models.ContactAlias{
+		UserID: userID,
+		Alias:  alias,
+	}
+
+	// Use FirstOrCreate to update if exists, create if not
+	var existing models.ContactAlias
+	result := db.DB.Where("user_id = ?", userID).First(&existing)
+	if result.Error == nil {
+		// Update existing
+		existing.Alias = alias
+		existing.UpdatedAt = time.Now()
+		return db.DB.Save(&existing).Error
+	} else if result.Error == gorm.ErrRecordNotFound {
+		// Create new
+		return db.DB.Create(&contactAlias).Error
+	}
+	return result.Error
+}
+
+// GetContactAliases returns all contact aliases as a map of userId -> alias.
+func (a *App) GetContactAliases() (map[string]string, error) {
+	if db.DB == nil {
+		return make(map[string]string), nil
+	}
+
+	var aliases []models.ContactAlias
+	if err := db.DB.Find(&aliases).Error; err != nil {
+		return nil, err
+	}
+
+	aliasMap := make(map[string]string)
+	for _, alias := range aliases {
+		aliasMap[alias.UserID] = alias.Alias
+	}
+
+	return aliasMap, nil
 }

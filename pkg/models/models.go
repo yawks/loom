@@ -24,6 +24,7 @@ type LinkedAccount struct {
 	Protocol      string         `gorm:"index" json:"protocol"` // "slack", "whatsapp", "google_messages"
 	UserID        string         `json:"userId"`                // User's ID on the remote platform
 	Username      string         `json:"username"`
+	AvatarURL     string         `json:"avatarUrl,omitempty"`                 // Profile picture URL from the provider
 	Status        string         `json:"status"`                              // "online", "offline", "away", "busy", etc.
 	LastSeen      *time.Time     `json:"lastSeen,omitempty"`                  // Last seen timestamp (nil if not available)
 	Conversations []Conversation `gorm:"foreignKey:LinkedAccountID" json:"-"` // Avoid JSON cycles
@@ -61,10 +62,11 @@ type GroupParticipant struct {
 type Message struct {
 	ID              uint             `gorm:"primarykey" json:"id"`
 	ConversationID  uint             `json:"conversationId"`
-	ProtocolConvID  string           `json:"protocolConvId"`                   // Conversation ID on the platform
-	ProtocolMsgID   string           `gorm:"uniqueIndex" json:"protocolMsgId"` // Message ID on the platform
-	SenderID        string           `json:"senderId"`                         // Sender's ID on the platform
-	SenderName      string           `gorm:"-" json:"senderName,omitempty"`    // Human-readable sender name (not persisted yet)
+	ProtocolConvID  string           `json:"protocolConvId"`                     // Conversation ID on the platform
+	ProtocolMsgID   string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
+	SenderID        string           `json:"senderId"`                           // Sender's ID on the platform
+	SenderName      string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
+	SenderAvatarURL string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
 	Body            string           `json:"body"`
 	Timestamp       time.Time        `json:"timestamp"`
 	IsFromMe        bool             `json:"isFromMe"`
@@ -97,6 +99,16 @@ type Reaction struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// Attachment represents a file attached to a message.
+type Attachment struct {
+	Type     string `json:"type"`     // "image", "video", "audio", "document", "sticker"
+	URL      string `json:"url"`       // Local file path or remote URL
+	FileName string `json:"fileName"` // Original filename
+	FileSize int64  `json:"fileSize"`  // File size in bytes
+	MimeType string `json:"mimeType"`  // MIME type (e.g., "image/jpeg", "application/pdf")
+	Thumbnail string `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
+}
+
 // ProviderConfiguration stores the configuration of a provider instance.
 type ProviderConfiguration struct {
 	ID         uint       `gorm:"primarykey" json:"id"`
@@ -106,4 +118,13 @@ type ProviderConfiguration struct {
 	LastSyncAt *time.Time `json:"lastSyncAt,omitempty"`                   // Last time messages were synced
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+// ContactAlias stores user-defined custom names for contacts.
+type ContactAlias struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	UserID    string    `gorm:"uniqueIndex;not null" json:"userId"` // User ID on the platform (e.g., WhatsApp JID)
+	Alias     string    `gorm:"not null" json:"alias"`              // Custom name set by the user
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }

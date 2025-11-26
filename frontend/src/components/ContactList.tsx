@@ -1,11 +1,11 @@
 import { ArrowDownAZ, Clock } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery, useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetMetaContacts, GetContactAliases } from "../../wailsjs/go/main/App";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
@@ -27,6 +27,14 @@ export function ContactList() {
     queryFn: fetchMetaContacts,
   });
 
+  const { data: aliases = {} } = useQuery<Record<string, string>, Error>({
+    queryKey: ["contactAliases"],
+    queryFn: async () => {
+      const aliasMap = await GetContactAliases();
+      return aliasMap || {};
+    },
+  });
+
   // Listen for contact refresh events
   useEffect(() => {
     const unsubscribe = EventsOn("contacts-refresh", () => {
@@ -41,9 +49,17 @@ export function ContactList() {
     };
   }, [queryClient]);
 
-  // Sort contacts based on selected option
+  // Apply aliases to contacts and sort
   const sortedContacts = useMemo(() => {
-    const sorted = [...contacts];
+    const contactsWithAliases = contacts.map((contact) => {
+      // Check if any linked account has an alias
+      const alias = contact.linkedAccounts.find((acc) => aliases[acc.userId]);
+      const displayName = alias ? aliases[alias.userId] : contact.displayName;
+      // Create a new object with the updated displayName while preserving all other properties
+      return Object.assign({}, contact, { displayName });
+    }) as models.MetaContact[];
+
+    const sorted = [...contactsWithAliases];
     
     if (sortBy === "alphabetical") {
       sorted.sort((a, b) => 
@@ -61,7 +77,7 @@ export function ContactList() {
     }
     
     return sorted;
-  }, [contacts, sortBy]);
+  }, [contacts, sortBy, aliases]);
 
   if (contacts.length === 0) {
     return (

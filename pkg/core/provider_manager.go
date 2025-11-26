@@ -47,6 +47,7 @@ func (pm *ProviderManager) RegisterProvider(id string, info ProviderInfo, factor
 	defer pm.mu.Unlock()
 	pm.factories[id] = factory
 	pm.infos[id] = info
+	fmt.Printf("ProviderManager: Registered provider %s (name: %s)\n", id, info.Name)
 }
 
 // GetAvailableProviders returns a list of all available providers.
@@ -54,10 +55,21 @@ func (pm *ProviderManager) GetAvailableProviders() []ProviderInfo {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
+	fmt.Printf("ProviderManager.GetAvailableProviders: infos count: %d, providers count: %d\n", len(pm.infos), len(pm.providers))
+	
 	providers := make([]ProviderInfo, 0, len(pm.infos))
-	for _, info := range pm.infos {
-		providers = append(providers, info)
+	for id, info := range pm.infos {
+		// Make a copy to avoid modifying the original
+		providerInfo := info
+		// Check if this provider is configured
+		if _, exists := pm.providers[id]; exists {
+			providerInfo.Config = pm.providers[id].GetConfig()
+			providerInfo.IsActive = (id == pm.activeID)
+		}
+		providers = append(providers, providerInfo)
+		fmt.Printf("ProviderManager.GetAvailableProviders: added provider %s (name: %s)\n", id, info.Name)
 	}
+	fmt.Printf("ProviderManager.GetAvailableProviders: returning %d providers\n", len(providers))
 	return providers
 }
 
@@ -66,13 +78,25 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
+	fmt.Printf("ProviderManager.GetConfiguredProviders: providers count: %d, infos count: %d\n", len(pm.providers), len(pm.infos))
+	
 	providers := make([]ProviderInfo, 0)
 	for id, provider := range pm.providers {
-		info := pm.infos[id]
+		info, exists := pm.infos[id]
+		if !exists {
+			// If info doesn't exist, create a basic one
+			fmt.Printf("ProviderManager.GetConfiguredProviders: info not found for %s, creating basic one\n", id)
+			info = ProviderInfo{
+				ID:   id,
+				Name: id,
+			}
+		}
 		info.Config = provider.GetConfig()
 		info.IsActive = (id == pm.activeID)
 		providers = append(providers, info)
+		fmt.Printf("ProviderManager.GetConfiguredProviders: added configured provider %s (name: %s, active: %v)\n", id, info.Name, info.IsActive)
 	}
+	fmt.Printf("ProviderManager.GetConfiguredProviders: returning %d providers\n", len(providers))
 	return providers
 }
 
@@ -287,32 +311,42 @@ func (pm *ProviderManager) LoadProviderConfigs() ([]models.ProviderConfiguration
 
 // RestoreProvider restores a provider from database configuration.
 func (pm *ProviderManager) RestoreProvider(config models.ProviderConfiguration) (Provider, error) {
+	fmt.Printf("ProviderManager.RestoreProvider: restoring provider %s (IsActive: %v)\n", config.ProviderID, config.IsActive)
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
 	factory, ok := pm.factories[config.ProviderID]
 	if !ok {
+		fmt.Printf("ProviderManager.RestoreProvider: ERROR - provider factory not found: %s\n", config.ProviderID)
 		return nil, fmt.Errorf("provider not found: %s", config.ProviderID)
 	}
+	fmt.Printf("ProviderManager.RestoreProvider: factory found for %s\n", config.ProviderID)
 
 	// Parse config JSON
 	var providerConfig ProviderConfig
 	if err := json.Unmarshal([]byte(config.ConfigJSON), &providerConfig); err != nil {
+		fmt.Printf("ProviderManager.RestoreProvider: ERROR - failed to unmarshal config: %v\n", err)
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	fmt.Printf("ProviderManager.RestoreProvider: config unmarshaled successfully\n")
 
 	// Create provider instance
 	provider := factory()
 	if err := provider.Init(providerConfig); err != nil {
+		fmt.Printf("ProviderManager.RestoreProvider: ERROR - failed to initialize provider: %v\n", err)
 		return nil, fmt.Errorf("failed to initialize provider: %w", err)
 	}
+	fmt.Printf("ProviderManager.RestoreProvider: provider initialized successfully\n")
 
 	pm.providers[config.ProviderID] = provider
+	fmt.Printf("ProviderManager.RestoreProvider: provider added to pm.providers (now %d providers)\n", len(pm.providers))
 
 	// Set as active if needed
 	if config.IsActive {
 		pm.activeID = config.ProviderID
+		fmt.Printf("ProviderManager.RestoreProvider: set %s as active provider\n", config.ProviderID)
 	}
 
+	fmt.Printf("ProviderManager.RestoreProvider: successfully restored provider %s\n", config.ProviderID)
 	return provider, nil
 }
