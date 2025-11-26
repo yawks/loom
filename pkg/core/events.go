@@ -158,6 +158,8 @@ const (
 	SyncStatusFetchingContacts SyncStatusType = "fetching_contacts"
 	// SyncStatusFetchingHistory indicates message history is being fetched for a conversation.
 	SyncStatusFetchingHistory SyncStatusType = "fetching_history"
+	// SyncStatusFetchingAvatars indicates profile pictures are being loaded.
+	SyncStatusFetchingAvatars SyncStatusType = "fetching_avatars"
 	// SyncStatusCompleted indicates synchronization is completed.
 	SyncStatusCompleted SyncStatusType = "completed"
 	// SyncStatusError indicates an error occurred during synchronization.

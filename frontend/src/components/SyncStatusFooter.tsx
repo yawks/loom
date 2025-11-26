@@ -1,16 +1,19 @@
 import { useEffect, useState, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { Loader2 } from "lucide-react";
+import { translateBackendMessage } from "@/lib/i18n-helpers";
 
 interface SyncStatus {
-  status: "fetching_contacts" | "fetching_history" | "completed" | "error" | null;
+  status: "fetching_contacts" | "fetching_history" | "fetching_avatars" | "completed" | "error" | null;
   message: string;
   conversationId?: string;
   progress: number;
 }
 
 export function SyncStatusFooter() {
+  const { t } = useTranslation();
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const hasCompletedRef = useRef(false);
 
@@ -83,12 +86,13 @@ export function SyncStatusFooter() {
           return; // Don't process further
         }
         
-        // For other statuses (fetching_contacts, fetching_history)
+        // For other statuses (fetching_contacts, fetching_history, fetching_avatars)
         // If we've already received a "completed" status, ignore these events
         // They are likely late events from the previous sync cycle
-        if (hasCompletedRef.current) {
+        // Exception: fetching_avatars can come after completed, so we allow it
+        if (hasCompletedRef.current && normalizedStatus.status !== "fetching_avatars") {
           console.log("SyncStatusFooter: Ignoring fetching event after completed status:", normalizedStatus.status);
-          return; // Ignore late events
+          return; // Ignore late events (except avatars which can load after sync)
         }
         
         // Clear any existing timeout (but don't auto-hide for these)
@@ -123,7 +127,9 @@ export function SyncStatusFooter() {
   const showSpinner = syncStatus.status !== "completed" && syncStatus.status !== "error";
 
   // Get display text - use the message from the status, which already contains the step
-  const displayText = syncStatus.message || "Synchronizing...";
+  // Translate backend messages
+  const rawMessage = syncStatus.message || t("synchronizing");
+  const displayText = translateBackendMessage(rawMessage);
 
   return (
     <div className="h-12 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex items-center px-4 gap-2 text-sm z-50">

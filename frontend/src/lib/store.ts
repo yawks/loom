@@ -8,10 +8,16 @@ interface AppState {
   setShowThreads: (show: boolean) => void;
   selectedThreadId: string | null;
   setSelectedThreadId: (threadId: string | null) => void;
+  showConversationDetails: boolean;
+  setShowConversationDetails: (show: boolean) => void;
   messageLayout: "bubble" | "irc";
   setMessageLayout: (layout: "bubble" | "irc") => void;
   theme: "light" | "dark";
   setTheme: (theme: "light" | "dark") => void;
+  language: "en" | "fr";
+  setLanguage: (language: "en" | "fr") => void;
+  selectedAvatarUrl: string | null;
+  setSelectedAvatarUrl: (url: string | null) => void;
 }
 
 // Load initial values from localStorage
@@ -50,6 +56,8 @@ export const useAppStore = create<AppState>((set) => ({
       // The user can close it manually with the toggle button
     }
   },
+  showConversationDetails: false,
+  setShowConversationDetails: (show) => set({ showConversationDetails: show }),
   messageLayout: loadFromStorage<"bubble" | "irc">("messageLayout", "bubble"),
   setMessageLayout: (layout) => {
     set({ messageLayout: layout });
@@ -60,4 +68,11 @@ export const useAppStore = create<AppState>((set) => ({
     set({ theme });
     saveToStorage("theme", theme);
   },
+  language: loadFromStorage<"en" | "fr">("language", "en"),
+  setLanguage: (language) => {
+    set({ language });
+    saveToStorage("language", language);
+  },
+  selectedAvatarUrl: null,
+  setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
 }));

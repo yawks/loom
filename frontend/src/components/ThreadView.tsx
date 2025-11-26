@@ -7,6 +7,7 @@ import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -23,9 +24,30 @@ function getColorFromString(str: string): string {
 }
 
 // Get display name for a message sender
-function getSenderDisplayName(senderId: string, isFromMe: boolean): string {
-  if (isFromMe) return "You";
-  // Extract a readable name from senderId (e.g., "user-alice" -> "Alice")
+function getSenderDisplayName(senderId: string, isFromMe: boolean, t: (key: string) => string): string {
+  if (isFromMe) return t("you") || "You";
+  
+  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
+  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
+  if (whatsappMatch) {
+    const phoneNumber = whatsappMatch[1];
+    // Format phone number: add spaces every 2 digits (French format)
+    // Example: 33631207926 -> +33 6 31 20 79 26
+    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
+      // French number: +33 followed by 9 digits (without leading 0)
+      const countryCode = phoneNumber.substring(0, 2);
+      const rest = phoneNumber.substring(2);
+      // Format as +33 X XX XX XX XX
+      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
+      return formatted;
+    } else {
+      // Other format: just add spaces every 2 digits
+      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
+      return `+${formatted}`;
+    }
+  }
+  
+  // Fallback for other ID formats
   return senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
@@ -40,14 +62,26 @@ const fetchThreads = async (parentMessageID: string) => {
 };
 
 export function ThreadView() {
+  const { t } = useTranslation();
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const messageLayout = useAppStore((state) => state.messageLayout);
+  const setSelectedAvatarUrl = useAppStore(
+    (state) => state.setSelectedAvatarUrl
+  );
 
   const handleClose = () => {
     setSelectedThreadId(null);
     setShowThreads(false);
+  };
+
+  const handleAvatarClick = (avatarUrl: string | undefined, displayName?: string) => {
+    // Use avatar URL if available, otherwise use a placeholder based on display name
+    const urlToShow = avatarUrl || (displayName ? `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}` : null);
+    if (urlToShow) {
+      setSelectedAvatarUrl(urlToShow);
+    }
   };
 
   // Use useQuery instead of useSuspenseQuery to handle conditional rendering
@@ -106,21 +140,28 @@ export function ThreadView() {
           </div>
         ) : messageLayout === "bubble" ? (
           <div className="space-y-4">
-            {sortedThreadMessages.map((message) => (
-              <div
-                key={message.protocolMsgId || `thread-${message.id}`}
-                className={`flex items-start gap-3 ${
-                  message.isFromMe ? "justify-end" : ""
-                }`}
-              >
-                {!message.isFromMe && (
-                  <Avatar className="h-6 w-6">
-                    <AvatarImage src="" />
-                    <AvatarFallback className="text-xs">
-                      {message.senderId.substring(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                )}
+            {sortedThreadMessages.map((message) => {
+              const displayName = getSenderDisplayName(message.senderId, message.isFromMe, t);
+              return (
+                <div
+                  key={message.protocolMsgId || `thread-${message.id}`}
+                  className={`flex items-start gap-3 ${
+                    message.isFromMe ? "justify-end" : ""
+                  }`}
+                >
+                  {!message.isFromMe && (
+                    <button
+                      onClick={() => handleAvatarClick("", displayName)}
+                      className="shrink-0"
+                    >
+                      <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
+                        <AvatarImage src="" />
+                        <AvatarFallback className="text-xs">
+                          {displayName.substring(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                    </button>
+                  )}
                 <div
                   className={`rounded-lg p-2 text-sm ${
                     message.isFromMe
@@ -135,14 +176,20 @@ export function ThreadView() {
                     {new Date(message.timestamp).toLocaleTimeString()}
                   </p>
                 </div>
-                {message.isFromMe && (
-                  <Avatar className="h-6 w-6">
-                    <AvatarImage src="" />
-                    <AvatarFallback className="text-xs">ME</AvatarFallback>
-                  </Avatar>
-                )}
-              </div>
-            ))}
+                  {message.isFromMe && (
+                    <button
+                      onClick={() => handleAvatarClick("", t("you"))}
+                      className="shrink-0"
+                    >
+                      <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
+                        <AvatarImage src="" />
+                        <AvatarFallback className="text-xs">{t("me")}</AvatarFallback>
+                      </Avatar>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="space-y-1 text-sm">
@@ -158,7 +205,7 @@ export function ThreadView() {
                 prevMessage.senderId !== message.senderId ||
                 prevMessage.isFromMe !== message.isFromMe ||
                 timeDiffMinutes >= 5;
-              const displayName = getSenderDisplayName(message.senderId, message.isFromMe);
+              const displayName = getSenderDisplayName(message.senderId, message.isFromMe, t);
               const senderColor = getColorFromString(message.senderId);
               const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
 
@@ -169,12 +216,17 @@ export function ThreadView() {
                     <div className="flex flex-col items-center min-w-[60px]">
                       {showSender ? (
                         <>
-                          <Avatar className="h-6 w-6 mt-2.5">
-                            <AvatarImage src="" />
-                            <AvatarFallback className="text-xs">
-                              {message.isFromMe ? "ME" : message.senderId.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
+                          <button
+                            onClick={() => handleAvatarClick("", displayName)}
+                            className="shrink-0"
+                          >
+                            <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
+                              <AvatarImage src="" />
+                              <AvatarFallback className="text-xs">
+                                {message.isFromMe ? t("me") : displayName.substring(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                          </button>
                           <span className="text-xs text-muted-foreground mt-1">{timeString}</span>
                         </>
                       ) : (
