@@ -1,12 +1,14 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChatInput } from "./ChatInput";
 import { GetMessagesForConversation } from "../../wailsjs/go/main/App";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
+import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -72,6 +74,28 @@ const fetchMessages = async (conversationID: string) => {
   return GetMessagesForConversation(conversationID);
 };
 
+const getMessageDomId = (message: models.Message): string => {
+  if (message.protocolMsgId && message.protocolMsgId.trim().length > 0) {
+    return message.protocolMsgId;
+  }
+  if (message.id) {
+    return `message-${message.id}`;
+  }
+  return `ts-${new Date(message.timestamp).getTime()}`;
+};
+
+const isElementVisibleWithinContainer = (
+  element: HTMLElement,
+  container: HTMLElement
+) => {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const intersectionTop = Math.max(elementRect.top, containerRect.top);
+  const intersectionBottom = Math.min(elementRect.bottom, containerRect.bottom);
+  const intersectionHeight = intersectionBottom - intersectionTop;
+  return intersectionHeight > elementRect.height * 0.6;
+};
+
 export function MessageList({
   selectedConversation,
 }: {
@@ -83,10 +107,23 @@ export function MessageList({
     queryFn: () =>
       fetchMessages(selectedConversation.linkedAccounts[0].userId),
   });
+  const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
+  const syncConversation = useMessageReadStore(
+    (state) => state.syncConversation
+  );
+  const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
+  const readByConversation = useMessageReadStore(
+    (state) => state.readByConversation
+  );
+  const conversationReadState = useMemo(
+    () => readByConversation[conversationId] ?? {},
+    [readByConversation, conversationId]
+  );
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const messageLayout = useAppStore((state) => state.messageLayout);
+  const hasScrolledToUnreadRef = useRef<string | null>(null);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -123,17 +160,144 @@ export function MessageList({
     return { mainMessages: main, threadsByParent: threads };
   }, [messages]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!conversationId) {
+      return;
+    }
+    syncConversation(conversationId, mainMessages);
+  }, [conversationId, mainMessages, syncConversation]);
+
+  const firstUnreadMessageId = useMemo(() => {
+    for (const message of mainMessages) {
+      const domId = getMessageDomId(message);
+      if (conversationReadState[domId] === false) {
+        return domId;
+      }
+    }
+    return null;
+  }, [conversationReadState, mainMessages]);
 
   useEffect(() => {
-    const node = scrollContainerRef.current;
-    if (!node) {
+    hasScrolledToUnreadRef.current = null;
+  }, [conversationId]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
       return;
     }
     requestAnimationFrame(() => {
-      node.scrollTop = node.scrollHeight;
+      if (
+        firstUnreadMessageId &&
+        hasScrolledToUnreadRef.current !== firstUnreadMessageId
+      ) {
+        const target = messageElementsRef.current.get(firstUnreadMessageId);
+        if (target) {
+          target.scrollIntoView({ block: "center", behavior: "smooth" });
+          hasScrolledToUnreadRef.current = firstUnreadMessageId;
+          return;
+        }
+      }
+      container.scrollTop = container.scrollHeight;
     });
-  }, [messages]);
+  }, [firstUnreadMessageId, messages]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
+    typeof document === "undefined" ? true : document.hasFocus()
+  );
+  const focusStateRef = useRef<boolean>(hasWindowFocus);
+
+  useEffect(() => {
+    focusStateRef.current = hasWindowFocus;
+  }, [hasWindowFocus]);
+
+  const registerMessageNode = useCallback(
+    (messageId: string) => (node: HTMLDivElement | null) => {
+      const elementsMap = messageElementsRef.current;
+      const existingNode = elementsMap.get(messageId);
+      if (existingNode && observerRef.current) {
+        observerRef.current.unobserve(existingNode);
+      }
+      if (!node) {
+        elementsMap.delete(messageId);
+        return;
+      }
+      elementsMap.set(messageId, node);
+      node.dataset.messageId = messageId;
+      if (observerRef.current) {
+        observerRef.current.observe(node);
+      }
+    },
+    []
+  );
+
+  const handleVisibilityChange = useCallback(
+    (entries: IntersectionObserverEntry[]) => {
+      if (!focusStateRef.current || !conversationId) {
+        return;
+      }
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) {
+          return;
+        }
+        const element = entry.target as HTMLElement;
+        const messageId = element.dataset.messageId;
+        if (messageId) {
+          markMessageAsRead(conversationId, messageId);
+        }
+      });
+    },
+    [conversationId, markMessageAsRead]
+  );
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+    const observer = new IntersectionObserver(handleVisibilityChange, {
+      root: container,
+      threshold: 0.65,
+    });
+    observerRef.current = observer;
+    messageElementsRef.current.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [handleVisibilityChange]);
+
+  useEffect(() => {
+    const handleFocus = () => setHasWindowFocus(true);
+    const handleBlur = () => setHasWindowFocus(false);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
+
+  const evaluateVisibleMessages = useCallback(() => {
+    if (!conversationId || !focusStateRef.current) {
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+    messageElementsRef.current.forEach((element, messageId) => {
+      if (isElementVisibleWithinContainer(element, container)) {
+        markMessageAsRead(conversationId, messageId);
+      }
+    });
+  }, [conversationId, markMessageAsRead]);
+
+  useEffect(() => {
+    if (hasWindowFocus) {
+      evaluateVisibleMessages();
+    }
+  }, [evaluateVisibleMessages, hasWindowFocus]);
 
   const getLastThreadMessage = (parentMsgId: string): models.Message | null => {
     const threadMessages = threadsByParent[parentMsgId];
@@ -187,6 +351,7 @@ export function MessageList({
         {messageLayout === "bubble" ? (
           <div className="space-y-4">
             {mainMessages.map((message) => {
+              const messageId = getMessageDomId(message);
               const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
               const threadCount = getThreadCount(message.protocolMsgId);
               const hasThread = threadCount > 0;
@@ -196,117 +361,181 @@ export function MessageList({
                 message.isFromMe,
                 t
               );
+              const isUnread = conversationReadState[messageId] === false;
+              const showUnreadDivider =
+                messageId === firstUnreadMessageId && isUnread;
+              const timestampLabel = new Date(
+                message.timestamp
+              ).toLocaleTimeString();
 
               return (
-                <div key={message.protocolMsgId || `msg-${message.id}`} className="space-y-2">
-                  <div
-                    className={`flex items-start gap-3 ${
-                      message.isFromMe ? "justify-end" : ""
-                    }`}
-                  >
-                    {!message.isFromMe && (
-                      <button
-                        onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
-                        className="shrink-0"
-                      >
-                        <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                          <AvatarImage src={message.senderAvatarUrl} />
-                          <AvatarFallback>
-                            {displayName.substring(0, 2).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                      </button>
-                    )}
+                <div key={messageId} className="space-y-2">
+                  {showUnreadDivider && (
                     <div
-                      className={`rounded-lg p-3 ${
-                        message.isFromMe
-                          ? "bg-blue-600 text-white"
-                          : "bg-muted text-foreground"
-                      }`}
+                      className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                      role="separator"
+                      aria-label={t("new_messages_separator")}
                     >
-                      {message.body && message.body.trim() !== "" && <p>{message.body}</p>}
-                      {message.attachments && message.attachments.trim() !== "" && (
-                        <MessageAttachments
-                          attachments={message.attachments}
-                          isFromMe={message.isFromMe}
-                        />
-                      )}
-                      {(!message.body || message.body.trim() === "") && 
-                       (!message.attachments || message.attachments.trim() === "") && (
-                        <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
-                      )}
-                      <p className={`text-xs mt-1 ${
-                        message.isFromMe
-                          ? "text-blue-100"
-                          : "text-muted-foreground"
-                      }`}>
-                        {new Date(message.timestamp).toLocaleTimeString()}
-                      </p>
+                      <span className="h-px flex-1 bg-border" />
+                      {t("new_messages_separator")}
+                      <span className="h-px flex-1 bg-border" />
                     </div>
-                    {message.isFromMe && (
-                      <button
-                        onClick={() => handleAvatarClick("", t("you"))}
-                        className="shrink-0"
+                  )}
+                  <div
+                    ref={registerMessageNode(messageId)}
+                    data-message-id={messageId}
+                    className="space-y-2 scroll-mt-28"
+                  >
+                    <div
+                      className={cn(
+                        "flex items-start gap-3",
+                        message.isFromMe && "justify-end"
+                      )}
+                    >
+                      {!message.isFromMe && (
+                        <button
+                          onClick={() =>
+                            handleAvatarClick(
+                              message.senderAvatarUrl,
+                              displayName
+                            )
+                          }
+                          className="shrink-0"
+                        >
+                          <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                            <AvatarImage src={message.senderAvatarUrl} />
+                            <AvatarFallback>
+                              {displayName.substring(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                        </button>
+                      )}
+                      <div
+                        className={cn(
+                          "rounded-lg p-3 transition-colors",
+                          message.isFromMe
+                            ? "bg-blue-600 text-white"
+                            : "bg-muted text-foreground",
+                          isUnread &&
+                            "ring-2 ring-primary/70 bg-primary/10 shadow-lg"
+                        )}
+                        aria-live="polite"
+                        aria-label={
+                          isUnread ? t("unread_message_label") : undefined
+                        }
                       >
-                        <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                          <AvatarImage src="" />
-                          <AvatarFallback>{t("me")}</AvatarFallback>
-                        </Avatar>
+                        {message.body && message.body.trim() !== "" && (
+                          <p>{message.body}</p>
+                        )}
+                        {message.attachments &&
+                          message.attachments.trim() !== "" && (
+                            <MessageAttachments
+                              attachments={message.attachments}
+                              isFromMe={message.isFromMe}
+                            />
+                          )}
+                        {(!message.body || message.body.trim() === "") &&
+                          (!message.attachments ||
+                            message.attachments.trim() === "") && (
+                            <p className="text-sm opacity-70 italic">
+                              {t("empty_message")}
+                            </p>
+                          )}
+                        <p
+                          className={cn(
+                            "text-xs mt-1 flex items-center gap-2",
+                            message.isFromMe
+                              ? "text-blue-100 justify-end"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {timestampLabel}
+                          {isUnread && (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                              {t("unread_indicator")}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      {message.isFromMe && (
+                        <button
+                          onClick={() => handleAvatarClick("", t("you"))}
+                          className="shrink-0"
+                        >
+                          <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                            <AvatarImage src="" />
+                            <AvatarFallback>{t("me")}</AvatarFallback>
+                          </Avatar>
+                        </button>
+                      )}
+                    </div>
+                    {hasThread && lastThreadMsg && (
+                      <button
+                        onClick={() =>
+                          handleThreadClick(message.protocolMsgId)
+                        }
+                        className={cn(
+                          "ml-15 flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left",
+                          message.isFromMe
+                            ? "ml-auto max-w-[80%]"
+                            : "mr-auto max-w-[80%]"
+                        )}
+                      >
+                        <button
+                          onClick={() =>
+                            handleAvatarClick(
+                              lastThreadMsg.senderAvatarUrl,
+                              getSenderDisplayName(
+                                lastThreadMsg.senderName,
+                                lastThreadMsg.senderId,
+                                lastThreadMsg.isFromMe,
+                                t
+                              )
+                            )
+                          }
+                          className="shrink-0"
+                        >
+                          <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
+                            <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
+                            <AvatarFallback className="text-xs">
+                              {getSenderDisplayName(
+                                lastThreadMsg.senderName,
+                                lastThreadMsg.senderId,
+                                lastThreadMsg.isFromMe,
+                                t
+                              )
+                                .substring(0, 2)
+                                .toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-muted-foreground truncate">
+                            {lastThreadMsg.body.length > 50
+                              ? `${lastThreadMsg.body.substring(0, 50)}...`
+                              : lastThreadMsg.body}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <p className="text-xs text-muted-foreground/70">
+                              {new Date(
+                                lastThreadMsg.timestamp
+                              ).toLocaleTimeString()}
+                            </p>
+                            {threadCount > 0 && (
+                              <span className="text-xs text-muted-foreground/70">
+                                ·{" "}
+                                {threadCount === 1
+                                  ? t("single_reply")
+                                  : t("multiple_replies", {
+                                      count: threadCount,
+                                    })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </button>
                     )}
                   </div>
-                  {hasThread && lastThreadMsg && (
-                    <button
-                      onClick={() => handleThreadClick(message.protocolMsgId)}
-                      className={`ml-15 flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left ${
-                        message.isFromMe ? "ml-auto max-w-[80%]" : "mr-auto max-w-[80%]"
-                      }`}
-                    >
-                      <button
-                        onClick={() => handleAvatarClick(
-                          lastThreadMsg.senderAvatarUrl,
-                          getSenderDisplayName(
-                            lastThreadMsg.senderName,
-                            lastThreadMsg.senderId,
-                            lastThreadMsg.isFromMe,
-                            t
-                          )
-                        )}
-                        className="shrink-0"
-                      >
-                        <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
-                          <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
-                          <AvatarFallback className="text-xs">
-                          {getSenderDisplayName(
-                            lastThreadMsg.senderName,
-                            lastThreadMsg.senderId,
-                            lastThreadMsg.isFromMe,
-                            t
-                          )
-                            .substring(0, 2)
-                            .toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-muted-foreground truncate">
-                          {lastThreadMsg.body.length > 50
-                            ? lastThreadMsg.body.substring(0, 50) + "..."
-                            : lastThreadMsg.body}
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <p className="text-xs text-muted-foreground/70">
-                            {new Date(lastThreadMsg.timestamp).toLocaleTimeString()}
-                          </p>
-                          {threadCount > 1 && (
-                            <span className="text-xs text-muted-foreground/70">
-                              · {threadCount} {threadCount === 1 ? "reply" : "replies"}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  )}
                 </div>
               );
             })}
@@ -314,12 +543,15 @@ export function MessageList({
         ) : (
           <div className="space-y-1 text-sm">
             {mainMessages.map((message, index) => {
+              const messageId = getMessageDomId(message);
               const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
               const threadCount = getThreadCount(message.protocolMsgId);
               const hasThread = threadCount > 0;
               const prevMessage = index > 0 ? mainMessages[index - 1] : null;
               const timestamp = new Date(message.timestamp);
-              const prevTimestamp = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const prevTimestamp = prevMessage
+                ? new Date(prevMessage.timestamp)
+                : null;
               const timeDiffMinutes = prevTimestamp
                 ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
                 : Infinity;
@@ -335,17 +567,49 @@ export function MessageList({
                 t
               );
               const senderColor = getColorFromString(message.senderId);
-              const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
+              const timeString = `${timestamp
+                .getHours()
+                .toString()
+                .padStart(2, "0")}:${timestamp
+                .getMinutes()
+                .toString()
+                .padStart(2, "0")}`;
+              const isUnread = conversationReadState[messageId] === false;
+              const showUnreadDivider =
+                messageId === firstUnreadMessageId && isUnread;
 
               return (
-                <div key={message.protocolMsgId || `msg-${message.id}`} className="space-y-1">
-                  <div className="flex items-start py-1">
+                <div key={messageId} className="space-y-1">
+                  {showUnreadDivider && (
+                    <div
+                      className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                      role="separator"
+                      aria-label={t("new_messages_separator")}
+                    >
+                      <span className="h-px flex-1 bg-border" />
+                      {t("new_messages_separator")}
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  )}
+                  <div
+                    className={cn(
+                      "flex items-start py-1 scroll-mt-28",
+                      isUnread && "rounded-md border border-primary/30 bg-primary/5 px-2"
+                    )}
+                    ref={registerMessageNode(messageId)}
+                    data-message-id={messageId}
+                  >
                     {/* Left column */}
                     <div className="flex flex-col items-center min-w-[60px]">
                       {showSender ? (
                         <>
                           <button
-                            onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
+                            onClick={() =>
+                              handleAvatarClick(
+                                message.senderAvatarUrl,
+                                displayName
+                              )
+                            }
                             className="shrink-0"
                           >
                             <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
@@ -357,10 +621,17 @@ export function MessageList({
                               </AvatarFallback>
                             </Avatar>
                           </button>
-                          <span className="text-xs text-muted-foreground mt-1">{timeString}</span>
+                          <span className="text-xs text-muted-foreground mt-1">
+                            {timeString}
+                          </span>
                         </>
                       ) : (
-                        <span className="text-xs text-muted-foreground leading-none" style={{ marginTop: '10px' }}>{timeString}</span>
+                        <span
+                          className="text-xs text-muted-foreground leading-none"
+                          style={{ marginTop: "10px" }}
+                        >
+                          {timeString}
+                        </span>
                       )}
                     </div>
                     {/* Right column with 20px margin */}
@@ -374,23 +645,38 @@ export function MessageList({
                             {displayName}
                           </span>
                           {message.body && message.body.trim() !== "" && (
-                            <p className="text-foreground text-left m-0">{message.body}</p>
+                            <p className="text-foreground text-left m-0">
+                              {message.body}
+                            </p>
                           )}
-                          {message.attachments && message.attachments.trim() !== "" && (
-                            <MessageAttachments
-                              attachments={message.attachments}
-                              isFromMe={message.isFromMe}
-                            />
-                          )}
+                          {message.attachments &&
+                            message.attachments.trim() !== "" && (
+                              <MessageAttachments
+                                attachments={message.attachments}
+                                isFromMe={message.isFromMe}
+                              />
+                            )}
                         </>
                       ) : (
                         <>
-                          {message.body && <p className="text-foreground text-left m-0 leading-none" style={{ marginTop: '10px' }}>{message.body}</p>}
+                          {message.body && (
+                            <p
+                              className="text-foreground text-left m-0 leading-none"
+                              style={{ marginTop: "10px" }}
+                            >
+                              {message.body}
+                            </p>
+                          )}
                           <MessageAttachments
                             attachments={message.attachments || ""}
                             isFromMe={message.isFromMe}
                           />
                         </>
+                      )}
+                      {isUnread && (
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">
+                          {t("unread_indicator")}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -400,15 +686,17 @@ export function MessageList({
                       className="ml-[80px] flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%]"
                     >
                       <button
-                        onClick={() => handleAvatarClick(
-                          lastThreadMsg.senderAvatarUrl,
-                          getSenderDisplayName(
-                            lastThreadMsg.senderName,
-                            lastThreadMsg.senderId,
-                            lastThreadMsg.isFromMe,
-                            t
+                        onClick={() =>
+                          handleAvatarClick(
+                            lastThreadMsg.senderAvatarUrl,
+                            getSenderDisplayName(
+                              lastThreadMsg.senderName,
+                              lastThreadMsg.senderId,
+                              lastThreadMsg.isFromMe,
+                              t
+                            )
                           )
-                        )}
+                        }
                         className="shrink-0"
                       >
                         <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
@@ -428,16 +716,21 @@ export function MessageList({
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-muted-foreground truncate">
                           {lastThreadMsg.body.length > 50
-                            ? lastThreadMsg.body.substring(0, 50) + "..."
+                            ? `${lastThreadMsg.body.substring(0, 50)}...`
                             : lastThreadMsg.body}
                         </p>
                         <div className="flex items-center gap-2 mt-1">
                           <p className="text-xs text-muted-foreground/70">
-                            {new Date(lastThreadMsg.timestamp).toLocaleTimeString()}
+                            {new Date(
+                              lastThreadMsg.timestamp
+                            ).toLocaleTimeString()}
                           </p>
-                          {threadCount > 1 && (
+                          {threadCount > 0 && (
                             <span className="text-xs text-muted-foreground/70">
-                              · {threadCount} {threadCount === 1 ? "reply" : "replies"}
+                              ·{" "}
+                              {threadCount === 1
+                                ? t("single_reply")
+                                : t("multiple_replies", { count: threadCount })}
                             </span>
                           )}
                         </div>

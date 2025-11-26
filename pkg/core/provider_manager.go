@@ -331,22 +331,26 @@ func (pm *ProviderManager) RestoreProvider(config models.ProviderConfiguration) 
 	fmt.Printf("ProviderManager.RestoreProvider: config unmarshaled successfully\n")
 
 	// Create provider instance
+	fmt.Printf("ProviderManager.RestoreProvider: creating provider instance\n")
 	provider := factory()
+	fmt.Printf("ProviderManager.RestoreProvider: provider instance created, calling Init\n")
 	if err := provider.Init(providerConfig); err != nil {
 		fmt.Printf("ProviderManager.RestoreProvider: ERROR - failed to initialize provider: %v\n", err)
 		return nil, fmt.Errorf("failed to initialize provider: %w", err)
 	}
 	fmt.Printf("ProviderManager.RestoreProvider: provider initialized successfully\n")
 
+	fmt.Printf("ProviderManager.RestoreProvider: adding provider to pm.providers map\n")
 	pm.providers[config.ProviderID] = provider
 	fmt.Printf("ProviderManager.RestoreProvider: provider added to pm.providers (now %d providers)\n", len(pm.providers))
 
 	// Set as active if needed
 	if config.IsActive {
+		fmt.Printf("ProviderManager.RestoreProvider: setting %s as active provider\n", config.ProviderID)
 		pm.activeID = config.ProviderID
 		fmt.Printf("ProviderManager.RestoreProvider: set %s as active provider\n", config.ProviderID)
 	}
 
-	fmt.Printf("ProviderManager.RestoreProvider: successfully restored provider %s\n", config.ProviderID)
+	fmt.Printf("ProviderManager.RestoreProvider: successfully restored provider %s, returning\n", config.ProviderID)
 	return provider, nil
 }

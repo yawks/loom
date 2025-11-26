@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -56,6 +57,9 @@ type WhatsAppProvider struct {
 	avatarLoadingMu      sync.Mutex                      // Mutex for avatarLoading map
 	avatarFailures       map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
 	avatarFailuresMu     sync.RWMutex                    // Mutex for avatarFailures map
+	lastSyncTimestamp    *time.Time                      // Timestamp of last successful sync (loaded from DB)
+	groupsCacheTimestamp *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
+	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
 }
 
 func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message string, progress int) {
@@ -297,6 +301,69 @@ func (w *WhatsAppProvider) saveAvatarFailures() {
 
 	if err := os.WriteFile(cacheFile, data, 0600); err != nil {
 		fmt.Printf("WhatsApp: Failed to save avatar failures cache: %v\n", err)
+	}
+}
+
+// loadLastSyncTimestamp loads the last sync timestamp from database.
+// This version locks the mutex itself.
+func (w *WhatsAppProvider) loadLastSyncTimestamp() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.loadLastSyncTimestampLocked()
+}
+
+// loadLastSyncTimestampLocked loads the last sync timestamp from database.
+// This version assumes the mutex is already locked (for use in Init()).
+func (w *WhatsAppProvider) loadLastSyncTimestampLocked() {
+	if db.DB == nil {
+		return
+	}
+
+	var config models.ProviderConfiguration
+	err := db.DB.Where("provider_id = ?", "whatsapp").First(&config).Error
+	if err == nil && config.LastSyncAt != nil {
+		w.lastSyncTimestamp = config.LastSyncAt
+		fmt.Printf("WhatsApp: Loaded last sync timestamp: %s\n", config.LastSyncAt.Format("2006-01-02 15:04:05"))
+	} else {
+		fmt.Printf("WhatsApp: No previous sync timestamp found (first sync)\n")
+	}
+}
+
+// saveLastSyncTimestamp saves the last sync timestamp to database.
+func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
+	if db.DB == nil {
+		return
+	}
+
+	w.mu.Lock()
+	w.lastSyncTimestamp = &timestamp
+	w.mu.Unlock()
+
+	var config models.ProviderConfiguration
+	err := db.DB.Where("provider_id = ?", "whatsapp").First(&config).Error
+	if err == nil {
+		// Update existing
+		config.LastSyncAt = &timestamp
+		config.UpdatedAt = time.Now()
+		if err := db.DB.Save(&config).Error; err != nil {
+			fmt.Printf("WhatsApp: Failed to save last sync timestamp: %v\n", err)
+		} else {
+			fmt.Printf("WhatsApp: Saved last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
+		}
+	} else {
+		// Create new
+		config = models.ProviderConfiguration{
+			ProviderID: "whatsapp",
+			IsActive:   true,
+			LastSyncAt: &timestamp,
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+		}
+		if err := db.DB.Create(&config).Error; err != nil {
+			fmt.Printf("WhatsApp: Failed to create provider configuration: %v\n", err)
+		} else {
+			fmt.Printf("WhatsApp: Created provider configuration with last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
+		}
 	}
 }
 
@@ -742,6 +809,12 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	w.loadAvatarFailures()
 	fmt.Printf("WhatsAppProvider.Init: Avatar failures cache loaded\n")
 
+	// Load last sync timestamp from database
+	// Note: w.mu is already locked, so we call the internal version that doesn't lock
+	fmt.Printf("WhatsAppProvider.Init: Loading last sync timestamp...\n")
+	w.loadLastSyncTimestampLocked()
+	fmt.Printf("WhatsAppProvider.Init: Last sync timestamp loaded\n")
+
 	// Add event handler
 	fmt.Printf("WhatsAppProvider.Init: Adding event handler...\n")
 	w.client.AddEventHandler(w.eventHandler)
@@ -779,27 +852,33 @@ func (w *WhatsAppProvider) IsAuthenticated() bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	// Check if we have a device store with an ID
-	// This indicates the provider was previously authenticated
+	// Check if we have a device store - if it exists, we can authenticate
+	// The device store existing means we have credentials stored
 	if w.deviceStore != nil {
-		// Try to get the device store's ID
-		// The device store is of type *store.Device, but we can't import it directly
-		// So we check via the client if available
+		// Try to get the device store's ID via reflection or direct check
+		// The device store is of type *store.Device
+		// First check via the client if available and connected
 		if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
 			return true
 		}
-		// If client is not yet initialized, check the container
+		// If client is not yet initialized or not connected, check the container
 		if w.container != nil {
 			// Try to get the first device from the container
 			ctx := context.Background()
 			deviceStore, err := w.container.GetFirstDevice(ctx)
 			if err == nil && deviceStore != nil {
 				// Check if device has an ID (was previously authenticated)
-				if deviceStore.ID != nil {
+				// Use reflection to check ID field
+				deviceValue := reflect.ValueOf(deviceStore).Elem()
+				idField := deviceValue.FieldByName("ID")
+				if idField.IsValid() && !idField.IsNil() {
 					return true
 				}
 			}
 		}
+		// If we have a deviceStore but can't check ID directly, assume authenticated
+		// This handles the case where deviceStore exists but client isn't connected yet
+		return true
 	}
 
 	// Fallback: check if client and store are initialized and have an ID
@@ -964,16 +1043,33 @@ func (w *WhatsAppProvider) Disconnect() error {
 
 // eventHandler handles WhatsApp events and converts them to ProviderEvent.
 func (w *WhatsAppProvider) eventHandler(evt interface{}) {
+	fmt.Printf("WhatsApp: Received event type: %T\n", evt)
 	switch v := evt.(type) {
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
+		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 		msg := w.convertWhatsAppMessage(v)
 		if msg != nil {
+			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s\n", msg.ProtocolMsgID, msg.Body)
 			w.appendMessageToConversation(msg)
+
+			// Update last sync timestamp when receiving a new message
+			w.saveLastSyncTimestamp(msg.Timestamp)
+
 			select {
 			case w.eventChan <- core.MessageEvent{Message: *msg}:
+				fmt.Printf("WhatsApp: MessageEvent emitted successfully for message %s\n", msg.ProtocolMsgID)
 			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for message %s\n", msg.ProtocolMsgID)
 			}
+			select {
+			case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "message_received"}:
+				fmt.Printf("WhatsApp: ContactStatusEvent emitted successfully\n")
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit ContactStatusEvent (channel full)\n")
+			}
+		} else {
+			fmt.Printf("WhatsApp: WARNING - convertWhatsAppMessage returned nil for message from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 		}
 	case *events.Presence:
 		// Handle typing indicators (Presence events include typing status)
@@ -1014,6 +1110,33 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		fmt.Println("WhatsApp: Logged out event received")
 	case *events.StreamError:
 		fmt.Printf("WhatsApp: Stream error: %v\n", v)
+	case *events.Receipt:
+		// Handle read receipts (message read confirmations)
+		// Convert to ReceiptEvent and emit
+		if len(v.MessageIDs) == 0 {
+			fmt.Printf("WhatsApp: Receipt event has no message IDs, skipping.\n")
+			break
+		}
+		receiptType := core.ReceiptTypeDelivery
+		if v.Type == types.ReceiptTypeRead {
+			receiptType = core.ReceiptTypeRead
+		}
+		fmt.Printf("WhatsApp: Processing receipt event for chat %s, type: %s, message IDs: %v\n", v.Chat.String(), receiptType, v.MessageIDs)
+		// Emit a ReceiptEvent for each message ID
+		for _, msgID := range v.MessageIDs {
+			select {
+			case w.eventChan <- core.ReceiptEvent{
+				ConversationID: v.Chat.String(),
+				MessageID:      msgID,
+				ReceiptType:    receiptType,
+				UserID:         v.Sender.String(),
+				Timestamp:      v.Timestamp.Unix(),
+			}:
+				fmt.Printf("WhatsApp: ReceiptEvent emitted successfully for message %s\n", msgID)
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit ReceiptEvent for message %s (channel full)\n", msgID)
+			}
+		}
 	case *events.HistorySync:
 		// History sync contains conversations and messages
 		fmt.Println("WhatsApp: History sync received - conversations are being synced")
@@ -1022,6 +1145,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if v != nil && v.Data != nil {
 			w.cacheConversationsFromHistory(v.Data)
 			w.cacheMessagesFromHistory(v.Data)
+
+			// Update last sync timestamp after successful history sync
+			now := time.Now()
+			w.saveLastSyncTimestamp(now)
 		}
 
 		// Emit sync status event - history sync in progress
@@ -1428,14 +1555,17 @@ func (w *WhatsAppProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 // GetContacts returns the list of conversations (chats) for WhatsApp.
 // This returns conversations, not just contacts, as they represent the actual chats.
 func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
+	fmt.Printf("WhatsApp: GetContacts called\n")
 	if w.client == nil {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
 	// Check if client is connected (Store.ID is set after successful login)
 	if w.client.Store == nil || w.client.Store.ID == nil {
+		fmt.Printf("WhatsApp: GetContacts - client not connected, returning empty\n")
 		return []models.LinkedAccount{}, nil
 	}
+	fmt.Printf("WhatsApp: GetContacts - starting to load conversations\n")
 
 	// Start with cached conversations discovered via history sync
 	// Make a copy to avoid holding the lock while processing fallback
@@ -1457,34 +1587,43 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	// Fall back to the contact store and joined groups
 	// Note: getContactsFallback may need to write to w.knownGroups, so we don't hold the lock
+	fmt.Printf("WhatsApp: GetContacts - calling getContactsFallback\n")
 	fallbackAccounts, err := w.getContactsFallback()
 	if err != nil {
+		fmt.Printf("WhatsApp: GetContacts - getContactsFallback error: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf("WhatsApp: GetContacts - getContactsFallback returned %d accounts\n", len(fallbackAccounts))
 
+	// Get all avatars from cache in one pass to minimize lock contention
+	w.mu.RLock()
+	avatarCache := make(map[string]string, len(w.conversations))
+	for userID, conv := range w.conversations {
+		if conv.AvatarURL != "" {
+			avatarCache[userID] = conv.AvatarURL
+		}
+	}
+	w.mu.RUnlock()
+
+	// Merge fallback accounts with cached conversations
 	for _, acc := range fallbackAccounts {
 		if _, exists := seen[acc.UserID]; exists {
 			// If already in cache, check if cache has avatar and fallback doesn't
 			// Update the entry in linkedAccounts with avatar from cache if available
-			for i := range linkedAccounts {
-				if linkedAccounts[i].UserID == acc.UserID {
-					// Check if cache has avatar but linkedAccounts entry doesn't
-					w.mu.RLock()
-					if cached, exists := w.conversations[acc.UserID]; exists && cached.AvatarURL != "" && linkedAccounts[i].AvatarURL == "" {
-						linkedAccounts[i].AvatarURL = cached.AvatarURL
+			if avatarURL, hasAvatar := avatarCache[acc.UserID]; hasAvatar {
+				for i := range linkedAccounts {
+					if linkedAccounts[i].UserID == acc.UserID && linkedAccounts[i].AvatarURL == "" {
+						linkedAccounts[i].AvatarURL = avatarURL
+						break
 					}
-					w.mu.RUnlock()
-					break
 				}
 			}
 			continue
 		}
 		// Check if cache has avatar for this account
-		w.mu.RLock()
-		if cached, exists := w.conversations[acc.UserID]; exists && cached.AvatarURL != "" {
-			acc.AvatarURL = cached.AvatarURL
+		if avatarURL, hasAvatar := avatarCache[acc.UserID]; hasAvatar {
+			acc.AvatarURL = avatarURL
 		}
-		w.mu.RUnlock()
 		linkedAccounts = append(linkedAccounts, acc)
 		seen[acc.UserID] = struct{}{}
 	}
@@ -1496,15 +1635,13 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	// Final pass: ensure all avatars from cache are included
 	// This ensures that avatars loaded asynchronously are visible
-	w.mu.RLock()
 	for i := range linkedAccounts {
 		if linkedAccounts[i].AvatarURL == "" {
-			if cached, exists := w.conversations[linkedAccounts[i].UserID]; exists && cached.AvatarURL != "" {
-				linkedAccounts[i].AvatarURL = cached.AvatarURL
+			if avatarURL, hasAvatar := avatarCache[linkedAccounts[i].UserID]; hasAvatar {
+				linkedAccounts[i].AvatarURL = avatarURL
 			}
 		}
 	}
-	w.mu.RUnlock()
 
 	fmt.Printf("WhatsApp: GetContacts returning %d conversations (%d cached + %d fallback)\n", len(linkedAccounts), cachedCount, len(fallbackAccounts))
 
@@ -1726,6 +1863,7 @@ func (w *WhatsAppProvider) filterAccountsWithHistory(accounts []models.LinkedAcc
 
 // getContactsFallback returns contacts and groups as conversations.
 func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error) {
+	fmt.Printf("WhatsApp: getContactsFallback called\n")
 	// Check if store is available
 	if w.client == nil || w.client.Store == nil || w.client.Store.Contacts == nil {
 		fmt.Printf("WhatsApp: Store not available yet (client=%v, store=%v, contacts=%v)\n",
@@ -1778,8 +1916,16 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 	}
 
 	// Add known groups (tracked from messages)
+	// Copy the map first to avoid holding the lock during lookupDisplayName
 	w.mu.RLock()
-	for groupJID, groupName := range w.knownGroups {
+	knownGroupsCopy := make(map[string]string, len(w.knownGroups))
+	for k, v := range w.knownGroups {
+		knownGroupsCopy[k] = v
+	}
+	w.mu.RUnlock()
+
+	// Now iterate over the copy without holding the lock
+	for groupJID, groupName := range knownGroupsCopy {
 		displayName := groupName
 		if jid, err := types.ParseJID(groupJID); err == nil {
 			displayName = w.lookupDisplayName(jid, groupName)
@@ -1795,10 +1941,22 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			UpdatedAt: now,
 		})
 	}
-	w.mu.RUnlock()
 
 	// Try to get groups using GetJoinedGroups if available
-	if w.client != nil && w.client.Store.ID != nil {
+	// Only fetch if cache is empty or older than 1 hour to avoid rate limiting
+	shouldFetchGroups := false
+	w.mu.RLock()
+	if w.groupsCacheTimestamp == nil {
+		shouldFetchGroups = true
+	} else {
+		// Refresh cache if older than 1 hour
+		if time.Since(*w.groupsCacheTimestamp) > 1*time.Hour {
+			shouldFetchGroups = true
+		}
+	}
+	w.mu.RUnlock()
+
+	if shouldFetchGroups && w.client != nil && w.client.Store.ID != nil {
 		fmt.Printf("WhatsApp: Attempting to fetch groups via GetJoinedGroups...\n")
 		groups, err := w.client.GetJoinedGroups(w.ctx)
 		if err == nil && len(groups) > 0 {
@@ -1843,10 +2001,48 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 				groupsAdded++
 			}
 			fmt.Printf("WhatsApp: Added %d new groups from GetJoinedGroups (total linkedAccounts: %d)\n", groupsAdded, len(linkedAccounts))
+
+			// Cache the groups and timestamp
+			// Build cache outside the lock first
+			groupsToCache := make([]models.LinkedAccount, 0, groupsAdded)
+			cacheNow := time.Now()
+			for _, acc := range linkedAccounts {
+				if jid, err := types.ParseJID(acc.UserID); err == nil && jid.Server == types.GroupServer {
+					groupsToCache = append(groupsToCache, acc)
+				}
+			}
+			// Now update the cache with the lock
+			w.mu.Lock()
+			w.groupsCache = groupsToCache
+			w.groupsCacheTimestamp = &cacheNow
+			w.mu.Unlock()
 		} else if err != nil {
 			fmt.Printf("WhatsApp: Could not get groups via GetJoinedGroups: %v\n", err)
 		} else {
 			fmt.Printf("WhatsApp: No groups found via GetJoinedGroups\n")
+		}
+	} else if !shouldFetchGroups {
+		// Use cached groups - copy first to avoid holding lock
+		w.mu.RLock()
+		cachedGroupsCopy := make([]models.LinkedAccount, len(w.groupsCache))
+		copy(cachedGroupsCopy, w.groupsCache)
+		cacheAge := time.Since(*w.groupsCacheTimestamp)
+		w.mu.RUnlock()
+
+		if len(cachedGroupsCopy) > 0 {
+			fmt.Printf("WhatsApp: Using cached groups (cache age: %v)\n", cacheAge)
+			for _, cachedGroup := range cachedGroupsCopy {
+				alreadyAdded := false
+				for _, acc := range linkedAccounts {
+					if acc.UserID == cachedGroup.UserID {
+						alreadyAdded = true
+						break
+					}
+				}
+				if !alreadyAdded {
+					linkedAccounts = append(linkedAccounts, cachedGroup)
+				}
+			}
 		}
 	} else {
 		fmt.Printf("WhatsApp: Cannot fetch groups - client=%v, Store.ID=%v\n", w.client != nil, w.client != nil && w.client.Store != nil && w.client.Store.ID != nil)
@@ -2446,11 +2642,64 @@ func (w *WhatsAppProvider) JoinGroupByInviteMessage(inviteMessageID string) (*mo
 
 // --- Receipts ---
 
-// MarkMessageAsRead marks a message as read.
+// MarkMessageAsRead sends a read receipt for a specific message.
 func (w *WhatsAppProvider) MarkMessageAsRead(conversationID string, messageID string) error {
-	// TODO: Implement marking message as read
-	markUnused(conversationID, messageID)
-	return fmt.Errorf("marking as read not yet implemented")
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	if w.client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	chatJID, err := types.ParseJID(conversationID)
+	if err != nil {
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Get message from database to find the sender
+	var message models.Message
+	if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&message).Error; err != nil {
+		fmt.Printf("WhatsApp: Warning - Could not find message %s in database: %v\n", messageID, err)
+		// If message not found, use chatJID as participantJID (fallback)
+		err = w.client.MarkRead(w.ctx, []types.MessageID{types.MessageID(messageID)}, time.Now(), chatJID, chatJID, types.ReceiptTypeRead)
+		if err != nil {
+			return fmt.Errorf("failed to send read receipt: %w", err)
+		}
+		fmt.Printf("WhatsApp: Sent read receipt for message %s in conversation %s (using chatJID as participant)\n", messageID, conversationID)
+		return nil
+	}
+
+	// Determine participantJID based on message sender
+	var participantJID types.JID
+	if message.IsFromMe {
+		// If message is from me, participantJID should be my own JID
+		if w.client.Store != nil && w.client.Store.ID != nil {
+			participantJID = *w.client.Store.ID
+		} else {
+			participantJID = chatJID
+		}
+	} else {
+		// If message is from someone else, participantJID is the sender's JID
+		senderJID, err := types.ParseJID(message.SenderID)
+		if err != nil {
+			fmt.Printf("WhatsApp: Warning - Could not parse sender ID %s: %v, using chatJID\n", message.SenderID, err)
+			participantJID = chatJID
+		} else {
+			participantJID = senderJID
+		}
+	}
+
+	// Send read receipt using MarkRead method
+	// MarkRead signature: (ctx, messageIDs, timestamp, chatJID, participantJID, receiptType...)
+	// participantJID is the JID of the person who sent the message
+	err = w.client.MarkRead(w.ctx, []types.MessageID{types.MessageID(messageID)}, time.Now(), chatJID, participantJID, types.ReceiptTypeRead)
+	if err != nil {
+		return fmt.Errorf("failed to send read receipt: %w", err)
+	}
+
+	fmt.Printf("WhatsApp: Sent read receipt for message %s in conversation %s (participant: %s)\n", messageID, conversationID, participantJID.String())
+	return nil
 }
 
 // MarkConversationAsRead marks all messages in a conversation as read.
@@ -2536,6 +2785,22 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 		// Client is not connected yet, return without error
 		fmt.Printf("WhatsApp: SyncHistory called but client not connected yet, skipping...\n")
 		return nil
+	}
+
+	// Use last sync timestamp if since is zero or very old
+	w.mu.RLock()
+	lastSync := w.lastSyncTimestamp
+	w.mu.RUnlock()
+
+	if since.IsZero() || since.Before(time.Now().Add(-24*time.Hour)) {
+		if lastSync != nil {
+			since = *lastSync
+			fmt.Printf("WhatsApp: Using last sync timestamp: %s\n", since.Format("2006-01-02 15:04:05"))
+		} else {
+			// First sync - sync from 30 days ago
+			since = time.Now().Add(-30 * 24 * time.Hour)
+			fmt.Printf("WhatsApp: First sync - syncing from 30 days ago: %s\n", since.Format("2006-01-02 15:04:05"))
+		}
 	}
 
 	// Emit sync status event

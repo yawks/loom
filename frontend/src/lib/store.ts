@@ -18,6 +18,8 @@ interface AppState {
   setLanguage: (language: "en" | "fr") => void;
   selectedAvatarUrl: string | null;
   setSelectedAvatarUrl: (url: string | null) => void;
+  metaContacts: models.MetaContact[];
+  setMetaContacts: (contacts: models.MetaContact[]) => void;
 }
 
 // Load initial values from localStorage
@@ -75,4 +77,6 @@ export const useAppStore = create<AppState>((set) => ({
   },
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
+  metaContacts: [],
+  setMetaContacts: (contacts) => set({ metaContacts: contacts }),
 }));

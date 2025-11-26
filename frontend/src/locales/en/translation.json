@@ -38,5 +38,11 @@
   "search_modal_title": "Search a conversation",
   "search_modal_placeholder": "Search a contact or group...",
   "search_modal_no_results": "No results found",
-  "search_modal_start_typing": "Start typing to search"
+  "search_modal_start_typing": "Start typing to search",
+  "unread_indicator": "Unread",
+  "unread_message_label": "Unread message",
+  "new_messages_separator": "New messages",
+  "single_reply": "reply",
+  "multiple_replies": "{{count}} replies",
+  "unread_badge_aria": "{{count}} unread messages"
 }
