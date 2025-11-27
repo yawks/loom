@@ -5,6 +5,7 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
+import type { KeyboardEvent } from "react";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,51 @@ import { useTranslation } from "react-i18next";
 // Declare SendFileFromPath as it will be available after Wails bindings are regenerated
 declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
 
+async function compressImageFile(file: File): Promise<File> {
+  const isImage = file.type?.startsWith("image/");
+  const shouldCompress = isImage && file.size > 1024 * 1024; // compress files > 1MB
+  if (!shouldCompress) {
+    return file;
+  }
+
+  try {
+    const imageBitmap = await createImageBitmap(file);
+    let { width, height } = imageBitmap;
+    const maxDimension = Math.max(width, height);
+    const targetMax = 1600;
+    const scale = maxDimension > targetMax ? targetMax / maxDimension : 1;
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      imageBitmap.close();
+      return file;
+    }
+    ctx.drawImage(imageBitmap, 0, 0, width, height);
+    imageBitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.85)
+    );
+
+    if (!blob) {
+      return file;
+    }
+
+    return new File(
+      [blob],
+      file.name.replace(/\.(png|webp)$/i, ".jpg"),
+      { type: "image/jpeg", lastModified: Date.now() }
+    );
+  } catch (error) {
+    console.warn("Image compression failed, sending original file.", error);
+    return file;
+  }
+}
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -198,6 +244,9 @@ export function MessageList({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingFilePaths, setPendingFilePaths] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [revealedDeletedMessages, setRevealedDeletedMessages] = useState<Set<string>>(
+    () => new Set()
+  );
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -256,6 +305,28 @@ export function MessageList({
   }, [conversationId]);
 
   useEffect(() => {
+    setRevealedDeletedMessages(new Set());
+  }, [conversationId]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+    const handleScroll = () => {
+      const distance =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      scrollStateRef.current = {
+        distanceFromBottom: distance,
+        atBottom: distance < 80,
+      };
+    };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) {
       return;
@@ -272,7 +343,14 @@ export function MessageList({
           return;
         }
       }
-      container.scrollTop = container.scrollHeight;
+      const { atBottom, distanceFromBottom } = scrollStateRef.current;
+      if (atBottom) {
+        container.scrollTop = container.scrollHeight;
+      } else {
+        const targetScrollTop =
+          container.scrollHeight - container.clientHeight - distanceFromBottom;
+        container.scrollTop = Math.max(0, targetScrollTop);
+      }
     });
   }, [firstUnreadMessageId, messages]);
 
@@ -283,6 +361,10 @@ export function MessageList({
     typeof document === "undefined" ? true : document.hasFocus()
   );
   const focusStateRef = useRef<boolean>(hasWindowFocus);
+  const scrollStateRef = useRef({
+    distanceFromBottom: 0,
+    atBottom: true,
+  });
 
   useEffect(() => {
     focusStateRef.current = hasWindowFocus;
@@ -413,6 +495,18 @@ export function MessageList({
     }
   };
 
+  const toggleDeletedMessage = useCallback((messageId: string) => {
+    setRevealedDeletedMessages((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, []);
+
   // Handle drag and drop for file upload
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -494,8 +588,10 @@ export function MessageList({
     }
 
     // Send each file
-    for (const file of files) {
+    for (const initialFile of files) {
+      let file = initialFile;
       try {
+
         // Check file size (limit to 64MB to avoid memory issues)
         const maxSize = 64 * 1024 * 1024; // 64MB
         if (file.size > maxSize) {
@@ -552,6 +648,9 @@ export function MessageList({
         
         // File doesn't have a path - try FileReader first, then fallback to Go clipboard API
         // ATTEMPT 1: Standard JS FileReader (works for screenshots/images copied in browser)
+        // Attempt to compress image files before reading
+        file = await compressImageFile(file);
+
         let fileData: string;
         let fileMimeType = file.type || "application/octet-stream";
         let fileName = file.name;
@@ -700,6 +799,45 @@ export function MessageList({
               const timestampLabel = new Date(
                 message.timestamp
               ).toLocaleTimeString();
+              const isDeleted = Boolean(message.isDeleted);
+              const isDeletedRevealed =
+                isDeleted && revealedDeletedMessages.has(messageId);
+              const showDeletedPlaceholder =
+                isDeleted && !isDeletedRevealed;
+              const baseBubbleColorClass = message.isFromMe
+                ? "bg-blue-600 text-white"
+                : "bg-muted text-foreground";
+              const deletedPlaceholderClass = message.isFromMe
+                ? "bg-blue-950/80 text-blue-100"
+                : "bg-muted/70 text-muted-foreground";
+              const deletedRevealedClass = message.isFromMe
+                ? "bg-blue-600/80 text-white"
+                : "bg-muted text-foreground";
+              const bubbleClass = cn(
+                "rounded-lg p-3 transition-colors border border-transparent",
+                isDeleted
+                  ? isDeletedRevealed
+                    ? deletedRevealedClass
+                    : deletedPlaceholderClass
+                  : baseBubbleColorClass,
+                isUnread &&
+                  "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
+                isDeleted &&
+                  "border-dashed border-destructive/60 cursor-pointer group"
+              );
+              const deletedInteractionHandlers = isDeleted
+                ? {
+                    role: "button" as const,
+                    tabIndex: 0,
+                    onClick: () => toggleDeletedMessage(messageId),
+                    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleDeletedMessage(messageId);
+                      }
+                    },
+                  }
+                : {};
               
               const messageDate = new Date(message.timestamp);
               const prevMessage = index > 0 ? mainMessages[index - 1] : null;
@@ -760,18 +898,12 @@ export function MessageList({
                         </button>
                       )}
                       <div
-                        className={cn(
-                          "rounded-lg p-3 transition-colors",
-                          message.isFromMe
-                            ? "bg-blue-600 text-white"
-                            : "bg-muted text-foreground",
-                          isUnread &&
-                            "ring-2 ring-primary/70 bg-primary/10 shadow-lg"
-                        )}
+                        className={bubbleClass}
                         aria-live="polite"
                         aria-label={
                           isUnread ? t("unread_message_label") : undefined
                         }
+                        {...deletedInteractionHandlers}
                       >
                         {message.body && message.body.trim() !== "" && (
                           <p>{message.body}</p>
@@ -781,6 +913,7 @@ export function MessageList({
                             <MessageAttachments
                               attachments={message.attachments}
                               isFromMe={message.isFromMe}
+                              layout="bubble"
                             />
                           )}
                         {(!message.body || message.body.trim() === "") &&
@@ -790,21 +923,36 @@ export function MessageList({
                               {t("empty_message")}
                             </p>
                           )}
-                        <p
-                          className={cn(
-                            "text-xs mt-1 flex items-center gap-2",
-                            message.isFromMe
-                              ? "text-blue-100 justify-end"
-                              : "text-muted-foreground"
+                        <div className="flex flex-col mt-1">
+                          {showDeletedPlaceholder && (
+                            <div className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none">
+                              <span>{t("message_deleted")}</span>
+                              <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                                {t("click_to_view_deleted")}
+                              </span>
+                            </div>
                           )}
-                        >
-                          {timestampLabel}
-                          {isUnread && (
-                            <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
-                              {t("unread_indicator")}
+                          {isDeleted && isDeletedRevealed && (
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                              {t("deleted_message_badge")}
                             </span>
                           )}
-                        </p>
+                          <p
+                            className={cn(
+                              "text-xs flex items-center gap-2",
+                              message.isFromMe
+                                ? "text-blue-100 justify-end"
+                                : "text-muted-foreground"
+                            )}
+                          >
+                            {timestampLabel}
+                            {isUnread && (
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                                {t("unread_indicator")}
+                              </span>
+                            )}
+                          </p>
+                        </div>
                       </div>
                       {message.isFromMe && (
                         <button
@@ -930,6 +1078,29 @@ export function MessageList({
               const messageDate = new Date(message.timestamp);
               const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
               const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
+              const isDeleted = Boolean(message.isDeleted);
+              const isDeletedRevealed =
+                isDeleted && revealedDeletedMessages.has(messageId);
+              const showDeletedPlaceholder =
+                isDeleted && !isDeletedRevealed;
+              const deletedListWrapperClass = cn(
+                "w-full flex flex-col gap-1",
+                isDeleted && "group",
+                showDeletedPlaceholder && "cursor-pointer text-muted-foreground/80"
+              );
+              const deletedListHandlers = isDeleted
+                ? {
+                    role: "button" as const,
+                    tabIndex: 0,
+                    onClick: () => toggleDeletedMessage(messageId),
+                    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleDeletedMessage(messageId);
+                      }
+                    },
+                  }
+                : {};
 
               return (
                 <div key={messageId} className="space-y-1">
@@ -1000,42 +1171,80 @@ export function MessageList({
                     </div>
                     {/* Right column with 20px margin */}
                     <div className="flex flex-col items-start ml-5 flex-1 min-w-0">
-                      {showSender ? (
-                        <>
-                          <span
-                            className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
-                            style={{ color: senderColor }}
-                          >
-                            {displayName}
+                      {showDeletedPlaceholder ? (
+                        <div
+                          className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none text-left group cursor-pointer"
+                          style={{ marginTop: "10px" }}
+                          {...deletedListHandlers}
+                        >
+                          <span>{t("message_deleted")}</span>
+                          <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                            {t("click_to_view_deleted")}
                           </span>
-                          {message.body && message.body.trim() !== "" && (
-                            <p className="text-foreground text-left m-0">
-                              {message.body}
-                            </p>
-                          )}
-                          {message.attachments &&
-                            message.attachments.trim() !== "" && (
-                              <MessageAttachments
-                                attachments={message.attachments}
-                                isFromMe={message.isFromMe}
-                              />
-                            )}
-                        </>
+                        </div>
                       ) : (
-                        <>
-                          {message.body && (
-                            <p
-                              className="text-foreground text-left m-0 leading-none"
-                              style={{ marginTop: "10px" }}
-                            >
-                              {message.body}
-                            </p>
-                          )}
-                          <MessageAttachments
-                            attachments={message.attachments || ""}
-                            isFromMe={message.isFromMe}
-                          />
-                        </>
+                      <div
+                        className={deletedListWrapperClass}
+                        {...deletedListHandlers}
+                      >
+                          <>
+                            {isDeleted && (
+                              <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                                {t("deleted_message_badge")}
+                              </span>
+                            )}
+                            {showSender ? (
+                              <>
+                                <span
+                                  className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
+                                  style={{ color: senderColor }}
+                                >
+                                  {displayName}
+                                </span>
+                                {message.body && message.body.trim() !== "" && (
+                                  <p className="text-foreground text-left m-0">
+                                    {message.body}
+                                  </p>
+                                )}
+                                {message.attachments &&
+                                  message.attachments.trim() !== "" && (
+                                    <MessageAttachments
+                                      attachments={message.attachments}
+                                      isFromMe={message.isFromMe}
+                                    />
+                                  )}
+                              </>
+                            ) : (
+                              <>
+                                {message.body && (
+                                  <p
+                                    className="text-foreground text-left m-0 leading-none"
+                                    style={{ marginTop: "10px" }}
+                                  >
+                                    {message.body}
+                                  </p>
+                                )}
+                                <MessageAttachments
+                                  attachments={message.attachments || ""}
+                                  isFromMe={message.isFromMe}
+                                  layout="bubble"
+                                />
+                                <MessageAttachments
+                                  attachments={message.attachments || ""}
+                                  isFromMe={message.isFromMe}
+                                  layout="irc"
+                                />
+                              </>
+                            )}
+                            {(!message.body || message.body.trim() === "") &&
+                              (!message.attachments ||
+                                message.attachments.trim() === "") && (
+                                <p className="text-sm opacity-70 italic">
+                                  {t("empty_message")}
+                                </p>
+                              )}
+                          </>
+                      </div>
                       )}
                       {isUnread && (
                         <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">

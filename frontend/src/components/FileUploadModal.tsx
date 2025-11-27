@@ -1,5 +1,3 @@
-import { useState, useRef, useEffect } from "react";
-import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -8,8 +6,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { File, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+
 import { Button } from "@/components/ui/button";
-import { X, File } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface FileUploadModalProps {
   open: boolean;
@@ -127,8 +128,8 @@ export function FileUploadModal({
           <DialogTitle>{t("upload_files")}</DialogTitle>
           <DialogDescription>{t("upload_files_description")}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
-          <div className="max-h-60 overflow-y-auto space-y-2">
+        <div className="space-y-4 min-w-0">
+          <div className="max-h-60 overflow-y-auto overflow-x-hidden min-w-0 w-full space-y-2">
             {selectedFiles.length === 0 && selectedFilePaths.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
                 {t("no_files_selected")}
@@ -138,7 +139,7 @@ export function FileUploadModal({
                 {selectedFiles.map((file, index) => (
                   <div
                     key={`file-${file.name}-${index}`}
-                    className="flex items-center gap-3 p-3 border rounded-lg"
+                    className="flex items-center gap-3 p-3 border rounded-lg min-w-0"
                   >
                     {file.type?.startsWith("image/") ? (
                       <img
@@ -149,8 +150,8 @@ export function FileUploadModal({
                     ) : (
                       <File className="h-5 w-5 text-muted-foreground shrink-0" />
                     )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{file.name}</p>
+                    <div className="flex-1 min-w-0 max-w-full overflow-hidden">
+                      <p className="text-sm font-medium truncate" title={file.name}>{file.name}</p>
                       <p className="text-xs text-muted-foreground">
                         {formatFileSize(file.size)}
                       </p>
@@ -168,12 +169,12 @@ export function FileUploadModal({
                 {selectedFilePaths.map((filePath, index) => (
                   <div
                     key={`path-${filePath}-${index}`}
-                    className="flex items-center gap-3 p-3 border rounded-lg"
+                    className="flex items-center gap-3 p-3 border rounded-lg min-w-0"
                   >
                     <File className="h-5 w-5 text-muted-foreground shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{filePath.split(/[/\\]/).pop() || filePath}</p>
-                      <p className="text-xs text-muted-foreground truncate">
+                    <div className="flex-1 min-w-0 max-w-full overflow-hidden">
+                      <p className="text-sm font-medium truncate" title={filePath.split(/[/\\]/).pop() || filePath}>{filePath.split(/[/\\]/).pop() || filePath}</p>
+                      <p className="text-xs text-muted-foreground truncate" title={filePath}>
                         {filePath}
                       </p>
                     </div>
