@@ -24,7 +24,6 @@ export function SyncStatusFooter() {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const rawStatus: Record<string, any> = JSON.parse(statusJSON);
-        console.log("SyncStatusFooter: Received sync status:", JSON.stringify(rawStatus, null, 2));
         
         // Normalize field names (Go uses capital case, TypeScript uses camelCase)
         const normalizedStatus: SyncStatus = {
@@ -34,13 +33,9 @@ export function SyncStatusFooter() {
           progress: rawStatus.Progress !== undefined ? rawStatus.Progress : (rawStatus.progress !== undefined ? rawStatus.progress : -1),
         };
         
-        console.log("SyncStatusFooter: Normalized status:", JSON.stringify(normalizedStatus, null, 2));
-        console.log("SyncStatusFooter: Status value:", normalizedStatus.status, "Type:", typeof normalizedStatus.status);
-        
         // If we receive a "completed" status, always clear any pending status
         // and set up the auto-hide timeout
         if (normalizedStatus.status === "completed") {
-          console.log("SyncStatusFooter: Processing completed status");
           // Mark that we've received a completed status
           hasCompletedRef.current = true;
           
@@ -51,12 +46,10 @@ export function SyncStatusFooter() {
           }
           
           // Set the completed status
-          console.log("SyncStatusFooter: Setting completed status, message:", normalizedStatus.message);
           setSyncStatus(normalizedStatus);
           
           // Auto-hide after 2 seconds
           timeoutId = setTimeout(() => {
-            console.log("SyncStatusFooter: Hiding completed status after timeout");
             setSyncStatus(null);
             hasCompletedRef.current = false; // Reset for next sync cycle
             timeoutId = null;
@@ -66,7 +59,6 @@ export function SyncStatusFooter() {
         
         // For error status
         if (normalizedStatus.status === "error") {
-          console.log("SyncStatusFooter: Processing error status");
           // Reset completed flag on error
           hasCompletedRef.current = false;
           
@@ -91,7 +83,6 @@ export function SyncStatusFooter() {
         // They are likely late events from the previous sync cycle
         // Exception: fetching_avatars can come after completed, so we allow it
         if (hasCompletedRef.current && normalizedStatus.status !== "fetching_avatars") {
-          console.log("SyncStatusFooter: Ignoring fetching event after completed status:", normalizedStatus.status);
           return; // Ignore late events (except avatars which can load after sync)
         }
         
@@ -101,7 +92,6 @@ export function SyncStatusFooter() {
           timeoutId = null;
         }
         
-        console.log("SyncStatusFooter: Setting fetching status, message:", normalizedStatus.message);
         setSyncStatus(normalizedStatus);
       } catch (error) {
         console.error("Failed to parse sync status:", error);

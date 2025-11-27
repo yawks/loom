@@ -31,17 +31,17 @@ function getSenderDisplayName(senderId: string, isFromMe: boolean, t: (key: stri
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {
     const phoneNumber = whatsappMatch[1];
-    // Format phone number: add spaces every 2 digits (French format)
+    // Format phone number with spaces for readability
     // Example: 33631207926 -> +33 6 31 20 79 26
     if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French number: +33 followed by 9 digits (without leading 0)
+      // French phone number format: +33 followed by 9 digits (without leading 0)
       const countryCode = phoneNumber.substring(0, 2);
       const rest = phoneNumber.substring(2);
       // Format as +33 X XX XX XX XX
       const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
       return formatted;
     } else {
-      // Other format: just add spaces every 2 digits
+      // Other formats: add spaces every 2 digits
       const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
       return `+${formatted}`;
     }

@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Moon, Sun, MessageSquare, Terminal, ChevronDown } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
+import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/lib/store";
 import i18n from "@/i18n";
+import { cn } from "@/lib/utils";
 
 interface SettingsModalProps {
   open: boolean;
@@ -35,9 +37,14 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const setMessageLayout = useAppStore((state) => state.setMessageLayout);
   const language = useAppStore((state) => state.language);
   const setLanguage = useAppStore((state) => state.setLanguage);
+  const fontSize = useAppStore((state) => state.fontSize);
+  const setFontSize = useAppStore((state) => state.setFontSize);
   const [isLanguagePopoverOpen, setIsLanguagePopoverOpen] = useState(false);
   const [isMessageLayoutPopoverOpen, setIsMessageLayoutPopoverOpen] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
+
+  // Font size options: 50%, 75%, 100%, 125%, 150%
+  const fontSizeOptions = [50, 75, 100, 125, 150] as const;
 
   // Sync language with i18n
   useEffect(() => {
@@ -197,6 +204,44 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                 </div>
               </PopoverContent>
             </Popover>
+          </div>
+          <div className="border-t" />
+          <div className="space-y-3">
+            <div className="text-sm font-semibold">
+              {t("font_size") || "Font Size"}
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Type className="h-4 w-4 text-muted-foreground" />
+                <Slider
+                  value={fontSize}
+                  onValueChange={setFontSize}
+                  min={50}
+                  max={150}
+                  step={25}
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium min-w-[3rem] text-right">
+                  {fontSize}%
+                </span>
+              </div>
+              <div className="flex justify-between text-xs text-muted-foreground px-1">
+                {fontSizeOptions.map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => setFontSize(size)}
+                    className={cn(
+                      "px-1 py-0.5 rounded transition-colors",
+                      fontSize === size
+                        ? "text-primary font-medium"
+                        : "hover:text-foreground"
+                    )}
+                  >
+                    {size}%
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </DialogContent>

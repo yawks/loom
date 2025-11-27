@@ -1,14 +1,21 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { GetContactAliases, GetMessagesForConversation, SendFile, SetContactAlias } from "../../wailsjs/go/main/App";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+
 import { Button } from "@/components/ui/button";
+import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
-import { useAppStore } from "@/lib/store";
-import { useMemo, useState } from "react";
-import { GetMessagesForConversation, GetContactAliases, SetContactAlias } from "../../wailsjs/go/main/App";
-import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
 import { translateBackendMessage } from "@/lib/i18n-helpers";
+import { useAppStore } from "@/lib/store";
+import { useTranslation } from "react-i18next";
+
+// Declare SendFileFromPath as it will be available after Wails bindings are regenerated
+declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
+
 
 // Get display name for a message sender
 function getSenderDisplayName(
@@ -26,13 +33,15 @@ function getSenderDisplayName(
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {
     const phoneNumber = whatsappMatch[1];
-    // Format phone number: add spaces every 2 digits (French format)
+    // Format phone number with spaces for readability
     if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
+      // French phone number format: +33 followed by 9 digits (without leading 0)
       const countryCode = phoneNumber.substring(0, 2);
       const rest = phoneNumber.substring(2);
       const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
       return formatted;
     } else {
+      // Other formats: add spaces every 2 digits
       const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
       return `+${formatted}`;
     }
@@ -66,12 +75,15 @@ export function ConversationDetailsView({
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
+  const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const queryClient = useQueryClient();
+  const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
   const { data: messages } = useSuspenseQuery<models.Message[], Error>({
-    queryKey: ["messages", selectedConversation.id],
-    queryFn: () =>
-      fetchMessages(selectedConversation.linkedAccounts[0].userId),
+    queryKey: ["messages", conversationId],
+    queryFn: () => fetchMessages(conversationId),
   });
 
   const { data: aliases = {} } = useQuery<Record<string, string>, Error>({
@@ -138,8 +150,229 @@ export function ConversationDetailsView({
     return getSenderDisplayName(senderName, senderId, isFromMe, t);
   };
 
+  // Handle drag and drop for file upload
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setPendingFiles(files);
+      setIsFileUploadModalOpen(true);
+    }
+  }, []);
+
+  const handleFileUpload = async (files: File[], filePaths?: string[]) => {
+    if (!selectedConversation || (files.length === 0 && (!filePaths || filePaths.length === 0))) {
+      return;
+    }
+
+    const convId = selectedConversation.linkedAccounts[0]?.userId;
+    if (!convId) {
+      return;
+    }
+
+    // First, handle file paths (from clipboard/drag&drop in Wails)
+    if (filePaths && filePaths.length > 0) {
+      for (const filePath of filePaths) {
+        try {
+          if (typeof SendFileFromPath === "function") {
+            await SendFileFromPath(convId, filePath);
+          } else {
+            console.error("SendFileFromPath API is not available. Please rebuild the application.");
+          }
+        } catch (error) {
+          console.error("Failed to send file from path:", filePath, error);
+        }
+      }
+    }
+
+    // Then handle File objects (from file picker)
+    if (files.length === 0) {
+      // Only file paths, no File objects
+      queryClient.invalidateQueries({
+        queryKey: ["messages", convId],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", convId],
+      });
+      return;
+    }
+
+    // Check if SendFile is available
+    if (typeof SendFile !== "function") {
+      console.error("SendFile API is not available. Please rebuild the application to generate Wails bindings.");
+      return;
+    }
+
+    // Send each file
+    for (const file of files) {
+      try {
+        // Check file size (limit to 64MB to avoid memory issues)
+        const maxSize = 64 * 1024 * 1024; // 64MB
+        if (file.size > maxSize) {
+          console.error(`File ${file.name} is too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum size is 64MB.`);
+          continue;
+        }
+
+        // In Wails, files from clipboard/drag&drop may have a path property
+        // Check all possible ways to get the file path
+        interface FileWithPath {
+          path?: string;
+          webkitRelativePath?: string;
+          [key: string]: unknown;
+        }
+        const fileWithPath = file as File & FileWithPath;
+        
+        // Try multiple ways to get the path
+        let filePath: string | undefined = undefined;
+        
+        // Method 1: Direct path property (Wails-specific)
+        if (fileWithPath.path && typeof fileWithPath.path === "string") {
+          filePath = fileWithPath.path;
+        }
+        // Method 2: webkitRelativePath (may contain full path in some cases)
+        else if (fileWithPath.webkitRelativePath && typeof fileWithPath.webkitRelativePath === "string") {
+          // webkitRelativePath is usually relative, but check if it looks like an absolute path
+          if (fileWithPath.webkitRelativePath.startsWith("/") || fileWithPath.webkitRelativePath.match(/^[A-Za-z]:/)) {
+            filePath = fileWithPath.webkitRelativePath;
+          }
+        }
+        // Method 3: Check all properties for any string that looks like a file path
+        else {
+          for (const key in fileWithPath) {
+            if (Object.prototype.hasOwnProperty.call(fileWithPath, key)) {
+              const value = fileWithPath[key];
+              if (typeof value === "string" && (value.startsWith("/") || value.match(/^[A-Za-z]:[\\/]/))) {
+                // This looks like a file path
+                filePath = value;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (filePath && typeof filePath === "string") {
+          // File has a path - use SendFileFromPath directly
+          if (typeof SendFileFromPath === "function") {
+            await SendFileFromPath(convId, filePath);
+            continue;
+          } else {
+            console.warn("SendFileFromPath not available yet, falling back to reading file");
+          }
+        }
+        
+        // File doesn't have a path - use FileReader to convert to base64
+        // This is the correct approach for Wails/WebKit (avoids WebKitBlobResource error 4)
+        let fileData: string;
+        try {
+          fileData = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            
+            // Set timeout to avoid hanging
+            const timeout = setTimeout(() => {
+              reader.abort();
+              reject(new Error(`Timeout reading file: ${file.name}`));
+            }, 30000); // 30 seconds timeout
+            
+            reader.onload = (e) => {
+              clearTimeout(timeout);
+              try {
+                if (e.target?.result && typeof e.target.result === "string") {
+                  // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+                  const parts = e.target.result.split(",");
+                  if (parts.length > 1) {
+                    resolve(parts[1]); // Return only the base64 data part
+                  } else {
+                    reject(new Error("Invalid data URL format"));
+                  }
+                } else {
+                  reject(new Error("FileReader result is empty or invalid"));
+                }
+              } catch (err) {
+                clearTimeout(timeout);
+                reject(err);
+              }
+            };
+            
+            reader.onerror = (error) => {
+              clearTimeout(timeout);
+              console.error("FileReader error for file:", file.name, error);
+              reject(new Error(`Failed to read file: ${file.name} (size: ${(file.size / 1024 / 1024).toFixed(2)}MB)`));
+            };
+            
+            reader.onabort = () => {
+              clearTimeout(timeout);
+              reject(new Error(`File reading aborted: ${file.name}`));
+            };
+            
+            // Use readAsDataURL to convert file to base64
+            try {
+              reader.readAsDataURL(file);
+            } catch (err) {
+              clearTimeout(timeout);
+              reject(new Error(`Failed to start reading file: ${file.name} - ${err}`));
+            }
+          });
+        } catch (readerError) {
+          console.error("Cannot read file with FileReader:", readerError);
+          throw new Error(`Cannot read file "${file.name}". Please try using the file picker button (📎) instead.`);
+        }
+
+        // Send file via API using base64 data
+        if (typeof SendFile === "function") {
+        await SendFile(convId, fileData, file.name, file.type);
+        } else {
+          throw new Error("SendFile API is not available");
+        }
+      } catch (error) {
+        console.error("Failed to send file:", file.name, error);
+        // Continue with other files even if one fails
+      }
+    }
+
+    // Invalidate and refetch messages after sending
+    queryClient.invalidateQueries({
+      queryKey: ["messages", convId],
+    });
+    queryClient.refetchQueries({
+      queryKey: ["messages", convId],
+    });
+  };
+
   return (
-    <div className="flex flex-col h-full">
+    <div 
+      className={cn(
+        "flex flex-col h-full transition-colors",
+        isDragging && "bg-muted/50"
+      )}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <div className="p-4 border-b flex justify-between items-center shrink-0">
         <h3 className="text-md font-semibold">{t("conversation_details")}</h3>
         <Button variant="ghost" size="icon" onClick={handleClose}>
@@ -151,7 +384,7 @@ export function ConversationDetailsView({
           {/* Participants */}
           <div>
             <h4 className="text-sm font-semibold text-muted-foreground mb-3">
-              Participants ({participants.length})
+              {t("participants")} ({participants.length})
             </h4>
             <div className="space-y-3">
               {participants.map((participant) => {
@@ -184,6 +417,12 @@ export function ConversationDetailsView({
           </div>
         </div>
       </div>
+      <FileUploadModal
+        open={isFileUploadModalOpen}
+        onOpenChange={setIsFileUploadModalOpen}
+        files={pendingFiles}
+        onConfirm={handleFileUpload}
+      />
     </div>
   );
 }
@@ -315,12 +554,12 @@ function ParticipantItem({
           <div
             className="flex items-center gap-2 cursor-pointer"
             onClick={() => setIsEditing(true)}
-            title="Click to edit name"
+            title={t("click_to_edit_name")}
           >
             <p className="font-medium text-sm truncate">{displayName}</p>
             {alias && (
               <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-                (custom)
+                ({t("custom")})
               </span>
             )}
           </div>

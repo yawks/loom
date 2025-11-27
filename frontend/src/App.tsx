@@ -10,6 +10,7 @@ const queryClient = new QueryClient();
 function AppContent() {
   const theme = useAppStore((state) => state.theme);
   const language = useAppStore((state) => state.language);
+  const fontSize = useAppStore((state) => state.fontSize);
 
   useEffect(() => {
     // Apply theme to document on mount
@@ -27,6 +28,12 @@ function AppContent() {
       i18n.changeLanguage(language);
     }
   }, [language]);
+
+  useEffect(() => {
+    // Apply font size to document
+    const root = document.documentElement;
+    root.style.fontSize = `${fontSize}%`;
+  }, [fontSize]);
 
   return (
     <main className="h-screen overflow-hidden">

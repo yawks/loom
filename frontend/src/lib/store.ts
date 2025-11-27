@@ -16,6 +16,8 @@ interface AppState {
   setTheme: (theme: "light" | "dark") => void;
   language: "en" | "fr";
   setLanguage: (language: "en" | "fr") => void;
+  fontSize: number;
+  setFontSize: (fontSize: number) => void;
   selectedAvatarUrl: string | null;
   setSelectedAvatarUrl: (url: string | null) => void;
   metaContacts: models.MetaContact[];
@@ -74,6 +76,11 @@ export const useAppStore = create<AppState>((set) => ({
   setLanguage: (language) => {
     set({ language });
     saveToStorage("language", language);
+  },
+  fontSize: loadFromStorage<number>("fontSize", 100),
+  setFontSize: (fontSize) => {
+    set({ fontSize });
+    saveToStorage("fontSize", fontSize);
   },
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),

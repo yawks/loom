@@ -6,6 +6,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"Loom/pkg/providers"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,8 +14,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -588,6 +591,93 @@ func (a *App) SendMessage(conversationID string, text string) (*models.Message, 
 	return a.provider.SendMessage(conversationID, text, nil, nil)
 }
 
+// SendFile sends a file to a conversation.
+// fileData is the base64-encoded file content.
+// fileName is the name of the file.
+// mimeType is the MIME type of the file (e.g., "image/jpeg", "application/pdf").
+func (a *App) SendFile(conversationID string, fileData string, fileName string, mimeType string) (*models.Message, error) {
+	if a.provider == nil {
+		return nil, fmt.Errorf("no active provider")
+	}
+
+	// Decode base64 file data
+	data, err := base64.StdEncoding.DecodeString(fileData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file data: %w", err)
+	}
+
+	// Create attachment
+	attachment := &core.Attachment{
+		FileName: fileName,
+		FileSize: len(data),
+		MimeType: mimeType,
+		Data:     data,
+	}
+
+	return a.provider.SendFile(conversationID, attachment, nil)
+}
+
+// SendFileFromPath sends a file to a conversation by reading it from a file path.
+// This is useful for files that cannot be read via FileReader in the browser.
+func (a *App) SendFileFromPath(conversationID string, filePath string) (*models.Message, error) {
+	if a.provider == nil {
+		return nil, fmt.Errorf("no active provider")
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("file does not exist: %s", filePath)
+	}
+
+	// Read the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Read file content
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Determine MIME type from file extension
+	mimeType := "application/octet-stream"
+	ext := filepath.Ext(filePath)
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		mimeType = "image/jpeg"
+	case ".png":
+		mimeType = "image/png"
+	case ".gif":
+		mimeType = "image/gif"
+	case ".webp":
+		mimeType = "image/webp"
+	case ".mp4":
+		mimeType = "video/mp4"
+	case ".mp3":
+		mimeType = "audio/mpeg"
+	case ".pdf":
+		mimeType = "application/pdf"
+	case ".xls", ".xlsx":
+		mimeType = "application/vnd.ms-excel"
+	}
+
+	// Get filename from path
+	fileName := filepath.Base(filePath)
+
+	// Create attachment
+	attachment := &core.Attachment{
+		FileName: fileName,
+		FileSize: len(data),
+		MimeType: mimeType,
+		Data:     data,
+	}
+
+	return a.provider.SendFile(conversationID, attachment, nil)
+}
+
 // GetThreads returns all messages in a thread for a given parent message ID.
 func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	return a.provider.GetThreads(parentMessageID)
@@ -609,7 +699,8 @@ func (a *App) MarkMessageAsRead(conversationID string, messageID string) error {
 }
 
 // GetAvatar returns the avatar image as a base64 data URL.
-// GetAttachmentData returns the base64-encoded data of an attachment file.
+
+// GetAttachmentData reads an attachment file and returns it as a base64 data URL.
 func (a *App) GetAttachmentData(filePath string) (string, error) {
 	if filePath == "" {
 		return "", fmt.Errorf("file path is empty")
@@ -977,4 +1068,114 @@ func (a *App) GetContactAliases() (map[string]string, error) {
 	}
 
 	return aliasMap, nil
+}
+
+// ClipboardFile represents a file retrieved from the system clipboard
+type ClipboardFile struct {
+	Filename string `json:"filename"`
+	Base64   string `json:"base64"`
+	MimeType string `json:"mimeType"`
+}
+
+// GetClipboardFile attempts to read a file from the system clipboard
+// by bypassing browser security restrictions
+func (a *App) GetClipboardFile() (*ClipboardFile, error) {
+	var filePath string
+
+	if goruntime.GOOS == "darwin" {
+		// macOS: Use AppleScript to get the POSIX path
+		// This handles the case where a file was copied from Finder
+		cmd := exec.Command("osascript", "-e",
+			`try
+				tell application "System Events" to return POSIX path of (the clipboard as alias)
+			on error
+				return ""
+			end try`)
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		err := cmd.Run()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get clipboard file path: %w", err)
+		}
+		filePath = strings.TrimSpace(out.String())
+	} else if goruntime.GOOS == "windows" {
+		// Windows: PowerShell to get the file list
+		cmd := exec.Command("powershell", "-command", "Get-Clipboard -Format FileDropList")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		err := cmd.Run()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get clipboard file path: %w", err)
+		}
+		// Take the first file (split by newline if multiple)
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) > 0 {
+			filePath = strings.TrimSpace(lines[0])
+		}
+	} else {
+		// Linux: Try xclip or xsel
+		// First try xclip
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-o")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		err := cmd.Run()
+		if err == nil {
+			filePath = strings.TrimSpace(out.String())
+		} else {
+			// Try xsel as fallback
+			cmd = exec.Command("xsel", "--clipboard", "--output")
+			out.Reset()
+			cmd.Stdout = &out
+			err = cmd.Run()
+			if err == nil {
+				filePath = strings.TrimSpace(out.String())
+			}
+		}
+	}
+
+	// If no file found via OS
+	if filePath == "" {
+		return nil, fmt.Errorf("no file found in system clipboard")
+	}
+
+	// Read the actual file from disk
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Get file info
+	stats, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file stats: %w", err)
+	}
+
+	// Determine MIME type from file extension
+	mimeType := "application/octet-stream"
+	ext := filepath.Ext(filePath)
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		mimeType = "image/jpeg"
+	case ".png":
+		mimeType = "image/png"
+	case ".gif":
+		mimeType = "image/gif"
+	case ".webp":
+		mimeType = "image/webp"
+	case ".mp4":
+		mimeType = "video/mp4"
+	case ".mp3":
+		mimeType = "audio/mpeg"
+	case ".pdf":
+		mimeType = "application/pdf"
+	case ".xls", ".xlsx":
+		mimeType = "application/vnd.ms-excel"
+	}
+
+	// Prepare response
+	return &ClipboardFile{
+		Filename: stats.Name(),
+		Base64:   base64.StdEncoding.EncodeToString(data),
+		MimeType: mimeType,
+	}, nil
 }
