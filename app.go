@@ -617,6 +617,30 @@ func (a *App) SendFile(conversationID string, fileData string, fileName string, 
 	return a.provider.SendFile(conversationID, attachment, nil)
 }
 
+// EditMessage edits an existing message.
+func (a *App) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	if a.provider == nil {
+		return nil, fmt.Errorf("no active provider")
+	}
+	return a.provider.EditMessage(conversationID, messageID, newText)
+}
+
+// DeleteMessage deletes a message.
+func (a *App) DeleteMessage(conversationID string, messageID string) error {
+	log.Printf("DeleteMessage called: conversationID=%s, messageID=%s", conversationID, messageID)
+	if a.provider == nil {
+		log.Printf("DeleteMessage error: no active provider")
+		return fmt.Errorf("no active provider")
+	}
+	err := a.provider.DeleteMessage(conversationID, messageID)
+	if err != nil {
+		log.Printf("DeleteMessage error: %v", err)
+	} else {
+		log.Printf("DeleteMessage success: message %s deleted", messageID)
+	}
+	return err
+}
+
 // SendFileFromPath sends a file to a conversation by reading it from a file path.
 // This is useful for files that cannot be read via FileReader in the browser.
 func (a *App) SendFileFromPath(conversationID string, filePath string) (*models.Message, error) {

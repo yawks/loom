@@ -116,5 +116,10 @@
   "cancel": "Cancel",
   "upload": "Upload",
   "attach_files": "Attach Files",
-  "add_emoji": "Add Emoji"
+  "add_emoji": "Add Emoji",
+  "message_actions": "Message actions",
+  "edit_message": "Edit",
+  "delete_message": "Delete",
+  "delete_message_title": "Delete Message",
+  "delete_message_description": "Are you sure you want to delete this message? This action cannot be undone."
 }

@@ -1,11 +1,23 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
+import { DeleteMessage, EditMessage, GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
+import { Input } from "@/components/ui/input";
 import type { KeyboardEvent } from "react";
+import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
 import { cn } from "@/lib/utils";
@@ -247,6 +259,11 @@ export function MessageList({
   const [revealedDeletedMessages, setRevealedDeletedMessages] = useState<Set<string>>(
     () => new Set()
   );
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState<string>("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
+  const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -506,6 +523,81 @@ export function MessageList({
       return next;
     });
   }, []);
+
+  const handleEditMessage = useCallback((message: models.Message) => {
+    setEditingMessageId(getMessageDomId(message));
+    setEditingText(message.body || "");
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingMessageId || !editingText.trim() || typeof EditMessage !== "function") {
+      return;
+    }
+
+    // Find the message to get its protocol message ID
+    const message = messages.find((msg) => getMessageDomId(msg) === editingMessageId);
+    if (!message || !message.protocolMsgId) {
+      return;
+    }
+
+    try {
+      await EditMessage(conversationId, message.protocolMsgId, editingText.trim());
+      setEditingMessageId(null);
+      setEditingText("");
+      // Invalidate and refetch messages
+      queryClient.invalidateQueries({
+        queryKey: ["messages", conversationId],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", conversationId],
+      });
+    } catch (error) {
+      console.error("Failed to edit message:", error);
+    }
+  }, [editingMessageId, editingText, conversationId, messages, queryClient]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingMessageId(null);
+    setEditingText("");
+  }, []);
+
+  const handleDeleteClick = useCallback((message: models.Message) => {
+    const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
+    setMessageToDelete({
+      conversationID: conversationId,
+      messageID: protocolMsgId,
+    });
+    setDeleteConfirmOpen(true);
+  }, [conversationId]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!messageToDelete) {
+      console.error("No message to delete");
+      return;
+    }
+
+    if (typeof DeleteMessage !== "function") {
+      console.error("DeleteMessage is not available");
+      return;
+    }
+
+    console.log("Deleting message:", messageToDelete);
+    try {
+      await DeleteMessage(messageToDelete.conversationID, messageToDelete.messageID);
+      console.log("Message deleted successfully");
+      setDeleteConfirmOpen(false);
+      setMessageToDelete(null);
+      // Invalidate and refetch messages
+      queryClient.invalidateQueries({
+        queryKey: ["messages", messageToDelete.conversationID],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", messageToDelete.conversationID],
+      });
+    } catch (error) {
+      console.error("Failed to delete message:", error);
+    }
+  }, [messageToDelete, queryClient]);
 
   // Handle drag and drop for file upload
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -796,9 +888,14 @@ export function MessageList({
               const isUnread = conversationReadState[messageId] === false;
               const showUnreadDivider =
                 messageId === firstUnreadMessageId && isUnread;
-              const timestampLabel = new Date(
-                message.timestamp
-              ).toLocaleTimeString();
+              const timestamp = new Date(message.timestamp);
+              const timeString = `${timestamp
+                .getHours()
+                .toString()
+                .padStart(2, "0")}:${timestamp
+                .getMinutes()
+                .toString()
+                .padStart(2, "0")}`;
               const isDeleted = Boolean(message.isDeleted);
               const isDeletedRevealed =
                 isDeleted && revealedDeletedMessages.has(messageId);
@@ -871,7 +968,9 @@ export function MessageList({
                   <div
                     ref={registerMessageNode(messageId)}
                     data-message-id={messageId}
-                    className="space-y-2 scroll-mt-28"
+                    className="space-y-2 scroll-mt-28 group"
+                    onMouseEnter={() => setOpenActionsMessageId(messageId)}
+                    onMouseLeave={() => setOpenActionsMessageId(null)}
                   >
                     <div
                       className={cn(
@@ -880,34 +979,75 @@ export function MessageList({
                       )}
                     >
                       {!message.isFromMe && (
-                        <button
-                          onClick={() =>
-                            handleAvatarClick(
-                              message.senderAvatarUrl,
-                              displayName
-                            )
-                          }
-                          className="shrink-0"
-                        >
-                          <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                            <AvatarImage src={message.senderAvatarUrl} />
-                            <AvatarFallback>
-                              {displayName.substring(0, 2).toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                        </button>
+                        <div className="flex flex-col items-center shrink-0">
+                          <button
+                            onClick={() =>
+                              handleAvatarClick(
+                                message.senderAvatarUrl,
+                                displayName
+                              )
+                            }
+                            className="shrink-0"
+                          >
+                            <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                              <AvatarImage src={message.senderAvatarUrl} />
+                              <AvatarFallback>
+                                {displayName.substring(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                          </button>
+                          <span className="text-xs text-muted-foreground mt-1">
+                            {timeString}
+                          </span>
+                        </div>
                       )}
-                      <div
-                        className={bubbleClass}
-                        aria-live="polite"
-                        aria-label={
-                          isUnread ? t("unread_message_label") : undefined
-                        }
-                        {...deletedInteractionHandlers}
-                      >
-                        {message.body && message.body.trim() !== "" && (
-                          <p>{message.body}</p>
-                        )}
+                      <div className="flex items-start gap-2 relative group/bubble">
+                        <div
+                          className={bubbleClass}
+                          aria-live="polite"
+                          aria-label={
+                            isUnread ? t("unread_message_label") : undefined
+                          }
+                          {...deletedInteractionHandlers}
+                        >
+                          {editingMessageId === messageId ? (
+                            <div className="flex flex-col gap-2">
+                              <Input
+                                value={editingText}
+                                onChange={(e) => setEditingText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSaveEdit();
+                                  } else if (e.key === "Escape") {
+                                    handleCancelEdit();
+                                  }
+                                }}
+                                className="text-foreground"
+                                autoFocus
+                              />
+                              <div className="flex gap-2 justify-end">
+                                <button
+                                  onClick={handleCancelEdit}
+                                  className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                >
+                                  {t("cancel")}
+                                </button>
+                                <button
+                                  onClick={handleSaveEdit}
+                                  className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                  {t("save")}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              {message.body && message.body.trim() !== "" && (
+                                <p>{message.body}</p>
+                              )}
+                            </>
+                          )}
                         {message.attachments &&
                           message.attachments.trim() !== "" && (
                             <MessageAttachments
@@ -937,33 +1077,50 @@ export function MessageList({
                               {t("deleted_message_badge")}
                             </span>
                           )}
-                          <p
-                            className={cn(
-                              "text-xs flex items-center gap-2",
-                              message.isFromMe
-                                ? "text-blue-100 justify-end"
-                                : "text-muted-foreground"
-                            )}
-                          >
-                            {timestampLabel}
-                            {isUnread && (
+                          {isUnread && (
+                            <p
+                              className={cn(
+                                "text-xs flex items-center gap-2 justify-end",
+                                message.isFromMe
+                                  ? "text-blue-100"
+                                  : "text-muted-foreground"
+                              )}
+                            >
                               <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
                                 {t("unread_indicator")}
                               </span>
-                            )}
-                          </p>
+                            </p>
+                          )}
                         </div>
                       </div>
+                        {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
+                          <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
+                            <MessageActions
+                              isFromMe={message.isFromMe}
+                              hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                              onEdit={() => handleEditMessage(message)}
+                              onDelete={() => handleDeleteClick(message)}
+                              messageId={messageId}
+                              openActionsMessageId={openActionsMessageId}
+                            />
+                          </div>
+                        )}
+                      </div>
                       {message.isFromMe && (
-                        <button
-                          onClick={() => handleAvatarClick("", t("you"))}
-                          className="shrink-0"
-                        >
-                          <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                            <AvatarImage src="" />
-                            <AvatarFallback>{t("me")}</AvatarFallback>
-                          </Avatar>
-                        </button>
+                        <div className="flex flex-col items-center shrink-0">
+                          <button
+                            onClick={() => handleAvatarClick("", t("you"))}
+                            className="shrink-0"
+                          >
+                            <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                              <AvatarImage src="" />
+                              <AvatarFallback>{t("me")}</AvatarFallback>
+                            </Avatar>
+                          </button>
+                          <span className="text-xs text-muted-foreground mt-1">
+                            {timeString}
+                          </span>
+                        </div>
                       )}
                     </div>
                     {hasThread && lastThreadMsg && (
@@ -1045,6 +1202,7 @@ export function MessageList({
               const threadCount = getThreadCount(message.protocolMsgId);
               const hasThread = threadCount > 0;
               const prevMessage = index > 0 ? mainMessages[index - 1] : null;
+              const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;
               const timestamp = new Date(message.timestamp);
               const prevTimestamp = prevMessage
                 ? new Date(prevMessage.timestamp)
@@ -1052,11 +1210,18 @@ export function MessageList({
               const timeDiffMinutes = prevTimestamp
                 ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
                 : Infinity;
+              const isDeleted = Boolean(message.isDeleted);
+              // For deleted messages, also check if next message is from same sender
+              // If so, we should show sender info to maintain context
+              const shouldShowSenderForDeleted = isDeleted && nextMessage &&
+                nextMessage.senderId === message.senderId &&
+                nextMessage.isFromMe === message.isFromMe;
               const showSender =
                 !prevMessage ||
                 prevMessage.senderId !== message.senderId ||
                 prevMessage.isFromMe !== message.isFromMe ||
-                timeDiffMinutes >= 5;
+                timeDiffMinutes >= 5 ||
+                shouldShowSenderForDeleted;
               const displayName = getSenderDisplayName(
                 message.senderName,
                 message.senderId,
@@ -1078,7 +1243,6 @@ export function MessageList({
               const messageDate = new Date(message.timestamp);
               const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
               const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
-              const isDeleted = Boolean(message.isDeleted);
               const isDeletedRevealed =
                 isDeleted && revealedDeletedMessages.has(messageId);
               const showDeletedPlaceholder =
@@ -1128,11 +1292,13 @@ export function MessageList({
                   )}
                   <div
                     className={cn(
-                      "flex items-start py-1 scroll-mt-28",
-                      isUnread && "rounded-md border border-primary/30 bg-primary/5 px-2"
+                      "flex items-start py-1 scroll-mt-28 group relative",
+                      isUnread && "border border-primary/30 bg-primary/5 px-2"
                     )}
                     ref={registerMessageNode(messageId)}
                     data-message-id={messageId}
+                    onMouseEnter={() => setOpenActionsMessageId(messageId)}
+                    onMouseLeave={() => setOpenActionsMessageId(null)}
                   >
                     {/* Left column */}
                     <div className="flex flex-col items-center min-w-[60px]">
@@ -1170,82 +1336,132 @@ export function MessageList({
                       )}
                     </div>
                     {/* Right column with 20px margin */}
-                    <div className="flex flex-col items-start ml-5 flex-1 min-w-0">
-                      {showDeletedPlaceholder ? (
-                        <div
-                          className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none text-left group cursor-pointer"
-                          style={{ marginTop: "10px" }}
-                          {...deletedListHandlers}
+                    <div className="flex flex-col items-start ml-5 flex-1 min-w-0 relative">
+                      {showSender && (
+                        <span
+                          className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
+                          style={{ color: senderColor }}
                         >
-                          <span>{t("message_deleted")}</span>
-                          <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
-                            {t("click_to_view_deleted")}
-                          </span>
-                        </div>
-                      ) : (
-                      <div
-                        className={deletedListWrapperClass}
-                        {...deletedListHandlers}
-                      >
-                          <>
-                            {isDeleted && (
-                              <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
-                                {t("deleted_message_badge")}
-                              </span>
-                            )}
-                            {showSender ? (
-                              <>
-                                <span
-                                  className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
-                                  style={{ color: senderColor }}
-                                >
-                                  {displayName}
-                                </span>
-                                {message.body && message.body.trim() !== "" && (
-                                  <p className="text-foreground text-left m-0">
-                                    {message.body}
-                                  </p>
-                                )}
-                                {message.attachments &&
-                                  message.attachments.trim() !== "" && (
-                                    <MessageAttachments
-                                      attachments={message.attachments}
-                                      isFromMe={message.isFromMe}
-                                    />
-                                  )}
-                              </>
-                            ) : (
-                              <>
-                                {message.body && (
-                                  <p
-                                    className="text-foreground text-left m-0 leading-none"
-                                    style={{ marginTop: "10px" }}
-                                  >
-                                    {message.body}
-                                  </p>
-                                )}
-                                <MessageAttachments
-                                  attachments={message.attachments || ""}
-                                  isFromMe={message.isFromMe}
-                                  layout="bubble"
-                                />
-                                <MessageAttachments
-                                  attachments={message.attachments || ""}
-                                  isFromMe={message.isFromMe}
-                                  layout="irc"
-                                />
-                              </>
-                            )}
-                            {(!message.body || message.body.trim() === "") &&
-                              (!message.attachments ||
-                                message.attachments.trim() === "") && (
-                                <p className="text-sm opacity-70 italic">
-                                  {t("empty_message")}
-                                </p>
-                              )}
-                          </>
-                      </div>
+                          {displayName}
+                        </span>
                       )}
+                      <div className="w-full rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
+                        {!isDeleted && editingMessageId !== messageId && (
+                          <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                            <MessageActions
+                              isFromMe={message.isFromMe}
+                              hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                              onEdit={() => handleEditMessage(message)}
+                              onDelete={() => handleDeleteClick(message)}
+                              messageId={messageId}
+                              openActionsMessageId={openActionsMessageId}
+                            />
+                          </div>
+                        )}
+                        {showDeletedPlaceholder ? (
+                          <div className="flex flex-col gap-1">
+                            <div
+                              className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none text-left cursor-pointer"
+                              style={{ marginTop: "10px" }}
+                              {...deletedListHandlers}
+                            >
+                              <span>{t("message_deleted")}</span>
+                              <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                                {t("click_to_view_deleted")}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div
+                              className={deletedListWrapperClass}
+                              {...deletedListHandlers}
+                            >
+                              {isDeleted && (
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                                  {t("deleted_message_badge")}
+                                </span>
+                              )}
+                              {editingMessageId === messageId ? (
+                                <div className="flex flex-col gap-2 w-full">
+                                  <Input
+                                    value={editingText}
+                                    onChange={(e) => setEditingText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSaveEdit();
+                                      } else if (e.key === "Escape") {
+                                        handleCancelEdit();
+                                      }
+                                    }}
+                                    className="text-foreground"
+                                    autoFocus
+                                  />
+                                  <div className="flex gap-2 justify-end">
+                                    <button
+                                      onClick={handleCancelEdit}
+                                      className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                    >
+                                      {t("cancel")}
+                                    </button>
+                                    <button
+                                      onClick={handleSaveEdit}
+                                      className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                    >
+                                      {t("save")}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  {!showSender && message.body && (
+                                    <p
+                                      className="text-foreground text-left m-0 leading-none"
+                                      style={{ marginTop: "10px" }}
+                                    >
+                                      {message.body}
+                                    </p>
+                                  )}
+                                  {showSender && message.body && message.body.trim() !== "" && (
+                                    <p className="text-foreground text-left m-0">
+                                      {message.body}
+                                    </p>
+                                  )}
+                                  {message.attachments &&
+                                    message.attachments.trim() !== "" && (
+                                      <MessageAttachments
+                                        attachments={message.attachments}
+                                        isFromMe={message.isFromMe}
+                                      />
+                                    )}
+                                  {!showSender && (
+                                    <>
+                                      <MessageAttachments
+                                        attachments={message.attachments || ""}
+                                        isFromMe={message.isFromMe}
+                                        layout="bubble"
+                                      />
+                                      <MessageAttachments
+                                        attachments={message.attachments || ""}
+                                        isFromMe={message.isFromMe}
+                                        layout="irc"
+                                      />
+                                    </>
+                                  )}
+                                  {(!message.body || message.body.trim() === "") &&
+                                    (!message.attachments ||
+                                      message.attachments.trim() === "") && (
+                                      <p className="text-sm opacity-70 italic">
+                                        {t("empty_message")}
+                                      </p>
+                                    )}
+                                </>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
                       {isUnread && (
                         <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">
                           {t("unread_indicator")}
@@ -1332,6 +1548,27 @@ export function MessageList({
         filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
         onConfirm={handleFileUpload}
       />
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("delete_message_title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("delete_message_description")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteConfirmOpen(false)}>
+              {t("cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {t("delete_message")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

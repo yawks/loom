@@ -245,6 +245,80 @@ func (m *MockProvider) SendFile(conversationID string, file *core.Attachment, th
 	return &newMessage, nil
 }
 
+// EditMessage edits an existing message.
+func (m *MockProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	messages, ok := m.messages[conversationID]
+	if !ok {
+		return nil, fmt.Errorf("conversation not found: %s", conversationID)
+	}
+
+	// Find and update the message
+	for i := range messages {
+		if messages[i].ProtocolMsgID == messageID {
+			if !messages[i].IsFromMe {
+				return nil, fmt.Errorf("cannot edit message from another user")
+			}
+			messages[i].Body = newText
+			updatedMsg := messages[i]
+			m.messages[conversationID] = messages
+
+			// Emit MessageEvent to notify frontend
+			select {
+			case m.eventChan <- core.MessageEvent{Message: updatedMsg}:
+			default:
+			}
+
+			return &updatedMsg, nil
+		}
+	}
+
+	return nil, fmt.Errorf("message not found: %s", messageID)
+}
+
+// DeleteMessage deletes a message.
+func (m *MockProvider) DeleteMessage(conversationID string, messageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	messages, ok := m.messages[conversationID]
+	if !ok {
+		return fmt.Errorf("conversation not found: %s", conversationID)
+	}
+
+	// Find and mark the message as deleted
+	for i := range messages {
+		if messages[i].ProtocolMsgID == messageID {
+			if !messages[i].IsFromMe {
+				return fmt.Errorf("cannot delete message from another user")
+			}
+			messages[i].IsDeleted = true
+			deletedBy := "me"
+			if len(m.contacts) > 0 {
+				deletedBy = m.contacts[0].UserID
+			}
+			messages[i].DeletedBy = deletedBy
+			messages[i].DeletedReason = "deleted"
+			now := time.Now()
+			messages[i].DeletedTimestamp = &now
+			updatedMsg := messages[i]
+			m.messages[conversationID] = messages
+
+			// Emit MessageEvent to notify frontend
+			select {
+			case m.eventChan <- core.MessageEvent{Message: updatedMsg}:
+			default:
+			}
+
+			return nil
+		}
+	}
+
+	return fmt.Errorf("message not found: %s", messageID)
+}
+
 // GetThreads loads all messages in a discussion thread from a parent message ID.
 func (m *MockProvider) GetThreads(parentMessageID string) ([]models.Message, error) {
 	fmt.Printf("MockProvider: Getting threads for message %s\n", parentMessageID)
