@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { DeleteMessage, EditMessage, GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -261,9 +262,11 @@ export function MessageList({
   );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState<string>("");
+  const [originalEditText, setOriginalEditText] = useState<string>("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
+  const { toasts, showToast, closeToast } = useToast();
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -345,30 +348,56 @@ export function MessageList({
 
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container) {
+    if (!container || messages.length === 0) {
       return;
     }
-    requestAnimationFrame(() => {
-      if (
-        firstUnreadMessageId &&
-        hasScrolledToUnreadRef.current !== firstUnreadMessageId
-      ) {
-        const target = messageElementsRef.current.get(firstUnreadMessageId);
-        if (target) {
-          target.scrollIntoView({ block: "center", behavior: "smooth" });
-          hasScrolledToUnreadRef.current = firstUnreadMessageId;
+    
+    // Use a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(() => {
+      requestAnimationFrame(() => {
+        if (
+          firstUnreadMessageId &&
+          hasScrolledToUnreadRef.current !== firstUnreadMessageId
+        ) {
+          const target = messageElementsRef.current.get(firstUnreadMessageId);
+          if (target) {
+            // Scroll to the first unread message with a margin above it
+            const containerRect = container.getBoundingClientRect();
+            const targetRect = target.getBoundingClientRect();
+            const marginTop = 100; // Margin in pixels above the message
+            const targetScrollTop = 
+              container.scrollTop + 
+              (targetRect.top - containerRect.top) - 
+              marginTop;
+            container.scrollTo({
+              top: Math.max(0, targetScrollTop),
+              behavior: "smooth"
+            });
+            hasScrolledToUnreadRef.current = firstUnreadMessageId;
+            return;
+          }
+        }
+        // If no unread messages, scroll to the bottom
+        if (!firstUnreadMessageId) {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: "smooth"
+          });
           return;
         }
-      }
-      const { atBottom, distanceFromBottom } = scrollStateRef.current;
-      if (atBottom) {
-        container.scrollTop = container.scrollHeight;
-      } else {
-        const targetScrollTop =
-          container.scrollHeight - container.clientHeight - distanceFromBottom;
-        container.scrollTop = Math.max(0, targetScrollTop);
-      }
-    });
+        // Otherwise, maintain scroll position
+        const { atBottom, distanceFromBottom } = scrollStateRef.current;
+        if (atBottom) {
+          container.scrollTop = container.scrollHeight;
+        } else {
+          const targetScrollTop =
+            container.scrollHeight - container.clientHeight - distanceFromBottom;
+          container.scrollTop = Math.max(0, targetScrollTop);
+        }
+      });
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
   }, [firstUnreadMessageId, messages]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -525,12 +554,19 @@ export function MessageList({
   }, []);
 
   const handleEditMessage = useCallback((message: models.Message) => {
-    setEditingMessageId(getMessageDomId(message));
-    setEditingText(message.body || "");
+    const messageId = getMessageDomId(message);
+    setEditingMessageId(messageId);
+    const body = message.body || "";
+    setEditingText(body);
+    setOriginalEditText(body);
   }, []);
 
-  const handleSaveEdit = useCallback(async () => {
-    if (!editingMessageId || !editingText.trim() || typeof EditMessage !== "function") {
+  const handleSaveEdit = useCallback(async (skipValidation = false) => {
+    if (!editingMessageId || typeof EditMessage !== "function") {
+      return;
+    }
+
+    if (!skipValidation && !editingText.trim()) {
       return;
     }
 
@@ -540,21 +576,42 @@ export function MessageList({
       return;
     }
 
+    const newText = editingText.trim();
+    const originalText = originalEditText;
+    const messageId = message.protocolMsgId;
+
+    // Exit edit mode immediately
+    setEditingMessageId(null);
+    setEditingText("");
+    setOriginalEditText("");
+
+    // Invalidate and refetch messages immediately (optimistic update)
+    queryClient.invalidateQueries({
+      queryKey: ["messages", conversationId],
+    });
+    queryClient.refetchQueries({
+      queryKey: ["messages", conversationId],
+    });
+
+    // Try to edit the message asynchronously
     try {
-      await EditMessage(conversationId, message.protocolMsgId, editingText.trim());
-      setEditingMessageId(null);
-      setEditingText("");
-      // Invalidate and refetch messages
-      queryClient.invalidateQueries({
-        queryKey: ["messages", conversationId],
-      });
-      queryClient.refetchQueries({
-        queryKey: ["messages", conversationId],
-      });
+      await EditMessage(conversationId, messageId, newText);
     } catch (error) {
       console.error("Failed to edit message:", error);
+      // Restore original text in the message
+      queryClient.setQueryData(["messages", conversationId], (oldData: models.Message[] | undefined) => {
+        if (!oldData) return oldData;
+        return oldData.map((msg) => {
+          if (msg.protocolMsgId === messageId) {
+            return { ...msg, body: originalText };
+          }
+          return msg;
+        });
+      });
+      // Show error toast
+      showToast(t("edit_failed"), "error");
     }
-  }, [editingMessageId, editingText, conversationId, messages, queryClient]);
+  }, [editingMessageId, editingText, originalEditText, conversationId, messages, queryClient, t, showToast]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
@@ -855,16 +912,18 @@ export function MessageList({
   };
 
   return (
-    <div 
-      className={cn(
-        "flex flex-col h-full overflow-hidden transition-colors",
-        isDragging && "bg-muted/50"
-      )}
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
+    <>
+      <ToastContainer toasts={toasts} onClose={closeToast} />
+      <div 
+        className={cn(
+          "flex flex-col h-full overflow-hidden transition-colors",
+          isDragging && "bg-muted/50"
+        )}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
       <MessageHeader
         displayName={selectedConversation.displayName}
         linkedAccounts={selectedConversation.linkedAccounts}
@@ -1001,109 +1060,126 @@ export function MessageList({
                           </span>
                         </div>
                       )}
-                      <div className="flex items-start gap-2 relative group/bubble">
-                        <div
-                          className={bubbleClass}
-                          aria-live="polite"
-                          aria-label={
-                            isUnread ? t("unread_message_label") : undefined
-                          }
-                          {...deletedInteractionHandlers}
-                        >
-                          {editingMessageId === messageId ? (
-                            <div className="flex flex-col gap-2">
-                              <Input
-                                value={editingText}
-                                onChange={(e) => setEditingText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSaveEdit();
-                                  } else if (e.key === "Escape") {
-                                    handleCancelEdit();
-                                  }
-                                }}
-                                className="text-foreground"
-                                autoFocus
-                              />
-                              <div className="flex gap-2 justify-end">
-                                <button
-                                  onClick={handleCancelEdit}
-                                  className="text-xs px-2 py-1 rounded hover:bg-muted"
-                                >
-                                  {t("cancel")}
-                                </button>
-                                <button
-                                  onClick={handleSaveEdit}
-                                  className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
-                                >
-                                  {t("save")}
-                                </button>
+                      <div className="flex flex-col items-start gap-1 relative group/bubble">
+                        <div className="flex items-start gap-2 relative w-full">
+                          <div
+                            className={bubbleClass}
+                            aria-live="polite"
+                            aria-label={
+                              isUnread ? t("unread_message_label") : undefined
+                            }
+                            {...deletedInteractionHandlers}
+                          >
+                            {editingMessageId === messageId ? (
+                              <div className="flex flex-col gap-2">
+                                <Input
+                                  value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                      e.preventDefault();
+                                      handleSaveEdit();
+                                    } else if (e.key === "Escape") {
+                                      handleCancelEdit();
+                                    }
+                                  }}
+                                  onBlur={(e) => {
+                                    // Only save if the blur is not caused by clicking on a button
+                                    const relatedTarget = e.relatedTarget as HTMLElement | null;
+                                    if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
+                                      handleSaveEdit(false);
+                                    }
+                                  }}
+                                  className="text-foreground"
+                                  autoFocus
+                                />
+                                <div className="flex gap-2 justify-end">
+                                  <button
+                                    onClick={handleCancelEdit}
+                                    className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                  >
+                                    {t("cancel")}
+                                  </button>
+                                  <button
+                                    onClick={() => handleSaveEdit(false)}
+                                    className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                  >
+                                    {t("save")}
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <>
-                              {message.body && message.body.trim() !== "" && (
-                                <p>{message.body}</p>
+                            ) : (
+                              <>
+                                {message.body && message.body.trim() !== "" && (
+                                  <p>{message.body}</p>
+                                )}
+                              </>
+                            )}
+                            {message.attachments &&
+                              message.attachments.trim() !== "" && (
+                                <MessageAttachments
+                                  attachments={message.attachments}
+                                  isFromMe={message.isFromMe}
+                                  layout="bubble"
+                                />
                               )}
-                            </>
-                          )}
-                        {message.attachments &&
-                          message.attachments.trim() !== "" && (
-                            <MessageAttachments
-                              attachments={message.attachments}
-                              isFromMe={message.isFromMe}
-                              layout="bubble"
-                            />
-                          )}
-                        {(!message.body || message.body.trim() === "") &&
-                          (!message.attachments ||
-                            message.attachments.trim() === "") && (
-                            <p className="text-sm opacity-70 italic">
-                              {t("empty_message")}
-                            </p>
-                          )}
-                        <div className="flex flex-col mt-1">
-                          {showDeletedPlaceholder && (
-                            <div className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none">
-                              <span>{t("message_deleted")}</span>
-                              <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
-                                {t("click_to_view_deleted")}
-                              </span>
-                            </div>
-                          )}
-                          {isDeleted && isDeletedRevealed && (
-                            <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
-                              {t("deleted_message_badge")}
-                            </span>
-                          )}
-                          {isUnread && (
-                            <p
-                              className={cn(
-                                "text-xs flex items-center gap-2 justify-end",
-                                message.isFromMe
-                                  ? "text-blue-100"
-                                  : "text-muted-foreground"
+                            {(!message.body || message.body.trim() === "") &&
+                              (!message.attachments ||
+                                message.attachments.trim() === "") && (
+                                <p className="text-sm opacity-70 italic">
+                                  {t("empty_message")}
+                                </p>
                               )}
-                            >
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
-                                {t("unread_indicator")}
-                              </span>
-                            </p>
+                            <div className="flex flex-col mt-1">
+                              {showDeletedPlaceholder && (
+                                <div className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none">
+                                  <span>{t("message_deleted")}</span>
+                                  <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                                    {t("click_to_view_deleted")}
+                                  </span>
+                                </div>
+                              )}
+                              {isDeleted && isDeletedRevealed && (
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                                  {t("deleted_message_badge")}
+                                </span>
+                              )}
+                              {isUnread && (
+                                <p
+                                  className={cn(
+                                    "text-xs flex items-center gap-2 justify-end",
+                                    message.isFromMe
+                                      ? "text-blue-100"
+                                      : "text-muted-foreground"
+                                  )}
+                                >
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                                    {t("unread_indicator")}
+                                  </span>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
+                            <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
+                              <MessageActions
+                                isFromMe={message.isFromMe}
+                                hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                onEdit={() => handleEditMessage(message)}
+                                onDelete={() => handleDeleteClick(message)}
+                                messageId={messageId}
+                                openActionsMessageId={openActionsMessageId}
+                              />
+                            </div>
                           )}
                         </div>
-                      </div>
-                        {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
-                          <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
-                            <MessageActions
-                              isFromMe={message.isFromMe}
-                              hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
-                              onEdit={() => handleEditMessage(message)}
-                              onDelete={() => handleDeleteClick(message)}
-                              messageId={messageId}
-                              openActionsMessageId={openActionsMessageId}
-                            />
-                          </div>
+                        {message.isEdited && (
+                          <span className={cn(
+                            "text-xs text-muted-foreground italic",
+                            message.isFromMe ? "self-end" : "self-start"
+                          )}>
+                            {t("edited")}
+                          </span>
                         )}
                       </div>
                       {message.isFromMe && (
@@ -1387,30 +1463,37 @@ export function MessageList({
                                   <Input
                                     value={editingText}
                                     onChange={(e) => setEditingText(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter" && !e.shiftKey) {
-                                        e.preventDefault();
-                                        handleSaveEdit();
-                                      } else if (e.key === "Escape") {
-                                        handleCancelEdit();
-                                      }
-                                    }}
-                                    className="text-foreground"
-                                    autoFocus
-                                  />
-                                  <div className="flex gap-2 justify-end">
-                                    <button
-                                      onClick={handleCancelEdit}
-                                      className="text-xs px-2 py-1 rounded hover:bg-muted"
-                                    >
-                                      {t("cancel")}
-                                    </button>
-                                    <button
-                                      onClick={handleSaveEdit}
-                                      className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
-                                    >
-                                      {t("save")}
-                                    </button>
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSaveEdit(false);
+                                  } else if (e.key === "Escape") {
+                                    handleCancelEdit();
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  // Only save if the blur is not caused by clicking on a button
+                                  const relatedTarget = e.relatedTarget as HTMLElement | null;
+                                  if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
+                                    handleSaveEdit(false);
+                                  }
+                                }}
+                                className="text-foreground"
+                                autoFocus
+                              />
+                              <div className="flex gap-2 justify-end">
+                                <button
+                                  onClick={handleCancelEdit}
+                                  className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                >
+                                  {t("cancel")}
+                                </button>
+                                <button
+                                  onClick={() => handleSaveEdit(false)}
+                                  className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                >
+                                  {t("save")}
+                                </button>
                                   </div>
                                 </div>
                               ) : (
@@ -1421,11 +1504,21 @@ export function MessageList({
                                       style={{ marginTop: "10px" }}
                                     >
                                       {message.body}
+                                      {message.isEdited && (
+                                        <span className="text-muted-foreground ml-1 text-xs italic">
+                                          ({t("edited")})
+                                        </span>
+                                      )}
                                     </p>
                                   )}
                                   {showSender && message.body && message.body.trim() !== "" && (
                                     <p className="text-foreground text-left m-0">
                                       {message.body}
+                                      {message.isEdited && (
+                                        <span className="text-muted-foreground ml-1 text-xs italic">
+                                          ({t("edited")})
+                                        </span>
+                                      )}
                                     </p>
                                   )}
                                   {message.attachments &&
@@ -1570,5 +1663,6 @@ export function MessageList({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+    </>
   );
 }

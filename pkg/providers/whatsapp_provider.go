@@ -28,6 +28,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver for whatsmeow store
 )
@@ -1053,7 +1054,119 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: Message event was a protocol update (handled separately)\n")
 			break
 		}
+
+		// Check if this is an edited message (message with same ID as existing message)
+		convID := v.Info.Chat.String()
+		msgID := v.Info.ID
+		fmt.Printf("WhatsApp: Processing message event: ID=%s, Chat=%s, Sender=%s\n", msgID, convID, v.Info.Sender.String())
+
+		// First, convert the message to get its body
 		msg := w.convertWhatsAppMessage(v)
+		if msg == nil {
+			fmt.Printf("WhatsApp: WARNING - convertWhatsAppMessage returned nil for message %s\n", msgID)
+			break
+		}
+
+		// Check if message with same ID already exists
+		var existingMsg *models.Message
+		w.mu.RLock()
+		if msgs, ok := w.conversationMessages[convID]; ok {
+			for _, m := range msgs {
+				if m.ProtocolMsgID == msgID {
+					existingMsg = &m
+					break
+				}
+			}
+		}
+		w.mu.RUnlock()
+
+		// If not found in cache, check database
+		if existingMsg == nil && db.DB != nil {
+			var dbMsg models.Message
+			if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+				existingMsg = &dbMsg
+				fmt.Printf("WhatsApp: Found existing message %s in database\n", msgID)
+				// Also add to cache if we found it in DB
+				w.mu.Lock()
+				if msgs, ok := w.conversationMessages[convID]; ok {
+					// Check if it's not already there (shouldn't be, but just in case)
+					found := false
+					for _, m := range msgs {
+						if m.ProtocolMsgID == msgID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						w.conversationMessages[convID] = append(msgs, dbMsg)
+					}
+				}
+				w.mu.Unlock()
+			} else {
+				fmt.Printf("WhatsApp: Message %s not found in database: %v\n", msgID, err)
+			}
+		}
+
+		// If message exists, it might be an edit - check if content changed
+		if existingMsg != nil {
+			fmt.Printf("WhatsApp: Found existing message %s: old body='%s', new body='%s'\n", msgID, existingMsg.Body, msg.Body)
+			if msg.Body != existingMsg.Body && msg.Body != "" {
+				// This is an edited message - update it
+				fmt.Printf("WhatsApp: Detected edited message %s (content changed from '%s' to '%s')\n", msgID, existingMsg.Body, msg.Body)
+				editedAt := time.Now()
+				existingMsg.Body = msg.Body
+				existingMsg.IsEdited = true
+				existingMsg.EditedTimestamp = &editedAt
+
+				// Update in cache
+				w.mu.Lock()
+				if msgs, ok := w.conversationMessages[convID]; ok {
+					for idx := range msgs {
+						if msgs[idx].ProtocolMsgID == msgID {
+							msgs[idx] = *existingMsg
+							w.conversationMessages[convID][idx] = msgs[idx]
+							fmt.Printf("WhatsApp: Updated message %s in cache\n", msgID)
+							break
+						}
+					}
+				}
+				w.mu.Unlock()
+
+				// Update in database
+				if db.DB != nil {
+					updates := map[string]interface{}{
+						"body":             existingMsg.Body,
+						"is_edited":        true,
+						"edited_timestamp": editedAt,
+					}
+					if err := db.DB.Model(&models.Message{}).
+						Where("protocol_msg_id = ?", msgID).
+						Updates(updates).Error; err != nil {
+						fmt.Printf("WhatsApp: Failed to update edited message in database: %v\n", err)
+					} else {
+						fmt.Printf("WhatsApp: Successfully updated edited message %s in database\n", msgID)
+					}
+				}
+
+				// Emit event
+				select {
+				case w.eventChan <- core.MessageEvent{Message: *existingMsg}:
+					fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", msgID)
+				default:
+					fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", msgID)
+				}
+				break
+			}
+			if msg.Body == existingMsg.Body {
+				// Same content, might be a duplicate - skip it
+				fmt.Printf("WhatsApp: Received duplicate message %s with same content, skipping\n", msgID)
+				break
+			}
+			fmt.Printf("WhatsApp: Message %s exists but content unchanged or empty, treating as new\n", msgID)
+		}
+
+		// Normal message processing
+		msg = w.convertWhatsAppMessage(v)
 		if msg != nil {
 			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s\n", msg.ProtocolMsgID, msg.Body)
 			w.appendMessageToConversation(msg)
@@ -1225,6 +1338,9 @@ func (w *WhatsAppProvider) tryHandleProtocolMessage(evt *events.Message, emitEve
 	case waProto.ProtocolMessage_REVOKE:
 		w.handleRevokedProtocolMessage(evt, protocolMsg, emitEvent)
 		return true
+	case waProto.ProtocolMessage_MESSAGE_EDIT:
+		w.handleEditedProtocolMessage(evt, protocolMsg, emitEvent)
+		return true
 	default:
 		return false
 	}
@@ -1271,6 +1387,164 @@ func (w *WhatsAppProvider) handleRevokedProtocolMessage(evt *events.Message, pro
 		default:
 			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for revoked message %s (channel full)\n", msgID)
 		}
+	}
+}
+
+func (w *WhatsAppProvider) handleEditedProtocolMessage(evt *events.Message, protocolMsg *waProto.ProtocolMessage, emitEvent bool) {
+	if evt == nil || protocolMsg == nil {
+		return
+	}
+
+	key := protocolMsg.GetKey()
+	if key == nil {
+		fmt.Println("WhatsApp: Received edit protocol message without key, skipping")
+		return
+	}
+
+	convID := key.GetRemoteJID()
+	if convID == "" && evt.Info.Chat.String() != "" {
+		convID = evt.Info.Chat.String()
+	}
+
+	msgID := key.GetID()
+	if msgID == "" {
+		fmt.Println("WhatsApp: Received edit protocol message without message ID, skipping")
+		return
+	}
+
+	editedMsg := protocolMsg.GetEditedMessage()
+	if editedMsg == nil {
+		fmt.Println("WhatsApp: Received edit protocol message without edited message, skipping")
+		return
+	}
+
+	newText := ""
+	if editedMsg.Conversation != nil {
+		newText = *editedMsg.Conversation
+	}
+
+	// Update the message in cache and database
+	var updated *models.Message
+	editedAt := time.Now()
+	w.mu.Lock()
+	if msgs, ok := w.conversationMessages[convID]; ok {
+		for idx := range msgs {
+			if msgs[idx].ProtocolMsgID == msgID {
+				msgs[idx].Body = newText
+				msgs[idx].IsEdited = true
+				msgs[idx].EditedTimestamp = &editedAt
+				copyMsg := msgs[idx]
+				updated = &copyMsg
+				w.conversationMessages[convID][idx] = msgs[idx]
+				fmt.Printf("WhatsApp: Found and updated message %s in cache\n", msgID)
+				break
+			}
+		}
+	}
+	w.mu.Unlock()
+
+	// If not found in cache, try database
+	if updated == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+			fmt.Printf("WhatsApp: Found message %s in database, updating. Old body: '%s', New body: '%s'\n", msgID, dbMsg.Body, newText)
+
+			// Update in database first
+			updates := map[string]interface{}{
+				"body":             newText,
+				"is_edited":        true,
+				"edited_timestamp": editedAt,
+			}
+			if err := db.DB.Model(&models.Message{}).
+				Where("protocol_msg_id = ?", msgID).
+				Updates(updates).Error; err != nil {
+				fmt.Printf("WhatsApp: Failed to update edited message in database: %v\n", err)
+			} else {
+				fmt.Printf("WhatsApp: Successfully updated edited message %s in database\n", msgID)
+				// Reload from database to get the updated version
+				if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+					dbMsg.Body = newText
+					dbMsg.IsEdited = true
+					dbMsg.EditedTimestamp = &editedAt
+					fmt.Printf("WhatsApp: Reloaded message %s from database, body: '%s'\n", msgID, dbMsg.Body)
+				}
+			}
+
+			// Add to cache if conversation exists
+			if convID != "" {
+				w.mu.Lock()
+				if msgs, ok := w.conversationMessages[convID]; ok {
+					// Check if it's not already there
+					found := false
+					for idx := range msgs {
+						if msgs[idx].ProtocolMsgID == msgID {
+							msgs[idx] = dbMsg
+							w.conversationMessages[convID][idx] = msgs[idx]
+							found = true
+							fmt.Printf("WhatsApp: Updated message %s in cache, body: '%s'\n", msgID, msgs[idx].Body)
+							break
+						}
+					}
+					if !found {
+						w.conversationMessages[convID] = append(msgs, dbMsg)
+						fmt.Printf("WhatsApp: Added message %s to cache\n", msgID)
+					}
+				} else {
+					// Create new conversation entry
+					w.conversationMessages[convID] = []models.Message{dbMsg}
+					fmt.Printf("WhatsApp: Created new conversation entry for %s with message %s\n", convID, msgID)
+				}
+				w.mu.Unlock()
+			}
+
+			updated = &dbMsg
+		} else {
+			fmt.Printf("WhatsApp: Message %s not found in database: %v\n", msgID, err)
+		}
+	}
+
+	// Update in database if found in cache (and not already updated above)
+	if updated != nil && db.DB != nil {
+		// Check if we already updated it above (when found in DB)
+		// We only need to update here if it was found in cache
+		var needsUpdate bool
+		w.mu.RLock()
+		if msgs, ok := w.conversationMessages[convID]; ok {
+			for _, msg := range msgs {
+				if msg.ProtocolMsgID == msgID {
+					needsUpdate = true
+					break
+				}
+			}
+		}
+		w.mu.RUnlock()
+
+		if needsUpdate {
+			updates := map[string]interface{}{
+				"body":             newText,
+				"is_edited":        true,
+				"edited_timestamp": editedAt,
+			}
+			if err := db.DB.Model(&models.Message{}).
+				Where("protocol_msg_id = ?", msgID).
+				Updates(updates).Error; err != nil {
+				fmt.Printf("WhatsApp: Failed to update edited message in database: %v\n", err)
+			} else {
+				fmt.Printf("WhatsApp: Successfully updated edited message %s in database (from cache)\n", msgID)
+			}
+		}
+	}
+
+	if updated != nil && emitEvent {
+		fmt.Printf("WhatsApp: Emitting MessageEvent for edited message %s with body: '%s', isEdited: %v\n", msgID, updated.Body, updated.IsEdited)
+		select {
+		case w.eventChan <- core.MessageEvent{Message: *updated}:
+			fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", msgID)
+		default:
+			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", msgID)
+		}
+	} else if updated == nil {
+		fmt.Printf("WhatsApp: Edit event received for %s but message not found locally yet\n", msgID)
 	}
 }
 
@@ -2701,10 +2975,18 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 }
 
 // EditMessage edits an existing message.
-// Note: WhatsApp doesn't natively support editing messages, so this updates the local message only.
 func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	fmt.Printf("WhatsApp: EditMessage called: conversationID=%s, messageID=%s\n", conversationID, messageID)
 	if w.client == nil {
+		fmt.Printf("WhatsApp: EditMessage error: client not initialized\n")
 		return nil, fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		fmt.Printf("WhatsApp: EditMessage error: invalid conversation ID: %v\n", err)
+		return nil, fmt.Errorf("invalid conversation ID: %w", err)
 	}
 
 	// Find the original message
@@ -2725,16 +3007,49 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 		var dbMsg models.Message
 		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
 			originalMsg = &dbMsg
+			fmt.Printf("WhatsApp: EditMessage: Found message in database\n")
+		} else {
+			fmt.Printf("WhatsApp: EditMessage: Message not found in database: %v\n", err)
 		}
 	}
 
 	if originalMsg == nil {
+		fmt.Printf("WhatsApp: EditMessage error: message not found: %s\n", messageID)
 		return nil, fmt.Errorf("message not found: %s", messageID)
 	}
+
+	// Create a ProtocolMessage of type MESSAGE_EDIT
+	protocolMsg := &waProto.ProtocolMessage{
+		Type: waProto.ProtocolMessage_MESSAGE_EDIT.Enum(),
+		Key: &waProto.MessageKey{
+			RemoteJID: proto.String(conversationID),
+			ID:        proto.String(messageID),
+		},
+		EditedMessage: &waE2E.Message{
+			Conversation: &newText,
+		},
+	}
+
+	// Create the message with the protocol message
+	msg := &waE2E.Message{
+		ProtocolMessage: protocolMsg,
+	}
+
+	fmt.Printf("WhatsApp: EditMessage: Sending edit protocol message to WhatsApp server\n")
+	// Send the edit message
+	_, err = w.client.SendMessage(w.ctx, jid, msg)
+	if err != nil {
+		fmt.Printf("WhatsApp: EditMessage error: failed to send edit message: %v\n", err)
+		return nil, fmt.Errorf("failed to send edit message: %w", err)
+	}
+	fmt.Printf("WhatsApp: EditMessage: Edit message sent to WhatsApp server\n")
 
 	// Update the message in our cache and database
 	updatedMessage := *originalMsg
 	updatedMessage.Body = newText
+	editedAt := time.Now()
+	updatedMessage.IsEdited = true
+	updatedMessage.EditedTimestamp = &editedAt
 
 	w.mu.Lock()
 	if msgs, ok := w.conversationMessages[conversationID]; ok {
@@ -2750,9 +3065,14 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 
 	// Update in database
 	if db.DB != nil {
+		updates := map[string]interface{}{
+			"body":             newText,
+			"is_edited":        true,
+			"edited_timestamp": editedAt,
+		}
 		if err := db.DB.Model(&models.Message{}).
 			Where("protocol_msg_id = ?", messageID).
-			Update("body", newText).Error; err != nil {
+			Updates(updates).Error; err != nil {
 			fmt.Printf("WhatsApp: Failed to update message body in database: %v\n", err)
 		}
 	}
