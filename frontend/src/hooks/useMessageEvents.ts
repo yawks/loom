@@ -71,15 +71,15 @@ export function useMessageEvents() {
           console.log("useMessageEvents: Selected contact conversation ID:", conversationId, "Message conversation ID:", message.protocolConvId);
           
           // Check if this message belongs to the currently selected conversation
-          if (message.protocolConvId === conversationId) {
+          if (message.protocolConvId === conversationId && conversationId) {
             console.log("useMessageEvents: Message belongs to selected conversation, invalidating messages");
             // Invalidate and refetch messages for this conversation
             queryClient.invalidateQueries({
-              queryKey: ["messages", selectedContact.id],
+              queryKey: ["messages", conversationId],
             });
             // Force a refetch to ensure the new message appears immediately
             queryClient.refetchQueries({
-              queryKey: ["messages", selectedContact.id],
+              queryKey: ["messages", conversationId],
             });
             console.log("useMessageEvents: Invalidated and refetched messages for selected conversation");
           }
@@ -153,12 +153,12 @@ export function useMessageEvents() {
           // If this receipt is for the currently selected conversation, also update messages
           if (selectedContact) {
             const conversationId = selectedContact.linkedAccounts[0]?.userId;
-            if (receipt.ConversationID === conversationId) {
+            if (receipt.ConversationID === conversationId && conversationId) {
               queryClient.invalidateQueries({
-                queryKey: ["messages", selectedContact.id],
+                queryKey: ["messages", conversationId],
               });
               queryClient.refetchQueries({
-                queryKey: ["messages", selectedContact.id],
+                queryKey: ["messages", conversationId],
               });
               console.log("useMessageEvents: Updated messages for selected conversation");
             }

@@ -8,6 +8,7 @@ import {
   CreateProvider,
   GetProviderQRCode,
 } from "../../wailsjs/go/main/App";
+import { useTranslation } from "react-i18next";
 
 const QRCodeCanvas = lazy(() =>
   import("qrcode.react").then((module) => ({ default: module.QRCodeCanvas }))
@@ -36,6 +37,7 @@ export function ProviderConfigForm({
   onBack,
   onRefresh,
 }: ProviderConfigFormProps) {
+  const { t } = useTranslation();
   const schema = useMemo(() => {
     const raw = provider.configSchema ?? {};
     if (typeof raw !== "object" || raw === null) {
@@ -88,10 +90,10 @@ export function ProviderConfigForm({
     try {
       await CreateProvider(provider.id, values);
       await onRefresh();
-      setSaveMessage("Configuration saved successfully.");
+      setSaveMessage(t("configuration_saved"));
     } catch (error) {
       console.error("Failed to save provider config:", error);
-      setSaveMessage("Unable to save the configuration. Please try again.");
+      setSaveMessage(t("configuration_save_error"));
     } finally {
       setIsSaving(false);
     }
@@ -104,7 +106,7 @@ export function ProviderConfigForm({
       setPollError(null);
     } catch (error) {
       console.error("Failed to fetch QR code:", error);
-      setPollError("Unable to fetch the QR code right now.");
+      setPollError(t("qr_code_fetch_error"));
     }
   }, [provider.id]);
 
@@ -121,7 +123,7 @@ export function ProviderConfigForm({
     } catch (error) {
       console.error("Failed to connect provider:", error);
       setConnectState("idle");
-      setPollError("Unable to connect. Ensure the provider is configured properly.");
+      setPollError(t("provider_connect_error"));
     }
   }, [provider.id, values, onRefresh, fetchQRCode]);
 
@@ -141,7 +143,7 @@ export function ProviderConfigForm({
     <div className="space-y-4">
       <div>
         <Button variant="ghost" onClick={onBack} className="mb-2 px-0 text-muted-foreground">
-          ← Back
+          ← {t("back")}
         </Button>
         <h2 className="text-xl font-semibold">{provider.name}</h2>
         <p className="text-sm text-muted-foreground">{provider.description}</p>
@@ -151,10 +153,10 @@ export function ProviderConfigForm({
         <Card>
           <CardHeader>
             <CardTitle>
-              {mode === "edit" ? "Edit configuration" : "Configure provider"}
+              {mode === "edit" ? t("edit_configuration") : t("configure_provider")}
             </CardTitle>
             <CardDescription>
-              Provide the required information to initialize this provider.
+              {t("provider_config_description")}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -179,29 +181,29 @@ export function ProviderConfigForm({
           </CardContent>
           <CardFooter className="flex gap-2 justify-end">
             <Button onClick={handleSave} disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save"}
+              {isSaving ? t("saving") : t("save")}
             </Button>
           </CardFooter>
         </Card>
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle>No configuration required</CardTitle>
-            <CardDescription>This provider does not require additional parameters.</CardDescription>
+            <CardTitle>{t("no_configuration_required")}</CardTitle>
+            <CardDescription>{t("no_configuration_description")}</CardDescription>
           </CardHeader>
         </Card>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Connection</CardTitle>
+          <CardTitle>{t("connection")}</CardTitle>
           <CardDescription>
-            Connect to start synchronization and display the QR code if required.
+            {t("connection_description")}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button onClick={handleConnect} disabled={connectState === "connecting"}>
-            {connectState === "connecting" ? "Connecting..." : "Connect"}
+            {connectState === "connecting" ? t("connecting") : t("connect")}
           </Button>
 
           {pollError && <p className="text-sm text-destructive">{pollError}</p>}
@@ -209,22 +211,22 @@ export function ProviderConfigForm({
           {qrCode ? (
             <div className="flex flex-col items-center gap-2">
               <div className="bg-white p-4 rounded-lg">
-                <Suspense fallback={<p className="text-sm text-muted-foreground">Loading QR code…</p>}>
+                <Suspense fallback={<p className="text-sm text-muted-foreground">{t("loading_qr_code")}</p>}>
                   <QRCodeCanvas value={qrCode} size={256} level="M" />
                 </Suspense>
               </div>
               <p className="text-sm text-muted-foreground text-center max-w-md">
-                Scan this QR code with the {provider.name} app on your phone to authorize the connection.
+                {t("qr_code_instructions", { providerName: provider.name })}
                 <br />
                 <span className="text-xs text-yellow-600 dark:text-yellow-500">
-                  ⚠️ The QR code expires in ~30 seconds. Scan quickly!
+                  ⚠️ {t("qr_code_expires_warning")}
                 </span>
               </p>
             </div>
           ) : (
             connectState === "connected" && (
               <p className="text-sm text-muted-foreground">
-                Waiting for a QR code. Ensure the provider is ready to pair.
+                {t("waiting_for_qr_code")}
               </p>
             )
           )}

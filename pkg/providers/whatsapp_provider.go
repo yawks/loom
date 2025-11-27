@@ -2459,9 +2459,6 @@ func (w *WhatsAppProvider) enrichConversationInfo(acc models.LinkedAccount) mode
 
 // SendMessage sends a text message to a given conversation.
 func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
 	if w.client == nil {
 		return nil, fmt.Errorf("client not initialized")
 	}
@@ -2486,21 +2483,220 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	}
 
 	// Convert to our Message model
-	return &models.Message{
+	sentMessage := &models.Message{
 		ProtocolConvID: conversationID,
 		ProtocolMsgID:  resp.ID,
 		SenderID:       w.client.Store.ID.String(),
 		Body:           text,
 		Timestamp:      time.Now(),
 		IsFromMe:       true,
-	}, nil
+	}
+
+	// Store message in conversation cache and database
+	w.appendMessageToConversation(sentMessage)
+
+	// Emit MessageEvent to notify frontend
+	select {
+	case w.eventChan <- core.MessageEvent{Message: *sentMessage}:
+		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent message %s\n", sentMessage.ProtocolMsgID)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent message %s\n", sentMessage.ProtocolMsgID)
+	}
+
+	return sentMessage, nil
 }
 
 // SendFile sends a file to a given conversation without text.
 func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
-	// TODO: Implement file sending
-	markUnused(conversationID, file, threadID)
-	return nil, fmt.Errorf("file sending not yet implemented")
+	if w.client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	if file == nil {
+		return nil, fmt.Errorf("file is required")
+	}
+
+	markUnused(threadID)
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Determine media type and upload with correct type
+	var attachmentType string
+	var uploadType whatsmeow.MediaType
+
+	mimeType := strings.ToLower(file.MimeType)
+	if strings.HasPrefix(mimeType, "image/") {
+		uploadType = whatsmeow.MediaImage
+		attachmentType = "image"
+	} else if strings.HasPrefix(mimeType, "video/") {
+		uploadType = whatsmeow.MediaVideo
+		attachmentType = "video"
+	} else if strings.HasPrefix(mimeType, "audio/") {
+		uploadType = whatsmeow.MediaAudio
+		attachmentType = "audio"
+	} else {
+		uploadType = whatsmeow.MediaDocument
+		attachmentType = "document"
+	}
+
+	// Upload the file
+	uploadResp, err := w.client.Upload(w.ctx, file.Data, uploadType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload file: %w", err)
+	}
+
+	// Create message based on media type
+	var msg *waE2E.Message
+	if attachmentType == "image" {
+		msg = &waE2E.Message{
+			ImageMessage: &waE2E.ImageMessage{
+				URL:           &uploadResp.URL,
+				Mimetype:      &file.MimeType,
+				Caption:       nil,
+				FileSHA256:    uploadResp.FileSHA256,
+				FileLength:    &uploadResp.FileLength,
+				MediaKey:      uploadResp.MediaKey,
+				FileEncSHA256: uploadResp.FileEncSHA256,
+			},
+		}
+	} else if attachmentType == "video" {
+		msg = &waE2E.Message{
+			VideoMessage: &waE2E.VideoMessage{
+				URL:           &uploadResp.URL,
+				Mimetype:      &file.MimeType,
+				Caption:       nil,
+				FileSHA256:    uploadResp.FileSHA256,
+				FileLength:    &uploadResp.FileLength,
+				MediaKey:      uploadResp.MediaKey,
+				FileEncSHA256: uploadResp.FileEncSHA256,
+			},
+		}
+	} else if attachmentType == "audio" {
+		msg = &waE2E.Message{
+			AudioMessage: &waE2E.AudioMessage{
+				URL:           &uploadResp.URL,
+				Mimetype:      &file.MimeType,
+				FileSHA256:    uploadResp.FileSHA256,
+				FileLength:    &uploadResp.FileLength,
+				MediaKey:      uploadResp.MediaKey,
+				FileEncSHA256: uploadResp.FileEncSHA256,
+			},
+		}
+	} else {
+		// Send as document
+		fileName := file.FileName
+		if fileName == "" {
+			fileName = "file"
+		}
+		msg = &waE2E.Message{
+			DocumentMessage: &waE2E.DocumentMessage{
+				URL:           &uploadResp.URL,
+				Mimetype:      &file.MimeType,
+				FileName:      &fileName,
+				FileSHA256:    uploadResp.FileSHA256,
+				FileLength:    &uploadResp.FileLength,
+				MediaKey:      uploadResp.MediaKey,
+				FileEncSHA256: uploadResp.FileEncSHA256,
+			},
+		}
+	}
+
+	// Send message
+	resp, err := w.client.SendMessage(w.ctx, jid, msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send file: %w", err)
+	}
+
+	// Cache the file locally
+	configDir, err := os.UserConfigDir()
+	if err == nil {
+		cacheDir := filepath.Join(configDir, "Loom", "whatsapp", "attachments")
+		os.MkdirAll(cacheDir, 0700)
+
+		hash := sha256.Sum256([]byte(resp.ID + attachmentType))
+		ext := filepath.Ext(file.FileName)
+		if ext == "" {
+			// Determine extension from mime type
+			switch {
+			case strings.HasPrefix(mimeType, "image/"):
+				ext = ".jpg"
+			case strings.HasPrefix(mimeType, "video/"):
+				ext = ".mp4"
+			case strings.HasPrefix(mimeType, "audio/"):
+				ext = ".mp3"
+			case mimeType == "application/pdf":
+				ext = ".pdf"
+			default:
+				ext = ".bin"
+			}
+		}
+		filename := hex.EncodeToString(hash[:]) + ext
+		cachePath := filepath.Join(cacheDir, filename)
+
+		// Save file to cache
+		if err := os.WriteFile(cachePath, file.Data, 0644); err == nil {
+			// Create attachment info
+			attachment := models.Attachment{
+				Type:     attachmentType,
+				URL:      cachePath,
+				FileName: file.FileName,
+				FileSize: int64(file.FileSize),
+				MimeType: file.MimeType,
+			}
+
+			// Convert to JSON for storage
+			attachmentsJSON, _ := json.Marshal([]models.Attachment{attachment})
+
+			// Convert to our Message model
+			sentMessage := &models.Message{
+				ProtocolConvID: conversationID,
+				ProtocolMsgID:  resp.ID,
+				SenderID:       w.client.Store.ID.String(),
+				Body:           "",
+				Attachments:    string(attachmentsJSON),
+				Timestamp:      time.Now(),
+				IsFromMe:       true,
+			}
+
+			// Store message in conversation cache and database
+			w.appendMessageToConversation(sentMessage)
+
+			// Emit MessageEvent to notify frontend
+			select {
+			case w.eventChan <- core.MessageEvent{Message: *sentMessage}:
+				fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent file %s\n", sentMessage.ProtocolMsgID)
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent file %s\n", sentMessage.ProtocolMsgID)
+			}
+
+			return sentMessage, nil
+		}
+	}
+
+	// If caching failed, still return the message without attachment info
+	sentMessage := &models.Message{
+		ProtocolConvID: conversationID,
+		ProtocolMsgID:  resp.ID,
+		SenderID:       w.client.Store.ID.String(),
+		Body:           "",
+		Timestamp:      time.Now(),
+		IsFromMe:       true,
+	}
+
+	w.appendMessageToConversation(sentMessage)
+
+	select {
+	case w.eventChan <- core.MessageEvent{Message: *sentMessage}:
+		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent file %s\n", sentMessage.ProtocolMsgID)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent file %s\n", sentMessage.ProtocolMsgID)
+	}
+
+	return sentMessage, nil
 }
 
 // GetThreads loads all messages in a discussion thread from a parent message ID.

@@ -74,14 +74,12 @@ export function MessageAttachments({
   let parsedAttachments: Attachment[] = [];
   try {
     parsedAttachments = JSON.parse(attachments);
-    console.log("MessageAttachments: Parsed attachments:", parsedAttachments);
   } catch (e) {
     console.error("Failed to parse attachments:", e, "Raw attachments:", attachments);
     return null;
   }
 
   if (parsedAttachments.length === 0) {
-    console.log("MessageAttachments: No attachments found after parsing");
     return null;
   }
 

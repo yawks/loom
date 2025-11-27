@@ -1,16 +1,21 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
-import { GetMessagesForConversation } from "../../wailsjs/go/main/App";
+import { FileUploadModal } from "./FileUploadModal";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
-import { useSuspenseQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+
+// Declare SendFileFromPath as it will be available after Wails bindings are regenerated
+declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
+
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -43,17 +48,17 @@ function getSenderDisplayName(
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {
     const phoneNumber = whatsappMatch[1];
-    // Format phone number: add spaces every 2 digits (French format)
+    // Format phone number with spaces for readability
     // Example: 33631207926 -> +33 6 31 20 79 26
     if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French number: +33 followed by 9 digits (without leading 0)
+      // French phone number format: +33 followed by 9 digits (without leading 0)
       const countryCode = phoneNumber.substring(0, 2);
       const rest = phoneNumber.substring(2);
       // Format as +33 X XX XX XX XX
       const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
       return formatted;
     } else {
-      // Other format: just add spaces every 2 digits
+      // Other formats: add spaces every 2 digits
       const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
       return `+${formatted}`;
     }
@@ -96,18 +101,83 @@ const isElementVisibleWithinContainer = (
   return intersectionHeight > elementRect.height * 0.6;
 };
 
+// Check if two dates are on different days
+const isDifferentDay = (date1: Date, date2: Date | null): boolean => {
+  if (!date2) return true;
+  return (
+    date1.getFullYear() !== date2.getFullYear() ||
+    date1.getMonth() !== date2.getMonth() ||
+    date1.getDate() !== date2.getDate()
+  );
+};
+
+// Format date for date separator
+const formatDateSeparator = (date: Date, t: (key: string) => string): string => {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const messageDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // Check if it's today
+  if (messageDate.getTime() === today.getTime()) {
+    return t("today");
+  }
+
+  // Check if it's yesterday
+  if (messageDate.getTime() === yesterday.getTime()) {
+    return t("yesterday");
+  }
+
+  // Format as "dayName day month" or "dayName day month year" if different year
+  const dayNames = [
+    t("sunday"),
+    t("monday"),
+    t("tuesday"),
+    t("wednesday"),
+    t("thursday"),
+    t("friday"),
+    t("saturday"),
+  ];
+  const monthNames = [
+    t("january"),
+    t("february"),
+    t("march"),
+    t("april"),
+    t("may"),
+    t("june"),
+    t("july"),
+    t("august"),
+    t("september"),
+    t("october"),
+    t("november"),
+    t("december"),
+  ];
+
+  const dayName = dayNames[date.getDay()];
+  const day = date.getDate();
+  const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
+
+  if (year !== now.getFullYear()) {
+    return `${dayName} ${day} ${month} ${year}`;
+  }
+
+  return `${dayName} ${day} ${month}`;
+};
+
 export function MessageList({
   selectedConversation,
 }: {
   selectedConversation: models.MetaContact;
 }) {
   const { t } = useTranslation();
-  const { data: messages } = useSuspenseQuery<models.Message[], Error>({
-    queryKey: ["messages", selectedConversation.id],
-    queryFn: () =>
-      fetchMessages(selectedConversation.linkedAccounts[0].userId),
-  });
+  const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
+  const { data: messages } = useSuspenseQuery<models.Message[], Error>({
+    queryKey: ["messages", conversationId],
+    queryFn: () => fetchMessages(conversationId),
+  });
   const syncConversation = useMessageReadStore(
     (state) => state.syncConversation
   );
@@ -124,6 +194,10 @@ export function MessageList({
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const messageLayout = useAppStore((state) => state.messageLayout);
   const hasScrolledToUnreadRef = useRef<string | null>(null);
+  const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [pendingFilePaths, setPendingFilePaths] = useState<string[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -339,8 +413,267 @@ export function MessageList({
     }
   };
 
+  // Handle drag and drop for file upload
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setPendingFiles(files);
+      setIsFileUploadModalOpen(true);
+    }
+  }, []);
+
+  const handleFileUpload = async (files: File[], filePaths?: string[]) => {
+    const hasFilePaths = Boolean(filePaths && filePaths.length > 0);
+
+    if (!selectedConversation || (files.length === 0 && !hasFilePaths)) {
+      return;
+    }
+
+    const conversationId = selectedConversation.linkedAccounts[0]?.userId;
+    if (!conversationId) {
+      return;
+    }
+
+    // First, handle file paths (from clipboard/drag&drop in Wails or clipboard managers)
+    if (hasFilePaths && filePaths) {
+      for (const filePath of filePaths) {
+        try {
+          if (typeof SendFileFromPath === "function") {
+            await SendFileFromPath(conversationId, filePath);
+          } else {
+            console.error("SendFileFromPath API is not available. Please rebuild the application.");
+          }
+        } catch (error) {
+          console.error("Failed to send file from path:", filePath, error);
+        }
+      }
+    }
+
+    const shouldProcessFileObjects = files.length > 0 && !hasFilePaths;
+
+    if (!shouldProcessFileObjects) {
+      // Only file paths were processed (or no files to process), just refresh messages
+      queryClient.invalidateQueries({
+        queryKey: ["messages", conversationId],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", conversationId],
+      });
+      return;
+    }
+
+    // Check if SendFile is available
+    if (typeof SendFile !== "function") {
+      console.error("SendFile API is not available. Please rebuild the application to generate Wails bindings.");
+      return;
+    }
+
+    // Send each file
+    for (const file of files) {
+      try {
+        // Check file size (limit to 64MB to avoid memory issues)
+        const maxSize = 64 * 1024 * 1024; // 64MB
+        if (file.size > maxSize) {
+          console.error(`File ${file.name} is too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum size is 64MB.`);
+          continue;
+        }
+
+        // In Wails, files from clipboard/drag&drop may have a path property
+        // Check all possible ways to get the file path
+        interface FileWithPath {
+          path?: string;
+          webkitRelativePath?: string;
+          [key: string]: unknown;
+        }
+        const fileWithPath = file as File & FileWithPath;
+        
+        // Try multiple ways to get the path
+        let filePath: string | undefined = undefined;
+        
+        // Method 1: Direct path property (Wails-specific)
+        if (fileWithPath.path && typeof fileWithPath.path === "string") {
+          filePath = fileWithPath.path;
+        }
+        // Method 2: webkitRelativePath (may contain full path in some cases)
+        else if (fileWithPath.webkitRelativePath && typeof fileWithPath.webkitRelativePath === "string") {
+          // webkitRelativePath is usually relative, but check if it looks like an absolute path
+          if (fileWithPath.webkitRelativePath.startsWith("/") || fileWithPath.webkitRelativePath.match(/^[A-Za-z]:/)) {
+            filePath = fileWithPath.webkitRelativePath;
+          }
+        }
+        // Method 3: Check all properties for any string that looks like a file path
+        else {
+          for (const key in fileWithPath) {
+            if (Object.prototype.hasOwnProperty.call(fileWithPath, key)) {
+              const value = fileWithPath[key];
+              if (typeof value === "string" && (value.startsWith("/") || value.match(/^[A-Za-z]:[\\/]/))) {
+                // This looks like a file path
+                filePath = value;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (filePath && typeof filePath === "string") {
+          // File has a path - use SendFileFromPath directly
+          if (typeof SendFileFromPath === "function") {
+            await SendFileFromPath(conversationId, filePath);
+            continue;
+          } else {
+            console.warn("SendFileFromPath not available yet, falling back to reading file");
+          }
+        }
+        
+        // File doesn't have a path - try FileReader first, then fallback to Go clipboard API
+        // ATTEMPT 1: Standard JS FileReader (works for screenshots/images copied in browser)
+        let fileData: string;
+        let fileMimeType = file.type || "application/octet-stream";
+        let fileName = file.name;
+        
+        try {
+          fileData = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            
+            // Set timeout to avoid hanging
+            const timeout = setTimeout(() => {
+              reader.abort();
+              reject(new Error(`Timeout reading file: ${file.name}`));
+            }, 30000); // 30 seconds timeout
+            
+            reader.onload = (e) => {
+              clearTimeout(timeout);
+              try {
+                if (e.target?.result && typeof e.target.result === "string") {
+                  // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+                  const parts = e.target.result.split(",");
+                  if (parts.length > 1) {
+                    resolve(parts[1]); // Return only the base64 data part
+                  } else {
+                    reject(new Error("Invalid data URL format"));
+                  }
+                } else {
+                  reject(new Error("FileReader result is empty or invalid"));
+                }
+              } catch (err) {
+                clearTimeout(timeout);
+                reject(err);
+              }
+            };
+            
+            reader.onerror = (error) => {
+              clearTimeout(timeout);
+              console.error("FileReader error for file:", file.name, error);
+              reject(new Error(`Failed to read file: ${file.name} (size: ${(file.size / 1024 / 1024).toFixed(2)}MB)`));
+            };
+            
+            reader.onabort = () => {
+              clearTimeout(timeout);
+              reject(new Error(`File reading aborted: ${file.name}`));
+            };
+            
+            // Use readAsDataURL to convert file to base64
+            try {
+              reader.readAsDataURL(file);
+            } catch (err) {
+              clearTimeout(timeout);
+              reject(new Error(`Failed to start reading file: ${file.name} - ${err}`));
+            }
+          });
+        } catch (readerError) {
+          // ATTEMPT 2: Fallback to Go clipboard API (for files from Finder/Explorer)
+          console.warn("JS FileReader failed (likely WebKit security restriction), trying Go clipboard fallback...", readerError);
+          
+          // Try to get GetClipboardFile dynamically from window
+          let getClipboardFileFn: (() => Promise<{ filename: string; base64: string; mimeType: string }>) | undefined;
+          
+          if (typeof window !== "undefined") {
+            try {
+              // GetClipboardFile will be available after Wails bindings are regenerated
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              getClipboardFileFn = (window as any).go?.main?.App?.GetClipboardFile;
+            } catch {
+              // Ignore
+            }
+          }
+          
+          if (getClipboardFileFn && typeof getClipboardFileFn === "function") {
+            try {
+              const clipboardFile = await getClipboardFileFn();
+              if (clipboardFile && clipboardFile.base64) {
+                fileData = clipboardFile.base64;
+                fileMimeType = clipboardFile.mimeType || file.type || "application/octet-stream";
+                fileName = clipboardFile.filename || file.name;
+              } else {
+                throw new Error("Go clipboard API returned empty result");
+              }
+            } catch (goError) {
+              console.error("Go clipboard API also failed:", goError);
+              throw new Error(`Cannot read file "${file.name}". Both JS FileReader and Go clipboard API failed. Please try using the file picker button (📎) instead.`);
+            }
+          } else {
+            console.error("GetClipboardFile API is not available. Please rebuild the application with 'wails dev' or 'wails build'.");
+            throw new Error(`Cannot read file "${file.name}". FileReader failed and GetClipboardFile is not available. Please rebuild the application to generate Wails bindings, or use the file picker button (📎) instead.`);
+          }
+        }
+
+        // Send file via API using base64 data
+        if (typeof SendFile === "function") {
+          await SendFile(conversationId, fileData, fileName, fileMimeType);
+        } else {
+          throw new Error("SendFile API is not available");
+        }
+      } catch (error) {
+        console.error("Failed to send file:", file.name, error);
+        // Continue with other files even if one fails
+      }
+    }
+
+    // Invalidate and refetch messages after sending
+    queryClient.invalidateQueries({
+      queryKey: ["messages", conversationId],
+    });
+    queryClient.refetchQueries({
+      queryKey: ["messages", conversationId],
+    });
+  };
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div 
+      className={cn(
+        "flex flex-col h-full overflow-hidden transition-colors",
+        isDragging && "bg-muted/50"
+      )}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <MessageHeader
         displayName={selectedConversation.displayName}
         linkedAccounts={selectedConversation.linkedAccounts}
@@ -350,7 +683,7 @@ export function MessageList({
       <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area" ref={scrollContainerRef}>
         {messageLayout === "bubble" ? (
           <div className="space-y-4">
-            {mainMessages.map((message) => {
+            {mainMessages.map((message, index) => {
               const messageId = getMessageDomId(message);
               const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
               const threadCount = getThreadCount(message.protocolMsgId);
@@ -367,9 +700,25 @@ export function MessageList({
               const timestampLabel = new Date(
                 message.timestamp
               ).toLocaleTimeString();
+              
+              const messageDate = new Date(message.timestamp);
+              const prevMessage = index > 0 ? mainMessages[index - 1] : null;
+              const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
 
               return (
                 <div key={messageId} className="space-y-2">
+                  {showDateSeparator && (
+                    <div
+                      className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                      role="separator"
+                      aria-label={formatDateSeparator(messageDate, t)}
+                    >
+                      <span className="h-px flex-1 bg-border" />
+                      <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  )}
                   {showUnreadDivider && (
                     <div
                       className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
@@ -577,9 +926,24 @@ export function MessageList({
               const isUnread = conversationReadState[messageId] === false;
               const showUnreadDivider =
                 messageId === firstUnreadMessageId && isUnread;
+              
+              const messageDate = new Date(message.timestamp);
+              const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
 
               return (
                 <div key={messageId} className="space-y-1">
+                  {showDateSeparator && (
+                    <div
+                      className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                      role="separator"
+                      aria-label={formatDateSeparator(messageDate, t)}
+                    >
+                      <span className="h-px flex-1 bg-border" />
+                      <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  )}
                   {showUnreadDivider && (
                     <div
                       className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
@@ -744,8 +1108,21 @@ export function MessageList({
         )}
       </div>
       <div className="shrink-0">
-        <ChatInput />
+        <ChatInput 
+          onFileUploadRequest={(files, filePaths) => {
+            setPendingFiles(files);
+            setPendingFilePaths(filePaths || []);
+            setIsFileUploadModalOpen(true);
+          }}
+        />
       </div>
+      <FileUploadModal
+        open={isFileUploadModalOpen}
+        onOpenChange={setIsFileUploadModalOpen}
+        files={pendingFiles}
+        filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
+        onConfirm={handleFileUpload}
+      />
     </div>
   );
 }

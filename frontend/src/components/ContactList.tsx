@@ -91,7 +91,6 @@ export function ContactList() {
   );
 
   const unreadCountsByConversation = useMemo(() => {
-    console.log("ContactList: Computing unread counts, readStateByConversation keys:", Object.keys(readStateByConversation));
     const counts: Record<string, number> = {};
     sortedContacts.forEach((contact) => {
       const conversationId = contact.linkedAccounts[0]?.userId;
@@ -107,11 +106,7 @@ export function ContactList() {
         (isRead) => !isRead
       ).length;
       counts[conversationId] = unreadCount;
-      if (unreadCount > 0) {
-        console.log(`ContactList: Conversation ${conversationId} has ${unreadCount} unread messages`);
-      }
     });
-    console.log("ContactList: Unread counts:", counts);
     return counts;
   }, [readStateByConversation, sortedContacts]);
 
@@ -132,7 +127,7 @@ export function ContactList() {
   return (
     <div className="flex flex-col h-full">
       <div className="p-2 border-b space-y-2">
-        <h2 className="text-lg font-semibold">{t("contacts")}</h2>
+        <h2 className="text-base font-semibold">{t("contacts")}</h2>
         <div className="flex gap-1">
           <Button
             variant={sortBy === "alphabetical" ? "default" : "ghost"}
@@ -163,11 +158,6 @@ export function ContactList() {
               unreadCount > 99 ? "99+" : unreadCount.toString();
             const isSelected = selectedContact?.id === contact.id;
             
-            // Debug log for conversations with unread messages
-            if (unreadCount > 0) {
-              console.log(`ContactList: Rendering contact ${contact.displayName} with ${unreadCount} unread messages`);
-            }
-
             return (
               <div
                 key={contact.id}
@@ -185,7 +175,7 @@ export function ContactList() {
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <span className="font-medium truncate">
+                  <span className="text-sm font-medium truncate">
                     {contact.displayName}
                   </span>
                   {unreadCount > 0 && (
