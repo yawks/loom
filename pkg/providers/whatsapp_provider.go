@@ -2700,6 +2700,152 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	return sentMessage, nil
 }
 
+// EditMessage edits an existing message.
+// Note: WhatsApp doesn't natively support editing messages, so this updates the local message only.
+func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	if w.client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	// Find the original message
+	var originalMsg *models.Message
+	w.mu.RLock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == messageID {
+				originalMsg = &msg
+				break
+			}
+		}
+	}
+	w.mu.RUnlock()
+
+	// If not found in cache, try database
+	if originalMsg == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
+			originalMsg = &dbMsg
+		}
+	}
+
+	if originalMsg == nil {
+		return nil, fmt.Errorf("message not found: %s", messageID)
+	}
+
+	// Update the message in our cache and database
+	updatedMessage := *originalMsg
+	updatedMessage.Body = newText
+
+	w.mu.Lock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for idx := range msgs {
+			if msgs[idx].ProtocolMsgID == messageID {
+				msgs[idx] = updatedMessage
+				w.conversationMessages[conversationID][idx] = msgs[idx]
+				break
+			}
+		}
+	}
+	w.mu.Unlock()
+
+	// Update in database
+	if db.DB != nil {
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_msg_id = ?", messageID).
+			Update("body", newText).Error; err != nil {
+			fmt.Printf("WhatsApp: Failed to update message body in database: %v\n", err)
+		}
+	}
+
+	// Emit MessageEvent to notify frontend
+	select {
+	case w.eventChan <- core.MessageEvent{Message: updatedMessage}:
+		fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", messageID)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", messageID)
+	}
+
+	return &updatedMessage, nil
+}
+
+// DeleteMessage deletes a message.
+func (w *WhatsAppProvider) DeleteMessage(conversationID string, messageID string) error {
+	fmt.Printf("WhatsApp: DeleteMessage called: conversationID=%s, messageID=%s\n", conversationID, messageID)
+	if w.client == nil {
+		fmt.Printf("WhatsApp: DeleteMessage error: client not initialized\n")
+		return fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		fmt.Printf("WhatsApp: DeleteMessage error: invalid conversation ID: %v\n", err)
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Find the message to verify it exists and get its details
+	var message *models.Message
+	w.mu.RLock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == messageID {
+				message = &msg
+				break
+			}
+		}
+	}
+	w.mu.RUnlock()
+
+	// If not found in cache, try database
+	if message == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
+			message = &dbMsg
+			fmt.Printf("WhatsApp: DeleteMessage: Found message in database\n")
+		} else {
+			fmt.Printf("WhatsApp: DeleteMessage: Message not found in database: %v\n", err)
+		}
+	}
+
+	if message == nil {
+		fmt.Printf("WhatsApp: DeleteMessage error: message not found: %s\n", messageID)
+		return fmt.Errorf("message not found: %s", messageID)
+	}
+
+	fmt.Printf("WhatsApp: DeleteMessage: Found message, revoking on WhatsApp server\n")
+	// Revoke the message using WhatsApp's revoke functionality
+	_, err = w.client.RevokeMessage(w.ctx, jid, types.MessageID(messageID))
+	if err != nil {
+		fmt.Printf("WhatsApp: DeleteMessage error: failed to revoke message: %v\n", err)
+		return fmt.Errorf("failed to revoke message: %w", err)
+	}
+	fmt.Printf("WhatsApp: DeleteMessage: Message revoked on WhatsApp server\n")
+
+	// Mark message as deleted in our cache and database
+	deletedBy := ""
+	if w.client.Store != nil && w.client.Store.ID != nil {
+		deletedBy = w.client.Store.ID.String()
+	}
+	deletedAt := time.Now()
+
+	updated := w.markMessageAsDeleted(conversationID, messageID, deletedBy, "deleted", deletedAt)
+	if updated == nil {
+		fmt.Printf("WhatsApp: Warning - Message %s was revoked but not found in cache\n", messageID)
+	}
+
+	// Emit MessageEvent to notify frontend
+	if updated != nil {
+		select {
+		case w.eventChan <- core.MessageEvent{Message: *updated}:
+			fmt.Printf("WhatsApp: MessageEvent emitted for deleted message %s\n", messageID)
+		default:
+			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for deleted message %s\n", messageID)
+		}
+	}
+
+	return nil
+}
+
 // SendFile sends a file to a given conversation without text.
 func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	if w.client == nil {

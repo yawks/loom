@@ -74,6 +74,19 @@ type Provider interface {
 	// Returns the created message or an error.
 	SendFile(conversationID string, file *Attachment, threadID *string) (*models.Message, error)
 
+	// EditMessage edits an existing message.
+	// conversationID is the protocol-specific conversation ID.
+	// messageID is the protocol-specific message ID.
+	// newText is the new message text.
+	// Returns the updated message or an error.
+	EditMessage(conversationID string, messageID string, newText string) (*models.Message, error)
+
+	// DeleteMessage deletes a message.
+	// conversationID is the protocol-specific conversation ID.
+	// messageID is the protocol-specific message ID.
+	// Returns an error if the message could not be deleted.
+	DeleteMessage(conversationID string, messageID string) error
+
 	// GetThreads loads all messages in a discussion thread from a parent message ID.
 	// parentMessageID is the protocol-specific message ID of the parent message.
 	GetThreads(parentMessageID string) ([]models.Message, error)
