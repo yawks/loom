@@ -262,6 +262,9 @@ func (m *MockProvider) EditMessage(conversationID string, messageID string, newT
 				return nil, fmt.Errorf("cannot edit message from another user")
 			}
 			messages[i].Body = newText
+			messages[i].IsEdited = true
+			editedAt := time.Now()
+			messages[i].EditedTimestamp = &editedAt
 			updatedMsg := messages[i]
 			m.messages[conversationID] = messages
 

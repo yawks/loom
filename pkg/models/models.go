@@ -79,6 +79,8 @@ type Message struct {
 	DeletedBy        string           `json:"deletedBy,omitempty"`                             // User ID who triggered the deletion
 	DeletedReason    string           `json:"deletedReason,omitempty"`                         // Reason (e.g., "revoked")
 	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                      // When the deletion happened
+	IsEdited         bool             `json:"isEdited"`                                         // Flag when the message has been edited
+	EditedTimestamp  *time.Time       `json:"editedTimestamp,omitempty"`                       // When the message was edited
 	DeletedAt        gorm.DeletedAt   `gorm:"index" json:"-"`
 }
 

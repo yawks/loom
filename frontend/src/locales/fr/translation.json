@@ -119,6 +119,8 @@
   "add_emoji": "Ajouter un emoji",
   "message_actions": "Actions du message",
   "edit_message": "Modifier",
+  "edit_failed": "Modification impossible",
+  "edited": "modifié",
   "delete_message": "Supprimer",
   "delete_message_title": "Supprimer le message",
   "delete_message_description": "Êtes-vous sûr de vouloir supprimer ce message ? Cette action est irréversible."

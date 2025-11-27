@@ -119,6 +119,8 @@
   "add_emoji": "Add Emoji",
   "message_actions": "Message actions",
   "edit_message": "Edit",
+  "edit_failed": "Edit failed",
+  "edited": "edited",
   "delete_message": "Delete",
   "delete_message_title": "Delete Message",
   "delete_message_description": "Are you sure you want to delete this message? This action cannot be undone."
