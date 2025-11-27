@@ -60,22 +60,26 @@ type GroupParticipant struct {
 
 // Message contains the content of a message.
 type Message struct {
-	ID              uint             `gorm:"primarykey" json:"id"`
-	ConversationID  uint             `json:"conversationId"`
-	ProtocolConvID  string           `json:"protocolConvId"`                     // Conversation ID on the platform
-	ProtocolMsgID   string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
-	SenderID        string           `json:"senderId"`                           // Sender's ID on the platform
-	SenderName      string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
-	SenderAvatarURL string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
-	Body            string           `json:"body"`
-	Timestamp       time.Time        `json:"timestamp"`
-	IsFromMe        bool             `json:"isFromMe"`
-	ThreadID        *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
-	Attachments     string           `json:"attachments"`                                     // Could be a JSON []string of URLs/paths
-	Reactions       []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"` // Reactions to this message
-	Receipts        []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`  // Delivery and read receipts
-	IsStatusMessage bool             `json:"isStatusMessage"`                                 // Whether this is a status message
-	DeletedAt       gorm.DeletedAt   `gorm:"index" json:"-"`
+	ID               uint             `gorm:"primarykey" json:"id"`
+	ConversationID   uint             `json:"conversationId"`
+	ProtocolConvID   string           `json:"protocolConvId"`                     // Conversation ID on the platform
+	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
+	SenderID         string           `json:"senderId"`                           // Sender's ID on the platform
+	SenderName       string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
+	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
+	Body             string           `json:"body"`
+	Timestamp        time.Time        `json:"timestamp"`
+	IsFromMe         bool             `json:"isFromMe"`
+	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
+	Attachments      string           `json:"attachments"`                                     // Could be a JSON []string of URLs/paths
+	Reactions        []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"` // Reactions to this message
+	Receipts         []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`  // Delivery and read receipts
+	IsStatusMessage  bool             `json:"isStatusMessage"`                                 // Whether this is a status message
+	IsDeleted        bool             `json:"isDeleted"`                                       // Flag when the remote client deleted the message
+	DeletedBy        string           `json:"deletedBy,omitempty"`                             // User ID who triggered the deletion
+	DeletedReason    string           `json:"deletedReason,omitempty"`                         // Reason (e.g., "revoked")
+	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                      // When the deletion happened
+	DeletedAt        gorm.DeletedAt   `gorm:"index" json:"-"`
 }
 
 // MessageReceipt represents a delivery or read receipt for a message.
@@ -101,11 +105,11 @@ type Reaction struct {
 
 // Attachment represents a file attached to a message.
 type Attachment struct {
-	Type     string `json:"type"`     // "image", "video", "audio", "document", "sticker"
-	URL      string `json:"url"`       // Local file path or remote URL
-	FileName string `json:"fileName"` // Original filename
-	FileSize int64  `json:"fileSize"`  // File size in bytes
-	MimeType string `json:"mimeType"`  // MIME type (e.g., "image/jpeg", "application/pdf")
+	Type      string `json:"type"`                // "image", "video", "audio", "document", "sticker"
+	URL       string `json:"url"`                 // Local file path or remote URL
+	FileName  string `json:"fileName"`            // Original filename
+	FileSize  int64  `json:"fileSize"`            // File size in bytes
+	MimeType  string `json:"mimeType"`            // MIME type (e.g., "image/jpeg", "application/pdf")
 	Thumbnail string `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
 }
 

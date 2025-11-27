@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -1048,6 +1049,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
 		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
+		if w.tryHandleProtocolMessage(v, true) {
+			fmt.Printf("WhatsApp: Message event was a protocol update (handled separately)\n")
+			break
+		}
 		msg := w.convertWhatsAppMessage(v)
 		if msg != nil {
 			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s\n", msg.ProtocolMsgID, msg.Body)
@@ -1205,6 +1210,192 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Log other events for debugging
 		fmt.Printf("WhatsApp: Unhandled event type: %T\n", evt)
 	}
+}
+
+func (w *WhatsAppProvider) tryHandleProtocolMessage(evt *events.Message, emitEvent bool) bool {
+	if evt == nil || evt.Message == nil {
+		return false
+	}
+	protocolMsg := evt.Message.GetProtocolMessage()
+	if protocolMsg == nil {
+		return false
+	}
+
+	switch protocolMsg.GetType() {
+	case waProto.ProtocolMessage_REVOKE:
+		w.handleRevokedProtocolMessage(evt, protocolMsg, emitEvent)
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *WhatsAppProvider) handleRevokedProtocolMessage(evt *events.Message, protocolMsg *waProto.ProtocolMessage, emitEvent bool) {
+	if evt == nil || protocolMsg == nil {
+		return
+	}
+
+	key := protocolMsg.GetKey()
+	if key == nil {
+		fmt.Println("WhatsApp: Received revoke protocol message without key, skipping")
+		return
+	}
+
+	convID := key.GetRemoteJID()
+	if convID == "" && evt.Info.Chat.String() != "" {
+		convID = evt.Info.Chat.String()
+	}
+
+	msgID := key.GetID()
+	if msgID == "" {
+		fmt.Println("WhatsApp: Received revoke protocol message without message ID, skipping")
+		return
+	}
+
+	deletedBy := ""
+	if !evt.Info.Sender.IsEmpty() {
+		deletedBy = evt.Info.Sender.String()
+	}
+
+	deletedAt := evt.Info.Timestamp
+	updated := w.markMessageAsDeleted(convID, msgID, deletedBy, "revoked", deletedAt)
+	if updated == nil {
+		fmt.Printf("WhatsApp: Revoke event received for %s but message not found locally yet\n", msgID)
+		return
+	}
+
+	if emitEvent {
+		select {
+		case w.eventChan <- core.MessageEvent{Message: *updated}:
+			fmt.Printf("WhatsApp: MessageEvent emitted for revoked message %s\n", msgID)
+		default:
+			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for revoked message %s (channel full)\n", msgID)
+		}
+	}
+}
+
+func (w *WhatsAppProvider) markMessageAsDeleted(convID, msgID, deletedBy, reason string, deletedAt time.Time) *models.Message {
+	if msgID == "" {
+		return nil
+	}
+
+	var updated *models.Message
+	var convIDCopy = convID
+
+	w.mu.Lock()
+	if convIDCopy != "" {
+		updated = w.updateCachedMessageDeletion(convIDCopy, msgID, deletedBy, reason, deletedAt)
+	}
+	if updated == nil {
+		updated = w.updateCachedMessageDeletionAcrossConversations(msgID, deletedBy, reason, deletedAt, &convIDCopy)
+	}
+	w.mu.Unlock()
+
+	if db.DB != nil {
+		updates := map[string]interface{}{
+			"is_deleted":     true,
+			"deleted_by":     deletedBy,
+			"deleted_reason": reason,
+		}
+		if !deletedAt.IsZero() {
+			updates["deleted_timestamp"] = deletedAt
+		} else {
+			updates["deleted_timestamp"] = nil
+		}
+
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_msg_id = ?", msgID).
+			Updates(updates).Error; err != nil {
+			fmt.Printf("WhatsApp: Failed to persist deletion state for message %s: %v\n", msgID, err)
+		} else if updated == nil {
+			var dbMsg models.Message
+			if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+				convIDCopy = dbMsg.ProtocolConvID
+				updatedCopy := dbMsg
+				updated = &updatedCopy
+
+				if convIDCopy != "" {
+					w.mu.Lock()
+					if msgs, ok := w.conversationMessages[convIDCopy]; ok {
+						for idx := range msgs {
+							if msgs[idx].ProtocolMsgID == msgID {
+								msgs[idx] = dbMsg
+								w.conversationMessages[convIDCopy][idx] = msgs[idx]
+								break
+							}
+						}
+					}
+					w.mu.Unlock()
+				}
+			}
+		}
+	}
+
+	return updated
+}
+
+func (w *WhatsAppProvider) updateCachedMessageDeletion(convID, msgID, deletedBy, reason string, deletedAt time.Time) *models.Message {
+	if w.conversationMessages == nil {
+		return nil
+	}
+	msgs, ok := w.conversationMessages[convID]
+	if !ok {
+		return nil
+	}
+
+	for idx := range msgs {
+		if msgs[idx].ProtocolMsgID != msgID {
+			continue
+		}
+
+		msg := msgs[idx]
+		msg.IsDeleted = true
+		msg.DeletedBy = deletedBy
+		msg.DeletedReason = reason
+		if !deletedAt.IsZero() {
+			ts := deletedAt
+			msg.DeletedTimestamp = &ts
+		} else {
+			msg.DeletedTimestamp = nil
+		}
+		w.conversationMessages[convID][idx] = msg
+		copyMsg := msg
+		return &copyMsg
+	}
+
+	return nil
+}
+
+func (w *WhatsAppProvider) updateCachedMessageDeletionAcrossConversations(msgID, deletedBy, reason string, deletedAt time.Time, convIDOut *string) *models.Message {
+	if w.conversationMessages == nil {
+		return nil
+	}
+	for convID, msgs := range w.conversationMessages {
+		for idx := range msgs {
+			if msgs[idx].ProtocolMsgID != msgID {
+				continue
+			}
+
+			msg := msgs[idx]
+			msg.IsDeleted = true
+			msg.DeletedBy = deletedBy
+			msg.DeletedReason = reason
+			if !deletedAt.IsZero() {
+				ts := deletedAt
+				msg.DeletedTimestamp = &ts
+			} else {
+				msg.DeletedTimestamp = nil
+			}
+			w.conversationMessages[convID][idx] = msg
+			copyMsg := msg
+			if convIDOut != nil {
+				*convIDOut = convID
+			}
+			return &copyMsg
+		}
+	}
+
+	return nil
 }
 
 // convertWhatsAppMessage converts a WhatsApp message to our Message model.
@@ -1533,6 +1724,9 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			evt, err := w.client.ParseWebMessage(chatJID, hMsg.GetMessage())
 			if err != nil {
 				fmt.Printf("WhatsApp: Failed to parse history message for %s: %v\n", convID, err)
+				continue
+			}
+			if w.tryHandleProtocolMessage(evt, false) {
 				continue
 			}
 			if msg := w.convertWhatsAppMessage(evt); msg != nil {
@@ -2555,6 +2749,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 		msg = &waE2E.Message{
 			ImageMessage: &waE2E.ImageMessage{
 				URL:           &uploadResp.URL,
+				DirectPath:    &uploadResp.DirectPath,
 				Mimetype:      &file.MimeType,
 				Caption:       nil,
 				FileSHA256:    uploadResp.FileSHA256,
@@ -2567,6 +2762,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 		msg = &waE2E.Message{
 			VideoMessage: &waE2E.VideoMessage{
 				URL:           &uploadResp.URL,
+				DirectPath:    &uploadResp.DirectPath,
 				Mimetype:      &file.MimeType,
 				Caption:       nil,
 				FileSHA256:    uploadResp.FileSHA256,
@@ -2579,6 +2775,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 		msg = &waE2E.Message{
 			AudioMessage: &waE2E.AudioMessage{
 				URL:           &uploadResp.URL,
+				DirectPath:    &uploadResp.DirectPath,
 				Mimetype:      &file.MimeType,
 				FileSHA256:    uploadResp.FileSHA256,
 				FileLength:    &uploadResp.FileLength,
@@ -2595,6 +2792,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 		msg = &waE2E.Message{
 			DocumentMessage: &waE2E.DocumentMessage{
 				URL:           &uploadResp.URL,
+				DirectPath:    &uploadResp.DirectPath,
 				Mimetype:      &file.MimeType,
 				FileName:      &fileName,
 				FileSHA256:    uploadResp.FileSHA256,

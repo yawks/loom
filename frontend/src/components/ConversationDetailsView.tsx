@@ -16,6 +16,51 @@ import { useTranslation } from "react-i18next";
 // Declare SendFileFromPath as it will be available after Wails bindings are regenerated
 declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
 
+async function compressImageFile(file: File): Promise<File> {
+  const isImage = file.type?.startsWith("image/");
+  const shouldCompress = isImage && file.size > 1024 * 1024;
+  if (!shouldCompress) {
+    return file;
+  }
+
+  try {
+    const imageBitmap = await createImageBitmap(file);
+    let { width, height } = imageBitmap;
+    const maxDimension = Math.max(width, height);
+    const targetMax = 1600;
+    const scale = maxDimension > targetMax ? targetMax / maxDimension : 1;
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      imageBitmap.close();
+      return file;
+    }
+    ctx.drawImage(imageBitmap, 0, 0, width, height);
+    imageBitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob((result) => resolve(result), "image/jpeg", 0.85)
+    );
+
+    if (!blob) {
+      return file;
+    }
+
+    return new File(
+      [blob],
+      file.name.replace(/\.(png|webp)$/i, ".jpg"),
+      { type: "image/jpeg", lastModified: Date.now() }
+    );
+  } catch (error) {
+    console.warn("Image compression failed, sending original file.", error);
+    return file;
+  }
+}
 
 // Get display name for a message sender
 function getSenderDisplayName(
@@ -228,8 +273,10 @@ export function ConversationDetailsView({
     }
 
     // Send each file
-    for (const file of files) {
+    for (const initialFile of files) {
+      let file = initialFile;
       try {
+
         // Check file size (limit to 64MB to avoid memory issues)
         const maxSize = 64 * 1024 * 1024; // 64MB
         if (file.size > maxSize) {
@@ -284,6 +331,9 @@ export function ConversationDetailsView({
           }
         }
         
+        // Attempt to compress image before reading
+        file = await compressImageFile(file);
+
         // File doesn't have a path - use FileReader to convert to base64
         // This is the correct approach for Wails/WebKit (avoids WebKitBlobResource error 4)
         let fileData: string;

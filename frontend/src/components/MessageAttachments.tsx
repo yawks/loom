@@ -23,6 +23,7 @@ interface Attachment {
 interface MessageAttachmentsProps {
   attachments: string; // JSON string from message.attachments
   isFromMe: boolean;
+  layout?: "bubble" | "irc";
 }
 
 function formatFileSize(bytes: number): string {
@@ -62,6 +63,7 @@ function getFileExtension(fileName: string): string {
 export function MessageAttachments({
   attachments,
   isFromMe,
+  layout = "bubble",
 }: MessageAttachmentsProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -160,9 +162,7 @@ export function MessageAttachments({
           return (
             <div
               key={index}
-              className={`relative group ${
-                isFromMe ? "flex justify-end" : "flex justify-start"
-              }`}
+              className="relative group flex justify-start"
               onMouseEnter={() => setHoveredIndex(index)}
               onMouseLeave={() => setHoveredIndex(null)}
             >
@@ -192,7 +192,7 @@ export function MessageAttachments({
               ) : (
                 <div
                   className={`flex items-center gap-3 p-3 rounded-lg border ${
-                    isFromMe
+                    isFromMe && layout === "bubble"
                       ? "bg-blue-600 text-white border-blue-700"
                       : "bg-muted text-foreground border-border"
                   } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
