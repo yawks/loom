@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { timeToDate } from "./utils";
 import type { models } from "../../wailsjs/go/models";
 
 // Extend Window interface to include Wails runtime
@@ -143,7 +144,7 @@ const getMessageIdentifier = (message: models.Message): MessageId | null => {
   if (message.id) {
     return `message-${message.id}`;
   }
-  const timestamp = new Date(message.timestamp).getTime();
+  const timestamp = timeToDate(message.timestamp).getTime();
   return Number.isNaN(timestamp) ? null : `ts-${timestamp}`;
 };
 

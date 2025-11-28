@@ -60,8 +60,9 @@ type Provider interface {
 	// GetConversationHistory retrieves the message history for a specific conversation.
 	// conversationID is the protocol-specific conversation ID.
 	// limit specifies the maximum number of messages to retrieve (0 = no limit).
+	// beforeTimestamp, if not nil, limits results to messages before this timestamp (for pagination).
 	// Returns messages ordered by timestamp (oldest first).
-	GetConversationHistory(conversationID string, limit int) ([]models.Message, error)
+	GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error)
 
 	// SendMessage sends a text message to a given conversation.
 	// If file is not nil, the file will be attached to the message.

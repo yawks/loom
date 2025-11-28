@@ -9,10 +9,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { DeleteMessage, EditMessage, GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
+import { DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, SendFile } from "../../wailsjs/go/main/App";
 import { ToastContainer, useToast } from "@/components/ui/toast";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { cn, timeToDate } from "@/lib/utils";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
@@ -21,7 +22,6 @@ import type { KeyboardEvent } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
-import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -133,8 +133,11 @@ function getSenderDisplayName(
     .join(" ");
 }
 
-// Wrapper function to use Wails with React Query's suspense mode
-const fetchMessages = async (conversationID: string) => {
+// Wrapper function to use Wails with React Query's infinite query
+const fetchMessages = async (conversationID: string, beforeTimestamp?: Date) => {
+  if (beforeTimestamp) {
+    return GetMessagesForConversationBefore(conversationID, beforeTimestamp);
+  }
   return GetMessagesForConversation(conversationID);
 };
 
@@ -145,7 +148,7 @@ const getMessageDomId = (message: models.Message): string => {
   if (message.id) {
     return `message-${message.id}`;
   }
-  return `ts-${new Date(message.timestamp).getTime()}`;
+  return `ts-${timeToDate(message.timestamp).getTime()}`;
 };
 
 const isElementVisibleWithinContainer = (
@@ -233,10 +236,260 @@ export function MessageList({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
-  const { data: messages } = useSuspenseQuery<models.Message[], Error>({
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+  } = useInfiniteQuery<models.Message[], Error>({
     queryKey: ["messages", conversationId],
-    queryFn: () => fetchMessages(conversationId),
+    queryFn: ({ pageParam }) => {
+      const beforeTimestamp = pageParam ? new Date(pageParam as string) : undefined;
+      return fetchMessages(conversationId, beforeTimestamp);
+    },
+    getNextPageParam: (lastPage, allPages) => {
+      if (!lastPage || lastPage.length === 0) {
+        return undefined;
+      }
+      // Get the oldest message timestamp from all loaded pages
+      const allMessages = allPages.flat();
+      if (allMessages.length === 0) {
+        return undefined;
+      }
+      // Find the oldest message
+      const oldestMessage = allMessages.reduce((oldest, msg) => {
+        const msgTime = timeToDate(msg.timestamp);
+        const oldestTime = timeToDate(oldest.timestamp);
+        return msgTime < oldestTime ? msg : oldest;
+      });
+      return timeToDate(oldestMessage.timestamp).toISOString();
+    },
+    initialPageParam: undefined,
   });
+
+  // Flatten all pages into a single array
+  const messages = useMemo(() => {
+    if (!data?.pages) return [];
+    return data.pages.flat();
+  }, [data]);
+
+  // Track scroll height and position before messages change (for infinite scroll)
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (container && isFetchingNextPage) {
+      // Capture scroll position and height before new messages are added
+      const heightBefore = container.scrollHeight;
+      const scrollTopBefore = container.scrollTop;
+      previousScrollHeightRef.current = heightBefore;
+      previousScrollTopRef.current = scrollTopBefore;
+      heightWithBarRef.current = 0; // Reset
+      isAdjustingScrollRef.current = false; // Reset adjustment flag
+      
+      // Find the oldest visible message (first message in the list that's visible)
+      // This will be our anchor point
+      const visibleMessages = Array.from(messageElementsRef.current.entries())
+        .filter(([_, el]) => {
+          const rect = el.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          return rect.top >= containerRect.top && rect.top <= containerRect.bottom;
+        })
+        .map(([id, el]) => ({ id, element: el }));
+      
+      if (visibleMessages.length > 0) {
+        // Find the oldest message (first in chronological order, which is first in the array)
+        // The messages are already sorted chronologically
+        const oldestVisible = visibleMessages[0];
+        const messageId = oldestVisible.id;
+        const messageElement = oldestVisible.element;
+        
+        // Store the oldest visible message ID and its absolute position
+        oldestVisibleMessageIdRef.current = messageId;
+        
+        // Calculate and store the relative position of the anchor message (from top of viewport)
+        const messageRect = messageElement.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const anchorRelativeTop = messageRect.top - containerRect.top;
+        
+        // Store the relative position in a data attribute for later retrieval
+        (container as any).__anchorRelativeTop = anchorRelativeTop;
+        
+        // Add a class to mark this message as the scroll anchor
+        messageElement.classList.add('scroll-anchor-message');
+        
+        console.log('[Scroll Debug] Found oldest visible message for anchor:', {
+          messageId,
+          scrollTop: scrollTopBefore,
+          height: heightBefore,
+          anchorRelativeTop
+        });
+      } else {
+        console.log('[Scroll Debug] No visible message found for anchor');
+      }
+    }
+  }, [isFetchingNextPage]);
+  
+  // Capture height when loading bar is visible
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (container && isFetchingNextPage && heightWithBarRef.current === 0) {
+      // Wait for bar to be rendered
+      requestAnimationFrame(() => {
+        const heightWithBar = container.scrollHeight;
+        if (heightWithBar > previousScrollHeightRef.current) {
+          heightWithBarRef.current = heightWithBar;
+          console.log('[Scroll Debug] Loading bar appeared:', {
+            heightBefore: previousScrollHeightRef.current,
+            heightWithBar,
+            scrollTop: container.scrollTop
+          });
+        }
+      });
+    }
+  }, [isFetchingNextPage]);
+  
+
+  // Adjust scroll position synchronously when new messages are added (prevents flicker)
+  // This handles the case when loading bar is replaced by real messages
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || messages.length === 0) {
+      return;
+    }
+    
+    const currentScrollHeight = container.scrollHeight;
+    const previousScrollHeight = previousScrollHeightRef.current;
+    const currentScrollTop = container.scrollTop;
+    const loadingBarHeight = loadingBarHeightRef.current;
+    
+    // If we just finished loading (loading bar was replaced by real messages)
+    // We need to adjust scroll to maintain the position of the oldest visible message
+    if (!isFetchingNextPage && previousScrollHeight > 0 && previousScrollTopRef.current > 0 && !isAdjustingScrollRef.current) {
+      // Mark that we're adjusting scroll to prevent other effects from interfering
+      isAdjustingScrollRef.current = true;
+      
+      // Use the preserved scrollTop from before loading started
+      const preservedScrollTop = previousScrollTopRef.current;
+      
+      // Find the anchor message (oldest visible message before loading)
+      const anchorMessageId = oldestVisibleMessageIdRef.current;
+      if (anchorMessageId) {
+        const anchorElement = messageElementsRef.current.get(anchorMessageId);
+        
+        if (anchorElement) {
+          // Remove the anchor class from the old message
+          anchorElement.classList.remove('scroll-anchor-message');
+          
+          const anchorRect = anchorElement.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          
+          // Get the stored relative position of the anchor before loading
+          const anchorRelativeTop = (container as any).__anchorRelativeTop;
+          
+          if (anchorRelativeTop !== undefined) {
+            // Current relative position of the anchor (from top of viewport)
+            const anchorCurrentRelativeTop = anchorRect.top - containerRect.top;
+            
+            // The anchor should be at loadingBarHeight from the top (to account for the loading bar that was there)
+            // The difference between current and target relative position is how much we need to scroll
+            // But we need to use preservedScrollTop as base, not currentScrollTop (which is 0)
+            const scrollAdjustment = anchorCurrentRelativeTop - loadingBarHeight;
+            const targetScrollTop = preservedScrollTop + scrollAdjustment;
+            
+            console.log('[Scroll Debug] Restoring position using anchor message:', {
+              anchorMessageId,
+              anchorRelativeTop,
+              anchorCurrentRelativeTop,
+              targetRelativeTop: loadingBarHeight,
+              scrollAdjustment,
+              currentScrollTop: container.scrollTop,
+              targetScrollTop,
+              scrollHeight: currentScrollHeight
+            });
+            
+            container.scrollTop = Math.max(0, targetScrollTop);
+          } else {
+            // Fallback: use height difference calculation
+            const newMessagesHeight = currentScrollHeight - previousScrollHeight;
+            const targetScrollTop = preservedScrollTop + newMessagesHeight;
+            
+            console.log('[Scroll Debug] Restoring position using anchor message (fallback):', {
+              anchorMessageId,
+              preservedScrollTop,
+              newMessagesHeight,
+              targetScrollTop
+            });
+            
+            container.scrollTop = Math.max(0, targetScrollTop);
+          }
+          
+          // Find the new oldest message and add the anchor class to it
+          if (messages.length > 0) {
+            const oldestMessage = messages[0];
+            const oldestMessageId = getMessageDomId(oldestMessage);
+            const oldestElement = messageElementsRef.current.get(oldestMessageId);
+            if (oldestElement) {
+              oldestElement.classList.add('scroll-anchor-message');
+              oldestVisibleMessageIdRef.current = oldestMessageId;
+            }
+          }
+          
+          // Clean up stored relative position
+          delete (container as any).__anchorRelativeTop;
+          
+          previousScrollHeightRef.current = currentScrollHeight;
+          lastScrollTopRef.current = container.scrollTop;
+          previousScrollTopRef.current = 0;
+          heightWithBarRef.current = 0;
+          
+          console.log('[Scroll Debug] After anchor restoration:', {
+            scrollTop: container.scrollTop,
+            scrollHeight: container.scrollHeight
+          });
+          
+          setTimeout(() => {
+            isLoadingMoreRef.current = false;
+            isAdjustingScrollRef.current = false;
+          }, 200);
+          return;
+        } else {
+          console.log('[Scroll Debug] Anchor message element not found:', {
+            anchorMessageId,
+            availableInRef: Array.from(messageElementsRef.current.keys()).slice(0, 5)
+          });
+        }
+      }
+      
+      // Fallback: Calculate the adjustment needed
+      const newMessagesHeight = currentScrollHeight - previousScrollHeight;
+      const newScrollTop = preservedScrollTop + newMessagesHeight;
+      
+      console.log('[Scroll Debug] Adjusting scroll after loading bar removal (fallback):', {
+        preservedScrollTop,
+        newMessagesHeight,
+        targetScrollTop: newScrollTop
+      });
+      
+      container.scrollTop = Math.max(0, newScrollTop);
+      
+      // Update refs
+      previousScrollHeightRef.current = currentScrollHeight;
+      lastScrollTopRef.current = container.scrollTop;
+      previousScrollTopRef.current = 0;
+      heightWithBarRef.current = 0;
+      
+      setTimeout(() => {
+        isLoadingMoreRef.current = false;
+        isAdjustingScrollRef.current = false;
+      }, 200);
+      return;
+    }
+    
+    // Update previous scroll height if not loading more
+    if (!isFetchingNextPage) {
+      previousScrollHeightRef.current = currentScrollHeight;
+    }
+  }, [messages, isFetchingNextPage]);
   const syncConversation = useMessageReadStore(
     (state) => state.syncConversation
   );
@@ -248,6 +501,83 @@ export function MessageList({
     () => readByConversation[conversationId] ?? {},
     [readByConversation, conversationId]
   );
+  
+  // Filter out thread messages and group threads by parent message
+  const { mainMessages, threadsByParent } = useMemo(() => {
+    const main: models.Message[] = [];
+    const threads: Record<string, models.Message[]> = {};
+
+    messages.forEach((msg) => {
+      if (!msg.threadId) {
+        // This is a main message
+        main.push(msg);
+      } else {
+        // This is a thread reply
+        if (!threads[msg.threadId]) {
+          threads[msg.threadId] = [];
+        }
+        threads[msg.threadId].push(msg);
+      }
+    });
+
+    // Sort main messages by timestamp
+    main.sort(
+      (a, b) =>
+        timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
+    );
+
+    return { mainMessages: main, threadsByParent: threads };
+  }, [messages]);
+
+  // Handle initial scroll position (bottom or first unread message)
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || messages.length === 0 || isLoading) {
+      return;
+    }
+    
+    // Only on initial load (when previousScrollHeight is 0)
+    if (previousScrollHeightRef.current === 0 && !isFetchingNextPage && !isAdjustingScrollRef.current) {
+      // Find first unread message
+      const firstUnreadMessage = mainMessages.find(msg => {
+        const domId = getMessageDomId(msg);
+        return conversationReadState[domId] === false;
+      });
+      
+      if (firstUnreadMessage) {
+        const targetId = getMessageDomId(firstUnreadMessage);
+        const target = messageElementsRef.current.get(targetId);
+        if (target) {
+          const containerRect = container.getBoundingClientRect();
+          const targetRect = target.getBoundingClientRect();
+          const marginTop = 100;
+          const targetScrollTop = 
+            container.scrollTop + 
+            (targetRect.top - containerRect.top) - 
+            marginTop;
+          container.scrollTop = Math.max(0, targetScrollTop);
+          hasScrolledToUnreadRef.current = targetId;
+          // Mark the oldest message as anchor
+          if (messages.length > 0) {
+            const oldestMessage = messages[0];
+            const oldestMessageId = getMessageDomId(oldestMessage);
+            oldestVisibleMessageIdRef.current = oldestMessageId;
+          }
+          return;
+        }
+      }
+      
+      // No unread messages, scroll to bottom
+      container.scrollTop = container.scrollHeight;
+      // Mark the oldest message (first in the list) as anchor
+      if (messages.length > 0) {
+        const oldestMessage = messages[0];
+        const oldestMessageId = getMessageDomId(oldestMessage);
+        oldestVisibleMessageIdRef.current = oldestMessageId;
+      }
+    }
+  }, [messages, isLoading, isFetchingNextPage, mainMessages, conversationReadState]);
+  
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
@@ -276,33 +606,6 @@ export function MessageList({
     setShowThreads(!showThreads);
   };
 
-  // Filter out thread messages and group threads by parent message
-  const { mainMessages, threadsByParent } = useMemo(() => {
-    const main: models.Message[] = [];
-    const threads: Record<string, models.Message[]> = {};
-
-    messages.forEach((msg) => {
-      if (!msg.threadId) {
-        // This is a main message
-        main.push(msg);
-      } else {
-        // This is a thread reply
-        if (!threads[msg.threadId]) {
-          threads[msg.threadId] = [];
-        }
-        threads[msg.threadId].push(msg);
-      }
-    });
-
-    // Sort main messages by timestamp
-    main.sort(
-      (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-
-    return { mainMessages: main, threadsByParent: threads };
-  }, [messages]);
-
   useEffect(() => {
     if (!conversationId) {
       return;
@@ -322,6 +625,16 @@ export function MessageList({
 
   useEffect(() => {
     hasScrolledToUnreadRef.current = null;
+    previousScrollHeightRef.current = 0;
+    previousScrollTopRef.current = 0;
+    heightWithBarRef.current = 0;
+    isAdjustingScrollRef.current = false;
+    isScrollingToUnreadRef.current = false;
+    hasUserScrolledRef.current = false;
+    isInitialLoadRef.current = true;
+    lastScrollTopRef.current = 0;
+    isLoadingMoreRef.current = false;
+    oldestVisibleMessageIdRef.current = null;
   }, [conversationId]);
 
   useEffect(() => {
@@ -340,11 +653,45 @@ export function MessageList({
         distanceFromBottom: distance,
         atBottom: distance < 80,
       };
+      
+      const currentScrollTop = container.scrollTop;
+      const scrollDelta = currentScrollTop - lastScrollTopRef.current;
+      
+      // Mark that user has scrolled (not programmatic scroll)
+      // Only if scroll position changed significantly (user action, not programmatic)
+      if (Math.abs(scrollDelta) > 5) {
+        hasUserScrolledRef.current = true;
+        // If user scrolled up (negative delta), reset the loading flag
+        if (scrollDelta < 0 && isLoadingMoreRef.current) {
+          isLoadingMoreRef.current = false;
+        }
+      }
+      
+      lastScrollTopRef.current = currentScrollTop;
+      
+      // Load more messages when scrolling near the top (within 200px)
+      // Only if:
+      // - User has manually scrolled (not initial load)
+      // - Not already loading
+      // - User scrolled up (not down)
+      // - Not in the middle of a loading operation
+      if (
+        container.scrollTop < 200 && 
+        hasNextPage && 
+        !isFetchingNextPage &&
+        !isLoadingMoreRef.current &&
+        hasUserScrolledRef.current &&
+        !isInitialLoadRef.current &&
+        scrollDelta < 0 // User scrolled up
+      ) {
+        isLoadingMoreRef.current = true;
+        fetchNextPage();
+      }
     };
     container.addEventListener("scroll", handleScroll, { passive: true });
     handleScroll();
     return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -352,13 +699,42 @@ export function MessageList({
       return;
     }
     
-    // Use a small delay to ensure DOM is ready
+    // Use a small delay to ensure DOM is ready for other scroll operations
     const timeoutId = setTimeout(() => {
       requestAnimationFrame(() => {
+        // This effect is now only for non-infinite-scroll operations
+        // Infinite scroll position adjustment is handled in useLayoutEffect above
+        
+        // Mark initial load as complete after first render
+        if (isInitialLoadRef.current) {
+          isInitialLoadRef.current = false;
+        }
+        
+        // If we just finished loading more messages (infinite scroll), don't interfere
+        // The useLayoutEffect above has already handled the scroll adjustment
+        if (isAdjustingScrollRef.current) {
+          console.log('[Scroll Debug] Skipping scroll adjustment - infinite scroll adjustment in progress');
+          return;
+        }
+        
+        // Also check if we're near the top (where old messages would be loaded)
+        if (!isFetchingNextPage && previousScrollHeightRef.current > 0) {
+          const isNearTop = container.scrollTop < 500;
+          const isNearBottom = container.scrollTop > container.scrollHeight - container.clientHeight - 100;
+          
+          // If we're near the top (where old messages would be loaded), don't interfere
+          if (isNearTop && !isNearBottom) {
+            console.log('[Scroll Debug] Skipping scroll adjustment - near top after infinite scroll');
+            return;
+          }
+        }
+        
         if (
           firstUnreadMessageId &&
-          hasScrolledToUnreadRef.current !== firstUnreadMessageId
+          hasScrolledToUnreadRef.current !== firstUnreadMessageId &&
+          !isAdjustingScrollRef.current
         ) {
+          isScrollingToUnreadRef.current = true;
           const target = messageElementsRef.current.get(firstUnreadMessageId);
           if (target) {
             // Scroll to the first unread message with a margin above it
@@ -369,40 +745,71 @@ export function MessageList({
               container.scrollTop + 
               (targetRect.top - containerRect.top) - 
               marginTop;
-            container.scrollTo({
-              top: Math.max(0, targetScrollTop),
-              behavior: "smooth"
-            });
+            container.scrollTop = Math.max(0, targetScrollTop); // Use instant scroll, not smooth
             hasScrolledToUnreadRef.current = firstUnreadMessageId;
-            return;
+            // Mark the oldest message as anchor
+            if (messages.length > 0) {
+              const oldestMessage = messages[0];
+              const oldestMessageId = getMessageDomId(oldestMessage);
+              oldestVisibleMessageIdRef.current = oldestMessageId;
+            }
+            setTimeout(() => {
+              isScrollingToUnreadRef.current = false;
+            }, 100);
           }
-        }
-        // If no unread messages, scroll to the bottom
-        if (!firstUnreadMessageId) {
-          container.scrollTo({
-            top: container.scrollHeight,
-            behavior: "smooth"
-          });
           return;
         }
+        
+        // If no unread messages and not loading more, scroll to the bottom
+        // But only if we're not in the middle of an infinite scroll operation
+        if (!firstUnreadMessageId && !isFetchingNextPage && previousScrollHeightRef.current === 0 && !isAdjustingScrollRef.current) {
+          container.scrollTop = container.scrollHeight; // Use instant scroll, not smooth
+          // Mark the oldest message (first in the list) as anchor
+          if (messages.length > 0) {
+            const oldestMessage = messages[0];
+            const oldestMessageId = getMessageDomId(oldestMessage);
+            oldestVisibleMessageIdRef.current = oldestMessageId;
+          }
+          return;
+        }
+        
+        // If loading more messages, don't change scroll position
+        if (isFetchingNextPage) {
+          return;
+        }
+        
         // Otherwise, maintain scroll position
-        const { atBottom, distanceFromBottom } = scrollStateRef.current;
-        if (atBottom) {
-          container.scrollTop = container.scrollHeight;
-        } else {
-          const targetScrollTop =
-            container.scrollHeight - container.clientHeight - distanceFromBottom;
-          container.scrollTop = Math.max(0, targetScrollTop);
+        // But only if we're not in the middle of an infinite scroll operation
+        if (previousScrollHeightRef.current === 0) {
+          const { atBottom, distanceFromBottom } = scrollStateRef.current;
+          if (atBottom) {
+            container.scrollTop = container.scrollHeight;
+          } else {
+            const targetScrollTop =
+              container.scrollHeight - container.clientHeight - distanceFromBottom;
+            container.scrollTop = Math.max(0, targetScrollTop);
+          }
         }
       });
     }, 100);
 
     return () => clearTimeout(timeoutId);
-  }, [firstUnreadMessageId, messages]);
+  }, [firstUnreadMessageId, messages, isFetchingNextPage]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const previousScrollHeightRef = useRef<number>(0);
+  const previousScrollTopRef = useRef<number>(0);
+  const heightWithBarRef = useRef<number>(0); // Height when loading bar is visible
+  const isAdjustingScrollRef = useRef<boolean>(false);
+  const loadingBarHeightRef = useRef<number>(64); // Fixed height: 64px (h-16 = 4rem = 64px)
+  const isScrollingToUnreadRef = useRef<boolean>(false);
+  const hasUserScrolledRef = useRef<boolean>(false);
+  const isInitialLoadRef = useRef<boolean>(true);
+  const lastScrollTopRef = useRef<number>(0);
+  const isLoadingMoreRef = useRef<boolean>(false);
+  const oldestVisibleMessageIdRef = useRef<string | null>(null); // ID of the oldest visible message (for scroll anchor)
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
@@ -507,7 +914,7 @@ export function MessageList({
     // Sort by timestamp and get the last one
     return threadMessages.sort(
       (a, b) =>
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        timeToDate(b.timestamp).getTime() - timeToDate(a.timestamp).getTime()
     )[0];
   };
 
@@ -931,7 +1338,32 @@ export function MessageList({
         onToggleDetails={handleToggleDetails}
       />
       <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area" ref={scrollContainerRef}>
-        {messageLayout === "bubble" ? (
+        {isLoading ? (
+          <div className="flex flex-col gap-2">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="flex items-start gap-3 animate-pulse">
+                <div className="h-10 w-10 rounded-full bg-muted"></div>
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-24 bg-muted rounded"></div>
+                  <div className="h-16 w-3/4 bg-muted rounded"></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            {isFetchingNextPage && (
+              <div 
+                id="loading-bar-top"
+                className="flex justify-center items-center h-16 w-full bg-muted/30"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-sm text-muted-foreground">{t("loading")}</span>
+                </div>
+              </div>
+            )}
+            {messageLayout === "bubble" ? (
           <div className="space-y-4">
             {mainMessages.map((message, index) => {
               const messageId = getMessageDomId(message);
@@ -947,7 +1379,7 @@ export function MessageList({
               const isUnread = conversationReadState[messageId] === false;
               const showUnreadDivider =
                 messageId === firstUnreadMessageId && isUnread;
-              const timestamp = new Date(message.timestamp);
+              const timestamp = timeToDate(message.timestamp);
               const timeString = `${timestamp
                 .getHours()
                 .toString()
@@ -995,9 +1427,9 @@ export function MessageList({
                   }
                 : {};
               
-              const messageDate = new Date(message.timestamp);
+              const messageDate = timeToDate(message.timestamp);
               const prevMessage = index > 0 ? mainMessages[index - 1] : null;
-              const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
               const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
 
               return (
@@ -1027,7 +1459,10 @@ export function MessageList({
                   <div
                     ref={registerMessageNode(messageId)}
                     data-message-id={messageId}
-                    className="space-y-2 scroll-mt-28 group"
+                    className={cn(
+                      "space-y-2 scroll-mt-28 group",
+                      oldestVisibleMessageIdRef.current === messageId && "scroll-anchor-message"
+                    )}
                     onMouseEnter={() => setOpenActionsMessageId(messageId)}
                     onMouseLeave={() => setOpenActionsMessageId(null)}
                   >
@@ -1247,7 +1682,7 @@ export function MessageList({
                           </p>
                           <div className="flex items-center gap-2 mt-1">
                             <p className="text-xs text-muted-foreground/70">
-                              {new Date(
+                              {timeToDate(
                                 lastThreadMsg.timestamp
                               ).toLocaleTimeString()}
                             </p>
@@ -1279,9 +1714,9 @@ export function MessageList({
               const hasThread = threadCount > 0;
               const prevMessage = index > 0 ? mainMessages[index - 1] : null;
               const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;
-              const timestamp = new Date(message.timestamp);
+              const timestamp = timeToDate(message.timestamp);
               const prevTimestamp = prevMessage
-                ? new Date(prevMessage.timestamp)
+                ? timeToDate(prevMessage.timestamp)
                 : null;
               const timeDiffMinutes = prevTimestamp
                 ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
@@ -1316,8 +1751,8 @@ export function MessageList({
               const showUnreadDivider =
                 messageId === firstUnreadMessageId && isUnread;
               
-              const messageDate = new Date(message.timestamp);
-              const prevMessageDate = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const messageDate = timeToDate(message.timestamp);
+              const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
               const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
               const isDeletedRevealed =
                 isDeleted && revealedDeletedMessages.has(messageId);
@@ -1369,7 +1804,8 @@ export function MessageList({
                   <div
                     className={cn(
                       "flex items-start py-1 scroll-mt-28 group relative",
-                      isUnread && "border border-primary/30 bg-primary/5 px-2"
+                      isUnread && "border border-primary/30 bg-primary/5 px-2",
+                      oldestVisibleMessageIdRef.current === messageId && "scroll-anchor-message"
                     )}
                     ref={registerMessageNode(messageId)}
                     data-message-id={messageId}
@@ -1603,7 +2039,7 @@ export function MessageList({
                         </p>
                         <div className="flex items-center gap-2 mt-1">
                           <p className="text-xs text-muted-foreground/70">
-                            {new Date(
+                            {timeToDate(
                               lastThreadMsg.timestamp
                             ).toLocaleTimeString()}
                           </p>
@@ -1623,6 +2059,8 @@ export function MessageList({
               );
             })}
           </div>
+        )}
+          </>
         )}
       </div>
       <div className="shrink-0">
