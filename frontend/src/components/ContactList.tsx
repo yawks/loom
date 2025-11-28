@@ -10,7 +10,7 @@ import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
+import { cn, timeToDate } from "@/lib/utils";
 
 type SortOption = "alphabetical" | "last_message";
 
@@ -77,8 +77,8 @@ export function ContactList() {
       );
     } else if (sortBy === "last_message") {
       sorted.sort((a, b) => {
-        const timeA = new Date(a.updatedAt || a.createdAt).getTime();
-        const timeB = new Date(b.updatedAt || b.createdAt).getTime();
+        const timeA = timeToDate(a.updatedAt || a.createdAt).getTime();
+        const timeB = timeToDate(b.updatedAt || b.createdAt).getTime();
         return timeB - timeA;
       });
     }

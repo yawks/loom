@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, timeToDate } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { translateBackendMessage } from "@/lib/i18n-helpers";
 import { useAppStore } from "@/lib/store";
@@ -154,7 +154,7 @@ export function ConversationDetailsView({
 
     messages.forEach((msg) => {
       const existing = participantMap.get(msg.senderId);
-      const msgTime = new Date(msg.timestamp);
+      const msgTime = timeToDate(msg.timestamp);
       
       if (!existing || msgTime > existing.lastMessageTime) {
         participantMap.set(msg.senderId, {
