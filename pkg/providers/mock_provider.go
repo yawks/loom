@@ -7,6 +7,7 @@ import (
 	cryptoRand "crypto/rand"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -361,22 +362,40 @@ func (m *MockProvider) GetContacts() ([]models.LinkedAccount, error) {
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.
-func (m *MockProvider) GetConversationHistory(conversationID string, limit int) ([]models.Message, error) {
-	fmt.Printf("MockProvider: Getting conversation history for %s (limit: %d)\n", conversationID, limit)
+func (m *MockProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
+	fmt.Printf("MockProvider: Getting conversation history for %s (limit: %d, beforeTimestamp: %v)\n", conversationID, limit, beforeTimestamp)
 
 	messages, ok := m.messages[conversationID]
 	if !ok {
 		return []models.Message{}, nil
 	}
 
-	// Return messages ordered by timestamp (oldest first)
-	result := make([]models.Message, len(messages))
-	copy(result, messages)
-
-	// Apply limit if specified
-	if limit > 0 && limit < len(result) {
-		result = result[:limit]
+	// Filter by beforeTimestamp if specified
+	var filtered []models.Message
+	if beforeTimestamp != nil {
+		for _, msg := range messages {
+			if msg.Timestamp.Before(*beforeTimestamp) {
+				filtered = append(filtered, msg)
+			}
+		}
+	} else {
+		filtered = make([]models.Message, len(messages))
+		copy(filtered, messages)
 	}
+
+	// Sort by timestamp (oldest first)
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return filtered[i].Timestamp.Before(filtered[j].Timestamp)
+	})
+
+	// Take last 'limit' messages
+	start := 0
+	if limit > 0 && len(filtered) > limit {
+		start = len(filtered) - limit
+	}
+
+	result := make([]models.Message, len(filtered)-start)
+	copy(result, filtered[start:])
 
 	return result, nil
 }

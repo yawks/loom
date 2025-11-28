@@ -8,6 +8,7 @@ import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { timeToDate } from "@/lib/utils";
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -101,7 +102,7 @@ export function ThreadView() {
     if (!threadMessages || threadMessages.length === 0) return [];
     return [...threadMessages].sort(
       (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
     );
   }, [threadMessages]);
 
@@ -173,7 +174,7 @@ export function ThreadView() {
                   <p className={`text-xs mt-1 ${
                     message.isFromMe ? "text-blue-100" : "text-muted-foreground"
                   }`}>
-                    {new Date(message.timestamp).toLocaleTimeString()}
+                    {timeToDate(message.timestamp).toLocaleTimeString()}
                   </p>
                 </div>
                   {message.isFromMe && (
@@ -195,8 +196,8 @@ export function ThreadView() {
           <div className="space-y-1 text-sm">
             {sortedThreadMessages.map((message, index) => {
               const prevMessage = index > 0 ? sortedThreadMessages[index - 1] : null;
-              const timestamp = new Date(message.timestamp);
-              const prevTimestamp = prevMessage ? new Date(prevMessage.timestamp) : null;
+              const timestamp = timeToDate(message.timestamp);
+              const prevTimestamp = prevMessage ? timeToDate(prevMessage.timestamp) : null;
               const timeDiffMinutes = prevTimestamp
                 ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
                 : Infinity;

@@ -562,13 +562,18 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 
 // GetMessagesForConversation returns messages for a given conversation ID.
 func (a *App) GetMessagesForConversation(conversationID string) ([]models.Message, error) {
+	return a.GetMessagesForConversationBefore(conversationID, nil)
+}
+
+// GetMessagesForConversationBefore returns messages for a given conversation ID before a specific timestamp.
+func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTimestamp *time.Time) ([]models.Message, error) {
 	// Use the provider's GetConversationHistory method
-	// Limit to 100 messages by default
+	// Limit to 20 messages by default
 	activeProvider, err := a.providerManager.GetActiveProvider()
 	if err != nil || activeProvider == nil {
 		return nil, fmt.Errorf("no active provider available")
 	}
-	messages, err := activeProvider.GetConversationHistory(conversationID, 100)
+	messages, err := activeProvider.GetConversationHistory(conversationID, 20, beforeTimestamp)
 	if err != nil {
 		return nil, err
 	}

@@ -2609,7 +2609,7 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.
-func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit int) ([]models.Message, error) {
+func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
 	if conversationID == "" {
 		return []models.Message{}, fmt.Errorf("conversation ID is required")
 	}
@@ -2621,58 +2621,95 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 	}
 	isGroup := chatJID.Server == types.GroupServer
 
-	// First check in-memory cache
-	w.mu.RLock()
-	messages, ok := w.conversationMessages[conversationID]
-	w.mu.RUnlock()
+	// Default limit to 20 if not specified
+	if limit <= 0 {
+		limit = 20
+	}
 
-	if !ok || len(messages) == 0 {
-		// If not in cache, try to load from database
-		if db.DB != nil {
-			var dbMessages []models.Message
-			query := db.DB.Where("protocol_conv_id = ?", conversationID).
-				Order("timestamp ASC")
-			if limit > 0 {
-				query = query.Limit(limit)
+	// If not in cache or beforeTimestamp is specified, load from database
+	if beforeTimestamp != nil || db.DB != nil {
+		var dbMessages []models.Message
+		query := db.DB.Where("protocol_conv_id = ?", conversationID)
+
+		// If beforeTimestamp is specified, only get messages before that timestamp
+		if beforeTimestamp != nil {
+			query = query.Where("timestamp < ?", *beforeTimestamp)
+		}
+
+		// Order by timestamp descending to get newest first, then reverse
+		query = query.Order("timestamp DESC").Limit(limit)
+
+		if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
+			// Reverse to get oldest first
+			for i, j := 0, len(dbMessages)-1; i < j; i, j = i+1, j-1 {
+				dbMessages[i], dbMessages[j] = dbMessages[j], dbMessages[i]
 			}
-			if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
-				// Enrich messages with sender names and avatars
-				w.enrichMessagesWithSenderInfo(dbMessages, chatJID, isGroup)
 
-				// Load into cache for future use
+			// Enrich messages with sender names and avatars
+			w.enrichMessagesWithSenderInfo(dbMessages, chatJID, isGroup)
+
+			// If beforeTimestamp is nil (initial load), update cache
+			if beforeTimestamp == nil {
 				w.mu.Lock()
 				if w.conversationMessages == nil {
 					w.conversationMessages = make(map[string][]models.Message)
 				}
-				w.conversationMessages[conversationID] = dbMessages
+				// Merge with existing cache, avoiding duplicates
+				existing := w.conversationMessages[conversationID]
+				existingMap := make(map[string]bool)
+				for _, msg := range existing {
+					existingMap[msg.ProtocolMsgID] = true
+				}
+				for _, msg := range dbMessages {
+					if !existingMap[msg.ProtocolMsgID] {
+						existing = append(existing, msg)
+					}
+				}
+				// Sort by timestamp
+				sort.SliceStable(existing, func(i, j int) bool {
+					return existing[i].Timestamp.Before(existing[j].Timestamp)
+				})
+				w.conversationMessages[conversationID] = existing
 				w.mu.Unlock()
-				messages = dbMessages
-				ok = true
 			}
+
+			return dbMessages, nil
 		}
-	} else {
-		// Even if in cache, ensure messages are enriched (in case they were loaded before enrichment was added)
-		w.enrichMessagesWithSenderInfo(messages, chatJID, isGroup)
 	}
 
-	if !ok || len(messages) == 0 {
-		return []models.Message{}, nil
+	// Fallback to cache if available
+	w.mu.RLock()
+	messages, ok := w.conversationMessages[conversationID]
+	w.mu.RUnlock()
+
+	if ok && len(messages) > 0 {
+		// Filter by beforeTimestamp if specified
+		var filtered []models.Message
+		if beforeTimestamp != nil {
+			for _, msg := range messages {
+				if msg.Timestamp.Before(*beforeTimestamp) {
+					filtered = append(filtered, msg)
+				}
+			}
+		} else {
+			filtered = messages
+		}
+
+		// Take last 'limit' messages
+		start := 0
+		if limit > 0 && len(filtered) > limit {
+			start = len(filtered) - limit
+		}
+
+		result := make([]models.Message, len(filtered)-start)
+		copy(result, filtered[start:])
+
+		// Ensure messages are enriched
+		w.enrichMessagesWithSenderInfo(result, chatJID, isGroup)
+		return result, nil
 	}
 
-	start := 0
-	if limit > 0 && len(messages) > limit {
-		start = len(messages) - limit
-	}
-
-	result := make([]models.Message, len(messages)-start)
-	copy(result, messages[start:])
-	// Ensure result messages are also enriched
-	// Note: enrichMessagesWithSenderInfo may take time if loading avatars,
-	// but it should not block indefinitely
-	fmt.Printf("WhatsApp: GetConversationHistory: Enriching %d messages for conversation %s\n", len(result), conversationID)
-	w.enrichMessagesWithSenderInfo(result, chatJID, isGroup)
-	fmt.Printf("WhatsApp: GetConversationHistory: Enriched %d messages, returning\n", len(result))
-	return result, nil
+	return []models.Message{}, nil
 }
 
 // enrichMessagesWithSenderInfo enriches messages with sender names and avatars.
