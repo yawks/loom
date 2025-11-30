@@ -5,6 +5,7 @@
   "type_a_message": "Type a message...",
   "send": "Send",
   "participants": "Participants",
+  "contact": "Contact",
   "switch_protocol": "Switch to {{protocol}}",
   "loading": "Loading...",
   "disconnect": "Disconnect",
@@ -123,5 +124,11 @@
   "edited": "edited",
   "delete_message": "Delete",
   "delete_message_title": "Delete Message",
-  "delete_message_description": "Are you sure you want to delete this message? This action cannot be undone."
+  "delete_message_description": "Are you sure you want to delete this message? This action cannot be undone.",
+  "status_sent": "Sent",
+  "status_delivered": "Delivered",
+  "status_read": "Read",
+  "status_sent_detail": "Sent",
+  "status_delivered_detail": "Delivered",
+  "status_read_detail": "Read"
 }

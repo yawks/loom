@@ -354,6 +354,45 @@ func (a *App) startEventListener(ctx context.Context) {
 					}
 
 				case core.ReceiptEvent:
+					// Save receipt to database
+					if db.DB != nil {
+						// Find the message by protocol message ID
+						var message models.Message
+						if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", e.MessageID, e.ConversationID).First(&message).Error; err == nil {
+							// Check if receipt already exists
+							var existingReceipt models.MessageReceipt
+							receiptExists := db.DB.Where("message_id = ? AND user_id = ? AND receipt_type = ?", message.ID, e.UserID, string(e.ReceiptType)).First(&existingReceipt).Error == nil
+
+							if !receiptExists {
+								// Create new receipt
+								receipt := models.MessageReceipt{
+									MessageID:   message.ID,
+									UserID:      e.UserID,
+									ReceiptType: string(e.ReceiptType),
+									Timestamp:   time.Unix(e.Timestamp, 0),
+								}
+								if err := db.DB.Create(&receipt).Error; err != nil {
+									log.Printf("Failed to save receipt to database: %v", err)
+								} else {
+									log.Printf("App: Saved receipt to database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
+								}
+							} else {
+								// Update existing receipt timestamp if newer
+								receiptTimestamp := time.Unix(e.Timestamp, 0)
+								if receiptTimestamp.After(existingReceipt.Timestamp) {
+									existingReceipt.Timestamp = receiptTimestamp
+									if err := db.DB.Save(&existingReceipt).Error; err != nil {
+										log.Printf("Failed to update receipt in database: %v", err)
+									} else {
+										log.Printf("App: Updated receipt in database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
+									}
+								}
+							}
+						} else {
+							log.Printf("App: Message not found for receipt: conversation %s, message %s", e.ConversationID, e.MessageID)
+						}
+					}
+
 					// Serialize the receipt to JSON
 					receiptJSON, err := json.Marshal(e)
 					if err != nil {
@@ -589,6 +628,48 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 	}
 
 	return messages, nil
+}
+
+// GetGroupParticipants returns the list of participants in a group conversation.
+func (a *App) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
+	activeProvider, err := a.providerManager.GetActiveProvider()
+	if err != nil || activeProvider == nil {
+		return nil, fmt.Errorf("no active provider available")
+	}
+	participants, err := activeProvider.GetGroupParticipants(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return participants, nil
+}
+
+// GetParticipantNames returns the display names for a list of participant IDs.
+// This uses the provider's contact resolution to get proper names for group members.
+func (a *App) GetParticipantNames(participantIDs []string) (map[string]string, error) {
+	activeProvider, err := a.providerManager.GetActiveProvider()
+	if err != nil || activeProvider == nil {
+		return nil, fmt.Errorf("no active provider available")
+	}
+
+	// Check if provider has a GetContactName method (for WhatsApp)
+	type ContactNameProvider interface {
+		GetContactName(contactID string) (string, error)
+	}
+
+	if cnp, ok := activeProvider.(ContactNameProvider); ok {
+		names := make(map[string]string)
+		for _, id := range participantIDs {
+			name, err := cnp.GetContactName(id)
+			if err == nil && name != "" {
+				names[id] = name
+			} else {
+				fmt.Printf("GetParticipantNames: failed to get name for %s: %v\n", id, err)
+			}
+		}
+		return names, nil
+	}
+
+	return make(map[string]string), nil
 }
 
 // SendMessage sends a text message.

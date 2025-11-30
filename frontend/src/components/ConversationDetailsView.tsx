@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetContactAliases, GetMessagesForConversation, SendFile, SetContactAlias } from "../../wailsjs/go/main/App";
+import { GetContactAliases, GetGroupParticipants, GetMessagesForConversation, GetParticipantNames, SendFile, SetContactAlias } from "../../wailsjs/go/main/App";
+import { cn, timeToDate } from "@/lib/utils";
 import { useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -7,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
-import { cn, timeToDate } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { translateBackendMessage } from "@/lib/i18n-helpers";
 import { useAppStore } from "@/lib/store";
@@ -73,26 +73,29 @@ function getSenderDisplayName(
   if (senderName && senderName.trim().length > 0) {
     return senderName;
   }
+  // Robust handling: extract local part from various WhatsApp ID formats
+  // Supports: "33603018166@s.whatsapp.net", "186560595132538:6@lid", "187119343554767:7@lid"
+  let phoneNumber: string | null = null;
   
-  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
-  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    // Format phone number with spaces for readability
-    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French phone number format: +33 followed by 9 digits (without leading 0)
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
-      return formatted;
-    } else {
-      // Other formats: add spaces every 2 digits
-      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
-      return `+${formatted}`;
-    }
+  // Match "digits" optionally followed by ":digits@server"
+  const match = senderId.match(/^(\d+)(?::\d+)?@/);
+  if (match) {
+    phoneNumber = match[1];
   }
   
-  // Fallback for other ID formats
+  if (phoneNumber) {
+    // If this looks like a French number (starts with 33 and 11 digits) format nicely
+    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
+      const countryCode = phoneNumber.substring(0, 2); // "33"
+      const rest = phoneNumber.substring(2); // 9 digits
+      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
+      return formatted;
+    }
+    // For other numeric local parts, return with a leading + and no odd grouping
+    return `+${phoneNumber}`;
+  }
+
+  // Fallback for other ID formats: try to return a readable label
   return senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
@@ -102,8 +105,10 @@ function getSenderDisplayName(
     .join(" ");
 }
 
-const fetchMessages = async (conversationID: string) => {
-  return GetMessagesForConversation(conversationID);
+const fetchMessages = async (conversationID: string): Promise<models.Message[]> => {
+  const result = await GetMessagesForConversation(conversationID);
+  // Ensure we always return an array
+  return Array.isArray(result) ? result : [];
 };
 
 interface ConversationDetailsViewProps {
@@ -126,10 +131,20 @@ export function ConversationDetailsView({
 
   const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
-  const { data: messages } = useSuspenseQuery<models.Message[], Error>({
-    queryKey: ["messages", conversationId],
+  
+  // Use a different query key to avoid conflicts with MessageList's useInfiniteQuery
+  const { data: messagesData } = useSuspenseQuery<models.Message[], Error>({
+    queryKey: ["messages-details", conversationId],
     queryFn: () => fetchMessages(conversationId),
   });
+  
+  // Ensure messages is always an array
+  const messages = useMemo(() => {
+    if (!messagesData || !Array.isArray(messagesData)) {
+      return [];
+    }
+    return messagesData;
+  }, [messagesData]);
 
   const { data: aliases = {} } = useQuery<Record<string, string>, Error>({
     queryKey: ["contactAliases"],
@@ -137,6 +152,31 @@ export function ConversationDetailsView({
       const aliasMap = await GetContactAliases();
       return aliasMap || {};
     },
+  });
+
+  // Query for group participants from the provider
+  const { data: groupParticipantsData = [] } = useQuery<models.GroupParticipant[], Error>({
+    queryKey: ["groupParticipants", conversationId],
+    queryFn: () => GetGroupParticipants(conversationId),
+    enabled: !!conversationId,
+  });
+
+  // Get participant names from the provider (contacts)
+  const { data: participantNames = {} } = useQuery<Record<string, string>, Error>({
+    queryKey: ["participantNames", conversationId],
+    queryFn: async () => {
+      if (!groupParticipantsData || groupParticipantsData.length === 0) {
+        return {};
+      }
+      const ids = groupParticipantsData.map((p) => p.userId);
+      try {
+        return await GetParticipantNames(ids);
+      } catch (err) {
+        console.error("Failed to get participant names:", err);
+        return {};
+      }
+    },
+    enabled: !!conversationId && groupParticipantsData.length > 0,
   });
 
   // Extract unique participants from messages
@@ -149,29 +189,101 @@ export function ConversationDetailsView({
         senderAvatarUrl: string | undefined;
         isFromMe: boolean;
         lastMessageTime: Date;
+        isAdmin?: boolean;
+        joinedAt?: Date;
       }
     >();
 
-    messages.forEach((msg) => {
-      const existing = participantMap.get(msg.senderId);
-      const msgTime = timeToDate(msg.timestamp);
-      
-      if (!existing || msgTime > existing.lastMessageTime) {
-        participantMap.set(msg.senderId, {
-          senderId: msg.senderId,
-          senderName: msg.senderName,
-          senderAvatarUrl: msg.senderAvatarUrl,
-          isFromMe: msg.isFromMe,
-          lastMessageTime: msgTime,
-        });
+    // Determine the current user's ID by finding messages marked as isFromMe
+    let currentUserId: string | undefined;
+    if (messages && Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (msg.isFromMe && msg.senderId) {
+          currentUserId = msg.senderId;
+          break;
+        }
       }
-    });
+    }
+
+    // First, add participants from the provider (group participants)
+    if (groupParticipantsData && Array.isArray(groupParticipantsData)) {
+      groupParticipantsData.forEach((participant) => {
+        if (!participantMap.has(participant.userId)) {
+          const joinedAtDate = participant.joinedAt ? timeToDate(participant.joinedAt) : new Date();
+          // Use the provider's contact name first (from GetParticipantNames)
+          const providerName = participantNames[participant.userId];
+          participantMap.set(participant.userId, {
+            senderId: participant.userId,
+            senderName: providerName || undefined, // Will be populated from messages or aliases if not found
+            senderAvatarUrl: undefined,
+            isFromMe: currentUserId ? participant.userId === currentUserId : false,
+            lastMessageTime: joinedAtDate,
+            isAdmin: participant.isAdmin,
+            joinedAt: joinedAtDate,
+          });
+        } else {
+          // Update with provider info
+          const existing = participantMap.get(participant.userId);
+          if (existing) {
+            existing.isAdmin = participant.isAdmin;
+            existing.joinedAt = participant.joinedAt ? timeToDate(participant.joinedAt) : new Date();
+            // Use provider name if not already set
+            if (!existing.senderName) {
+              existing.senderName = participantNames[participant.userId];
+            }
+            // Ensure isFromMe is correctly set based on currentUserId
+            existing.isFromMe = currentUserId ? participant.userId === currentUserId : false;
+          }
+        }
+      });
+    }
+
+    // Ensure messages is an array before iterating
+    if (messages && Array.isArray(messages)) {
+      messages.forEach((msg) => {
+        // Skip messages from senders with malformed IDs (e.g., "186560595132538:6@lid")
+        // These are internal WhatsApp metadata, not real participants
+        if (/:\d+@/.test(msg.senderId)) {
+          return; // Skip this sender
+        }
+        
+        const existing = participantMap.get(msg.senderId);
+        const msgTime = timeToDate(msg.timestamp);
+        
+        if (!existing) {
+          participantMap.set(msg.senderId, {
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+            senderAvatarUrl: msg.senderAvatarUrl,
+            isFromMe: msg.isFromMe && msg.senderId === currentUserId,
+            lastMessageTime: msgTime,
+          });
+        } else {
+          // Update with message info (name, avatar) BUT don't override provider names
+          // Only use message name if we don't have a provider name already
+          if (!existing.senderName && msg.senderName) {
+            existing.senderName = msg.senderName;
+          }
+          if (msg.senderAvatarUrl) {
+            existing.senderAvatarUrl = msg.senderAvatarUrl;
+          }
+          // Update last message time if newer
+          if (msgTime > existing.lastMessageTime) {
+            existing.lastMessageTime = msgTime;
+          }
+          // Update isFromMe based on currentUserId
+          if (currentUserId) {
+            existing.isFromMe = msg.senderId === currentUserId;
+          }
+        }
+      });
+    }
 
     return Array.from(participantMap.values()).sort((a, b) => {
       // Sort by last message time, most recent first
       return b.lastMessageTime.getTime() - a.lastMessageTime.getTime();
     });
-  }, [messages]);
+  }, [messages, groupParticipantsData, participantNames]);
 
   const handleClose = () => {
     setShowConversationDetails(false);
@@ -188,10 +300,17 @@ export function ConversationDetailsView({
     senderId: string,
     isFromMe: boolean
   ): string => {
-    // Check if there's a custom alias
+    // Check if there's a custom alias first
     if (aliases[senderId]) {
       return aliases[senderId];
     }
+    
+    // Use senderName if available, otherwise format the ID
+    if (senderName && senderName.trim().length > 0) {
+      return senderName;
+    }
+    
+    // Fall back to formatting the ID itself
     return getSenderDisplayName(senderName, senderId, isFromMe, t);
   };
 
@@ -258,10 +377,10 @@ export function ConversationDetailsView({
     if (files.length === 0) {
       // Only file paths, no File objects
       queryClient.invalidateQueries({
-        queryKey: ["messages", convId],
+        queryKey: ["messages-details", convId],
       });
       queryClient.refetchQueries({
-        queryKey: ["messages", convId],
+        queryKey: ["messages-details", convId],
       });
       return;
     }
@@ -405,10 +524,10 @@ export function ConversationDetailsView({
 
     // Invalidate and refetch messages after sending
     queryClient.invalidateQueries({
-      queryKey: ["messages", convId],
+      queryKey: ["messages-details", convId],
     });
     queryClient.refetchQueries({
-      queryKey: ["messages", convId],
+      queryKey: ["messages-details", convId],
     });
   };
 
@@ -483,6 +602,8 @@ interface ParticipantItemProps {
     senderName: string | undefined;
     senderAvatarUrl: string | undefined;
     isFromMe: boolean;
+    isAdmin?: boolean;
+    joinedAt?: Date;
   };
   displayName: string;
   status: string;
@@ -540,6 +661,11 @@ function ParticipantItem({
           <div className="flex items-center gap-2">
             <p className="font-medium text-sm truncate">{displayName}</p>
             <span className="text-xs text-muted-foreground">({t("you")})</span>
+            {participant.isAdmin && (
+              <span className="text-xs bg-blue-600/20 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
+                {t("admin")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-1">
             <span
@@ -610,6 +736,11 @@ function ParticipantItem({
             {alias && (
               <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
                 ({t("custom")})
+              </span>
+            )}
+            {participant.isAdmin && (
+              <span className="text-xs bg-blue-600/20 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
+                {t("admin")}
               </span>
             )}
           </div>

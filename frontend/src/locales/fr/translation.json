@@ -5,6 +5,7 @@
   "type_a_message": "Écrivez un message...",
   "send": "Envoyer",
   "participants": "Participants",
+  "contact": "Contact",
   "switch_protocol": "Passer à {{protocol}}",
   "loading": "Chargement...",
   "disconnect": "Déconnecter",
@@ -123,5 +124,11 @@
   "edited": "modifié",
   "delete_message": "Supprimer",
   "delete_message_title": "Supprimer le message",
-  "delete_message_description": "Êtes-vous sûr de vouloir supprimer ce message ? Cette action est irréversible."
+  "delete_message_description": "Êtes-vous sûr de vouloir supprimer ce message ? Cette action est irréversible.",
+  "status_sent": "Envoyé",
+  "status_delivered": "Livré",
+  "status_read": "Lu",
+  "status_sent_detail": "Envoyé",
+  "status_delivered_detail": "Livré",
+  "status_read_detail": "Lu"
 }

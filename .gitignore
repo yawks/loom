@@ -125,3 +125,7 @@ __debug_bin
 # User config directory (contains databases and WhatsApp session)
 # Note: This is typically in ~/Library/Application Support/Loom/ on macOS
 # but we ignore any local config files that might be in the repo
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
