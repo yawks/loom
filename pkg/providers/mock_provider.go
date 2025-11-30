@@ -743,6 +743,23 @@ func (m *MockProvider) GetGroupParticipants(conversationID string) ([]models.Gro
 	return participants, nil
 }
 
+// GetContactName retrieves the display name for a contact ID.
+func (m *MockProvider) GetContactName(contactID string) (string, error) {
+	// Look up in contacts list
+	for _, contact := range m.contacts {
+		if contact.UserID == contactID {
+			if contact.Username != "" {
+				return contact.Username, nil
+			}
+			// Fallback to UserID if no username
+			return contactID, nil
+		}
+	}
+
+	// If not found, return the contactID as fallback
+	return contactID, nil
+}
+
 // --- Invite Links ---
 
 // CreateGroupInviteLink creates an invite link for a group.

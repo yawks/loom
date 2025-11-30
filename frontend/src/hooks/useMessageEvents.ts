@@ -1,9 +1,10 @@
-import { useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import type { models } from "../../wailsjs/go/models";
+import type { InfiniteData } from "@tanstack/react-query";
+import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { useEffect } from "react";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface ReceiptEvent {
   ConversationID: string;
@@ -138,34 +139,96 @@ export function useMessageEvents() {
           userId: receipt.UserID,
         });
 
-        // Only handle read receipts (not delivery receipts)
+        // Handle both read and delivery receipts
+        console.log("useMessageEvents: Processing receipt for message", receipt.MessageID);
+        console.log("useMessageEvents: Conversation ID:", receipt.ConversationID);
+        console.log("useMessageEvents: Receipt type:", receipt.ReceiptType);
+        
         if (receipt.ReceiptType === "read") {
-          console.log("useMessageEvents: Processing read receipt for message", receipt.MessageID);
-          console.log("useMessageEvents: Conversation ID:", receipt.ConversationID);
-          console.log("useMessageEvents: Message ID from receipt:", receipt.MessageID);
           markAsReadByProtocolId(receipt.ConversationID, receipt.MessageID);
-          console.log("useMessageEvents: Called markAsReadByProtocolId with conversationId:", receipt.ConversationID, "messageId:", receipt.MessageID);
-
-          // Invalidate queries to update UI
-          queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
-          queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-          
-          // If this receipt is for the currently selected conversation, also update messages
-          if (selectedContact) {
-            const conversationId = selectedContact.linkedAccounts[0]?.userId;
-            if (receipt.ConversationID === conversationId && conversationId) {
-              queryClient.invalidateQueries({
-                queryKey: ["messages", conversationId],
-              });
-              queryClient.refetchQueries({
-                queryKey: ["messages", conversationId],
-              });
-              console.log("useMessageEvents: Updated messages for selected conversation");
-            }
-          }
-        } else {
-          console.log("useMessageEvents: Ignoring delivery receipt (only handling read receipts)");
         }
+
+        // Update messages cache directly without refetching to avoid scroll
+        if (selectedContact) {
+          const conversationId = selectedContact.linkedAccounts[0]?.userId;
+          if (receipt.ConversationID === conversationId && conversationId) {
+            // Update the message in the cache directly
+            // Note: useInfiniteQuery uses InfiniteData structure { pages: [...], pageParams: [...] }
+            queryClient.setQueryData<InfiniteData<models.Message[]>>(
+              ["messages", conversationId],
+              (oldData) => {
+                if (!oldData) {
+                  return { pages: [], pageParams: [] };
+                }
+                if (!oldData.pages || !Array.isArray(oldData.pages)) {
+                  return oldData;
+                }
+                
+                // Update each page
+                const updatedPages = oldData.pages.map((page) => {
+                  if (!Array.isArray(page)) return page;
+                  
+                  return page.map((msg) => {
+                    // Find message by protocolMsgId
+                    if (msg.protocolMsgId === receipt.MessageID) {
+                      // Check if receipt already exists
+                      const existingReceipt = msg.receipts?.find(
+                        (r) => r.userId === receipt.UserID && r.receiptType === receipt.ReceiptType
+                      );
+                      
+                      if (!existingReceipt) {
+                        // Add new receipt - create a new MessageReceipt instance
+                        const receiptTimestamp = new Date(receipt.Timestamp * 1000);
+                        const newReceipt = models.MessageReceipt.createFrom({
+                          id: 0, // Will be set by backend
+                          messageId: msg.id,
+                          userId: receipt.UserID,
+                          receiptType: receipt.ReceiptType,
+                          timestamp: receiptTimestamp.toISOString(),
+                          createdAt: new Date().toISOString(),
+                          updatedAt: new Date().toISOString(),
+                        });
+                        
+                        return models.Message.createFrom({
+                          ...msg,
+                          receipts: [...(msg.receipts || []), newReceipt],
+                        });
+                      } else {
+                        // Update existing receipt timestamp if newer
+                        const receiptTimestamp = new Date(receipt.Timestamp * 1000);
+                        const existingTimestamp = new Date(String(existingReceipt.timestamp));
+                        if (receiptTimestamp > existingTimestamp) {
+                          const updatedReceipts = msg.receipts?.map((r) =>
+                            r.userId === receipt.UserID && r.receiptType === receipt.ReceiptType
+                              ? models.MessageReceipt.createFrom({
+                                  ...r,
+                                  timestamp: receiptTimestamp.toISOString(),
+                                })
+                              : r
+                          );
+                          return models.Message.createFrom({
+                            ...msg,
+                            receipts: updatedReceipts,
+                          });
+                        }
+                      }
+                    }
+                    return msg;
+                  });
+                });
+                
+                return {
+                  ...oldData,
+                  pages: updatedPages,
+                };
+              }
+            );
+            console.log("useMessageEvents: Updated messages cache for selected conversation");
+          }
+        }
+        
+        // Invalidate metaContacts to update unread counts
+        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
       } catch (error) {
         console.error("useMessageEvents: Failed to parse receipt event:", error);
       }

@@ -22,6 +22,7 @@ import type { KeyboardEvent } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
+import { MessageStatus } from "./MessageStatus";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -134,11 +135,17 @@ function getSenderDisplayName(
 }
 
 // Wrapper function to use Wails with React Query's infinite query
-const fetchMessages = async (conversationID: string, beforeTimestamp?: Date) => {
-  if (beforeTimestamp) {
-    return GetMessagesForConversationBefore(conversationID, beforeTimestamp);
+const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
+  try {
+    const result = beforeTimestamp
+      ? await GetMessagesForConversationBefore(conversationID, beforeTimestamp)
+      : await GetMessagesForConversation(conversationID);
+    // Ensure we always return an array
+    return Array.isArray(result) ? result : [];
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return [];
   }
-  return GetMessagesForConversation(conversationID);
 };
 
 const getMessageDomId = (message: models.Message): string => {
@@ -236,6 +243,7 @@ export function MessageList({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
+  
   const {
     data,
     fetchNextPage,
@@ -248,11 +256,29 @@ export function MessageList({
       const beforeTimestamp = pageParam ? new Date(pageParam as string) : undefined;
       return fetchMessages(conversationId, beforeTimestamp);
     },
+    enabled: !!conversationId,
+    initialData: { pages: [], pageParams: [] },
+    placeholderData: (previousData) => {
+      if (previousData && previousData.pages && Array.isArray(previousData.pages)) {
+        return previousData;
+      }
+      return { pages: [], pageParams: [] };
+    },
+    structuralSharing: (oldData, newData) => {
+      // Ensure we always return a valid structure
+      if (!newData || typeof newData !== 'object' || !('pages' in newData) || !Array.isArray((newData as { pages: unknown }).pages)) {
+        return oldData || { pages: [], pageParams: [] };
+      }
+      return newData;
+    },
     getNextPageParam: (lastPage, allPages) => {
-      if (!lastPage || lastPage.length === 0) {
+      if (!lastPage || !Array.isArray(lastPage) || lastPage.length === 0) {
         return undefined;
       }
       // Get the oldest message timestamp from all loaded pages
+      if (!allPages || !Array.isArray(allPages)) {
+        return undefined;
+      }
       const allMessages = allPages.flat();
       if (allMessages.length === 0) {
         return undefined;
@@ -270,9 +296,27 @@ export function MessageList({
 
   // Flatten all pages into a single array
   const messages = useMemo(() => {
-    if (!data?.pages) return [];
-    return data.pages.flat();
+    // Ensure data exists and has pages property
+    if (!data) return [];
+    if (!data.pages || !Array.isArray(data.pages)) return [];
+    // Filter out any null/undefined pages and flat
+    return data.pages.filter((page) => Array.isArray(page)).flat();
   }, [data]);
+
+  // Determine if this is a group conversation
+  // For WhatsApp, groups have "@g.us" in the conversation ID
+  // For other providers, we can check if there are multiple unique senders
+  const isGroupConversation = useMemo(() => {
+    if (conversationId.includes("@g.us")) {
+      return true; // WhatsApp group
+    }
+    // Check if there are multiple unique senders in the messages
+    if (messages.length > 0) {
+      const uniqueSenders = new Set(messages.map((m) => m.senderId));
+      return uniqueSenders.size > 2; // More than 2 (me + at least 2 others)
+    }
+    return false;
+  }, [conversationId, messages]);
 
   // Track scroll height and position before messages change (for infinite scroll)
   useLayoutEffect(() => {
@@ -359,7 +403,6 @@ export function MessageList({
     
     const currentScrollHeight = container.scrollHeight;
     const previousScrollHeight = previousScrollHeightRef.current;
-    const currentScrollTop = container.scrollTop;
     const loadingBarHeight = loadingBarHeightRef.current;
     
     // If we just finished loading (loading bar was replaced by real messages)
@@ -1616,6 +1659,12 @@ export function MessageList({
                             {t("edited")}
                           </span>
                         )}
+                        <MessageStatus
+                          message={message}
+                          isGroup={isGroupConversation}
+                          allMessages={mainMessages}
+                          layout="bubble"
+                        />
                       </div>
                       {message.isFromMe && (
                         <div className="flex flex-col items-center shrink-0">
@@ -1857,19 +1906,20 @@ export function MessageList({
                           {displayName}
                         </span>
                       )}
-                      <div className="w-full rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
-                        {!isDeleted && editingMessageId !== messageId && (
-                          <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
-                            <MessageActions
-                              isFromMe={message.isFromMe}
-                              hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
-                              onEdit={() => handleEditMessage(message)}
-                              onDelete={() => handleDeleteClick(message)}
-                              messageId={messageId}
-                              openActionsMessageId={openActionsMessageId}
-                            />
-                          </div>
-                        )}
+                      <div className="w-full flex items-start gap-2">
+                        <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
+                          {!isDeleted && editingMessageId !== messageId && (
+                            <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                              <MessageActions
+                                isFromMe={message.isFromMe}
+                                hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                onEdit={() => handleEditMessage(message)}
+                                onDelete={() => handleDeleteClick(message)}
+                                messageId={messageId}
+                                openActionsMessageId={openActionsMessageId}
+                              />
+                            </div>
+                          )}
                         {showDeletedPlaceholder ? (
                           <div className="flex flex-col gap-1">
                             <div
@@ -1989,6 +2039,15 @@ export function MessageList({
                               )}
                             </div>
                           </>
+                        )}
+                        </div>
+                        {message.isFromMe && (
+                          <MessageStatus
+                            message={message}
+                            isGroup={isGroupConversation}
+                            allMessages={mainMessages}
+                            layout="irc"
+                          />
                         )}
                       </div>
                       {isUnread && (

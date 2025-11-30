@@ -97,37 +97,142 @@ func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message st
 	}
 }
 
+// formatPhoneNumber formats a phone number string by grouping digits 2 by 2
+// Handles French numbers with +33 prefix (10 digits after +33)
+// Example: "33612345678" -> "+33 6 12 34 56 78"
+// Example: "0122334455" -> "01 22 33 44 55"
+func formatPhoneNumber(phoneNumber string) string {
+	// Remove @s.whatsapp.net suffix if present
+	cleaned := phoneNumber
+	if strings.Contains(cleaned, "@s.whatsapp.net") {
+		cleaned = strings.Split(cleaned, "@s.whatsapp.net")[0]
+	}
+
+	// Extract all digits
+	digits := ""
+	for _, r := range cleaned {
+		if r >= '0' && r <= '9' {
+			digits += string(r)
+		}
+	}
+
+	if len(digits) == 0 {
+		return phoneNumber
+	}
+
+	// Handle French numbers with +33 prefix
+	// French numbers: +33 followed by 9 digits (without leading 0)
+	// Format: +33 X XX XX XX XX
+	if len(digits) >= 11 && digits[:2] == "33" {
+		// Check if it's a valid French number (33 + 9 digits = 11 total)
+		if len(digits) == 11 {
+			countryCode := digits[:2]
+			rest := digits[2:]
+			// Format as +33 X XX XX XX XX
+			formatted := "+" + countryCode + " " + rest[:1] + " " + rest[1:3] + " " + rest[3:5] + " " + rest[5:7] + " " + rest[7:]
+			return formatted
+		}
+		// If longer, might be international format, format 2 by 2
+	}
+
+	// For other numbers, format 2 digits at a time
+	formatted := ""
+	for i := 0; i < len(digits); i += 2 {
+		if i > 0 {
+			formatted += " "
+		}
+		if i+2 <= len(digits) {
+			formatted += digits[i : i+2]
+		} else {
+			formatted += digits[i:]
+		}
+	}
+
+	return formatted
+}
+
+// isPhoneNumber checks if a string is just a phone number (mostly digits)
+func isPhoneNumber(str string) bool {
+	if str == "" {
+		return false
+	}
+	// Remove spaces and common phone formatting characters
+	cleaned := strings.ReplaceAll(str, " ", "")
+	cleaned = strings.ReplaceAll(cleaned, "-", "")
+	cleaned = strings.ReplaceAll(cleaned, "(", "")
+	cleaned = strings.ReplaceAll(cleaned, ")", "")
+	cleaned = strings.ReplaceAll(cleaned, "+", "")
+
+	// Count digits
+	digitCount := 0
+	for _, r := range cleaned {
+		if r >= '0' && r <= '9' {
+			digitCount++
+		}
+	}
+
+	// Consider it a phone number if at least 8 digits and mostly digits
+	return digitCount >= 8 && float64(digitCount)/float64(len(cleaned)) > 0.7
+}
+
 func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) string {
-	if fallback != "" && fallback != jid.String() {
+	// Check fallback first, but only if it's not just a phone number
+	if fallback != "" && fallback != jid.String() && !isPhoneNumber(fallback) {
 		return fallback
 	}
 
 	if jid.Server == types.GroupServer {
 		w.mu.RLock()
-		if name, ok := w.knownGroups[jid.String()]; ok && name != "" {
+		if name, ok := w.knownGroups[jid.String()]; ok && name != "" && !isPhoneNumber(name) {
 			w.mu.RUnlock()
 			return name
 		}
 		w.mu.RUnlock()
 	}
 
+	// Try to get contact from store first
 	if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && !jid.IsEmpty() {
 		if contact, err := w.client.Store.Contacts.GetContact(w.ctx, jid); err == nil && contact.Found {
+			// Only return names that are not phone numbers
 			switch {
-			case contact.FullName != "":
+			case contact.FullName != "" && !isPhoneNumber(contact.FullName):
 				return contact.FullName
-			case contact.FirstName != "":
+			case contact.FirstName != "" && !isPhoneNumber(contact.FirstName):
 				return contact.FirstName
-			case contact.PushName != "":
+			case contact.PushName != "" && !isPhoneNumber(contact.PushName):
 				return contact.PushName
-			case contact.BusinessName != "":
+			case contact.BusinessName != "" && !isPhoneNumber(contact.BusinessName):
 				return contact.BusinessName
 			}
 		}
 	}
 
-	if fallback != "" {
+	// Check fallback again (even if it's a phone number, we'll format it properly)
+	if fallback != "" && fallback != jid.String() {
+		// If fallback is a phone number, format it
+		if isPhoneNumber(fallback) {
+			return formatPhoneNumber(fallback)
+		}
 		return fallback
+	}
+
+	// If still no name found, format the phone number from JID
+	if !jid.IsEmpty() && jid.Server != types.GroupServer {
+		// Extract phone number from JID (e.g., "33683896446@s.whatsapp.net" -> "33683896446")
+		jidStr := jid.String()
+		// Handle WhatsApp JID format specifically
+		if strings.Contains(jidStr, "@s.whatsapp.net") {
+			phonePart := strings.Split(jidStr, "@s.whatsapp.net")[0]
+			// Format phone number 2 by 2
+			return formatPhoneNumber(phonePart)
+		}
+		// Fallback: extract part before any @
+		if strings.Contains(jidStr, "@") {
+			phonePart := strings.Split(jidStr, "@")[0]
+			// Format phone number 2 by 2
+			return formatPhoneNumber(phonePart)
+		}
+		return formatPhoneNumber(jidStr)
 	}
 
 	if !jid.IsEmpty() {
@@ -139,6 +244,74 @@ func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) str
 
 func (w *WhatsAppProvider) lookupSenderName(jid types.JID) string {
 	return w.lookupDisplayName(jid, "")
+}
+
+// GetContactName retrieves the display name for a contact ID (JID).
+// This follows whatsmeow best practices by checking:
+// 1. Contact store (FullName, FirstName, PushName, BusinessName)
+// 2. Known groups cache for group names
+// IMPORTANT: Does NOT return formatted phone numbers - only actual contact names
+func (w *WhatsAppProvider) GetContactName(contactID string) (string, error) {
+	fmt.Printf("WhatsApp: GetContactName called with ID: '%s'\n", contactID)
+	// Parse the contact ID as a JID
+	jid, err := types.ParseJID(contactID)
+	if err != nil {
+		fmt.Printf("WhatsApp: GetContactName(%s) - failed to parse JID: %v\n", contactID, err)
+		return "", fmt.Errorf("invalid contact ID: %w", err)
+	}
+
+	if jid.IsEmpty() {
+		fmt.Printf("WhatsApp: GetContactName(%s) - empty JID\n", contactID)
+		return "", fmt.Errorf("empty JID")
+	}
+
+	// Try to get contact from store first
+	if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && !jid.IsEmpty() {
+		if contact, err := w.client.Store.Contacts.GetContact(w.ctx, jid); err == nil && contact.Found {
+			// Only return actual names, not phone numbers
+			if contact.FullName != "" && !isPhoneNumber(contact.FullName) {
+				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (FullName)\n", contactID, contact.FullName)
+				return contact.FullName, nil
+			}
+			if contact.FirstName != "" && !isPhoneNumber(contact.FirstName) {
+				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (FirstName)\n", contactID, contact.FirstName)
+				return contact.FirstName, nil
+			}
+			if contact.PushName != "" && !isPhoneNumber(contact.PushName) {
+				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (PushName)\n", contactID, contact.PushName)
+				return contact.PushName, nil
+			}
+			if contact.BusinessName != "" && !isPhoneNumber(contact.BusinessName) {
+				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (BusinessName)\n", contactID, contact.BusinessName)
+				return contact.BusinessName, nil
+			}
+			fmt.Printf("WhatsApp: GetContactName(%s) - contact found but all names are phone numbers (FullName='%s', FirstName='%s', PushName='%s', BusinessName='%s')\n",
+				contactID, contact.FullName, contact.FirstName, contact.PushName, contact.BusinessName)
+		} else {
+			found := false
+			if err == nil {
+				found = contact.Found
+			}
+			fmt.Printf("WhatsApp: GetContactName(%s) - contact not found in store (found=%v, err=%v)\n", contactID, found, err)
+		}
+	} else {
+		fmt.Printf("WhatsApp: GetContactName(%s) - store not available (client=%v, store=%v)\n", contactID, w.client != nil, w.client != nil && w.client.Store != nil)
+	}
+
+	// Check known groups for group names
+	if jid.Server == types.GroupServer {
+		w.mu.RLock()
+		if name, ok := w.knownGroups[jid.String()]; ok && name != "" && !isPhoneNumber(name) {
+			w.mu.RUnlock()
+			fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (GroupName)\n", contactID, name)
+			return name, nil
+		}
+		w.mu.RUnlock()
+	}
+
+	// No actual contact name found - return error instead of a formatted phone number
+	fmt.Printf("WhatsApp: GetContactName(%s) - no actual name found, returning error\n", contactID)
+	return "", fmt.Errorf("no contact name found for %s", contactID)
 }
 
 // getProfilePictureURL retrieves the profile picture URL for a given JID.
@@ -1083,7 +1256,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// If not found in cache, check database
 		if existingMsg == nil && db.DB != nil {
 			var dbMsg models.Message
-			if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+			if err := db.DB.Preload("Receipts").Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
 				existingMsg = &dbMsg
 				fmt.Printf("WhatsApp: Found existing message %s in database\n", msgID)
 				// Also add to cache if we found it in DB
@@ -1715,33 +1888,61 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 	// Get sender ID
 	senderID := evt.Info.Sender.String()
 
+	// If sender is a LID (Linked Device ID) in a group, convert to phone number
+	// This ensures consistency with GetGroupParticipants which uses phone numbers
+	if chatJID.Server == types.GroupServer && evt.Info.Sender.Server == "lid" {
+		w.mu.RLock()
+		groupParticipants, hasGroup := w.groupParticipants[chatJID.String()]
+		w.mu.RUnlock()
+
+		if hasGroup {
+			fmt.Printf("WhatsApp: Looking for sender LID %v in group %s\n", evt.Info.Sender, chatJID.String())
+			fmt.Printf("WhatsApp: Available LIDs in group: %v\n", func() []string {
+				var lids []string
+				for lid := range groupParticipants {
+					lids = append(lids, lid.String())
+				}
+				return lids
+			}())
+
+			if phoneNumber, ok := groupParticipants[evt.Info.Sender]; ok {
+				senderID = phoneNumber
+				fmt.Printf("WhatsApp: Converted sender LID %s to phone number %s\n", evt.Info.Sender.String(), senderID)
+			} else {
+				fmt.Printf("WhatsApp: Sender LID %s not found in group participants\n", evt.Info.Sender.String())
+			}
+		} else {
+			fmt.Printf("WhatsApp: No cached participants for group %s\n", chatJID.String())
+		}
+	}
+
 	// Check if message is from me
 	isFromMe := evt.Info.IsFromMe
 	var senderName string
-	if isFromMe {
-		senderName = "You"
-	} else {
-		// For group messages, use group-aware lookup to handle LID participants
-		if chatJID.Server == types.GroupServer {
-			// Try push name first (most reliable for groups)
-			if evt.Info.PushName != "" {
-				senderName = evt.Info.PushName
-			} else {
-				// Use group-aware lookup to handle LID participants
-				senderName = w.lookupSenderNameInGroup(evt.Info.Sender, chatJID)
-			}
-		} else {
-			// For individual chats, use normal lookup
-			senderName = w.lookupSenderName(evt.Info.Sender)
-		}
-		// If still empty, use push name as fallback
-		if senderName == "" && evt.Info.PushName != "" {
+
+	// Always try to get the actual name, even for messages from me
+	// to avoid creating duplicate contacts with "You" as the name
+	if chatJID.Server == types.GroupServer {
+		// Try push name first (most reliable for groups)
+		if evt.Info.PushName != "" {
 			senderName = evt.Info.PushName
+		} else {
+			// Use group-aware lookup to handle LID participants
+			senderName = w.lookupSenderNameInGroup(evt.Info.Sender, chatJID)
 		}
-		// If still empty, use sender ID as last resort
-		if senderName == "" {
-			senderName = senderID
-		}
+	} else {
+		// For individual chats, use normal lookup
+		senderName = w.lookupSenderName(evt.Info.Sender)
+	}
+
+	// If still empty, use push name as fallback
+	if senderName == "" && evt.Info.PushName != "" {
+		senderName = evt.Info.PushName
+	}
+
+	// If still empty, use sender ID as last resort
+	if senderName == "" {
+		senderName = senderID
 	}
 
 	// Get message text
@@ -2637,7 +2838,8 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 		}
 
 		// Order by timestamp descending to get newest first, then reverse
-		query = query.Order("timestamp DESC").Limit(limit)
+		// Preload receipts to include delivery and read receipts
+		query = query.Preload("Receipts").Order("timestamp DESC").Limit(limit)
 
 		if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
 			// Reverse to get oldest first
@@ -2718,7 +2920,34 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 		return
 	}
 
-	fmt.Printf("WhatsApp: enrichMessagesWithSenderInfo: Processing %d messages\n", len(messages))
+	// Convert LID sender IDs to phone numbers for consistency with GetGroupParticipants
+	if isGroup {
+		w.mu.RLock()
+		groupParticipants, hasGroup := w.groupParticipants[chatJID.String()]
+		w.mu.RUnlock()
+
+		// If not cached, fetch participants to populate cache
+		if !hasGroup {
+			if _, err := w.GetGroupParticipants(chatJID.String()); err == nil {
+				// Try to get participants again after fetch
+				w.mu.RLock()
+				groupParticipants, hasGroup = w.groupParticipants[chatJID.String()]
+				w.mu.RUnlock()
+			}
+		}
+
+		if hasGroup {
+			for i := range messages {
+				msg := &messages[i]
+				senderJID, err := types.ParseJID(msg.SenderID)
+				if err == nil && senderJID.Server == "lid" {
+					if phoneNumber, ok := groupParticipants[senderJID]; ok {
+						msg.SenderID = phoneNumber
+					}
+				}
+			}
+		}
+	}
 
 	for i := range messages {
 		msg := &messages[i]
@@ -2737,7 +2966,16 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 		// Get sender name
 		if msg.SenderName == "" {
 			if msg.IsFromMe {
-				msg.SenderName = "You"
+				// Always try to get the actual name, even for messages from me
+				if isGroup {
+					msg.SenderName = w.lookupSenderNameInGroup(senderJID, chatJID)
+				} else {
+					msg.SenderName = w.lookupSenderName(senderJID)
+				}
+				// Fallback to sender ID if still empty
+				if msg.SenderName == "" {
+					msg.SenderName = msg.SenderID
+				}
 			} else {
 				if isGroup {
 					msg.SenderName = w.lookupSenderNameInGroup(senderJID, chatJID)
@@ -2749,6 +2987,17 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 					msg.SenderName = msg.SenderID
 				}
 			}
+		} else if msg.SenderName == "You" {
+			// Clean up old "You" values from DB and replace with actual name
+			if isGroup {
+				msg.SenderName = w.lookupSenderNameInGroup(senderJID, chatJID)
+			} else {
+				msg.SenderName = w.lookupSenderName(senderJID)
+			}
+			if msg.SenderName == "" {
+				msg.SenderName = msg.SenderID
+			}
+			fmt.Printf("WhatsApp: Cleaned up 'You' in message %s, new name: %s\n", msg.ProtocolMsgID, msg.SenderName)
 		}
 
 		// Get sender avatar URL (only for messages not from me)
@@ -2841,8 +3090,9 @@ func (w *WhatsAppProvider) loadMessagesFromDatabaseLocked() {
 	}
 
 	// Load messages grouped by conversation
+	// Preload receipts to include delivery and read receipts
 	var messages []models.Message
-	if err := db.DB.Order("protocol_conv_id, timestamp ASC").Find(&messages).Error; err != nil {
+	if err := db.DB.Preload("Receipts").Order("protocol_conv_id, timestamp ASC").Find(&messages).Error; err != nil {
 		fmt.Printf("WhatsApp: Failed to load messages from database: %v\n", err)
 		return
 	}
@@ -3502,9 +3752,82 @@ func (w *WhatsAppProvider) DemoteGroupAdmins(conversationID string, participantI
 
 // GetGroupParticipants returns the list of participants in a group.
 func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
-	// TODO: Implement getting participants
-	markUnused(conversationID)
-	return []models.GroupParticipant{}, nil
+	w.mu.RLock()
+	client := w.client
+	ctx := w.ctx
+	w.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	groupJID, err := types.ParseJID(conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Verify it's a group
+	if groupJID.Server != types.GroupServer {
+		return nil, fmt.Errorf("conversation is not a group: %s", conversationID)
+	}
+
+	// Get group info to obtain participants
+	groupInfo, err := client.GetGroupInfo(ctx, groupJID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get group info: %w", err)
+	}
+
+	if groupInfo == nil {
+		return nil, fmt.Errorf("group info is nil")
+	}
+
+	// Convert participants to models.GroupParticipant
+	participants := make([]models.GroupParticipant, 0, len(groupInfo.Participants))
+
+	// Also build a map of LID -> phone number for later conversion
+	lidToPhoneMap := make(map[types.JID]string)
+
+	for _, participant := range groupInfo.Participants {
+		// Determine if participant is admin
+		// In whatsmeow, GroupParticipant has an IsSuperAdmin field
+		isAdmin := participant.IsSuperAdmin
+
+		// Use current time as JoinedAt if not available (whatsmeow doesn't provide join time)
+		joinedAt := time.Now()
+
+		// Use PhoneNumber if available, otherwise fallback to JID
+		userID := participant.JID.String()
+		if !participant.PhoneNumber.IsEmpty() {
+			// Use phone number (may include @s.whatsapp.net suffix)
+			phoneStr := participant.PhoneNumber.String()
+			// Remove @s.whatsapp.net suffix if present
+			if strings.Contains(phoneStr, "@s.whatsapp.net") {
+				userID = phoneStr
+			} else {
+				// If no suffix, add it for consistency
+				userID = phoneStr + "@s.whatsapp.net"
+			}
+		}
+
+		// Store mapping from LID to phone number
+		if participant.JID.Server == "lid" && !participant.PhoneNumber.IsEmpty() {
+			lidToPhoneMap[participant.JID] = userID
+		}
+
+		participants = append(participants, models.GroupParticipant{
+			UserID:   userID,
+			IsAdmin:  isAdmin,
+			JoinedAt: joinedAt,
+		})
+	}
+
+	// Cache the LID to phone number mapping
+	w.mu.Lock()
+	w.groupParticipants[groupJID.String()] = lidToPhoneMap
+	w.mu.Unlock()
+
+	return participants, nil
 }
 
 // --- Invite Links ---
