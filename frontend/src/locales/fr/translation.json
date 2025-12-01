@@ -130,5 +130,9 @@
   "status_read": "Lu",
   "status_sent_detail": "Envoyé",
   "status_delivered_detail": "Livré",
-  "status_read_detail": "Lu"
+  "status_read_detail": "Lu",
+  "onboarding_welcome_title": "Bienvenue sur Loom",
+  "onboarding_welcome_description": "Loom est un outil de messagerie moderne qui vous permet de centraliser vos conversations en vous connectant à plusieurs plateformes de messagerie. Pour commencer à l'utiliser, configurez le ou les fournisseurs de votre choix.",
+  "onboarding_configure_button": "Configurer une messagerie",
+  "providers": "Comptes"
 }

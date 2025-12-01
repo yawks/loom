@@ -116,10 +116,7 @@ export function ContactList() {
         <div className="p-2 border-b">
           <h2 className="text-lg font-semibold">{t("contacts")}</h2>
         </div>
-        <div className="flex flex-col items-center justify-center flex-1 text-muted-foreground">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
-          <p className="text-sm">Loading conversations...</p>
-        </div>
+        <div className="flex-1"></div>
       </div>
     );
   }
@@ -157,7 +154,7 @@ export function ContactList() {
             const displayUnreadCount =
               unreadCount > 99 ? "99+" : unreadCount.toString();
             const isSelected = selectedContact?.id === contact.id;
-            
+
             return (
               <div
                 key={contact.id}
