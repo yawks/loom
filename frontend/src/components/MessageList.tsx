@@ -83,10 +83,10 @@ function getColorFromString(str: string): string {
   for (let i = 0; i < str.length; i++) {
     hash = str.charCodeAt(i) + ((hash << 5) - hash);
   }
-  
+
   // Generate a hue between 0 and 360
   const hue = Math.abs(hash) % 360;
-  
+
   // Use a moderate saturation and lightness for good contrast
   // Adjust these values based on light/dark mode if needed
   return `hsl(${hue}, 70%, 50%)`;
@@ -103,7 +103,7 @@ function getSenderDisplayName(
   if (senderName && senderName.trim().length > 0) {
     return senderName;
   }
-  
+
   // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {
@@ -123,7 +123,7 @@ function getSenderDisplayName(
       return `+${formatted}`;
     }
   }
-  
+
   // Fallback for other ID formats
   return senderId
     .replace(/^user-/, "")
@@ -243,7 +243,25 @@ export function MessageList({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
-  
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const hasUserScrolledRef = useRef<boolean>(false);
+
+  const isInitialLoadRef = useRef<boolean>(true);
+  const lastScrollTopRef = useRef<number>(0);
+  const isLoadingMoreRef = useRef<boolean>(false);
+  const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
+    typeof document === "undefined" ? true : document.hasFocus()
+  );
+  const focusStateRef = useRef<boolean>(hasWindowFocus);
+  const scrollStateRef = useRef({
+    distanceFromBottom: 0,
+    atBottom: true,
+  });
+  const hasScrolledToUnreadRef = useRef<string | null>(null);
+
   const {
     data,
     fetchNextPage,
@@ -318,221 +336,9 @@ export function MessageList({
     return false;
   }, [conversationId, messages]);
 
-  // Track scroll height and position before messages change (for infinite scroll)
-  useLayoutEffect(() => {
-    const container = scrollContainerRef.current;
-    if (container && isFetchingNextPage) {
-      // Capture scroll position and height before new messages are added
-      const heightBefore = container.scrollHeight;
-      const scrollTopBefore = container.scrollTop;
-      previousScrollHeightRef.current = heightBefore;
-      previousScrollTopRef.current = scrollTopBefore;
-      heightWithBarRef.current = 0; // Reset
-      isAdjustingScrollRef.current = false; // Reset adjustment flag
-      
-      // Find the oldest visible message (first message in the list that's visible)
-      // This will be our anchor point
-      const visibleMessages = Array.from(messageElementsRef.current.entries())
-        .filter(([_, el]) => {
-          const rect = el.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-          return rect.top >= containerRect.top && rect.top <= containerRect.bottom;
-        })
-        .map(([id, el]) => ({ id, element: el }));
-      
-      if (visibleMessages.length > 0) {
-        // Find the oldest message (first in chronological order, which is first in the array)
-        // The messages are already sorted chronologically
-        const oldestVisible = visibleMessages[0];
-        const messageId = oldestVisible.id;
-        const messageElement = oldestVisible.element;
-        
-        // Store the oldest visible message ID and its absolute position
-        oldestVisibleMessageIdRef.current = messageId;
-        
-        // Calculate and store the relative position of the anchor message (from top of viewport)
-        const messageRect = messageElement.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const anchorRelativeTop = messageRect.top - containerRect.top;
-        
-        // Store the relative position in a data attribute for later retrieval
-        (container as any).__anchorRelativeTop = anchorRelativeTop;
-        
-        // Add a class to mark this message as the scroll anchor
-        messageElement.classList.add('scroll-anchor-message');
-        
-        console.log('[Scroll Debug] Found oldest visible message for anchor:', {
-          messageId,
-          scrollTop: scrollTopBefore,
-          height: heightBefore,
-          anchorRelativeTop
-        });
-      } else {
-        console.log('[Scroll Debug] No visible message found for anchor');
-      }
-    }
-  }, [isFetchingNextPage]);
-  
-  // Capture height when loading bar is visible
-  useLayoutEffect(() => {
-    const container = scrollContainerRef.current;
-    if (container && isFetchingNextPage && heightWithBarRef.current === 0) {
-      // Wait for bar to be rendered
-      requestAnimationFrame(() => {
-        const heightWithBar = container.scrollHeight;
-        if (heightWithBar > previousScrollHeightRef.current) {
-          heightWithBarRef.current = heightWithBar;
-          console.log('[Scroll Debug] Loading bar appeared:', {
-            heightBefore: previousScrollHeightRef.current,
-            heightWithBar,
-            scrollTop: container.scrollTop
-          });
-        }
-      });
-    }
-  }, [isFetchingNextPage]);
-  
+  // With reverse scroll, we don't need complex scroll restoration logic
+  // The browser naturally maintains scroll position when new items are added at the "bottom" (visually top)
 
-  // Adjust scroll position synchronously when new messages are added (prevents flicker)
-  // This handles the case when loading bar is replaced by real messages
-  useLayoutEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container || messages.length === 0) {
-      return;
-    }
-    
-    const currentScrollHeight = container.scrollHeight;
-    const previousScrollHeight = previousScrollHeightRef.current;
-    const loadingBarHeight = loadingBarHeightRef.current;
-    
-    // If we just finished loading (loading bar was replaced by real messages)
-    // We need to adjust scroll to maintain the position of the oldest visible message
-    if (!isFetchingNextPage && previousScrollHeight > 0 && previousScrollTopRef.current > 0 && !isAdjustingScrollRef.current) {
-      // Mark that we're adjusting scroll to prevent other effects from interfering
-      isAdjustingScrollRef.current = true;
-      
-      // Use the preserved scrollTop from before loading started
-      const preservedScrollTop = previousScrollTopRef.current;
-      
-      // Find the anchor message (oldest visible message before loading)
-      const anchorMessageId = oldestVisibleMessageIdRef.current;
-      if (anchorMessageId) {
-        const anchorElement = messageElementsRef.current.get(anchorMessageId);
-        
-        if (anchorElement) {
-          // Remove the anchor class from the old message
-          anchorElement.classList.remove('scroll-anchor-message');
-          
-          const anchorRect = anchorElement.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-          
-          // Get the stored relative position of the anchor before loading
-          const anchorRelativeTop = (container as any).__anchorRelativeTop;
-          
-          if (anchorRelativeTop !== undefined) {
-            // Current relative position of the anchor (from top of viewport)
-            const anchorCurrentRelativeTop = anchorRect.top - containerRect.top;
-            
-            // The anchor should be at loadingBarHeight from the top (to account for the loading bar that was there)
-            // The difference between current and target relative position is how much we need to scroll
-            // But we need to use preservedScrollTop as base, not currentScrollTop (which is 0)
-            const scrollAdjustment = anchorCurrentRelativeTop - loadingBarHeight;
-            const targetScrollTop = preservedScrollTop + scrollAdjustment;
-            
-            console.log('[Scroll Debug] Restoring position using anchor message:', {
-              anchorMessageId,
-              anchorRelativeTop,
-              anchorCurrentRelativeTop,
-              targetRelativeTop: loadingBarHeight,
-              scrollAdjustment,
-              currentScrollTop: container.scrollTop,
-              targetScrollTop,
-              scrollHeight: currentScrollHeight
-            });
-            
-            container.scrollTop = Math.max(0, targetScrollTop);
-          } else {
-            // Fallback: use height difference calculation
-            const newMessagesHeight = currentScrollHeight - previousScrollHeight;
-            const targetScrollTop = preservedScrollTop + newMessagesHeight;
-            
-            console.log('[Scroll Debug] Restoring position using anchor message (fallback):', {
-              anchorMessageId,
-              preservedScrollTop,
-              newMessagesHeight,
-              targetScrollTop
-            });
-            
-            container.scrollTop = Math.max(0, targetScrollTop);
-          }
-          
-          // Find the new oldest message and add the anchor class to it
-          if (messages.length > 0) {
-            const oldestMessage = messages[0];
-            const oldestMessageId = getMessageDomId(oldestMessage);
-            const oldestElement = messageElementsRef.current.get(oldestMessageId);
-            if (oldestElement) {
-              oldestElement.classList.add('scroll-anchor-message');
-              oldestVisibleMessageIdRef.current = oldestMessageId;
-            }
-          }
-          
-          // Clean up stored relative position
-          delete (container as any).__anchorRelativeTop;
-          
-          previousScrollHeightRef.current = currentScrollHeight;
-          lastScrollTopRef.current = container.scrollTop;
-          previousScrollTopRef.current = 0;
-          heightWithBarRef.current = 0;
-          
-          console.log('[Scroll Debug] After anchor restoration:', {
-            scrollTop: container.scrollTop,
-            scrollHeight: container.scrollHeight
-          });
-          
-          setTimeout(() => {
-            isLoadingMoreRef.current = false;
-            isAdjustingScrollRef.current = false;
-          }, 200);
-          return;
-        } else {
-          console.log('[Scroll Debug] Anchor message element not found:', {
-            anchorMessageId,
-            availableInRef: Array.from(messageElementsRef.current.keys()).slice(0, 5)
-          });
-        }
-      }
-      
-      // Fallback: Calculate the adjustment needed
-      const newMessagesHeight = currentScrollHeight - previousScrollHeight;
-      const newScrollTop = preservedScrollTop + newMessagesHeight;
-      
-      console.log('[Scroll Debug] Adjusting scroll after loading bar removal (fallback):', {
-        preservedScrollTop,
-        newMessagesHeight,
-        targetScrollTop: newScrollTop
-      });
-      
-      container.scrollTop = Math.max(0, newScrollTop);
-      
-      // Update refs
-      previousScrollHeightRef.current = currentScrollHeight;
-      lastScrollTopRef.current = container.scrollTop;
-      previousScrollTopRef.current = 0;
-      heightWithBarRef.current = 0;
-      
-      setTimeout(() => {
-        isLoadingMoreRef.current = false;
-        isAdjustingScrollRef.current = false;
-      }, 200);
-      return;
-    }
-    
-    // Update previous scroll height if not loading more
-    if (!isFetchingNextPage) {
-      previousScrollHeightRef.current = currentScrollHeight;
-    }
-  }, [messages, isFetchingNextPage]);
   const syncConversation = useMessageReadStore(
     (state) => state.syncConversation
   );
@@ -544,7 +350,7 @@ export function MessageList({
     () => readByConversation[conversationId] ?? {},
     [readByConversation, conversationId]
   );
-  
+
   // Filter out thread messages and group threads by parent message
   const { mainMessages, threadsByParent } = useMemo(() => {
     const main: models.Message[] = [];
@@ -576,56 +382,59 @@ export function MessageList({
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container || messages.length === 0 || isLoading) {
+
       return;
     }
-    
-    // Only on initial load (when previousScrollHeight is 0)
-    if (previousScrollHeightRef.current === 0 && !isFetchingNextPage && !isAdjustingScrollRef.current) {
+
+    // Only on initial load (use isInitialLoadRef flag)
+    if (isInitialLoadRef.current && !isFetchingNextPage) {
+
+
       // Find first unread message
       const firstUnreadMessage = mainMessages.find(msg => {
         const domId = getMessageDomId(msg);
         return conversationReadState[domId] === false;
       });
-      
+
       if (firstUnreadMessage) {
         const targetId = getMessageDomId(firstUnreadMessage);
         const target = messageElementsRef.current.get(targetId);
         if (target) {
-          const containerRect = container.getBoundingClientRect();
-          const targetRect = target.getBoundingClientRect();
           const marginTop = 100;
-          const targetScrollTop = 
-            container.scrollTop + 
-            (targetRect.top - containerRect.top) - 
-            marginTop;
+
+          // Calculate target scroll top relative to the container
+          // We use offsetTop for more reliable positioning within the scroll container
+          const targetScrollTop = target.offsetTop - marginTop;
+
+
+
           container.scrollTop = Math.max(0, targetScrollTop);
           hasScrolledToUnreadRef.current = targetId;
-          // Mark the oldest message as anchor
-          if (messages.length > 0) {
-            const oldestMessage = messages[0];
-            const oldestMessageId = getMessageDomId(oldestMessage);
-            oldestVisibleMessageIdRef.current = oldestMessageId;
-          }
+
+          // Mark that we've done the initial scroll
+          isInitialLoadRef.current = false;
           return;
+        } else {
+
         }
       }
-      
+
       // No unread messages, scroll to bottom
+
+
       container.scrollTop = container.scrollHeight;
-      // Mark the oldest message (first in the list) as anchor
-      if (messages.length > 0) {
-        const oldestMessage = messages[0];
-        const oldestMessageId = getMessageDomId(oldestMessage);
-        oldestVisibleMessageIdRef.current = oldestMessageId;
-      }
+
+      // Mark that we've done the initial scroll
+      isInitialLoadRef.current = false;
+    } else {
+
     }
   }, [messages, isLoading, isFetchingNextPage, mainMessages, conversationReadState]);
-  
+
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const messageLayout = useAppStore((state) => state.messageLayout);
-  const hasScrolledToUnreadRef = useRef<string | null>(null);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingFilePaths, setPendingFilePaths] = useState<string[]>([]);
@@ -668,16 +477,10 @@ export function MessageList({
 
   useEffect(() => {
     hasScrolledToUnreadRef.current = null;
-    previousScrollHeightRef.current = 0;
-    previousScrollTopRef.current = 0;
-    heightWithBarRef.current = 0;
-    isAdjustingScrollRef.current = false;
-    isScrollingToUnreadRef.current = false;
     hasUserScrolledRef.current = false;
     isInitialLoadRef.current = true;
     lastScrollTopRef.current = 0;
     isLoadingMoreRef.current = false;
-    oldestVisibleMessageIdRef.current = null;
   }, [conversationId]);
 
   useEffect(() => {
@@ -696,10 +499,10 @@ export function MessageList({
         distanceFromBottom: distance,
         atBottom: distance < 80,
       };
-      
+
       const currentScrollTop = container.scrollTop;
       const scrollDelta = currentScrollTop - lastScrollTopRef.current;
-      
+
       // Mark that user has scrolled (not programmatic scroll)
       // Only if scroll position changed significantly (user action, not programmatic)
       if (Math.abs(scrollDelta) > 5) {
@@ -709,24 +512,31 @@ export function MessageList({
           isLoadingMoreRef.current = false;
         }
       }
-      
+
       lastScrollTopRef.current = currentScrollTop;
-      
-      // Load more messages when scrolling near the top (within 200px)
-      // Only if:
-      // - User has manually scrolled (not initial load)
-      // - Not already loading
-      // - User scrolled up (not down)
-      // - Not in the middle of a loading operation
+
+      // With column-reverse on WebKit/Safari, scrollTop can become negative when scrolling up
+      // We need to trigger when we're near the "top" (old messages)
+      // This can be when scrollTop is small (close to 0) or negative (overscroll)
+
+      // Calculate distance from the visual "top" where old messages are
+      // On WebKit with column-reverse, this is when scrollTop approaches 0 from below (negative)
+      const isNearTop = container.scrollTop < 200;
+
+
+
+      // Load more messages when scrolling near the top (within 200px, including negative for overscroll)
+      // On WebKit with column-reverse, scrollTop becomes negative when scrolling up past the content
       if (
-        container.scrollTop < 200 && 
-        hasNextPage && 
+        isNearTop &&
+        hasNextPage &&
         !isFetchingNextPage &&
         !isLoadingMoreRef.current &&
         hasUserScrolledRef.current &&
         !isInitialLoadRef.current &&
-        scrollDelta < 0 // User scrolled up
+        scrollDelta < 0 // User scrolled up (toward old messages)
       ) {
+
         isLoadingMoreRef.current = true;
         fetchNextPage();
       }
@@ -741,126 +551,34 @@ export function MessageList({
     if (!container || messages.length === 0) {
       return;
     }
-    
-    // Use a small delay to ensure DOM is ready for other scroll operations
+
+    // Use a small delay to ensure DOM is ready
     const timeoutId = setTimeout(() => {
-      requestAnimationFrame(() => {
-        // This effect is now only for non-infinite-scroll operations
-        // Infinite scroll position adjustment is handled in useLayoutEffect above
-        
-        // Mark initial load as complete after first render
-        if (isInitialLoadRef.current) {
-          isInitialLoadRef.current = false;
-        }
-        
-        // If we just finished loading more messages (infinite scroll), don't interfere
-        // The useLayoutEffect above has already handled the scroll adjustment
-        if (isAdjustingScrollRef.current) {
-          console.log('[Scroll Debug] Skipping scroll adjustment - infinite scroll adjustment in progress');
-          return;
-        }
-        
-        // Also check if we're near the top (where old messages would be loaded)
-        if (!isFetchingNextPage && previousScrollHeightRef.current > 0) {
-          const isNearTop = container.scrollTop < 500;
-          const isNearBottom = container.scrollTop > container.scrollHeight - container.clientHeight - 100;
-          
-          // If we're near the top (where old messages would be loaded), don't interfere
-          if (isNearTop && !isNearBottom) {
-            console.log('[Scroll Debug] Skipping scroll adjustment - near top after infinite scroll');
-            return;
-          }
-        }
-        
-        if (
-          firstUnreadMessageId &&
-          hasScrolledToUnreadRef.current !== firstUnreadMessageId &&
-          !isAdjustingScrollRef.current
-        ) {
-          isScrollingToUnreadRef.current = true;
-          const target = messageElementsRef.current.get(firstUnreadMessageId);
-          if (target) {
-            // Scroll to the first unread message with a margin above it
-            const containerRect = container.getBoundingClientRect();
-            const targetRect = target.getBoundingClientRect();
-            const marginTop = 100; // Margin in pixels above the message
-            const targetScrollTop = 
-              container.scrollTop + 
-              (targetRect.top - containerRect.top) - 
-              marginTop;
-            container.scrollTop = Math.max(0, targetScrollTop); // Use instant scroll, not smooth
-            hasScrolledToUnreadRef.current = firstUnreadMessageId;
-            // Mark the oldest message as anchor
-            if (messages.length > 0) {
-              const oldestMessage = messages[0];
-              const oldestMessageId = getMessageDomId(oldestMessage);
-              oldestVisibleMessageIdRef.current = oldestMessageId;
-            }
-            setTimeout(() => {
-              isScrollingToUnreadRef.current = false;
-            }, 100);
-          }
-          return;
-        }
-        
-        // If no unread messages and not loading more, scroll to the bottom
-        // But only if we're not in the middle of an infinite scroll operation
-        if (!firstUnreadMessageId && !isFetchingNextPage && previousScrollHeightRef.current === 0 && !isAdjustingScrollRef.current) {
-          container.scrollTop = container.scrollHeight; // Use instant scroll, not smooth
-          // Mark the oldest message (first in the list) as anchor
-          if (messages.length > 0) {
-            const oldestMessage = messages[0];
-            const oldestMessageId = getMessageDomId(oldestMessage);
-            oldestVisibleMessageIdRef.current = oldestMessageId;
-          }
-          return;
-        }
-        
-        // If loading more messages, don't change scroll position
-        if (isFetchingNextPage) {
-          return;
-        }
-        
-        // Otherwise, maintain scroll position
-        // But only if we're not in the middle of an infinite scroll operation
-        if (previousScrollHeightRef.current === 0) {
-          const { atBottom, distanceFromBottom } = scrollStateRef.current;
-          if (atBottom) {
-            container.scrollTop = container.scrollHeight;
-          } else {
-            const targetScrollTop =
-              container.scrollHeight - container.clientHeight - distanceFromBottom;
-            container.scrollTop = Math.max(0, targetScrollTop);
-          }
-        }
-      });
+      // Mark initial load as complete
+      if (isInitialLoadRef.current) {
+        isInitialLoadRef.current = false;
+      }
+
+      // If loading more messages (infinite scroll), don't interfere
+      if (isFetchingNextPage) {
+
+        return;
+      }
+
+      // Handle auto-scroll to bottom for new messages
+      // If we were at the bottom before the update, stay at the bottom
+      const { atBottom } = scrollStateRef.current;
+
+
+      if (atBottom) {
+
+        container.scrollTop = container.scrollHeight;
+      }
     }, 100);
 
     return () => clearTimeout(timeoutId);
-  }, [firstUnreadMessageId, messages, isFetchingNextPage]);
+  }, [messages, isFetchingNextPage]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const previousScrollHeightRef = useRef<number>(0);
-  const previousScrollTopRef = useRef<number>(0);
-  const heightWithBarRef = useRef<number>(0); // Height when loading bar is visible
-  const isAdjustingScrollRef = useRef<boolean>(false);
-  const loadingBarHeightRef = useRef<number>(64); // Fixed height: 64px (h-16 = 4rem = 64px)
-  const isScrollingToUnreadRef = useRef<boolean>(false);
-  const hasUserScrolledRef = useRef<boolean>(false);
-  const isInitialLoadRef = useRef<boolean>(true);
-  const lastScrollTopRef = useRef<number>(0);
-  const isLoadingMoreRef = useRef<boolean>(false);
-  const oldestVisibleMessageIdRef = useRef<string | null>(null); // ID of the oldest visible message (for scroll anchor)
-  const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
-    typeof document === "undefined" ? true : document.hasFocus()
-  );
-  const focusStateRef = useRef<boolean>(hasWindowFocus);
-  const scrollStateRef = useRef({
-    distanceFromBottom: 0,
-    atBottom: true,
-  });
 
   useEffect(() => {
     focusStateRef.current = hasWindowFocus;
@@ -1206,10 +924,10 @@ export function MessageList({
           [key: string]: unknown;
         }
         const fileWithPath = file as File & FileWithPath;
-        
+
         // Try multiple ways to get the path
         let filePath: string | undefined = undefined;
-        
+
         // Method 1: Direct path property (Wails-specific)
         if (fileWithPath.path && typeof fileWithPath.path === "string") {
           filePath = fileWithPath.path;
@@ -1234,7 +952,7 @@ export function MessageList({
             }
           }
         }
-        
+
         if (filePath && typeof filePath === "string") {
           // File has a path - use SendFileFromPath directly
           if (typeof SendFileFromPath === "function") {
@@ -1244,7 +962,7 @@ export function MessageList({
             console.warn("SendFileFromPath not available yet, falling back to reading file");
           }
         }
-        
+
         // File doesn't have a path - try FileReader first, then fallback to Go clipboard API
         // ATTEMPT 1: Standard JS FileReader (works for screenshots/images copied in browser)
         // Attempt to compress image files before reading
@@ -1253,17 +971,17 @@ export function MessageList({
         let fileData: string;
         let fileMimeType = file.type || "application/octet-stream";
         let fileName = file.name;
-        
+
         try {
           fileData = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
-            
+
             // Set timeout to avoid hanging
             const timeout = setTimeout(() => {
               reader.abort();
               reject(new Error(`Timeout reading file: ${file.name}`));
             }, 30000); // 30 seconds timeout
-            
+
             reader.onload = (e) => {
               clearTimeout(timeout);
               try {
@@ -1283,18 +1001,18 @@ export function MessageList({
                 reject(err);
               }
             };
-            
+
             reader.onerror = (error) => {
               clearTimeout(timeout);
               console.error("FileReader error for file:", file.name, error);
               reject(new Error(`Failed to read file: ${file.name} (size: ${(file.size / 1024 / 1024).toFixed(2)}MB)`));
             };
-            
+
             reader.onabort = () => {
               clearTimeout(timeout);
               reject(new Error(`File reading aborted: ${file.name}`));
             };
-            
+
             // Use readAsDataURL to convert file to base64
             try {
               reader.readAsDataURL(file);
@@ -1306,10 +1024,10 @@ export function MessageList({
         } catch (readerError) {
           // ATTEMPT 2: Fallback to Go clipboard API (for files from Finder/Explorer)
           console.warn("JS FileReader failed (likely WebKit security restriction), trying Go clipboard fallback...", readerError);
-          
+
           // Try to get GetClipboardFile dynamically from window
           let getClipboardFileFn: (() => Promise<{ filename: string; base64: string; mimeType: string }>) | undefined;
-          
+
           if (typeof window !== "undefined") {
             try {
               // GetClipboardFile will be available after Wails bindings are regenerated
@@ -1319,7 +1037,7 @@ export function MessageList({
               // Ignore
             }
           }
-          
+
           if (getClipboardFileFn && typeof getClipboardFileFn === "function") {
             try {
               const clipboardFile = await getClipboardFileFn();
@@ -1364,7 +1082,7 @@ export function MessageList({
   return (
     <>
       <ToastContainer toasts={toasts} onClose={closeToast} />
-      <div 
+      <div
         className={cn(
           "flex flex-col h-full overflow-hidden transition-colors",
           isDragging && "bg-muted/50"
@@ -1374,660 +1092,222 @@ export function MessageList({
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
-      <MessageHeader
-        displayName={selectedConversation.displayName}
-        linkedAccounts={selectedConversation.linkedAccounts}
-        onToggleThreads={handleToggleThreads}
-        onToggleDetails={handleToggleDetails}
-      />
-      <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area" ref={scrollContainerRef}>
-        {isLoading ? (
-          <div className="flex flex-col gap-2">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="flex items-start gap-3 animate-pulse">
-                <div className="h-10 w-10 rounded-full bg-muted"></div>
-                <div className="flex-1 space-y-2">
-                  <div className="h-4 w-24 bg-muted rounded"></div>
-                  <div className="h-16 w-3/4 bg-muted rounded"></div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <>
-            {isFetchingNextPage && (
-              <div 
-                id="loading-bar-top"
-                className="flex justify-center items-center h-16 w-full bg-muted/30"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-                  <span className="text-sm text-muted-foreground">{t("loading")}</span>
-                </div>
-              </div>
-            )}
-            {messageLayout === "bubble" ? (
-          <div className="space-y-4">
-            {mainMessages.map((message, index) => {
-              const messageId = getMessageDomId(message);
-              const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
-              const threadCount = getThreadCount(message.protocolMsgId);
-              const hasThread = threadCount > 0;
-              const displayName = getSenderDisplayName(
-                message.senderName,
-                message.senderId,
-                message.isFromMe,
-                t
-              );
-              const isUnread = conversationReadState[messageId] === false;
-              const showUnreadDivider =
-                messageId === firstUnreadMessageId && isUnread;
-              const timestamp = timeToDate(message.timestamp);
-              const timeString = `${timestamp
-                .getHours()
-                .toString()
-                .padStart(2, "0")}:${timestamp
-                .getMinutes()
-                .toString()
-                .padStart(2, "0")}`;
-              const isDeleted = Boolean(message.isDeleted);
-              const isDeletedRevealed =
-                isDeleted && revealedDeletedMessages.has(messageId);
-              const showDeletedPlaceholder =
-                isDeleted && !isDeletedRevealed;
-              const baseBubbleColorClass = message.isFromMe
-                ? "bg-blue-600 text-white"
-                : "bg-muted text-foreground";
-              const deletedPlaceholderClass = message.isFromMe
-                ? "bg-blue-950/80 text-blue-100"
-                : "bg-muted/70 text-muted-foreground";
-              const deletedRevealedClass = message.isFromMe
-                ? "bg-blue-600/80 text-white"
-                : "bg-muted text-foreground";
-              const bubbleClass = cn(
-                "rounded-lg p-3 transition-colors border border-transparent",
-                isDeleted
-                  ? isDeletedRevealed
-                    ? deletedRevealedClass
-                    : deletedPlaceholderClass
-                  : baseBubbleColorClass,
-                isUnread &&
-                  "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
-                isDeleted &&
-                  "border-dashed border-destructive/60 cursor-pointer group"
-              );
-              const deletedInteractionHandlers = isDeleted
-                ? {
-                    role: "button" as const,
-                    tabIndex: 0,
-                    onClick: () => toggleDeletedMessage(messageId),
-                    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        toggleDeletedMessage(messageId);
-                      }
-                    },
-                  }
-                : {};
-              
-              const messageDate = timeToDate(message.timestamp);
-              const prevMessage = index > 0 ? mainMessages[index - 1] : null;
-              const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
-              const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
-
-              return (
-                <div key={messageId} className="space-y-2">
-                  {showDateSeparator && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
-                      role="separator"
-                      aria-label={formatDateSeparator(messageDate, t)}
-                    >
-                      <span className="h-px flex-1 bg-border" />
-                      <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
-                      <span className="h-px flex-1 bg-border" />
-                    </div>
-                  )}
-                  {showUnreadDivider && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
-                      role="separator"
-                      aria-label={t("new_messages_separator")}
-                    >
-                      <span className="h-px flex-1 bg-border" />
-                      {t("new_messages_separator")}
-                      <span className="h-px flex-1 bg-border" />
-                    </div>
-                  )}
-                  <div
-                    ref={registerMessageNode(messageId)}
-                    data-message-id={messageId}
-                    className={cn(
-                      "space-y-2 scroll-mt-28 group",
-                      oldestVisibleMessageIdRef.current === messageId && "scroll-anchor-message"
-                    )}
-                    onMouseEnter={() => setOpenActionsMessageId(messageId)}
-                    onMouseLeave={() => setOpenActionsMessageId(null)}
-                  >
-                    <div
-                      className={cn(
-                        "flex items-start gap-3",
-                        message.isFromMe && "justify-end"
-                      )}
-                    >
-                      {!message.isFromMe && (
-                        <div className="flex flex-col items-center shrink-0">
-                          <button
-                            onClick={() =>
-                              handleAvatarClick(
-                                message.senderAvatarUrl,
-                                displayName
-                              )
-                            }
-                            className="shrink-0"
-                          >
-                            <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                              <AvatarImage src={message.senderAvatarUrl} />
-                              <AvatarFallback>
-                                {displayName.substring(0, 2).toUpperCase()}
-                              </AvatarFallback>
-                            </Avatar>
-                          </button>
-                          <span className="text-xs text-muted-foreground mt-1">
-                            {timeString}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex flex-col items-start gap-1 relative group/bubble">
-                        <div className="flex items-start gap-2 relative w-full">
-                          <div
-                            className={bubbleClass}
-                            aria-live="polite"
-                            aria-label={
-                              isUnread ? t("unread_message_label") : undefined
-                            }
-                            {...deletedInteractionHandlers}
-                          >
-                            {editingMessageId === messageId ? (
-                              <div className="flex flex-col gap-2">
-                                <Input
-                                  value={editingText}
-                                  onChange={(e) => setEditingText(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey) {
-                                      e.preventDefault();
-                                      handleSaveEdit();
-                                    } else if (e.key === "Escape") {
-                                      handleCancelEdit();
-                                    }
-                                  }}
-                                  onBlur={(e) => {
-                                    // Only save if the blur is not caused by clicking on a button
-                                    const relatedTarget = e.relatedTarget as HTMLElement | null;
-                                    if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
-                                      handleSaveEdit(false);
-                                    }
-                                  }}
-                                  className="text-foreground"
-                                  autoFocus
-                                />
-                                <div className="flex gap-2 justify-end">
-                                  <button
-                                    onClick={handleCancelEdit}
-                                    className="text-xs px-2 py-1 rounded hover:bg-muted"
-                                  >
-                                    {t("cancel")}
-                                  </button>
-                                  <button
-                                    onClick={() => handleSaveEdit(false)}
-                                    className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
-                                  >
-                                    {t("save")}
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                {message.body && message.body.trim() !== "" && (
-                                  <p>{message.body}</p>
-                                )}
-                              </>
-                            )}
-                            {message.attachments &&
-                              message.attachments.trim() !== "" && (
-                                <MessageAttachments
-                                  attachments={message.attachments}
-                                  isFromMe={message.isFromMe}
-                                  layout="bubble"
-                                />
-                              )}
-                            {(!message.body || message.body.trim() === "") &&
-                              (!message.attachments ||
-                                message.attachments.trim() === "") && (
-                                <p className="text-sm opacity-70 italic">
-                                  {t("empty_message")}
-                                </p>
-                              )}
-                            <div className="flex flex-col mt-1">
-                              {showDeletedPlaceholder && (
-                                <div className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none">
-                                  <span>{t("message_deleted")}</span>
-                                  <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
-                                    {t("click_to_view_deleted")}
-                                  </span>
-                                </div>
-                              )}
-                              {isDeleted && isDeletedRevealed && (
-                                <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
-                                  {t("deleted_message_badge")}
-                                </span>
-                              )}
-                              {isUnread && (
-                                <p
-                                  className={cn(
-                                    "text-xs flex items-center gap-2 justify-end",
-                                    message.isFromMe
-                                      ? "text-blue-100"
-                                      : "text-muted-foreground"
-                                  )}
-                                >
-                                  <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
-                                    {t("unread_indicator")}
-                                  </span>
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                          {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
-                            <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
-                              <MessageActions
-                                isFromMe={message.isFromMe}
-                                hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
-                                onEdit={() => handleEditMessage(message)}
-                                onDelete={() => handleDeleteClick(message)}
-                                messageId={messageId}
-                                openActionsMessageId={openActionsMessageId}
-                              />
-                            </div>
-                          )}
-                        </div>
-                        {message.isEdited && (
-                          <span className={cn(
-                            "text-xs text-muted-foreground italic",
-                            message.isFromMe ? "self-end" : "self-start"
-                          )}>
-                            {t("edited")}
-                          </span>
-                        )}
-                        <MessageStatus
-                          message={message}
-                          isGroup={isGroupConversation}
-                          allMessages={mainMessages}
-                          layout="bubble"
-                        />
-                      </div>
-                      {message.isFromMe && (
-                        <div className="flex flex-col items-center shrink-0">
-                          <button
-                            onClick={() => handleAvatarClick("", t("you"))}
-                            className="shrink-0"
-                          >
-                            <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                              <AvatarImage src="" />
-                              <AvatarFallback>{t("me")}</AvatarFallback>
-                            </Avatar>
-                          </button>
-                          <span className="text-xs text-muted-foreground mt-1">
-                            {timeString}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    {hasThread && lastThreadMsg && (
-                      <button
-                        onClick={() =>
-                          handleThreadClick(message.protocolMsgId)
-                        }
-                        className={cn(
-                          "ml-15 flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left",
-                          message.isFromMe
-                            ? "ml-auto max-w-[80%]"
-                            : "mr-auto max-w-[80%]"
-                        )}
-                      >
-                        <button
-                          onClick={() =>
-                            handleAvatarClick(
-                              lastThreadMsg.senderAvatarUrl,
-                              getSenderDisplayName(
-                                lastThreadMsg.senderName,
-                                lastThreadMsg.senderId,
-                                lastThreadMsg.isFromMe,
-                                t
-                              )
-                            )
-                          }
-                          className="shrink-0"
-                        >
-                          <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
-                            <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
-                            <AvatarFallback className="text-xs">
-                              {getSenderDisplayName(
-                                lastThreadMsg.senderName,
-                                lastThreadMsg.senderId,
-                                lastThreadMsg.isFromMe,
-                                t
-                              )
-                                .substring(0, 2)
-                                .toUpperCase()}
-                            </AvatarFallback>
-                          </Avatar>
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-muted-foreground truncate">
-                            {lastThreadMsg.body.length > 50
-                              ? `${lastThreadMsg.body.substring(0, 50)}...`
-                              : lastThreadMsg.body}
-                          </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <p className="text-xs text-muted-foreground/70">
-                              {timeToDate(
-                                lastThreadMsg.timestamp
-                              ).toLocaleTimeString()}
-                            </p>
-                            {threadCount > 0 && (
-                              <span className="text-xs text-muted-foreground/70">
-                                ·{" "}
-                                {threadCount === 1
-                                  ? t("single_reply")
-                                  : t("multiple_replies", {
-                                      count: threadCount,
-                                    })}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    )}
+        <MessageHeader
+          displayName={selectedConversation.displayName}
+          linkedAccounts={selectedConversation.linkedAccounts}
+          onToggleThreads={handleToggleThreads}
+          onToggleDetails={handleToggleDetails}
+        />
+        <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area flex flex-col-reverse" ref={scrollContainerRef}>
+          {isLoading ? (
+            <div className="flex flex-col gap-2">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="flex items-start gap-3 animate-pulse">
+                  <div className="h-10 w-10 rounded-full bg-muted"></div>
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 w-24 bg-muted rounded"></div>
+                    <div className="h-16 w-3/4 bg-muted rounded"></div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="space-y-1 text-sm">
-            {mainMessages.map((message, index) => {
-              const messageId = getMessageDomId(message);
-              const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
-              const threadCount = getThreadCount(message.protocolMsgId);
-              const hasThread = threadCount > 0;
-              const prevMessage = index > 0 ? mainMessages[index - 1] : null;
-              const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;
-              const timestamp = timeToDate(message.timestamp);
-              const prevTimestamp = prevMessage
-                ? timeToDate(prevMessage.timestamp)
-                : null;
-              const timeDiffMinutes = prevTimestamp
-                ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
-                : Infinity;
-              const isDeleted = Boolean(message.isDeleted);
-              // For deleted messages, also check if next message is from same sender
-              // If so, we should show sender info to maintain context
-              const shouldShowSenderForDeleted = isDeleted && nextMessage &&
-                nextMessage.senderId === message.senderId &&
-                nextMessage.isFromMe === message.isFromMe;
-              const showSender =
-                !prevMessage ||
-                prevMessage.senderId !== message.senderId ||
-                prevMessage.isFromMe !== message.isFromMe ||
-                timeDiffMinutes >= 5 ||
-                shouldShowSenderForDeleted;
-              const displayName = getSenderDisplayName(
-                message.senderName,
-                message.senderId,
-                message.isFromMe,
-                t
-              );
-              const senderColor = getColorFromString(message.senderId);
-              const timeString = `${timestamp
-                .getHours()
-                .toString()
-                .padStart(2, "0")}:${timestamp
-                .getMinutes()
-                .toString()
-                .padStart(2, "0")}`;
-              const isUnread = conversationReadState[messageId] === false;
-              const showUnreadDivider =
-                messageId === firstUnreadMessageId && isUnread;
-              
-              const messageDate = timeToDate(message.timestamp);
-              const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
-              const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
-              const isDeletedRevealed =
-                isDeleted && revealedDeletedMessages.has(messageId);
-              const showDeletedPlaceholder =
-                isDeleted && !isDeletedRevealed;
-              const deletedListWrapperClass = cn(
-                "w-full flex flex-col gap-1",
-                isDeleted && "group",
-                showDeletedPlaceholder && "cursor-pointer text-muted-foreground/80"
-              );
-              const deletedListHandlers = isDeleted
-                ? {
-                    role: "button" as const,
-                    tabIndex: 0,
-                    onClick: () => toggleDeletedMessage(messageId),
-                    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        toggleDeletedMessage(messageId);
+              ))}
+            </div>
+          ) : (
+            <>
+              {messageLayout === "bubble" ? (
+                <div className="space-y-4">
+                  {/* Reverse array for display with column-reverse */}
+                  {[...mainMessages].reverse().map((message, index) => {
+                    const messageId = getMessageDomId(message);
+                    const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
+                    const threadCount = getThreadCount(message.protocolMsgId);
+                    const hasThread = threadCount > 0;
+                    const displayName = getSenderDisplayName(
+                      message.senderName,
+                      message.senderId,
+                      message.isFromMe,
+                      t
+                    );
+                    const isUnread = conversationReadState[messageId] === false;
+                    const showUnreadDivider =
+                      messageId === firstUnreadMessageId && isUnread;
+                    const timestamp = timeToDate(message.timestamp);
+                    const timeString = `${timestamp
+                      .getHours()
+                      .toString()
+                      .padStart(2, "0")}:${timestamp
+                        .getMinutes()
+                        .toString()
+                        .padStart(2, "0")}`;
+                    const isDeleted = Boolean(message.isDeleted);
+                    const isDeletedRevealed =
+                      isDeleted && revealedDeletedMessages.has(messageId);
+                    const showDeletedPlaceholder =
+                      isDeleted && !isDeletedRevealed;
+                    const baseBubbleColorClass = message.isFromMe
+                      ? "bg-blue-600 text-white"
+                      : "bg-muted text-foreground";
+                    const deletedPlaceholderClass = message.isFromMe
+                      ? "bg-blue-950/80 text-blue-100"
+                      : "bg-muted/70 text-muted-foreground";
+                    const deletedRevealedClass = message.isFromMe
+                      ? "bg-blue-600/80 text-white"
+                      : "bg-muted text-foreground";
+                    const bubbleClass = cn(
+                      "rounded-lg p-3 transition-colors border border-transparent",
+                      isDeleted
+                        ? isDeletedRevealed
+                          ? deletedRevealedClass
+                          : deletedPlaceholderClass
+                        : baseBubbleColorClass,
+                      isUnread &&
+                      "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
+                      isDeleted &&
+                      "border-dashed border-destructive/60 cursor-pointer group"
+                    );
+                    const deletedInteractionHandlers = isDeleted
+                      ? {
+                        role: "button" as const,
+                        tabIndex: 0,
+                        onClick: () => toggleDeletedMessage(messageId),
+                        onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleDeletedMessage(messageId);
+                          }
+                        },
                       }
-                    },
-                  }
-                : {};
+                      : {};
 
-              return (
-                <div key={messageId} className="space-y-1">
-                  {showDateSeparator && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
-                      role="separator"
-                      aria-label={formatDateSeparator(messageDate, t)}
-                    >
-                      <span className="h-px flex-1 bg-border" />
-                      <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
-                      <span className="h-px flex-1 bg-border" />
-                    </div>
-                  )}
-                  {showUnreadDivider && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
-                      role="separator"
-                      aria-label={t("new_messages_separator")}
-                    >
-                      <span className="h-px flex-1 bg-border" />
-                      {t("new_messages_separator")}
-                      <span className="h-px flex-1 bg-border" />
-                    </div>
-                  )}
-                  <div
-                    className={cn(
-                      "flex items-start py-1 scroll-mt-28 group relative",
-                      isUnread && "border border-primary/30 bg-primary/5 px-2",
-                      oldestVisibleMessageIdRef.current === messageId && "scroll-anchor-message"
-                    )}
-                    ref={registerMessageNode(messageId)}
-                    data-message-id={messageId}
-                    onMouseEnter={() => setOpenActionsMessageId(messageId)}
-                    onMouseLeave={() => setOpenActionsMessageId(null)}
-                  >
-                    {/* Left column */}
-                    <div className="flex flex-col items-center min-w-[60px]">
-                      {showSender ? (
-                        <>
-                          <button
-                            onClick={() =>
-                              handleAvatarClick(
-                                message.senderAvatarUrl,
-                                displayName
-                              )
-                            }
-                            className="shrink-0"
+                    const messageDate = timeToDate(message.timestamp);
+                    const prevMessage = index > 0 ? mainMessages[index - 1] : null;
+                    const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
+                    const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
+
+                    return (
+                      <div key={messageId} className="space-y-2">
+                        {showDateSeparator && (
+                          <div
+                            className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                            role="separator"
+                            aria-label={formatDateSeparator(messageDate, t)}
                           >
-                            <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
-                              <AvatarImage src={message.senderAvatarUrl} />
-                              <AvatarFallback className="text-xs">
-                                {message.isFromMe
-                                  ? t("me")
-                                  : displayName.substring(0, 2).toUpperCase()}
-                              </AvatarFallback>
-                            </Avatar>
-                          </button>
-                          <span className="text-xs text-muted-foreground mt-1">
-                            {timeString}
-                          </span>
-                        </>
-                      ) : (
-                        <span
-                          className="text-xs text-muted-foreground leading-none"
-                          style={{ marginTop: "10px" }}
-                        >
-                          {timeString}
-                        </span>
-                      )}
-                    </div>
-                    {/* Right column with 20px margin */}
-                    <div className="flex flex-col items-start ml-5 flex-1 min-w-0 relative">
-                      {showSender && (
-                        <span
-                          className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
-                          style={{ color: senderColor }}
-                        >
-                          {displayName}
-                        </span>
-                      )}
-                      <div className="w-full flex items-start gap-2">
-                        <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
-                          {!isDeleted && editingMessageId !== messageId && (
-                            <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
-                              <MessageActions
-                                isFromMe={message.isFromMe}
-                                hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
-                                onEdit={() => handleEditMessage(message)}
-                                onDelete={() => handleDeleteClick(message)}
-                                messageId={messageId}
-                                openActionsMessageId={openActionsMessageId}
-                              />
-                            </div>
-                          )}
-                        {showDeletedPlaceholder ? (
-                          <div className="flex flex-col gap-1">
-                            <div
-                              className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none text-left cursor-pointer"
-                              style={{ marginTop: "10px" }}
-                              {...deletedListHandlers}
-                            >
-                              <span>{t("message_deleted")}</span>
-                              <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
-                                {t("click_to_view_deleted")}
-                              </span>
-                            </div>
+                            <span className="h-px flex-1 bg-border" />
+                            <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                            <span className="h-px flex-1 bg-border" />
                           </div>
-                        ) : (
-                          <>
-                            <div
-                              className={deletedListWrapperClass}
-                              {...deletedListHandlers}
-                            >
-                              {isDeleted && (
-                                <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
-                                  {t("deleted_message_badge")}
+                        )}
+                        {showUnreadDivider && (
+                          <div
+                            className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                            role="separator"
+                            aria-label={t("new_messages_separator")}
+                          >
+                            <span className="h-px flex-1 bg-border" />
+                            {t("new_messages_separator")}
+                            <span className="h-px flex-1 bg-border" />
+                          </div>
+                        )}
+                        <div
+                          ref={registerMessageNode(messageId)}
+                          data-message-id={messageId}
+                          className={cn(
+                            "space-y-2 scroll-mt-28 group"
+                          )}
+                          onMouseEnter={() => setOpenActionsMessageId(messageId)}
+                          onMouseLeave={() => setOpenActionsMessageId(null)}
+                        >
+                          <div
+                            className={cn(
+                              "flex items-start gap-3",
+                              message.isFromMe && "justify-end"
+                            )}
+                          >
+                            {!message.isFromMe && (
+                              <div className="flex flex-col items-center shrink-0">
+                                <button
+                                  onClick={() =>
+                                    handleAvatarClick(
+                                      message.senderAvatarUrl,
+                                      displayName
+                                    )
+                                  }
+                                  className="shrink-0"
+                                >
+                                  <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                                    <AvatarImage src={message.senderAvatarUrl} />
+                                    <AvatarFallback>
+                                      {displayName.substring(0, 2).toUpperCase()}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                </button>
+                                <span className="text-xs text-muted-foreground mt-1">
+                                  {timeString}
                                 </span>
-                              )}
-                              {editingMessageId === messageId ? (
-                                <div className="flex flex-col gap-2 w-full">
-                                  <Input
-                                    value={editingText}
-                                    onChange={(e) => setEditingText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSaveEdit(false);
-                                  } else if (e.key === "Escape") {
-                                    handleCancelEdit();
+                              </div>
+                            )}
+                            <div className="flex flex-col items-start gap-1 relative group/bubble">
+                              <div className="flex items-start gap-2 relative w-full">
+                                <div
+                                  className={bubbleClass}
+                                  aria-live="polite"
+                                  aria-label={
+                                    isUnread ? t("unread_message_label") : undefined
                                   }
-                                }}
-                                onBlur={(e) => {
-                                  // Only save if the blur is not caused by clicking on a button
-                                  const relatedTarget = e.relatedTarget as HTMLElement | null;
-                                  if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
-                                    handleSaveEdit(false);
-                                  }
-                                }}
-                                className="text-foreground"
-                                autoFocus
-                              />
-                              <div className="flex gap-2 justify-end">
-                                <button
-                                  onClick={handleCancelEdit}
-                                  className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                  {...deletedInteractionHandlers}
                                 >
-                                  {t("cancel")}
-                                </button>
-                                <button
-                                  onClick={() => handleSaveEdit(false)}
-                                  className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
-                                >
-                                  {t("save")}
-                                </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <>
-                                  {!showSender && message.body && (
-                                    <p
-                                      className="text-foreground text-left m-0 leading-none"
-                                      style={{ marginTop: "10px" }}
-                                    >
-                                      {message.body}
-                                      {message.isEdited && (
-                                        <span className="text-muted-foreground ml-1 text-xs italic">
-                                          ({t("edited")})
-                                        </span>
+                                  {editingMessageId === messageId ? (
+                                    <div className="flex flex-col gap-2">
+                                      <Input
+                                        value={editingText}
+                                        onChange={(e) => setEditingText(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter" && !e.shiftKey) {
+                                            e.preventDefault();
+                                            handleSaveEdit();
+                                          } else if (e.key === "Escape") {
+                                            handleCancelEdit();
+                                          }
+                                        }}
+                                        onBlur={(e) => {
+                                          // Only save if the blur is not caused by clicking on a button
+                                          const relatedTarget = e.relatedTarget as HTMLElement | null;
+                                          if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
+                                            handleSaveEdit(false);
+                                          }
+                                        }}
+                                        className="text-foreground"
+                                        autoFocus
+                                      />
+                                      <div className="flex gap-2 justify-end">
+                                        <button
+                                          onClick={handleCancelEdit}
+                                          className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                        >
+                                          {t("cancel")}
+                                        </button>
+                                        <button
+                                          onClick={() => handleSaveEdit(false)}
+                                          className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                        >
+                                          {t("save")}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      {message.body && message.body.trim() !== "" && (
+                                        <p>{message.body}</p>
                                       )}
-                                    </p>
-                                  )}
-                                  {showSender && message.body && message.body.trim() !== "" && (
-                                    <p className="text-foreground text-left m-0">
-                                      {message.body}
-                                      {message.isEdited && (
-                                        <span className="text-muted-foreground ml-1 text-xs italic">
-                                          ({t("edited")})
-                                        </span>
-                                      )}
-                                    </p>
+                                    </>
                                   )}
                                   {message.attachments &&
                                     message.attachments.trim() !== "" && (
                                       <MessageAttachments
                                         attachments={message.attachments}
                                         isFromMe={message.isFromMe}
-                                      />
-                                    )}
-                                  {!showSender && (
-                                    <>
-                                      <MessageAttachments
-                                        attachments={message.attachments || ""}
-                                        isFromMe={message.isFromMe}
                                         layout="bubble"
                                       />
-                                      <MessageAttachments
-                                        attachments={message.attachments || ""}
-                                        isFromMe={message.isFromMe}
-                                        layout="irc"
-                                      />
-                                    </>
-                                  )}
+                                    )}
                                   {(!message.body || message.body.trim() === "") &&
                                     (!message.attachments ||
                                       message.attachments.trim() === "") && (
@@ -2035,131 +1315,568 @@ export function MessageList({
                                         {t("empty_message")}
                                       </p>
                                     )}
-                                </>
+                                  <div className="flex flex-col mt-1">
+                                    {showDeletedPlaceholder && (
+                                      <div className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none">
+                                        <span>{t("message_deleted")}</span>
+                                        <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                                          {t("click_to_view_deleted")}
+                                        </span>
+                                      </div>
+                                    )}
+                                    {isDeleted && isDeletedRevealed && (
+                                      <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                                        {t("deleted_message_badge")}
+                                      </span>
+                                    )}
+                                    {isUnread && (
+                                      <p
+                                        className={cn(
+                                          "text-xs flex items-center gap-2 justify-end",
+                                          message.isFromMe
+                                            ? "text-blue-100"
+                                            : "text-muted-foreground"
+                                        )}
+                                      >
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                                          {t("unread_indicator")}
+                                        </span>
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
+                                  <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
+                                    <MessageActions
+                                      isFromMe={message.isFromMe}
+                                      hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                      onEdit={() => handleEditMessage(message)}
+                                      onDelete={() => handleDeleteClick(message)}
+                                      messageId={messageId}
+                                      openActionsMessageId={openActionsMessageId}
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                              {message.isEdited && (
+                                <span className={cn(
+                                  "text-xs text-muted-foreground italic",
+                                  message.isFromMe ? "self-end" : "self-start"
+                                )}>
+                                  {t("edited")}
+                                </span>
                               )}
+                              <MessageStatus
+                                message={message}
+                                isGroup={isGroupConversation}
+                                allMessages={mainMessages}
+                                layout="bubble"
+                              />
                             </div>
-                          </>
-                        )}
-                        </div>
-                        {message.isFromMe && (
-                          <MessageStatus
-                            message={message}
-                            isGroup={isGroupConversation}
-                            allMessages={mainMessages}
-                            layout="irc"
-                          />
-                        )}
-                      </div>
-                      {isUnread && (
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">
-                          {t("unread_indicator")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {hasThread && lastThreadMsg && (
-                    <button
-                      onClick={() => handleThreadClick(message.protocolMsgId)}
-                      className="ml-[80px] flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%]"
-                    >
-                      <button
-                        onClick={() =>
-                          handleAvatarClick(
-                            lastThreadMsg.senderAvatarUrl,
-                            getSenderDisplayName(
-                              lastThreadMsg.senderName,
-                              lastThreadMsg.senderId,
-                              lastThreadMsg.isFromMe,
-                              t
-                            )
-                          )
-                        }
-                        className="shrink-0"
-                      >
-                        <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
-                          <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
-                          <AvatarFallback className="text-xs">
-                            {getSenderDisplayName(
-                              lastThreadMsg.senderName,
-                              lastThreadMsg.senderId,
-                              lastThreadMsg.isFromMe,
-                              t
-                            )
-                              .substring(0, 2)
-                              .toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-muted-foreground truncate">
-                          {lastThreadMsg.body.length > 50
-                            ? `${lastThreadMsg.body.substring(0, 50)}...`
-                            : lastThreadMsg.body}
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <p className="text-xs text-muted-foreground/70">
-                            {timeToDate(
-                              lastThreadMsg.timestamp
-                            ).toLocaleTimeString()}
-                          </p>
-                          {threadCount > 0 && (
-                            <span className="text-xs text-muted-foreground/70">
-                              ·{" "}
-                              {threadCount === 1
-                                ? t("single_reply")
-                                : t("multiple_replies", { count: threadCount })}
-                            </span>
+                            {message.isFromMe && (
+                              <div className="flex flex-col items-center shrink-0">
+                                <button
+                                  onClick={() => handleAvatarClick("", t("you"))}
+                                  className="shrink-0"
+                                >
+                                  <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
+                                    <AvatarImage src="" />
+                                    <AvatarFallback>{t("me")}</AvatarFallback>
+                                  </Avatar>
+                                </button>
+                                <span className="text-xs text-muted-foreground mt-1">
+                                  {timeString}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          {hasThread && lastThreadMsg && (
+                            <button
+                              onClick={() =>
+                                handleThreadClick(message.protocolMsgId)
+                              }
+                              className={cn(
+                                "ml-15 flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left",
+                                message.isFromMe
+                                  ? "ml-auto max-w-[80%]"
+                                  : "mr-auto max-w-[80%]"
+                              )}
+                            >
+                              <button
+                                onClick={() =>
+                                  handleAvatarClick(
+                                    lastThreadMsg.senderAvatarUrl,
+                                    getSenderDisplayName(
+                                      lastThreadMsg.senderName,
+                                      lastThreadMsg.senderId,
+                                      lastThreadMsg.isFromMe,
+                                      t
+                                    )
+                                  )
+                                }
+                                className="shrink-0"
+                              >
+                                <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
+                                  <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
+                                  <AvatarFallback className="text-xs">
+                                    {getSenderDisplayName(
+                                      lastThreadMsg.senderName,
+                                      lastThreadMsg.senderId,
+                                      lastThreadMsg.isFromMe,
+                                      t
+                                    )
+                                      .substring(0, 2)
+                                      .toUpperCase()}
+                                  </AvatarFallback>
+                                </Avatar>
+                              </button>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {lastThreadMsg.body.length > 50
+                                    ? `${lastThreadMsg.body.substring(0, 50)}...`
+                                    : lastThreadMsg.body}
+                                </p>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <p className="text-xs text-muted-foreground/70">
+                                    {timeToDate(
+                                      lastThreadMsg.timestamp
+                                    ).toLocaleTimeString()}
+                                  </p>
+                                  {threadCount > 0 && (
+                                    <span className="text-xs text-muted-foreground/70">
+                                      ·{" "}
+                                      {threadCount === 1
+                                        ? t("single_reply")
+                                        : t("multiple_replies", {
+                                          count: threadCount,
+                                        })}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
                           )}
                         </div>
                       </div>
-                    </button>
-                  )}
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        )}
-          </>
-        )}
-      </div>
-      <div className="shrink-0">
-        <ChatInput 
-          onFileUploadRequest={(files, filePaths) => {
-            setPendingFiles(files);
-            setPendingFilePaths(filePaths || []);
-            setIsFileUploadModalOpen(true);
-          }}
+              ) : (
+                <div className="space-y-1 text-sm">
+                  {mainMessages.map((message, index) => {
+                    const messageId = getMessageDomId(message);
+                    const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
+                    const threadCount = getThreadCount(message.protocolMsgId);
+                    const hasThread = threadCount > 0;
+                    const prevMessage = index > 0 ? mainMessages[index - 1] : null;
+                    const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;
+                    const timestamp = timeToDate(message.timestamp);
+                    const prevTimestamp = prevMessage
+                      ? timeToDate(prevMessage.timestamp)
+                      : null;
+                    const timeDiffMinutes = prevTimestamp
+                      ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
+                      : Infinity;
+                    const isDeleted = Boolean(message.isDeleted);
+                    // For deleted messages, also check if next message is from same sender
+                    // If so, we should show sender info to maintain context
+                    const shouldShowSenderForDeleted = isDeleted && nextMessage &&
+                      nextMessage.senderId === message.senderId &&
+                      nextMessage.isFromMe === message.isFromMe;
+                    const showSender =
+                      !prevMessage ||
+                      prevMessage.senderId !== message.senderId ||
+                      prevMessage.isFromMe !== message.isFromMe ||
+                      timeDiffMinutes >= 5 ||
+                      shouldShowSenderForDeleted;
+                    const displayName = getSenderDisplayName(
+                      message.senderName,
+                      message.senderId,
+                      message.isFromMe,
+                      t
+                    );
+                    const senderColor = getColorFromString(message.senderId);
+                    const timeString = `${timestamp
+                      .getHours()
+                      .toString()
+                      .padStart(2, "0")}:${timestamp
+                        .getMinutes()
+                        .toString()
+                        .padStart(2, "0")}`;
+                    const isUnread = conversationReadState[messageId] === false;
+                    const showUnreadDivider =
+                      messageId === firstUnreadMessageId && isUnread;
+
+                    const messageDate = timeToDate(message.timestamp);
+                    const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
+                    const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
+                    const isDeletedRevealed =
+                      isDeleted && revealedDeletedMessages.has(messageId);
+                    const showDeletedPlaceholder =
+                      isDeleted && !isDeletedRevealed;
+                    const deletedListWrapperClass = cn(
+                      "w-full flex flex-col gap-1",
+                      isDeleted && "group",
+                      showDeletedPlaceholder && "cursor-pointer text-muted-foreground/80"
+                    );
+                    const deletedListHandlers = isDeleted
+                      ? {
+                        role: "button" as const,
+                        tabIndex: 0,
+                        onClick: () => toggleDeletedMessage(messageId),
+                        onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleDeletedMessage(messageId);
+                          }
+                        },
+                      }
+                      : {};
+
+                    return (
+                      <div key={messageId} className="space-y-1">
+                        {showDateSeparator && (
+                          <div
+                            className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                            role="separator"
+                            aria-label={formatDateSeparator(messageDate, t)}
+                          >
+                            <span className="h-px flex-1 bg-border" />
+                            <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                            <span className="h-px flex-1 bg-border" />
+                          </div>
+                        )}
+                        {showUnreadDivider && (
+                          <div
+                            className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                            role="separator"
+                            aria-label={t("new_messages_separator")}
+                          >
+                            <span className="h-px flex-1 bg-border" />
+                            {t("new_messages_separator")}
+                            <span className="h-px flex-1 bg-border" />
+                          </div>
+                        )}
+                        <div
+                          className={cn(
+                            "flex items-start py-1 scroll-mt-28 group relative",
+                            isUnread && "border border-primary/30 bg-primary/5 px-2"
+                          )}
+                          ref={registerMessageNode(messageId)}
+                          data-message-id={messageId}
+                          onMouseEnter={() => setOpenActionsMessageId(messageId)}
+                          onMouseLeave={() => setOpenActionsMessageId(null)}
+                        >
+                          {/* Left column */}
+                          <div className="flex flex-col items-center min-w-[60px]">
+                            {showSender ? (
+                              <>
+                                <button
+                                  onClick={() =>
+                                    handleAvatarClick(
+                                      message.senderAvatarUrl,
+                                      displayName
+                                    )
+                                  }
+                                  className="shrink-0"
+                                >
+                                  <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
+                                    <AvatarImage src={message.senderAvatarUrl} />
+                                    <AvatarFallback className="text-xs">
+                                      {message.isFromMe
+                                        ? t("me")
+                                        : displayName.substring(0, 2).toUpperCase()}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                </button>
+                                <span className="text-xs text-muted-foreground mt-1">
+                                  {timeString}
+                                </span>
+                              </>
+                            ) : (
+                              <span
+                                className="text-xs text-muted-foreground leading-none"
+                                style={{ marginTop: "10px" }}
+                              >
+                                {timeString}
+                              </span>
+                            )}
+                          </div>
+                          {/* Right column with 20px margin */}
+                          <div className="flex flex-col items-start ml-5 flex-1 min-w-0 relative">
+                            {showSender && (
+                              <span
+                                className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
+                                style={{ color: senderColor }}
+                              >
+                                {displayName}
+                              </span>
+                            )}
+                            <div className="w-full flex items-start gap-2">
+                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
+                                {!isDeleted && editingMessageId !== messageId && (
+                                  <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                                    <MessageActions
+                                      isFromMe={message.isFromMe}
+                                      hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                      onEdit={() => handleEditMessage(message)}
+                                      onDelete={() => handleDeleteClick(message)}
+                                      messageId={messageId}
+                                      openActionsMessageId={openActionsMessageId}
+                                    />
+                                  </div>
+                                )}
+                                {showDeletedPlaceholder ? (
+                                  <div className="flex flex-col gap-1">
+                                    <div
+                                      className="text-xs italic text-muted-foreground/80 flex items-center gap-2 leading-none text-left cursor-pointer"
+                                      style={{ marginTop: "10px" }}
+                                      {...deletedListHandlers}
+                                    >
+                                      <span>{t("message_deleted")}</span>
+                                      <span className="text-[10px] uppercase tracking-wide hidden group-hover:inline">
+                                        {t("click_to_view_deleted")}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div
+                                      className={deletedListWrapperClass}
+                                      {...deletedListHandlers}
+                                    >
+                                      {isDeleted && (
+                                        <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">
+                                          {t("deleted_message_badge")}
+                                        </span>
+                                      )}
+                                      {editingMessageId === messageId ? (
+                                        <div className="flex flex-col gap-2 w-full">
+                                          <Input
+                                            value={editingText}
+                                            onChange={(e) => setEditingText(e.target.value)}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter" && !e.shiftKey) {
+                                                e.preventDefault();
+                                                handleSaveEdit(false);
+                                              } else if (e.key === "Escape") {
+                                                handleCancelEdit();
+                                              }
+                                            }}
+                                            onBlur={(e) => {
+                                              // Only save if the blur is not caused by clicking on a button
+                                              const relatedTarget = e.relatedTarget as HTMLElement | null;
+                                              if (!relatedTarget || (!relatedTarget.closest('button') && !relatedTarget.closest('[role="button"]'))) {
+                                                handleSaveEdit(false);
+                                              }
+                                            }}
+                                            className="text-foreground"
+                                            autoFocus
+                                          />
+                                          <div className="flex gap-2 justify-end">
+                                            <button
+                                              onClick={handleCancelEdit}
+                                              className="text-xs px-2 py-1 rounded hover:bg-muted"
+                                            >
+                                              {t("cancel")}
+                                            </button>
+                                            <button
+                                              onClick={() => handleSaveEdit(false)}
+                                              className="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                            >
+                                              {t("save")}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <>
+                                          {!showSender && message.body && (
+                                            <p
+                                              className="text-foreground text-left m-0 leading-none"
+                                              style={{ marginTop: "10px" }}
+                                            >
+                                              {message.body}
+                                              {message.isEdited && (
+                                                <span className="text-muted-foreground ml-1 text-xs italic">
+                                                  ({t("edited")})
+                                                </span>
+                                              )}
+                                            </p>
+                                          )}
+                                          {showSender && message.body && message.body.trim() !== "" && (
+                                            <p className="text-foreground text-left m-0">
+                                              {message.body}
+                                              {message.isEdited && (
+                                                <span className="text-muted-foreground ml-1 text-xs italic">
+                                                  ({t("edited")})
+                                                </span>
+                                              )}
+                                            </p>
+                                          )}
+                                          {message.attachments &&
+                                            message.attachments.trim() !== "" && (
+                                              <MessageAttachments
+                                                attachments={message.attachments}
+                                                isFromMe={message.isFromMe}
+                                              />
+                                            )}
+                                          {!showSender && (
+                                            <>
+                                              <MessageAttachments
+                                                attachments={message.attachments || ""}
+                                                isFromMe={message.isFromMe}
+                                                layout="bubble"
+                                              />
+                                              <MessageAttachments
+                                                attachments={message.attachments || ""}
+                                                isFromMe={message.isFromMe}
+                                                layout="irc"
+                                              />
+                                            </>
+                                          )}
+                                          {(!message.body || message.body.trim() === "") &&
+                                            (!message.attachments ||
+                                              message.attachments.trim() === "") && (
+                                              <p className="text-sm opacity-70 italic">
+                                                {t("empty_message")}
+                                              </p>
+                                            )}
+                                        </>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                              {message.isFromMe && (
+                                <MessageStatus
+                                  message={message}
+                                  isGroup={isGroupConversation}
+                                  allMessages={mainMessages}
+                                  layout="irc"
+                                />
+                              )}
+                            </div>
+                            {isUnread && (
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">
+                                {t("unread_indicator")}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {hasThread && lastThreadMsg && (
+                          <button
+                            onClick={() => handleThreadClick(message.protocolMsgId)}
+                            className="ml-[80px] flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%]"
+                          >
+                            <button
+                              onClick={() =>
+                                handleAvatarClick(
+                                  lastThreadMsg.senderAvatarUrl,
+                                  getSenderDisplayName(
+                                    lastThreadMsg.senderName,
+                                    lastThreadMsg.senderId,
+                                    lastThreadMsg.isFromMe,
+                                    t
+                                  )
+                                )
+                              }
+                              className="shrink-0"
+                            >
+                              <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
+                                <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
+                                <AvatarFallback className="text-xs">
+                                  {getSenderDisplayName(
+                                    lastThreadMsg.senderName,
+                                    lastThreadMsg.senderId,
+                                    lastThreadMsg.isFromMe,
+                                    t
+                                  )
+                                    .substring(0, 2)
+                                    .toUpperCase()}
+                                </AvatarFallback>
+                              </Avatar>
+                            </button>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-muted-foreground truncate">
+                                {lastThreadMsg.body.length > 50
+                                  ? `${lastThreadMsg.body.substring(0, 50)}...`
+                                  : lastThreadMsg.body}
+                              </p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <p className="text-xs text-muted-foreground/70">
+                                  {timeToDate(
+                                    lastThreadMsg.timestamp
+                                  ).toLocaleTimeString()}
+                                </p>
+                                {threadCount > 0 && (
+                                  <span className="text-xs text-muted-foreground/70">
+                                    ·{" "}
+                                    {threadCount === 1
+                                      ? t("single_reply")
+                                      : t("multiple_replies", { count: threadCount })}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {isFetchingNextPage && (
+                <div
+                  id="loading-bar-top"
+                  className="flex justify-center items-center h-16 w-full bg-muted/30"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm text-muted-foreground">{t("loading")}</span>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="shrink-0">
+          <ChatInput
+            onFileUploadRequest={(files, filePaths) => {
+              setPendingFiles(files);
+              setPendingFilePaths(filePaths || []);
+              setIsFileUploadModalOpen(true);
+            }}
+          />
+        </div>
+        <FileUploadModal
+          open={isFileUploadModalOpen}
+          onOpenChange={setIsFileUploadModalOpen}
+          files={pendingFiles}
+          filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
+          onConfirm={handleFileUpload}
         />
+        <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t("delete_message_title")}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("delete_message_description")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setDeleteConfirmOpen(false)}>
+                {t("cancel")}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleConfirmDelete}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {t("delete_message")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
-      <FileUploadModal
-        open={isFileUploadModalOpen}
-        onOpenChange={setIsFileUploadModalOpen}
-        files={pendingFiles}
-        filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
-        onConfirm={handleFileUpload}
-      />
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("delete_message_title")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("delete_message_description")}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteConfirmOpen(false)}>
-              {t("cancel")}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleConfirmDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {t("delete_message")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
     </>
   );
 }
