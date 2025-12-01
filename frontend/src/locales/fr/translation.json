@@ -134,5 +134,9 @@
   "onboarding_welcome_title": "Bienvenue sur Loom",
   "onboarding_welcome_description": "Loom est un outil de messagerie moderne qui vous permet de centraliser vos conversations en vous connectant à plusieurs plateformes de messagerie. Pour commencer à l'utiliser, configurez le ou les fournisseurs de votre choix.",
   "onboarding_configure_button": "Configurer une messagerie",
-  "providers": "Comptes"
+  "providers": "Comptes",
+  "data_management": "Gestion des données",
+  "clear_read_state": "Effacer le cache d'état de lecture",
+  "clear_read_state_confirm": "Cela réinitialisera tous les états de lecture des messages. Continuer ?",
+  "clear_read_state_description": "Réinitialise tous les états de lecture des messages. Cela ne supprimera pas vos messages."
 }
