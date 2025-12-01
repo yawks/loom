@@ -3,7 +3,7 @@ import type { models } from "../../wailsjs/go/models";
 
 interface AppState {
   selectedContact: models.MetaContact | null;
-  setSelectedContact: (contact: models.MetaContact | null) => void;
+  setSelectedContact: (contact: models.MetaContact | null, skipHistory?: boolean) => void;
   showThreads: boolean;
   setShowThreads: (show: boolean) => void;
   selectedThreadId: string | null;
@@ -22,6 +22,12 @@ interface AppState {
   setSelectedAvatarUrl: (url: string | null) => void;
   metaContacts: models.MetaContact[];
   setMetaContacts: (contacts: models.MetaContact[]) => void;
+  // Navigation history
+  conversationHistory: models.MetaContact[];
+  historyIndex: number;
+  addToHistory: (contact: models.MetaContact) => void;
+  navigateHistoryBack: () => models.MetaContact | null;
+  navigateHistoryForward: () => models.MetaContact | null;
 }
 
 // Load initial values from localStorage
@@ -45,9 +51,14 @@ const saveToStorage = <T>(key: string, value: T): void => {
   }
 };
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   selectedContact: null,
-  setSelectedContact: (contact) => set({ selectedContact: contact }),
+  setSelectedContact: (contact, skipHistory = false) => {
+    set({ selectedContact: contact });
+    if (contact && !skipHistory) {
+      get().addToHistory(contact);
+    }
+  },
   showThreads: false,
   setShowThreads: (show) => set({ showThreads: show }),
   selectedThreadId: null,
@@ -86,4 +97,54 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
   metaContacts: [],
   setMetaContacts: (contacts) => set({ metaContacts: contacts }),
+  // Navigation history
+  conversationHistory: [],
+  historyIndex: -1,
+  addToHistory: (contact) => {
+    set((state) => {
+      // Remove any future history if we're not at the end
+      const newHistory = state.historyIndex >= 0 
+        ? state.conversationHistory.slice(0, state.historyIndex + 1)
+        : [];
+      
+      // Don't add if it's the same as the current contact
+      if (newHistory.length > 0 && newHistory[newHistory.length - 1]?.id === contact.id) {
+        return state;
+      }
+      
+      // Add new contact to history
+      newHistory.push(contact);
+      // Limit history to 50 entries
+      const limitedHistory = newHistory.slice(-50);
+      
+      return {
+        conversationHistory: limitedHistory,
+        historyIndex: limitedHistory.length - 1,
+      };
+    });
+  },
+  navigateHistoryBack: () => {
+    let result: models.MetaContact | null = null;
+    set((state) => {
+      if (state.historyIndex > 0) {
+        const newIndex = state.historyIndex - 1;
+        result = state.conversationHistory[newIndex] || null;
+        return { historyIndex: newIndex };
+      }
+      return state;
+    });
+    return result;
+  },
+  navigateHistoryForward: () => {
+    let result: models.MetaContact | null = null;
+    set((state) => {
+      if (state.historyIndex < state.conversationHistory.length - 1) {
+        const newIndex = state.historyIndex + 1;
+        result = state.conversationHistory[newIndex] || null;
+        return { historyIndex: newIndex };
+      }
+      return state;
+    });
+    return result;
+  },
 }));

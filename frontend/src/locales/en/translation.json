@@ -138,5 +138,12 @@
   "data_management": "Data Management",
   "clear_read_state": "Clear Read State Cache",
   "clear_read_state_confirm": "This will reset all message read states. Continue?",
-  "clear_read_state_description": "Reset all message read states. This will not delete your messages."
+  "clear_read_state_description": "Reset all message read states. This will not delete your messages.",
+  "keyboard_shortcuts": "Keyboard Shortcuts",
+  "shortcut_navigate_unread_up": "Navigate to unread conversation above",
+  "shortcut_navigate_unread_down": "Navigate to unread conversation below",
+  "shortcut_navigate_history_back": "Previous conversation in history",
+  "shortcut_navigate_history_forward": "Next conversation in history",
+  "shortcut_navigate_list_up": "Navigate to conversation above in list",
+  "shortcut_navigate_list_down": "Navigate to conversation below in list"
 }

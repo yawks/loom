@@ -138,5 +138,12 @@
   "data_management": "Gestion des données",
   "clear_read_state": "Effacer le cache d'état de lecture",
   "clear_read_state_confirm": "Cela réinitialisera tous les états de lecture des messages. Continuer ?",
-  "clear_read_state_description": "Réinitialise tous les états de lecture des messages. Cela ne supprimera pas vos messages."
+  "clear_read_state_description": "Réinitialise tous les états de lecture des messages. Cela ne supprimera pas vos messages.",
+  "keyboard_shortcuts": "Raccourcis clavier",
+  "shortcut_navigate_unread_up": "Aller à la conversation non lue au-dessus",
+  "shortcut_navigate_unread_down": "Aller à la conversation non lue en dessous",
+  "shortcut_navigate_history_back": "Conversation précédente dans l'historique",
+  "shortcut_navigate_history_forward": "Conversation suivante dans l'historique",
+  "shortcut_navigate_list_up": "Aller à la conversation au-dessus dans la liste",
+  "shortcut_navigate_list_down": "Aller à la conversation en dessous dans la liste"
 }
