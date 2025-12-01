@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
+import { ChevronDown, MessageSquare, Moon, Sun, Terminal, Trash2, Type } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useEffect, useState } from "react";
+
+import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type, Trash2, Keyboard } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
+import i18n from "@/i18n";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
-import i18n from "@/i18n";
-import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 interface SettingsModalProps {
   open: boolean;

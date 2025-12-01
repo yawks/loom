@@ -1,3 +1,4 @@
+import { AddReaction, DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile } from "../../wailsjs/go/main/App";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -9,7 +10,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, SendFile } from "../../wailsjs/go/main/App";
 import { ToastContainer, useToast } from "@/components/ui/toast";
 import { cn, timeToDate } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -22,6 +22,7 @@ import type { KeyboardEvent } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
+import { MessageReactions } from "./MessageReactions";
 import { MessageStatus } from "./MessageStatus";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
@@ -456,6 +457,86 @@ export function MessageList({
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const { toasts, showToast, closeToast } = useToast();
+  const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
+
+  // Get current user ID from messages
+  const currentUserId = useMemo(() => {
+    for (const msg of messages) {
+      if (msg.isFromMe && msg.senderId) {
+        return msg.senderId;
+      }
+    }
+    return undefined;
+  }, [messages]);
+
+  // Load participant names for groups
+  useEffect(() => {
+    if (!isGroupConversation || !conversationId) {
+      return;
+    }
+    const loadParticipantNames = async () => {
+      try {
+        // Get unique user IDs from reactions
+        const userIds = new Set<string>();
+        messages.forEach((msg) => {
+          if (msg.reactions) {
+            msg.reactions.forEach((reaction) => {
+              userIds.add(reaction.userId);
+            });
+          }
+        });
+        if (userIds.size > 0) {
+          // Normalize IDs by removing ":digits" part (LID format)
+          // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
+          const normalizedIds = Array.from(userIds).map(id => id.replace(/:\d+@/, "@"));
+          const names = await GetParticipantNames(normalizedIds);
+          
+          // Create a map that includes both normalized and original IDs
+          const namesMap = new Map<string, string>();
+          Array.from(userIds).forEach((originalId, index) => {
+            const normalizedId = normalizedIds[index];
+            const name = names[normalizedId];
+            if (name) {
+              // Map both the original ID and normalized ID to the same name
+              namesMap.set(originalId, name);
+              namesMap.set(normalizedId, name);
+            }
+          });
+          setParticipantNames(namesMap);
+        }
+      } catch (error) {
+        console.error("Failed to load participant names:", error);
+      }
+    };
+    loadParticipantNames();
+  }, [isGroupConversation, conversationId, messages]);
+
+  // Handle reaction
+  const handleReaction = useCallback(async (message: models.Message, emoji: string) => {
+    const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
+    const messageReactions = message.reactions || [];
+    const hasReaction = messageReactions.some(
+      (r) => r.emoji === emoji && r.userId === currentUserId
+    );
+
+    try {
+      if (hasReaction) {
+        await RemoveReaction(conversationId, protocolMsgId, emoji);
+      } else {
+        await AddReaction(conversationId, protocolMsgId, emoji);
+      }
+      // Invalidate and refetch messages
+      queryClient.invalidateQueries({
+        queryKey: ["messages", conversationId],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", conversationId],
+      });
+    } catch (error) {
+      console.error("Failed to handle reaction:", error);
+      showToast(t("error"), "error");
+    }
+  }, [conversationId, currentUserId, queryClient, t, showToast]);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -483,16 +564,49 @@ export function MessageList({
     // This handles messages that were deleted, filtered out (empty messages), or no longer exist
     cleanupObsoleteMessages(conversationId, allMessageIds);
     
-    // Log pour déboguer : vérifier s'il y a des messages non lus qui ne sont pas dans les messages chargés
+    // Debug log: check if there are unread messages that are not in the loaded messages
     const unreadInStore = Object.entries(conversationReadState)
       .filter(([, isRead]) => !isRead)
       .map(([msgId]) => msgId);
     const unreadNotInMessages = unreadInStore.filter(msgId => !allMessageIds.has(msgId));
     
     if (unreadNotInMessages.length > 0) {
-      console.log(`MessageList: Conversation ${conversationId} - Cleaning up ${unreadNotInMessages.length} unread messages that are not in loaded messages`);
+      console.log(`MessageList: Conversation ${conversationId} - Cleaning up ${unreadNotInMessages.length} unread messages that are not in loaded messages:`, unreadNotInMessages);
+      // Force cleanup of these obsolete unread messages
+      // This ensures messages that no longer exist (like reactions that were incorrectly counted) are removed
+      cleanupObsoleteMessages(conversationId, allMessageIds);
     }
   }, [conversationId, messages, syncConversation, cleanupObsoleteMessages, conversationReadState]);
+
+  // Mark all visible messages as read when conversation is opened
+  useEffect(() => {
+    if (!conversationId) {
+      return;
+    }
+    
+    // Mark all loaded messages as read
+    if (mainMessages.length > 0) {
+      mainMessages.forEach((msg) => {
+        const messageId = getMessageDomId(msg);
+        if (conversationReadState[messageId] === false) {
+          markMessageAsRead(conversationId, messageId);
+        }
+      });
+    }
+    
+    // Also mark all unread messages in the store as read (including obsolete ones)
+    // This ensures that when a conversation is opened, all messages are marked as read
+    const unreadMessages = Object.entries(conversationReadState)
+      .filter(([, isRead]) => !isRead)
+      .map(([msgId]) => msgId);
+    
+    if (unreadMessages.length > 0) {
+      console.log(`MessageList: Marking ${unreadMessages.length} unread messages as read for conversation ${conversationId}`);
+      unreadMessages.forEach((msgId) => {
+        markMessageAsRead(conversationId, msgId);
+      });
+    }
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState]);
 
   const firstUnreadMessageId = useMemo(() => {
     for (const message of mainMessages) {
@@ -1374,13 +1488,17 @@ export function MessageList({
                                     )}
                                   </div>
                                 </div>
-                                {!isDeleted && editingMessageId !== messageId && message.isFromMe && (
+                                {!isDeleted && editingMessageId !== messageId && (
                                   <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
                                     <MessageActions
                                       isFromMe={message.isFromMe}
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
                                       onEdit={() => handleEditMessage(message)}
                                       onDelete={() => handleDeleteClick(message)}
+                                      onReact={(emoji) => handleReaction(message, emoji)}
+                                      currentReactions={(message.reactions || [])
+                                        .filter((r) => r.userId === currentUserId)
+                                        .map((r) => r.emoji)}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
                                     />
@@ -1394,6 +1512,16 @@ export function MessageList({
                                 )}>
                                   {t("edited")}
                                 </span>
+                              )}
+                              {message.reactions && message.reactions.length > 0 && (
+                                <MessageReactions
+                                  reactions={message.reactions}
+                                  isGroup={isGroupConversation}
+                                  participantNames={participantNames}
+                                  currentUserId={currentUserId}
+                                  onReactionClick={(emoji) => handleReaction(message, emoji)}
+                                  className={message.isFromMe ? "self-end" : "self-start"}
+                                />
                               )}
                               <MessageStatus
                                 message={message}
@@ -1650,6 +1778,10 @@ export function MessageList({
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
                                       onEdit={() => handleEditMessage(message)}
                                       onDelete={() => handleDeleteClick(message)}
+                                      onReact={(emoji) => handleReaction(message, emoji)}
+                                      currentReactions={(message.reactions || [])
+                                        .filter((r) => r.userId === currentUserId)
+                                        .map((r) => r.emoji)}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
                                     />
@@ -1785,6 +1917,15 @@ export function MessageList({
                                 />
                               )}
                             </div>
+                            {message.reactions && message.reactions.length > 0 && (
+                              <MessageReactions
+                                reactions={message.reactions}
+                                isGroup={isGroupConversation}
+                                participantNames={participantNames}
+                                currentUserId={currentUserId}
+                                onReactionClick={(emoji) => handleReaction(message, emoji)}
+                              />
+                            )}
                             {isUnread && (
                               <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">
                                 {t("unread_indicator")}

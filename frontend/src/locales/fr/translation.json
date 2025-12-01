@@ -145,5 +145,6 @@
   "shortcut_navigate_history_back": "Conversation précédente dans l'historique",
   "shortcut_navigate_history_forward": "Conversation suivante dans l'historique",
   "shortcut_navigate_list_up": "Aller à la conversation au-dessus dans la liste",
-  "shortcut_navigate_list_down": "Aller à la conversation en dessous dans la liste"
+  "shortcut_navigate_list_down": "Aller à la conversation en dessous dans la liste",
+  "react": "Réagir"
 }
