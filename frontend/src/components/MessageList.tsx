@@ -342,6 +342,9 @@ export function MessageList({
   const syncConversation = useMessageReadStore(
     (state) => state.syncConversation
   );
+  const cleanupObsoleteMessages = useMessageReadStore(
+    (state) => state.cleanupObsoleteMessages
+  );
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
   const readByConversation = useMessageReadStore(
     (state) => state.readByConversation
@@ -357,6 +360,16 @@ export function MessageList({
     const threads: Record<string, models.Message[]> = {};
 
     messages.forEach((msg) => {
+      // Skip empty messages (no body and no attachments)
+      const hasBody = msg.body && msg.body.trim() !== "";
+      const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
+      const isEmpty = !hasBody && !hasAttachments;
+      
+      if (isEmpty) {
+        // Skip empty messages completely
+        return;
+      }
+
       if (!msg.threadId) {
         // This is a main message
         main.push(msg);
@@ -414,20 +427,14 @@ export function MessageList({
           // Mark that we've done the initial scroll
           isInitialLoadRef.current = false;
           return;
-        } else {
-
         }
       }
 
       // No unread messages, scroll to bottom
-
-
       container.scrollTop = container.scrollHeight;
 
       // Mark that we've done the initial scroll
       isInitialLoadRef.current = false;
-    } else {
-
     }
   }, [messages, isLoading, isFetchingNextPage, mainMessages, conversationReadState]);
 
@@ -459,11 +466,33 @@ export function MessageList({
   };
 
   useEffect(() => {
-    if (!conversationId) {
+    if (!conversationId || messages.length === 0) {
       return;
     }
-    syncConversation(conversationId, mainMessages);
-  }, [conversationId, mainMessages, syncConversation]);
+    // Sync with ALL messages (not just mainMessages) to ensure we clean up messages
+    // that were filtered out (empty messages) or are no longer in the conversation
+    syncConversation(conversationId, messages);
+    
+    // Create a set of all valid message IDs (from all loaded messages)
+    const allMessageIds = new Set(messages.map(msg => {
+      const id = getMessageDomId(msg);
+      return id;
+    }));
+    
+    // Cleanup obsolete messages that are not in the loaded messages
+    // This handles messages that were deleted, filtered out (empty messages), or no longer exist
+    cleanupObsoleteMessages(conversationId, allMessageIds);
+    
+    // Log pour déboguer : vérifier s'il y a des messages non lus qui ne sont pas dans les messages chargés
+    const unreadInStore = Object.entries(conversationReadState)
+      .filter(([, isRead]) => !isRead)
+      .map(([msgId]) => msgId);
+    const unreadNotInMessages = unreadInStore.filter(msgId => !allMessageIds.has(msgId));
+    
+    if (unreadNotInMessages.length > 0) {
+      console.log(`MessageList: Conversation ${conversationId} - Cleaning up ${unreadNotInMessages.length} unread messages that are not in loaded messages`);
+    }
+  }, [conversationId, messages, syncConversation, cleanupObsoleteMessages, conversationReadState]);
 
   const firstUnreadMessageId = useMemo(() => {
     for (const message of mainMessages) {

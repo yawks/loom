@@ -3,9 +3,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
-import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type } from "lucide-react";
+import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/lib/store";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -242,6 +243,38 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                 ))}
               </div>
             </div>
+          </div>
+          <div className="border-t" />
+          <div className="space-y-3">
+            <div className="text-sm font-semibold">
+              {t("data_management") || "Data Management"}
+            </div>
+            <Button
+              variant="outline"
+              className="w-full justify-start text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => {
+                if (window.confirm(t("clear_read_state_confirm") || "This will reset all message read states. Continue?")) {
+                  // Clear all conversations from the read store
+                  const readStore = useMessageReadStore.getState();
+                  const conversations = Object.keys(readStore.readByConversation);
+                  conversations.forEach((convId) => {
+                    readStore.clearConversation(convId);
+                  });
+                  // Also clear localStorage directly
+                  if (typeof window !== "undefined") {
+                    window.localStorage.removeItem("loom-message-read-state");
+                  }
+                  // Reload the page to refresh the UI
+                  window.location.reload();
+                }
+              }}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {t("clear_read_state") || "Clear Read State Cache"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {t("clear_read_state_description") || "Reset all message read states. This will not delete your messages."}
+            </p>
           </div>
         </div>
       </DialogContent>
