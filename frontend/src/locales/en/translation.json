@@ -130,5 +130,9 @@
   "status_read": "Read",
   "status_sent_detail": "Sent",
   "status_delivered_detail": "Delivered",
-  "status_read_detail": "Read"
+  "status_read_detail": "Read",
+  "onboarding_welcome_title": "Welcome to Loom",
+  "onboarding_welcome_description": "Loom is a modern messaging tool that allows you to centralize your conversations by connecting to multiple messaging platforms. To get started, configure one or more providers of your choice.",
+  "onboarding_configure_button": "Configure a Provider",
+  "providers": "Providers"
 }
