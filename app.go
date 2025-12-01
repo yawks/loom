@@ -302,15 +302,64 @@ func (a *App) startEventListener(ctx context.Context) {
 					}
 
 				case core.ReactionEvent:
-					// Serialize the reaction to JSON
+					log.Printf("App: Received ReactionEvent: conversation=%s, message=%s, user=%s, emoji=%s, added=%v", e.ConversationID, e.MessageID, e.UserID, e.Emoji, e.Added)
+					
+					// Save reaction to database
+					if db.DB != nil {
+						// Find the message by protocol message ID
+						var message models.Message
+						if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", e.MessageID, e.ConversationID).First(&message).Error; err == nil {
+							if e.Added {
+								// Check if reaction already exists
+								var existingReaction models.Reaction
+								reactionExists := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).First(&existingReaction).Error == nil
+
+								if !reactionExists {
+									// Create new reaction
+									reaction := models.Reaction{
+										MessageID: message.ID,
+										UserID:    e.UserID,
+										Emoji:     e.Emoji,
+										CreatedAt: time.Unix(e.Timestamp, 0),
+										UpdatedAt: time.Unix(e.Timestamp, 0),
+									}
+									if err := db.DB.Create(&reaction).Error; err != nil {
+										log.Printf("App: Failed to save reaction to database: %v", err)
+									} else {
+										log.Printf("App: Saved reaction to database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+									}
+								} else {
+									log.Printf("App: Reaction already exists in database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+								}
+							} else {
+								// Remove reaction
+								var existingReaction models.Reaction
+								if err := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).First(&existingReaction).Error; err == nil {
+									if err := db.DB.Delete(&existingReaction).Error; err != nil {
+										log.Printf("App: Failed to delete reaction from database: %v", err)
+									} else {
+										log.Printf("App: Deleted reaction from database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+									}
+								} else {
+									log.Printf("App: Reaction not found in database for deletion: message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+								}
+							}
+						} else {
+							log.Printf("App: Message not found in database for reaction: conversation %s, message %s (this is OK if message hasn't been loaded yet)", e.ConversationID, e.MessageID)
+						}
+					}
+
+					// Always emit the event to the frontend, even if message wasn't found in database
+					// The frontend will handle updating the UI when the message is loaded
 					reactionJSON, err := json.Marshal(e)
 					if err != nil {
-						log.Printf("Failed to marshal reaction: %v", err)
+						log.Printf("App: Failed to marshal reaction: %v", err)
 						continue
 					}
 					// Emit the event to the frontend
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "reaction", string(reactionJSON))
+						log.Printf("App: Emitted reaction event to frontend: conversation=%s, message=%s, emoji=%s", e.ConversationID, e.MessageID, e.Emoji)
 					}
 
 				case core.TypingEvent:
@@ -791,6 +840,22 @@ func (a *App) SendFileFromPath(conversationID string, filePath string) (*models.
 // GetThreads returns all messages in a thread for a given parent message ID.
 func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	return a.provider.GetThreads(parentMessageID)
+}
+
+// AddReaction adds a reaction (emoji) to a message.
+func (a *App) AddReaction(conversationID string, messageID string, emoji string) error {
+	if a.provider == nil {
+		return fmt.Errorf("no active provider")
+	}
+	return a.provider.AddReaction(conversationID, messageID, emoji)
+}
+
+// RemoveReaction removes a reaction (emoji) from a message.
+func (a *App) RemoveReaction(conversationID string, messageID string, emoji string) error {
+	if a.provider == nil {
+		return fmt.Errorf("no active provider")
+	}
+	return a.provider.RemoveReaction(conversationID, messageID, emoji)
 }
 
 // MarkMessageAsRead sends a read receipt for a specific message.

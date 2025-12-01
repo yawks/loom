@@ -9,12 +9,15 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
+import { ReactionPicker } from "./ReactionPicker";
 
 interface MessageActionsProps {
   isFromMe: boolean;
   hasAttachments: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onReact?: (emoji: string) => void;
+  currentReactions?: string[];
   className?: string;
   messageId?: string;
   openActionsMessageId?: string | null;
@@ -25,6 +28,8 @@ export function MessageActions({
   hasAttachments,
   onEdit,
   onDelete,
+  onReact,
+  currentReactions = [],
   className,
   messageId,
   openActionsMessageId,
@@ -53,56 +58,62 @@ export function MessageActions({
     }
   }, [canBeOpen, internalOpen]);
 
-  // Only show actions for messages from the current user
-  if (!isFromMe) {
-    return null;
-  }
-
   return (
-    <Popover open={open} onOpenChange={setInternalOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn(
-            "h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity border bg-background",
-            className
-          )}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <MoreVertical className="h-4 w-4" />
-          <span className="sr-only">{t("message_actions")}</span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-40 p-1 border" align="end">
-        <div className="flex flex-col">
-          {!hasAttachments && (
+    <div className={cn("flex items-center gap-1", className)}>
+      {onReact && (
+        <ReactionPicker
+          onReactionSelect={onReact}
+          currentReactions={currentReactions}
+          className="opacity-0 group-hover:opacity-100 transition-opacity"
+        />
+      )}
+      {isFromMe && (
+        <Popover open={open} onOpenChange={setInternalOpen}>
+          <PopoverTrigger asChild>
             <Button
               variant="ghost"
-              className="justify-start gap-2 h-9"
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit();
-              }}
+              size="icon"
+              className={cn(
+                "h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity border bg-background",
+                className
+              )}
+              onClick={(e) => e.stopPropagation()}
             >
-              <Edit className="h-4 w-4" />
-              {t("edit_message")}
+              <MoreVertical className="h-4 w-4" />
+              <span className="sr-only">{t("message_actions")}</span>
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-          >
-            <Trash2 className="h-4 w-4" />
-            {t("delete_message")}
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
+          </PopoverTrigger>
+          <PopoverContent className="w-40 p-1 border" align="end">
+            <div className="flex flex-col">
+              {!hasAttachments && (
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-2 h-9"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit();
+                  }}
+                >
+                  <Edit className="h-4 w-4" />
+                  {t("edit_message")}
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                {t("delete_message")}
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
   );
 }
 
