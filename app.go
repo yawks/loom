@@ -649,6 +649,106 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 }
 
 // GetMessagesForConversation returns messages for a given conversation ID.
+// ResolveLID attempts to resolve a WhatsApp Local ID (LID) to a standard JID
+// by searching through the database for messages or conversations involving this LID.
+func (a *App) ResolveLID(lid string) (string, error) {
+	fmt.Printf("App.ResolveLID: Attempting to resolve LID %s\n", lid)
+	
+	// First, check if it's actually a LID
+	if !strings.HasSuffix(lid, "@lid") {
+		fmt.Printf("App.ResolveLID: %s is not a LID, returning as-is\n", lid)
+		return lid, nil
+	}
+	
+	// Extract the phone number from the LID (e.g., "176188215558395@lid" -> "176188215558395")
+	lidNumber := strings.TrimSuffix(lid, "@lid")
+	fmt.Printf("App.ResolveLID: Extracted number from LID: %s\n", lidNumber)
+	
+	// Strategy 0: Try to find a contact whose phone number matches this LID number
+	// The LID number might be the same as a phone number in the format "33XXXXXXXXX@s.whatsapp.net"
+	// We'll search for linked accounts with user_id containing this number
+	var matchingAccounts []models.LinkedAccount
+	if err := db.DB.Where("user_id LIKE ?", "%"+lidNumber+"%").Find(&matchingAccounts).Error; err == nil {
+		fmt.Printf("App.ResolveLID: Found %d linked accounts with phone number containing %s\n", len(matchingAccounts), lidNumber)
+		for _, la := range matchingAccounts {
+			fmt.Printf("App.ResolveLID: - Linked account: %s (protocol: %s)\n", la.UserID, la.Protocol)
+			// If it's a WhatsApp account and ends with @s.whatsapp.net, use it
+			if la.Protocol == "whatsapp" && strings.HasSuffix(la.UserID, "@s.whatsapp.net") {
+				fmt.Printf("App.ResolveLID: Resolved LID %s to %s via phone number match\n", lid, la.UserID)
+				return la.UserID, nil
+			}
+		}
+	}
+	
+	// Strategy 1: Search for messages where this LID is the sender
+	var messages []models.Message
+	if err := db.DB.Where("sender_id = ?", lid).Limit(1).Find(&messages).Error; err == nil && len(messages) > 0 {
+		fmt.Printf("App.ResolveLID: Found message with sender_id = %s\n", lid)
+		// Found a message with this LID as sender
+		// The protocol_conv_id should be the real conversation ID
+		if messages[0].ProtocolConvID != "" && messages[0].ProtocolConvID != lid {
+			fmt.Printf("App.ResolveLID: Resolved LID %s to %s via message sender\n", lid, messages[0].ProtocolConvID)
+			return messages[0].ProtocolConvID, nil
+		}
+	} else {
+		fmt.Printf("App.ResolveLID: No messages found with sender_id = %s (error: %v)\n", lid, err)
+	}
+	
+	// Strategy 1.5: Search for messages where this LID is in the protocol_conv_id
+	// In 1-on-1 chats, the protocol_conv_id could be this LID
+	if err := db.DB.Where("protocol_conv_id = ?", lid).Limit(1).Find(&messages).Error; err == nil && len(messages) > 0 {
+		fmt.Printf("App.ResolveLID: Found message with protocol_conv_id = %s\n", lid)
+		// Found a message in this conversation
+		// Try to find who sent it - if it's not us, use their JID
+		if messages[0].SenderID != "" && messages[0].SenderID != lid && strings.HasSuffix(messages[0].SenderID, "@s.whatsapp.net") {
+			fmt.Printf("App.ResolveLID: Resolved LID %s to %s via message in conversation\n", lid, messages[0].SenderID)
+			return messages[0].SenderID, nil
+		}
+	} else {
+		fmt.Printf("App.ResolveLID: No messages found with protocol_conv_id = %s (error: %v)\n", lid, err)
+	}
+	
+	// Strategy 2: Search for conversations where this LID is the protocol_conv_id
+	var conversations []models.Conversation
+	if err := db.DB.Where("protocol_conv_id = ?", lid).Find(&conversations).Error; err == nil && len(conversations) > 0 {
+		// Found a conversation with this LID
+		// Get the linked account for this conversation to find the meta_contact_id
+		if conversations[0].LinkedAccountID != 0 {
+			var linkedAccount models.LinkedAccount
+			if err := db.DB.First(&linkedAccount, conversations[0].LinkedAccountID).Error; err == nil {
+				// Now find all linked accounts for this meta contact
+				var allLinkedAccounts []models.LinkedAccount
+				if err := db.DB.Where("meta_contact_id = ?", linkedAccount.MetaContactID).Find(&allLinkedAccounts).Error; err == nil && len(allLinkedAccounts) > 0 {
+					// Use the first linked account's user_id as the conversation ID
+					resolvedJID := allLinkedAccounts[0].UserID
+					if resolvedJID != lid && resolvedJID != "" {
+						fmt.Printf("App.ResolveLID: Resolved LID %s to %s via conversation and linked accounts\n", lid, resolvedJID)
+						return resolvedJID, nil
+					}
+				}
+			}
+		}
+	}
+	
+	// Strategy 3: Search for linked accounts with this LID
+	var linkedAccounts []models.LinkedAccount
+	if err := db.DB.Where("user_id = ?", lid).Find(&linkedAccounts).Error; err == nil && len(linkedAccounts) > 0 {
+		// Found a linked account with this LID
+		// Try to find another linked account for the same meta contact with a standard JID
+		if linkedAccounts[0].MetaContactID != 0 {
+			var allLinkedAccounts []models.LinkedAccount
+			if err := db.DB.Where("meta_contact_id = ? AND user_id != ?", linkedAccounts[0].MetaContactID, lid).Find(&allLinkedAccounts).Error; err == nil && len(allLinkedAccounts) > 0 {
+				resolvedJID := allLinkedAccounts[0].UserID
+				fmt.Printf("App.ResolveLID: Resolved LID %s to %s via linked account sibling\n", lid, resolvedJID)
+				return resolvedJID, nil
+			}
+		}
+	}
+	
+	fmt.Printf("App.ResolveLID: Could not resolve LID %s\n", lid)
+	return lid, fmt.Errorf("could not resolve LID %s", lid)
+}
+
 func (a *App) GetMessagesForConversation(conversationID string) ([]models.Message, error) {
 	return a.GetMessagesForConversationBefore(conversationID, nil)
 }
