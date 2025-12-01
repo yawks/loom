@@ -4,6 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn, timeToDate } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
+import { inferDMStatus, inferGroupStatus, mergeReceipts } from "@/lib/MessageStatusInference";
 
 interface MessageStatusProps {
   message: models.Message;
@@ -11,6 +12,7 @@ interface MessageStatusProps {
   groupParticipants?: models.GroupParticipant[];
   allMessages?: models.Message[];
   layout: "irc" | "bubble";
+  currentUserId?: string; // Add currentUserId for inference
 }
 
 type MessageStatusType = "sent" | "delivered" | "read";
@@ -22,30 +24,36 @@ interface ParticipantStatus {
   timestamp?: Date;
 }
 
-function getMessageStatus(receipts: models.MessageReceipt[] | undefined, senderId: string): MessageStatusType {
-  if (!receipts || receipts.length === 0) {
+function getMessageStatus(
+  receipts: models.MessageReceipt[] | undefined,
+  senderId: string,
+  mergedReceipts?: models.MessageReceipt[] // Use merged receipts if provided
+): MessageStatusType {
+  const receiptsToUse = mergedReceipts || receipts;
+
+  if (!receiptsToUse || receiptsToUse.length === 0) {
     return "sent";
   }
-  
+
   // Filter out receipts from the sender (we don't count ourselves)
-  const otherReceipts = receipts.filter((r) => r.userId !== senderId);
-  
+  const otherReceipts = receiptsToUse.filter((r) => r.userId !== senderId);
+
   if (otherReceipts.length === 0) {
     return "sent";
   }
-  
+
   // Check if any receipt is a read receipt (highest priority)
   const hasReadReceipt = otherReceipts.some((r) => r.receiptType === "read");
   if (hasReadReceipt) {
     return "read";
   }
-  
+
   // Check if any receipt is a delivery receipt
   const hasDeliveryReceipt = otherReceipts.some((r) => r.receiptType === "delivery");
   if (hasDeliveryReceipt) {
     return "delivered";
   }
-  
+
   return "sent";
 }
 
@@ -53,14 +61,16 @@ function getParticipantStatuses(
   receipts: models.MessageReceipt[] | undefined,
   groupParticipants: models.GroupParticipant[] | undefined,
   allMessages: models.Message[] | undefined,
-  senderId: string
+  senderId: string,
+  mergedReceipts?: models.MessageReceipt[] // Use merged receipts if provided
 ): ParticipantStatus[] {
-  if (!receipts || receipts.length === 0) {
+  const receiptsToUse = mergedReceipts || receipts;
+  if (!receiptsToUse || receiptsToUse.length === 0) {
     return [];
   }
-  
+
   const participantMap = new Map<string, ParticipantStatus>();
-  
+
   // Create a map of userId to userName from messages
   const userIdToName = new Map<string, string>();
   if (allMessages) {
@@ -70,17 +80,17 @@ function getParticipantStatuses(
       }
     });
   }
-  
+
   // Process all receipts, excluding the sender
-  receipts.forEach((receipt) => {
+  receiptsToUse.forEach((receipt) => {
     // Skip receipts from the sender (we don't count ourselves)
     if (receipt.userId === senderId) {
       return;
     }
-    
+
     const existing = participantMap.get(receipt.userId);
     const receiptTimestamp = timeToDate(receipt.timestamp);
-    
+
     // Read receipt takes precedence over delivery receipt
     // If someone has read, they have also been delivered and sent
     if (receipt.receiptType === "read") {
@@ -104,7 +114,7 @@ function getParticipantStatuses(
       }
     }
   });
-  
+
   // Add group participants who haven't sent receipts (status: sent)
   // Exclude the sender from this list
   if (groupParticipants) {
@@ -113,7 +123,7 @@ function getParticipantStatuses(
       if (participant.userId === senderId) {
         return;
       }
-      
+
       if (!participantMap.has(participant.userId)) {
         participantMap.set(participant.userId, {
           userId: participant.userId,
@@ -123,7 +133,7 @@ function getParticipantStatuses(
       }
     });
   }
-  
+
   return Array.from(participantMap.values());
 }
 
@@ -164,18 +174,18 @@ function StatusTooltipContent({
   status: MessageStatusType;
 }) {
   const { t } = useTranslation();
-  
+
   if (!message.isFromMe) {
     return null;
   }
-  
+
   if (isGroup && participantStatuses.length > 0) {
     // Group conversation: show list of participants
     // Respect hierarchy: read > delivered > sent
     const readParticipants = participantStatuses.filter((p) => p.status === "read");
     const deliveredParticipants = participantStatuses.filter((p) => p.status === "delivered");
     const sentParticipants = participantStatuses.filter((p) => p.status === "sent");
-    
+
     return (
       <div className="max-h-64 overflow-y-auto">
         <div className="space-y-2">
@@ -229,7 +239,7 @@ function StatusTooltipContent({
       </div>
     );
   }
-  
+
   // Individual conversation: show simple status
   return (
     <div className="text-sm">
@@ -246,16 +256,36 @@ export function MessageStatus({
   groupParticipants,
   allMessages,
   layout,
+  currentUserId,
 }: MessageStatusProps) {
   const [isAnimating, setIsAnimating] = useState(false);
   const previousStatusRef = useRef<MessageStatusType | null>(null);
-  
-  const status = useMemo(() => getMessageStatus(message.receipts, message.senderId), [message.receipts, message.senderId]);
-  const participantStatuses = useMemo(
-    () => getParticipantStatuses(message.receipts, groupParticipants, allMessages, message.senderId),
-    [message.receipts, groupParticipants, allMessages, message.senderId]
+
+  // Merge actual receipts with inferred receipts
+  const mergedReceipts = useMemo(() => {
+    if (!allMessages || !currentUserId) {
+      return message.receipts;
+    }
+
+    // Infer receipts based on user activity
+    const inferredReceipts = isGroup
+      ? inferGroupStatus(allMessages, groupParticipants, currentUserId, message)
+      : inferDMStatus(allMessages, currentUserId, message);
+
+    // Merge actual and inferred receipts (actual takes precedence)
+    return mergeReceipts(message.receipts, inferredReceipts);
+  }, [message, allMessages, currentUserId, isGroup, groupParticipants]);
+
+  const status = useMemo(
+    () => getMessageStatus(message.receipts, message.senderId, mergedReceipts),
+    [message.receipts, message.senderId, mergedReceipts]
   );
-  
+
+  const participantStatuses = useMemo(
+    () => getParticipantStatuses(message.receipts, groupParticipants, allMessages, message.senderId, mergedReceipts),
+    [message.receipts, groupParticipants, allMessages, message.senderId, mergedReceipts]
+  );
+
   // Detect status change and trigger animation
   useEffect(() => {
     if (previousStatusRef.current !== null && previousStatusRef.current !== status) {
@@ -265,25 +295,25 @@ export function MessageStatus({
     }
     previousStatusRef.current = status;
   }, [status]);
-  
+
   // Only show status for messages sent by the user
   if (!message.isFromMe) {
     return null;
   }
-  
+
   const { t } = useTranslation();
-  
+
   const statusLabel = useMemo(() => {
     if (isGroup && participantStatuses.length > 0) {
       const readCount = participantStatuses.filter((p) => p.status === "read").length;
       const deliveredCount = participantStatuses.filter((p) => p.status === "delivered").length;
       const sentCount = participantStatuses.filter((p) => p.status === "sent").length;
-      
+
       // Build label respecting the hierarchy: read > delivered > sent
       // Don't show "sent" count if there are delivered or read (they imply sent)
       // Don't show "delivered" count if there are read (they imply delivered)
       const parts: string[] = [];
-      
+
       if (readCount > 0) {
         parts.push(`${readCount} ${t("status_read")}`);
       }
@@ -294,14 +324,14 @@ export function MessageStatus({
       if (sentCount > 0 && deliveredCount === 0 && readCount === 0) {
         parts.push(`${sentCount} ${t("status_sent")}`);
       }
-      
+
       return parts.join(", ") || t("status_sent_detail");
     }
     if (status === "read") return t("status_read_detail");
     if (status === "delivered") return t("status_delivered_detail");
     return t("status_sent_detail");
   }, [isGroup, participantStatuses, status, t]);
-  
+
   const iconElement = (
     <div
       className={cn(
@@ -314,7 +344,7 @@ export function MessageStatus({
       <StatusIcon status={status} />
     </div>
   );
-  
+
   if (isGroup && participantStatuses.length > 0) {
     return (
       <Popover>
@@ -341,7 +371,7 @@ export function MessageStatus({
       </Popover>
     );
   }
-  
+
   // For individual conversations, use a simple tooltip with title attribute
   return (
     <div

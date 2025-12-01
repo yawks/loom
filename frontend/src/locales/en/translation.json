@@ -146,5 +146,10 @@
   "shortcut_navigate_history_forward": "Next conversation in history",
   "shortcut_navigate_list_up": "Navigate to conversation above in list",
   "shortcut_navigate_list_down": "Navigate to conversation below in list",
-  "react": "React"
+  "react": "React",
+  "typing_single": "{{user}} is typing",
+  "typing_double": "{{user1}} and {{user2}} are typing",
+  "typing_multiple": "{{users}} and {{lastUser}} are typing",
+  "typing_indicator_title": "Someone is typing",
+  "admin": "Admin"
 }

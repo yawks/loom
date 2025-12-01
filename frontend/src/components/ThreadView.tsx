@@ -140,7 +140,7 @@ export function ThreadView() {
           <X className="h-4 w-4" />
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
         {sortedThreadMessages.length === 0 ? (
           <div className="text-center text-muted-foreground py-8">
             No messages in this thread

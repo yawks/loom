@@ -105,38 +105,80 @@
     height: 100%;
     overflow: hidden;
   }
-
-.scroll-area {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
 }
 
-.dark .scroll-area {
-  scrollbar-color: rgba(200, 200, 200, 0.3) transparent;
+/* Scrollbar styles - outside @layer to ensure they're not overridden by Tailwind */
+* {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(128, 128, 128, 0.4) transparent !important;
+}
+
+html.dark * {
+  scrollbar-color: rgba(160, 160, 180, 0.6) transparent !important;
+}
+
+*::-webkit-scrollbar {
+  width: 8px !important;
+  height: 8px !important;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(128, 132, 155, 0.45) !important;
+  background-color: rgba(128, 132, 155, 0.45) !important;
+  border-radius: 9999px !important;
+}
+
+html.dark *::-webkit-scrollbar-thumb {
+  background: rgba(160, 160, 180, 0.6) !important;
+  background-color: rgba(160, 160, 180, 0.6) !important;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(128, 132, 155, 0.65) !important;
+}
+
+html.dark *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(180, 180, 200, 0.8) !important;
+}
+
+/* Specific styles for .scroll-area (backward compatibility) */
+.scroll-area {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(128, 132, 155, 0.45) transparent !important;
+}
+
+html.dark .scroll-area {
+  scrollbar-color: rgba(160, 160, 180, 0.6) transparent !important;
 }
 
 .scroll-area::-webkit-scrollbar {
-  width: 8px;
+  width: 8px !important;
 }
 
 .scroll-area::-webkit-scrollbar-track {
-  background: transparent;
+  background: transparent !important;
 }
 
 .scroll-area::-webkit-scrollbar-thumb {
-  background-color: rgba(128, 128, 128, 0.4);
-  border-radius: 9999px;
+  background: rgba(128, 132, 155, 0.45) !important;
+  background-color: rgba(128, 132, 155, 0.45) !important;
+  border-radius: 9999px !important;
+  border: none !important;
 }
 
-.dark .scroll-area::-webkit-scrollbar-thumb {
-  background-color: rgba(200, 200, 200, 0.3);
+html.dark .scroll-area::-webkit-scrollbar-thumb {
+  background: rgba(160, 160, 180, 0.6) !important;
+  background-color: rgba(160, 160, 180, 0.6) !important;
 }
 
 .scroll-area::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(128, 128, 128, 0.6);
+  background-color: rgba(128, 132, 155, 0.65) !important;
 }
 
-.dark .scroll-area::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(200, 200, 200, 0.5);
-}
+html.dark .scroll-area::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(180, 180, 200, 0.8) !important;
 }

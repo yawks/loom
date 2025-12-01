@@ -9,6 +9,7 @@ import { GetMetaContacts } from "../../wailsjs/go/main/App";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { useTypingStore } from "@/lib/typingStore";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useSortedContacts } from "@/hooks/useSortedContacts";
@@ -31,6 +32,7 @@ export function ContactList() {
     queryKey: ["metaContacts"],
     queryFn: fetchMetaContacts,
   });
+  const typingByConversation = useTypingStore((state) => state.typingByConversation);
 
   // Listen for contact refresh events
   useEffect(() => {
@@ -134,6 +136,7 @@ export function ContactList() {
             const displayUnreadCount =
               unreadCount > 99 ? "99+" : unreadCount.toString();
             const isSelected = selectedContact?.id === contact.id;
+            const isTyping = (typingByConversation[conversationId]?.length ?? 0) > 0;
 
             return (
               <div
@@ -145,12 +148,20 @@ export function ContactList() {
                 )}
                 onClick={() => setSelectedContact(contact)}
               >
-                <Avatar>
-                  <AvatarImage src={contact.avatarUrl} alt={contact.displayName} />
-                  <AvatarFallback>
-                    {contact.displayName.substring(0, 2).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
+                <div className="relative">
+                  <Avatar>
+                    <AvatarImage src={contact.avatarUrl} alt={contact.displayName} />
+                    <AvatarFallback>
+                      {contact.displayName.substring(0, 2).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  {isTyping && (
+                    <div 
+                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background animate-pulse"
+                      title={t("typing_indicator_title")}
+                    />
+                  )}
+                </div>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
                   <span className="text-sm font-medium truncate">
                     {contact.displayName}

@@ -59,6 +59,7 @@ func (e ReactionEvent) Type() EventType {
 type TypingEvent struct {
 	ConversationID string // Protocol conversation ID
 	UserID         string // User who is typing
+	UserName       string // Display name of the user who is typing
 	IsTyping       bool   // true if typing, false if stopped
 }
 

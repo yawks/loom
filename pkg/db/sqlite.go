@@ -41,6 +41,7 @@ func InitDatabase() error {
 		&models.MessageReceipt{},
 		&models.ProviderConfiguration{},
 		&models.ContactAlias{},
+		&models.LIDMapping{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto-migrate database schema: %w", err)
