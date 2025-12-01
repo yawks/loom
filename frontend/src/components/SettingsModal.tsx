@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
-import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type, Trash2 } from "lucide-react";
+import { Moon, Sun, MessageSquare, Terminal, ChevronDown, Type, Trash2, Keyboard } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -241,6 +241,78 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                     {size}%
                   </button>
                 ))}
+              </div>
+            </div>
+          </div>
+          <div className="border-t" />
+          <div className="space-y-3">
+            <div className="text-sm font-semibold">
+              {t("keyboard_shortcuts") || "Keyboard Shortcuts"}
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_unread_up") || "Navigate to unread conversation above"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">⇧</span>
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">↑</span>
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_unread_down") || "Navigate to unread conversation below"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">⇧</span>
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">↓</span>
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_history_back") || "Previous conversation in history"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">←</span>
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_history_forward") || "Next conversation in history"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">→</span>
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_list_up") || "Navigate to conversation above in list"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">↑</span>
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-muted-foreground">
+                  {t("shortcut_navigate_list_down") || "Navigate to conversation below in list"}
+                </span>
+                <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">↓</span>
+                </kbd>
               </div>
             </div>
           </div>
