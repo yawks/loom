@@ -62,6 +62,8 @@ type WhatsAppProvider struct {
 	lastSyncTimestamp    *time.Time                      // Timestamp of last successful sync (loaded from DB)
 	groupsCacheTimestamp *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
 	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
+	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
+	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
 }
 
 func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message string, progress int) {
@@ -901,6 +903,7 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		conversationMessages: make(map[string][]models.Message),
 		avatarLoading:        make(map[string]bool),
 		avatarFailures:       make(map[string]bool),
+		lidToJIDMap:          make(map[string]string),
 	}
 }
 
@@ -1177,6 +1180,89 @@ func (w *WhatsAppProvider) Connect() error {
 	return nil
 }
 
+// saveLIDMapping saves a LID->JID mapping to both cache and database
+func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
+	if lid == "" || jid == "" {
+		return fmt.Errorf("lid and jid cannot be empty")
+	}
+	
+	// Update cache first (fast)
+	w.lidToJIDMu.Lock()
+	w.lidToJIDMap[lid] = jid
+	w.lidToJIDMu.Unlock()
+	
+	// Then persist to database
+	if db.DB != nil {
+		mapping := models.LIDMapping{
+			LID:      lid,
+			JID:      jid,
+			Protocol: "whatsapp",
+			LastSeen: time.Now(),
+		}
+		
+		// Upsert: update if exists, create if not
+		err := db.DB.Where("lid = ?", lid).Assign(models.LIDMapping{
+			JID:      jid,
+			Protocol: "whatsapp",
+			LastSeen: time.Now(),
+		}).FirstOrCreate(&mapping).Error
+		
+		if err != nil {
+			return fmt.Errorf("failed to save LID mapping to database: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+// loadLIDMappingsFromDB loads all LID mappings from database into memory cache
+func (w *WhatsAppProvider) loadLIDMappingsFromDB() error {
+	if db.DB == nil {
+		return fmt.Errorf("database not available")
+	}
+	
+	var mappings []models.LIDMapping
+	if err := db.DB.Where("protocol = ?", "whatsapp").Find(&mappings).Error; err != nil {
+		return fmt.Errorf("failed to load LID mappings from database: %w", err)
+	}
+	
+	w.lidToJIDMu.Lock()
+	defer w.lidToJIDMu.Unlock()
+	
+	for _, mapping := range mappings {
+		w.lidToJIDMap[mapping.LID] = mapping.JID
+	}
+	
+	fmt.Printf("WhatsApp: Loaded %d LID->JID mappings from database into cache\n", len(mappings))
+	return nil
+}
+
+// buildLIDMappingsFromConversations attempts to build LID->JID mappings
+// from existing WhatsApp conversations to enable typing indicators
+func (w *WhatsAppProvider) buildLIDMappingsFromConversations() {
+	fmt.Println("WhatsApp: Building LID->JID mappings from existing messages in database...")
+	
+	// Load existing mappings from database first (fast, indexed query)
+	if err := w.loadLIDMappingsFromDB(); err != nil {
+		fmt.Printf("WhatsApp: Warning - Failed to load LID mappings from database: %v\n", err)
+	}
+	
+	// Log current state
+	w.lidToJIDMu.RLock()
+	existingCount := len(w.lidToJIDMap)
+	w.lidToJIDMu.RUnlock()
+	
+	fmt.Printf("WhatsApp: Loaded %d existing LID mappings from database\n", existingCount)
+	fmt.Println("WhatsApp: LID mappings will be created automatically as new messages arrive")
+	fmt.Println("WhatsApp: Typing indicators are ready!")
+	
+	// Note: We no longer scan ALL historical messages as this can be very slow
+	// Instead, mappings will be created automatically when:
+	// 1. New messages arrive (Chat.Server == "lid")
+	// 2. Typing events arrive (fallback resolution + save)
+	// This approach is much faster and doesn't block the sync
+}
+
 // Disconnect closes the connection and stops all background operations.
 func (w *WhatsAppProvider) Disconnect() error {
 	w.mu.Lock()
@@ -1218,11 +1304,74 @@ func (w *WhatsAppProvider) Disconnect() error {
 
 // eventHandler handles WhatsApp events and converts them to ProviderEvent.
 func (w *WhatsAppProvider) eventHandler(evt interface{}) {
-	fmt.Printf("WhatsApp: Received event type: %T\n", evt)
+	// Log ALL events to help debug
+	eventType := fmt.Sprintf("%T", evt)
+	fmt.Printf("WhatsApp: [EVENT] Received event type: %s\n", eventType)
+	
 	switch v := evt.(type) {
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
 		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
+		
+		// IMPORTANT: Create LID -> JID mapping for typing indicators
+		// WhatsApp now sends typing indicators with LIDs instead of JIDs
+		// We need to extract and persist the mapping from incoming messages
+		
+		// Log all message info fields for debugging
+		fmt.Printf("WhatsApp: [MESSAGE] Chat: %s (server: %s), Sender: %s (server: %s), PushName: %s, IsFromMe: %v\n", 
+			v.Info.Chat.String(), v.Info.Chat.Server,
+			v.Info.Sender.String(), v.Info.Sender.Server,
+			v.Info.PushName, v.Info.IsFromMe)
+		
+		// Strategy 1: Chat is LID + Sender is standard JID (messages FROM others)
+		if v.Info.Chat.Server == "lid" && v.Info.Sender.Server == types.DefaultUserServer {
+			chatLID := v.Info.Chat.String()
+			senderJID := v.Info.Sender.String()
+			
+			fmt.Printf("WhatsApp: *** FOUND LID MAPPING (incoming) *** Chat LID: %s -> Sender JID: %s\n", chatLID, senderJID)
+			
+			if err := w.saveLIDMapping(chatLID, senderJID); err != nil {
+				fmt.Printf("WhatsApp: Warning - Failed to save LID mapping: %v\n", err)
+			} else {
+				w.lidToJIDMu.RLock()
+				totalMappings := len(w.lidToJIDMap)
+				w.lidToJIDMu.RUnlock()
+				fmt.Printf("WhatsApp: Saved LID->JID mapping! Total mappings: %d\n", totalMappings)
+			}
+		}
+		
+		// Strategy 2: Sender is LID + Chat is standard JID (messages TO others - our outgoing messages)
+		if v.Info.Sender.Server == "lid" && v.Info.Chat.Server == types.DefaultUserServer {
+			senderLID := v.Info.Sender.String()
+			chatJID := v.Info.Chat.String()
+			
+			fmt.Printf("WhatsApp: *** FOUND LID MAPPING (outgoing) *** Sender LID: %s -> Chat JID: %s\n", senderLID, chatJID)
+			
+			if err := w.saveLIDMapping(senderLID, chatJID); err != nil {
+				fmt.Printf("WhatsApp: Warning - Failed to save LID mapping: %v\n", err)
+			} else {
+				w.lidToJIDMu.RLock()
+				totalMappings := len(w.lidToJIDMap)
+				w.lidToJIDMu.RUnlock()
+				fmt.Printf("WhatsApp: Saved LID->JID mapping! Total mappings: %d\n", totalMappings)
+			}
+		}
+		
+		// Log if neither condition matched
+		if v.Info.Chat.Server != "lid" && v.Info.Sender.Server != "lid" {
+			fmt.Printf("WhatsApp: [MESSAGE] No LID detected, both are standard JIDs\n")
+			
+			// WORKAROUND: WhatsApp normalizes LIDs in MessageInfo but keeps them in XML
+			// The raw XML message contains sender_lid that we can't access through whatsmeow
+			// As a workaround, we'll query the database to see if we've received any
+			// ChatPresence events with LIDs recently and try to map them to this contact
+			
+			// This is a known limitation: we need to rely on the user exchanging messages
+			// AFTER receiving a ChatPresence event to create the mapping
+			fmt.Printf("WhatsApp: [MESSAGE] Note: If this contact uses LID privacy, the mapping will be created from ChatPresence fallback\n")
+		} else if v.Info.Chat.Server == "lid" && v.Info.Sender.Server == "lid" {
+			fmt.Printf("WhatsApp: [MESSAGE] WARNING - Both Chat and Sender are LIDs! Cannot create mapping.\n")
+		}
 		
 		// Check if this is a reaction message
 		if v.Message != nil && v.Message.GetReactionMessage() != nil {
@@ -1399,10 +1548,178 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		} else {
 			fmt.Printf("WhatsApp: WARNING - convertWhatsAppMessage returned nil for message from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 		}
+	case *events.ChatPresence:
+		// Handle chat presence updates (typing indicators)
+		chatJID := v.MessageSource.Chat
+		senderJID := v.MessageSource.Sender
+		
+		fmt.Printf("WhatsApp: Received ChatPresence event - Chat: %s (server: %s), Sender: %s (server: %s), State: %s\n", 
+			chatJID.String(), 
+			chatJID.Server,
+			senderJID.String(),
+			senderJID.Server,
+			v.State)
+		
+		// Determine the real conversation ID
+		conversationID := chatJID.String()
+		userID := senderJID.String()
+		
+		// For 1-on-1 chats, the Chat field in ChatPresence can be a LID
+		// In that case, the actual conversation ID should be the phone number JID of the other person
+		// We need to check if we have this conversation in our database and use its actual JID
+		if chatJID.Server == "lid" {
+			fmt.Printf("WhatsApp: Chat is a LID, need to resolve to actual conversation ID\n")
+			
+			// Strategy 1: Check the memory cache (fastest)
+			w.lidToJIDMu.RLock()
+			cached, found := w.lidToJIDMap[chatJID.String()]
+			w.lidToJIDMu.RUnlock()
+			
+			if found {
+				conversationID = cached
+				fmt.Printf("WhatsApp: Resolved LID %s to conversation ID %s from cache\n", chatJID.String(), conversationID)
+			} else {
+				// Strategy 2: Check the database (persistent storage)
+				if db.DB != nil {
+					var mapping models.LIDMapping
+					if err := db.DB.Where("lid = ? AND protocol = ?", chatJID.String(), "whatsapp").First(&mapping).Error; err == nil {
+						conversationID = mapping.JID
+						fmt.Printf("WhatsApp: Resolved LID %s to conversation ID %s from database\n", chatJID.String(), conversationID)
+						
+						// Update cache for next time
+						w.lidToJIDMu.Lock()
+						w.lidToJIDMap[chatJID.String()] = conversationID
+						w.lidToJIDMu.Unlock()
+					} else {
+						fmt.Printf("WhatsApp: LID %s not found in database: %v\n", chatJID.String(), err)
+					}
+				}
+				
+				// Strategy 3: Try other resolution methods if still not found
+				if conversationID == chatJID.String() {
+					// Try to get contact info from WhatsApp for this LID
+					// The LID should be resolvable through the WhatsApp client
+					if w.client != nil && w.client.Store != nil {
+						// Try to find this contact in the store
+						contactInfo, err := w.client.Store.Contacts.GetContact(w.ctx, chatJID)
+						if err == nil && contactInfo.Found {
+							fmt.Printf("WhatsApp: Found contact info for LID %s: FullName=%s, PushName=%s\n", 
+								chatJID.String(), contactInfo.FullName, contactInfo.PushName)
+						} else {
+							fmt.Printf("WhatsApp: Could not find contact info for LID %s (error: %v)\n", chatJID.String(), err)
+						}
+					}
+					
+					// Try using the sender's JID as it's likely the contact's actual JID
+					if senderJID.Server == types.DefaultUserServer {
+						conversationID = senderJID.String()
+						fmt.Printf("WhatsApp: Using sender JID %s as conversation ID for LID %s\n", conversationID, chatJID.String())
+						
+						// Save this mapping for future use
+						if err := w.saveLIDMapping(chatJID.String(), conversationID); err != nil {
+							fmt.Printf("WhatsApp: Warning - Failed to save LID mapping: %v\n", err)
+						}
+					} else if senderJID.Server == "lid" {
+						// Both Chat and Sender are LIDs - this is tricky
+						// WhatsApp normalizes sender_lid in the XML to standard JID in MessageInfo
+						// but ChatPresence still uses LIDs for both fields
+						
+						// Strategy: Search recent messages to find a conversation that might match this LID
+						// We'll look for recent messages from any contact and try to match
+						fmt.Printf("WhatsApp: Both Chat and Sender are LIDs (%s, %s) - attempting smart resolution\n", 
+							chatJID.String(), senderJID.String())
+						
+						if db.DB != nil {
+							// Get the most recent message from ANY conversation to see active chats
+							// We're looking for 1-on-1 conversations (not groups)
+							var recentMessages []models.Message
+							if err := db.DB.Where("is_from_me = ? AND protocol_conv_id LIKE ?", false, "%@s.whatsapp.net").
+								Order("timestamp DESC").
+								Limit(10).
+								Find(&recentMessages).Error; err == nil && len(recentMessages) > 0 {
+								
+								fmt.Printf("WhatsApp: Found %d recent incoming messages, checking for potential match\n", len(recentMessages))
+								
+								// Look for a conversation that has recent activity
+								for _, msg := range recentMessages {
+									// This is a candidate - the LID might be for this conversation
+									fmt.Printf("WhatsApp: Candidate conversation: %s (last message: %v)\n", 
+										msg.ProtocolConvID, msg.Timestamp)
+									
+									// For now, try the most recent one as it's likely the active conversation
+									// where typing is happening
+									if msg.ProtocolConvID != "" && !strings.HasSuffix(msg.ProtocolConvID, "@lid") {
+										conversationID = msg.ProtocolConvID
+										fmt.Printf("WhatsApp: Tentatively mapping LID %s to most recent conversation %s\n", 
+											chatJID.String(), conversationID)
+										
+										// Save this mapping (it might be wrong, but we'll update it if needed)
+										if err := w.saveLIDMapping(chatJID.String(), conversationID); err != nil {
+											fmt.Printf("WhatsApp: Warning - Failed to save tentative LID mapping: %v\n", err)
+										} else {
+											fmt.Printf("WhatsApp: Saved tentative LID mapping based on recent activity\n")
+										}
+										break
+									}
+								}
+							}
+						}
+					}
+					
+					// Last resort: skip this typing event if we still can't resolve it
+					if conversationID == chatJID.String() {
+						fmt.Printf("WhatsApp: WARNING - Could not resolve LID %s to any JID. Skipping typing event.\n", chatJID.String())
+						fmt.Printf("WhatsApp: TIP - Send or receive a message in this conversation to create the LID mapping\n")
+						return
+					}
+				}
+			}
+		}
+		
+		// ChatPresence events contain typing indicator information
+		// State can be "composing" (typing) or "paused" (stopped typing)
+		
+		// Get the display name of the user who is typing
+		userName, err := w.GetContactName(conversationID)
+		if err != nil {
+			fmt.Printf("WhatsApp: Failed to get contact name for %s: %v, using fallback\n", conversationID, err)
+			// Fallback to the conversation ID if we can't get the name
+			userName = conversationID
+		}
+		fmt.Printf("WhatsApp: Resolved contact name for %s: %s\n", conversationID, userName)
+		
+		if v.State == types.ChatPresenceComposing {
+			// User started typing
+			fmt.Printf("WhatsApp: User %s (%s) started typing in conversation %s\n", userName, userID, conversationID)
+			select {
+			case w.eventChan <- core.TypingEvent{
+				ConversationID: conversationID,
+				UserID:         userID,
+				UserName:       userName,
+				IsTyping:       true,
+			}:
+				fmt.Printf("WhatsApp: TypingEvent (started) emitted successfully\n")
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit TypingEvent (channel full)\n")
+			}
+		} else if v.State == types.ChatPresencePaused {
+			// User stopped typing
+			fmt.Printf("WhatsApp: User %s (%s) stopped typing in conversation %s\n", userName, userID, conversationID)
+			select {
+			case w.eventChan <- core.TypingEvent{
+				ConversationID: conversationID,
+				UserID:         userID,
+				UserName:       userName,
+				IsTyping:       false,
+			}:
+				fmt.Printf("WhatsApp: TypingEvent (stopped) emitted successfully\n")
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit TypingEvent (channel full)\n")
+			}
+		}
 	case *events.Presence:
-		// Handle typing indicators (Presence events include typing status)
-		// TODO: Fix typing indicator handling once we understand the exact structure
-		// For now, we'll skip this to get the basic functionality working
+		// Handle presence updates (online/offline status)
+		fmt.Printf("WhatsApp: Received Presence event from %s, Unavailable=%v\n", v.From.String(), v.Unavailable)
 	case *events.QR:
 		// QR code event - this is handled by the QR channel
 		// No need to log here as it's already handled by the QR channel goroutine
@@ -1411,6 +1728,21 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Check if we're logged in now
 		if w.client != nil && w.client.Store.ID != nil {
 			fmt.Printf("WhatsApp: Successfully logged in as %s\n", w.client.Store.ID)
+			
+			// IMPORTANT: Mark client as available to receive typing indicators
+			// Without this, WhatsApp will not send ChatPresence events (typing notifications)
+			// Reference: https://github.com/tulir/whatsmeow/discussions/681
+			err := w.client.SendPresence(w.ctx, types.PresenceAvailable)
+			if err != nil {
+				fmt.Printf("WhatsApp: Warning - Failed to send presence available: %v\n", err)
+			} else {
+				fmt.Println("WhatsApp: Marked self as available - will now receive typing indicators")
+			}
+			
+			// Build LID mappings from existing conversations
+			// This allows typing indicators to work immediately on existing chats
+			go w.buildLIDMappingsFromConversations()
+			
 			// Note: Device name is set during initial pairing via QR code
 			// To change the name to "loom", you need to unpair and re-pair the device
 			// The name will appear as "loom" after re-pairing

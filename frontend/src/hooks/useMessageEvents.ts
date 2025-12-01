@@ -4,6 +4,7 @@ import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useEffect } from "react";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { useTypingStore } from "@/lib/typingStore";
 import { useQueryClient } from "@tanstack/react-query";
 
 interface ReceiptEvent {
@@ -23,6 +24,13 @@ interface ReactionEvent {
   Timestamp: number;
 }
 
+interface TypingEvent {
+  ConversationID: string;
+  UserID: string;
+  UserName: string;
+  IsTyping: boolean;
+}
+
 export function useMessageEvents() {
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
@@ -32,6 +40,8 @@ export function useMessageEvents() {
   const markAsReadByProtocolId = useMessageReadStore(
     (state) => state.markAsReadByProtocolId
   );
+  const setTyping = useTypingStore((state) => state.setTyping);
+  const setNotTyping = useTypingStore((state) => state.setNotTyping);
 
   useEffect(() => {
     console.log("useMessageEvents: Setting up event listener for 'new-message'");
@@ -363,5 +373,105 @@ export function useMessageEvents() {
       }
     };
   }, [queryClient, selectedContact]);
+
+  // Listen for typing events
+  useEffect(() => {
+    console.log("useMessageEvents: Setting up event listener for 'typing'");
+    
+    if (typeof window !== "undefined" && !window.runtime) {
+      console.error("useMessageEvents: window.runtime is NOT available for typing events!");
+      return;
+    }
+    
+    let isMounted = true;
+    const unsubscribeTyping = EventsOn("typing", async (typingJSON: string) => {
+      console.log("useMessageEvents: *** TYPING EVENT RECEIVED ***");
+      console.log("useMessageEvents: Received typing event (raw):", typingJSON?.substring?.(0, 200) || typingJSON);
+      if (!isMounted) {
+        console.warn("useMessageEvents: Component unmounted, ignoring typing event");
+        return;
+      }
+      
+      try {
+        const typing: TypingEvent = JSON.parse(typingJSON);
+        console.log("useMessageEvents: Received typing event:", {
+          conversationId: typing.ConversationID,
+          userId: typing.UserID,
+          isTyping: typing.IsTyping,
+        });
+
+        // Resolve LID to actual conversation ID
+        // LID format: "176188215558395@lid", standard format: "33123456789@s.whatsapp.net"
+        let resolvedConversationId = typing.ConversationID;
+        
+        // If the conversation ID is a LID, ask the backend to resolve it
+        if (typing.ConversationID.includes("@lid")) {
+          console.log("useMessageEvents: ConversationID is a LID, asking backend to resolve...");
+          
+          try {
+            // Call the backend API to resolve the LID
+            if (window.go?.main?.App?.ResolveLID) {
+              const resolved = await window.go.main.App.ResolveLID(typing.ConversationID);
+              if (resolved && resolved !== typing.ConversationID) {
+                resolvedConversationId = resolved;
+                console.log("useMessageEvents: Backend resolved LID", typing.ConversationID, "to", resolvedConversationId);
+              } else {
+                console.warn("useMessageEvents: Backend could not resolve LID", typing.ConversationID);
+                
+                // Fallback: if UserID is a phone number, use it
+                if (typing.UserID.includes("@s.whatsapp.net")) {
+                  resolvedConversationId = typing.UserID;
+                  console.log("useMessageEvents: Using UserID as conversation ID (fallback):", resolvedConversationId);
+                } else {
+                  console.warn("useMessageEvents: Could not resolve LID to any known conversation. This typing indicator will be ignored.");
+                  return; // Don't process this event
+                }
+              }
+            } else {
+              console.error("useMessageEvents: ResolveLID API not available");
+              return;
+            }
+          } catch (error) {
+            console.error("useMessageEvents: Error calling ResolveLID:", error);
+            
+            // Fallback: if UserID is a phone number, use it
+            if (typing.UserID.includes("@s.whatsapp.net")) {
+              resolvedConversationId = typing.UserID;
+              console.log("useMessageEvents: Using UserID as conversation ID (error fallback):", resolvedConversationId);
+            } else {
+              console.warn("useMessageEvents: Could not resolve LID and error occurred. This typing indicator will be ignored.");
+              return; // Don't process this event
+            }
+          }
+        }
+        
+        console.log("useMessageEvents: Final conversation ID:", resolvedConversationId);
+        console.log("useMessageEvents: User name:", typing.UserName);
+
+        if (typing.IsTyping) {
+          setTyping(resolvedConversationId, typing.UserID, typing.UserName);
+          console.log("useMessageEvents: Set typing for conversation", resolvedConversationId, "with userName", typing.UserName);
+        } else {
+          setNotTyping(resolvedConversationId, typing.UserID);
+          console.log("useMessageEvents: Set not typing for conversation", resolvedConversationId);
+        }
+      } catch (error) {
+        console.error("useMessageEvents: Failed to parse typing event:", error);
+      }
+    });
+    
+    // Verify the listener was registered
+    if (typeof window !== "undefined" && window.runtime?.listeners) {
+      console.log("useMessageEvents: After registration, listeners for 'typing':", window.runtime.listeners["typing"]?.length || 0);
+    }
+
+    return () => {
+      console.log("useMessageEvents: Cleaning up typing event listener");
+      isMounted = false;
+      if (unsubscribeTyping) {
+        unsubscribeTyping();
+      }
+    };
+  }, [setTyping, setNotTyping]);
 }
 

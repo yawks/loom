@@ -548,7 +548,7 @@ export function ConversationDetailsView({
           <X className="h-4 w-4" />
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
         <div className="space-y-6">
           {/* Participants */}
           <div>

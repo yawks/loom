@@ -95,6 +95,23 @@ type MessageReceipt struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+// LIDMapping stores the mapping between WhatsApp Local IDs (LID) and standard JIDs
+// This is crucial for resolving typing indicators and other presence events
+type LIDMapping struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	LID       string    `gorm:"column:lid;uniqueIndex" json:"lid"`     // WhatsApp Local ID (e.g., "176188215558395@lid")
+	JID       string    `gorm:"column:jid;index" json:"jid"`           // Standard JID (e.g., "33677815440@s.whatsapp.net")
+	Protocol  string    `gorm:"column:protocol;index" json:"protocol"` // Protocol (e.g., "whatsapp")
+	LastSeen  time.Time `gorm:"column:last_seen" json:"lastSeen"`      // Last time this mapping was seen/confirmed
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// TableName overrides the table name used by LIDMapping to 'lid_mappings'
+func (LIDMapping) TableName() string {
+	return "lid_mappings"
+}
+
 // Reaction represents a reaction to a message.
 type Reaction struct {
 	ID        uint      `gorm:"primarykey" json:"id"`

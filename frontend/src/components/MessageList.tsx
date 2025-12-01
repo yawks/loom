@@ -24,6 +24,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
 import { MessageReactions } from "./MessageReactions";
 import { MessageStatus } from "./MessageStatus";
+import { TypingIndicator } from "./TypingIndicator";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -365,7 +366,7 @@ export function MessageList({
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
       const isEmpty = !hasBody && !hasAttachments;
-      
+
       if (isEmpty) {
         // Skip empty messages completely
         return;
@@ -490,7 +491,7 @@ export function MessageList({
           // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
           const normalizedIds = Array.from(userIds).map(id => id.replace(/:\d+@/, "@"));
           const names = await GetParticipantNames(normalizedIds);
-          
+
           // Create a map that includes both normalized and original IDs
           const namesMap = new Map<string, string>();
           Array.from(userIds).forEach((originalId, index) => {
@@ -553,23 +554,23 @@ export function MessageList({
     // Sync with ALL messages (not just mainMessages) to ensure we clean up messages
     // that were filtered out (empty messages) or are no longer in the conversation
     syncConversation(conversationId, messages);
-    
+
     // Create a set of all valid message IDs (from all loaded messages)
     const allMessageIds = new Set(messages.map(msg => {
       const id = getMessageDomId(msg);
       return id;
     }));
-    
+
     // Cleanup obsolete messages that are not in the loaded messages
     // This handles messages that were deleted, filtered out (empty messages), or no longer exist
     cleanupObsoleteMessages(conversationId, allMessageIds);
-    
+
     // Debug log: check if there are unread messages that are not in the loaded messages
     const unreadInStore = Object.entries(conversationReadState)
       .filter(([, isRead]) => !isRead)
       .map(([msgId]) => msgId);
     const unreadNotInMessages = unreadInStore.filter(msgId => !allMessageIds.has(msgId));
-    
+
     if (unreadNotInMessages.length > 0) {
       console.log(`MessageList: Conversation ${conversationId} - Cleaning up ${unreadNotInMessages.length} unread messages that are not in loaded messages:`, unreadNotInMessages);
       // Force cleanup of these obsolete unread messages
@@ -583,7 +584,7 @@ export function MessageList({
     if (!conversationId) {
       return;
     }
-    
+
     // Mark all loaded messages as read
     if (mainMessages.length > 0) {
       mainMessages.forEach((msg) => {
@@ -593,13 +594,13 @@ export function MessageList({
         }
       });
     }
-    
+
     // Also mark all unread messages in the store as read (including obsolete ones)
     // This ensures that when a conversation is opened, all messages are marked as read
     const unreadMessages = Object.entries(conversationReadState)
       .filter(([, isRead]) => !isRead)
       .map(([msgId]) => msgId);
-    
+
     if (unreadMessages.length > 0) {
       console.log(`MessageList: Marking ${unreadMessages.length} unread messages as read for conversation ${conversationId}`);
       unreadMessages.forEach((msgId) => {
@@ -1258,8 +1259,7 @@ export function MessageList({
             <>
               {messageLayout === "bubble" ? (
                 <div className="space-y-4">
-                  {/* Reverse array for display with column-reverse */}
-                  {[...mainMessages].reverse().map((message, index) => {
+                  {mainMessages.map((message, index) => {
                     const messageId = getMessageDomId(message);
                     const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
                     const threadCount = getThreadCount(message.protocolMsgId);
@@ -1296,7 +1296,7 @@ export function MessageList({
                       ? "bg-blue-600/80 text-white"
                       : "bg-muted text-foreground";
                     const bubbleClass = cn(
-                      "rounded-lg p-3 transition-colors border border-transparent",
+                      "rounded-lg p-3 transition-colors border border-transparent text-left",
                       isDeleted
                         ? isDeletedRevealed
                           ? deletedRevealedClass
@@ -1388,7 +1388,7 @@ export function MessageList({
                                 </span>
                               </div>
                             )}
-                            <div className="flex flex-col items-start gap-1 relative group/bubble">
+                            <div className="flex flex-col items-start gap-1 relative group/bubble pt-7">
                               <div className="flex items-start gap-2 relative w-full">
                                 <div
                                   className={bubbleClass}
@@ -1489,7 +1489,7 @@ export function MessageList({
                                   </div>
                                 </div>
                                 {!isDeleted && editingMessageId !== messageId && (
-                                  <div className="absolute -top-7 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
+                                  <div className="absolute top-0 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
                                     <MessageActions
                                       isFromMe={message.isFromMe}
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
@@ -1523,12 +1523,15 @@ export function MessageList({
                                   className={message.isFromMe ? "self-end" : "self-start"}
                                 />
                               )}
-                              <MessageStatus
-                                message={message}
-                                isGroup={isGroupConversation}
-                                allMessages={mainMessages}
-                                layout="bubble"
-                              />
+                              <div className={message.isFromMe ? "self-end" : "self-start"}>
+                                <MessageStatus
+                                  message={message}
+                                  isGroup={isGroupConversation}
+                                  allMessages={mainMessages}
+                                  layout="bubble"
+                                  currentUserId={currentUserId}
+                                />
+                              </div>
                             </div>
                             {message.isFromMe && (
                               <div className="flex flex-col items-center shrink-0">
@@ -1770,9 +1773,9 @@ export function MessageList({
                               </span>
                             )}
                             <div className="w-full flex items-start gap-2">
-                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
+                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative pt-7">
                                 {!isDeleted && editingMessageId !== messageId && (
-                                  <div className="absolute -top-7 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                                  <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
                                     <MessageActions
                                       isFromMe={message.isFromMe}
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
@@ -1914,6 +1917,7 @@ export function MessageList({
                                   isGroup={isGroupConversation}
                                   allMessages={mainMessages}
                                   layout="irc"
+                                  currentUserId={currentUserId}
                                 />
                               )}
                             </div>
@@ -2010,6 +2014,7 @@ export function MessageList({
           )}
         </div>
         <div className="shrink-0">
+          <TypingIndicator conversationId={conversationId} />
           <ChatInput
             onFileUploadRequest={(files, filePaths) => {
               setPendingFiles(files);
