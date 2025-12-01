@@ -134,5 +134,9 @@
   "onboarding_welcome_title": "Welcome to Loom",
   "onboarding_welcome_description": "Loom is a modern messaging tool that allows you to centralize your conversations by connecting to multiple messaging platforms. To get started, configure one or more providers of your choice.",
   "onboarding_configure_button": "Configure a Provider",
-  "providers": "Providers"
+  "providers": "Providers",
+  "data_management": "Data Management",
+  "clear_read_state": "Clear Read State Cache",
+  "clear_read_state_confirm": "This will reset all message read states. Continue?",
+  "clear_read_state_description": "Reset all message read states. This will not delete your messages."
 }

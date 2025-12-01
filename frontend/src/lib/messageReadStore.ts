@@ -101,6 +101,7 @@ interface MessageReadStore {
   markAsReadByProtocolId: (conversationId: ConversationId, protocolMsgId: string) => void;
   registerIncomingMessage: (message: models.Message) => void;
   clearConversation: (conversationId: ConversationId) => void;
+  cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
 }
 
 const STORAGE_KEY = "loom-message-read-state";
@@ -151,18 +152,42 @@ const getMessageIdentifier = (message: models.Message): MessageId | null => {
 export const useMessageReadStore = create<MessageReadStore>((set) => ({
   readByConversation: loadPersistedState(),
   syncConversation: (conversationId, messages) => {
-    if (!conversationId || messages.length === 0) {
+    if (!conversationId) {
       return;
     }
     set((state) => {
       const existingState = state.readByConversation[conversationId];
       const hasExisting =
         existingState && Object.keys(existingState).length > 0;
-      const nextState: ConversationReadState = {
-        ...(existingState || {}),
-      };
-      let hasChanged = false;
+      
+      // Create a set of message IDs that actually exist in the conversation
+      const existingMessageIds = new Set<string>();
+      messages.forEach((message) => {
+        const messageId = getMessageIdentifier(message);
+        if (messageId) {
+          existingMessageIds.add(messageId);
+        }
+      });
 
+      // Start with existing state, but only keep messages that still exist
+      const nextState: ConversationReadState = {};
+      let hasChanged = false;
+      let removedCount = 0;
+
+      // Only keep messages that exist in the current conversation
+      // This cleans up messages that were deleted, filtered out, or no longer exist
+      if (existingState) {
+        Object.keys(existingState).forEach((messageId) => {
+          if (existingMessageIds.has(messageId)) {
+            nextState[messageId] = existingState[messageId];
+          } else {
+            removedCount++;
+            hasChanged = true;
+          }
+        });
+      }
+
+      // Add new messages that aren't in the store yet
       messages.forEach((message) => {
         const messageId = getMessageIdentifier(message);
         if (!messageId) {
@@ -178,6 +203,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
         }
       });
 
+      // If we removed messages or if there are no messages left, we need to update the store
+      if (removedCount > 0 || (messages.length === 0 && existingState && Object.keys(existingState).length > 0)) {
+        hasChanged = true;
+      }
+
       if (!hasChanged) {
         return state;
       }
@@ -187,6 +217,16 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
         [conversationId]: nextState,
       };
       persistState(updatedMap);
+      
+      const unreadCount = Object.values(nextState).filter(r => !r).length;
+      const unreadMessageIds = Object.entries(nextState)
+        .filter(([_, isRead]) => !isRead)
+        .map(([msgId, _]) => msgId);
+      console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, messages in conversation: ${messages.length}, messages in store: ${Object.keys(nextState).length}, removed: ${removedCount}, unread count: ${unreadCount}`);
+      if (unreadCount > 0) {
+        console.log(`messageReadStore: Unread message IDs after sync:`, unreadMessageIds.slice(0, 10));
+      }
+      
       return { readByConversation: updatedMap };
     });
   },
@@ -320,6 +360,46 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
       const updatedMap = { ...state.readByConversation };
       delete updatedMap[conversationId];
       persistState(updatedMap);
+      return { readByConversation: updatedMap };
+    });
+  },
+  cleanupObsoleteMessages: (conversationId, validMessageIds) => {
+    if (!conversationId) {
+      return;
+    }
+    set((state) => {
+      const existingState = state.readByConversation[conversationId];
+      if (!existingState || Object.keys(existingState).length === 0) {
+        return state;
+      }
+      
+      const nextState: ConversationReadState = {};
+      let hasChanged = false;
+      let removedCount = 0;
+      
+      // Only keep messages that are in the valid set
+      Object.keys(existingState).forEach((messageId) => {
+        if (validMessageIds.has(messageId)) {
+          nextState[messageId] = existingState[messageId];
+        } else {
+          removedCount++;
+          hasChanged = true;
+        }
+      });
+      
+      if (!hasChanged) {
+        return state;
+      }
+      
+      const updatedMap = {
+        ...state.readByConversation,
+        [conversationId]: nextState,
+      };
+      persistState(updatedMap);
+      
+      const unreadCount = Object.values(nextState).filter(r => !r).length;
+      console.log(`messageReadStore: cleanupObsoleteMessages - conversationId: ${conversationId}, removed: ${removedCount}, remaining: ${Object.keys(nextState).length}, unread count: ${unreadCount}`);
+      
       return { readByConversation: updatedMap };
     });
   },

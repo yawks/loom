@@ -97,10 +97,16 @@ export function ThreadView() {
     enabled: !!selectedThreadId,
   });
 
-  // Sort thread messages by timestamp
+  // Sort thread messages by timestamp and filter out empty messages
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
-    return [...threadMessages].sort(
+    // Filter out empty messages (no body and no attachments)
+    const filtered = threadMessages.filter((msg) => {
+      const hasBody = msg.body && msg.body.trim() !== "";
+      const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
+      return hasBody || hasAttachments;
+    });
+    return [...filtered].sort(
       (a, b) =>
         timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
     );

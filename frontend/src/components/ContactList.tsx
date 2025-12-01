@@ -1,11 +1,11 @@
 import { ArrowDownAZ, Clock } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient, useSuspenseQuery, useQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery, useQuery, useQueries } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetMetaContacts, GetContactAliases } from "../../wailsjs/go/main/App";
+import { GetMetaContacts, GetContactAliases, GetMessagesForConversation } from "../../wailsjs/go/main/App";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -45,6 +45,8 @@ export function ContactList() {
       // Invalidate and refetch contacts when sync completes or new message arrives
       queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
       queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
+      // Invalidate last message queries to update sorting
+      queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
     });
 
     return () => {
@@ -66,6 +68,58 @@ export function ContactList() {
     setMetaContacts(contactsWithAliases);
   }, [contactsWithAliases, setMetaContacts]);
 
+  // Récupérer le dernier message affiché (non vide) de chaque conversation pour obtenir la date réelle
+  const lastMessagesQueries = useQueries({
+    queries: contactsWithAliases.map((contact) => {
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      return {
+        queryKey: ["lastMessage", conversationId],
+        queryFn: async () => {
+          if (!conversationId) return null;
+          try {
+            const messages = await GetMessagesForConversation(conversationId);
+            // Filtrer les messages vides (comme dans MessageList)
+            const displayedMessages = (messages || []).filter((msg) => {
+              const hasBody = msg.body && msg.body.trim() !== "";
+              const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
+              return hasBody || hasAttachments;
+            });
+            
+            // Retourner le message le plus récent parmi les messages affichés
+            if (displayedMessages.length > 0) {
+              // Trier par timestamp décroissant pour obtenir le plus récent en premier
+              const sorted = [...displayedMessages].sort((a, b) => {
+                const timeA = timeToDate(a.timestamp).getTime();
+                const timeB = timeToDate(b.timestamp).getTime();
+                return timeB - timeA; // Décroissant
+              });
+              return sorted[0]; // Le premier est le plus récent
+            }
+            return null;
+          } catch (error) {
+            console.error(`Error fetching last message for ${conversationId}:`, error);
+            return null;
+          }
+        },
+        enabled: !!conversationId && sortBy === "last_message",
+        staleTime: 30000, // Cache pendant 30 secondes
+      };
+    }),
+  });
+
+  // Créer un map des dates du dernier message par conversation ID
+  const lastMessageDates = useMemo(() => {
+    const dates: Record<string, Date> = {};
+    lastMessagesQueries.forEach((query, index) => {
+      const contact = contactsWithAliases[index];
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      if (query.data && conversationId) {
+        dates[conversationId] = timeToDate(query.data.timestamp);
+      }
+    });
+    return dates;
+  }, [lastMessagesQueries, contactsWithAliases]);
+
   const sortedContacts = useMemo(() => {
     const sorted = [...contactsWithAliases];
 
@@ -77,14 +131,23 @@ export function ContactList() {
       );
     } else if (sortBy === "last_message") {
       sorted.sort((a, b) => {
-        const timeA = timeToDate(a.updatedAt || a.createdAt).getTime();
-        const timeB = timeToDate(b.updatedAt || b.createdAt).getTime();
+        const conversationIdA = a.linkedAccounts[0]?.userId ?? "";
+        const conversationIdB = b.linkedAccounts[0]?.userId ?? "";
+        
+        // Utiliser la date du dernier message si disponible, sinon fallback sur updatedAt/createdAt
+        const timeA = lastMessageDates[conversationIdA] 
+          ? lastMessageDates[conversationIdA].getTime()
+          : timeToDate(a.updatedAt || a.createdAt).getTime();
+        const timeB = lastMessageDates[conversationIdB]
+          ? lastMessageDates[conversationIdB].getTime()
+          : timeToDate(b.updatedAt || b.createdAt).getTime();
+        
         return timeB - timeA;
       });
     }
 
     return sorted;
-  }, [contactsWithAliases, sortBy]);
+  }, [contactsWithAliases, sortBy, lastMessageDates]);
 
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
@@ -106,6 +169,15 @@ export function ContactList() {
         (isRead) => !isRead
       ).length;
       counts[conversationId] = unreadCount;
+      
+      // Log pour déboguer les compteurs incorrects
+      if (unreadCount > 0) {
+        const unreadMessageIds = Object.entries(conversationState)
+          .filter(([_, isRead]) => !isRead)
+          .map(([msgId, _]) => msgId)
+          .slice(0, 5); // Limiter à 5 pour ne pas surcharger les logs
+        console.log(`ContactList: Conversation ${conversationId} has ${unreadCount} unread messages. Sample IDs:`, unreadMessageIds);
+      }
     });
     return counts;
   }, [readStateByConversation, sortedContacts]);
