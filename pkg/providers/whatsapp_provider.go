@@ -1223,6 +1223,43 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
 		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
+		
+		// Check if this is a reaction message
+		if v.Message != nil && v.Message.GetReactionMessage() != nil {
+			reactionMsg := v.Message.GetReactionMessage()
+			key := reactionMsg.GetKey()
+			if key != nil {
+				targetMsgID := key.GetID()
+				targetConvID := key.GetRemoteJID()
+				if targetConvID == "" {
+					targetConvID = v.Info.Chat.String()
+				}
+				emoji := reactionMsg.GetText()
+				senderID := v.Info.Sender.String()
+				
+				// Empty emoji means reaction was removed
+				added := emoji != ""
+				
+				fmt.Printf("WhatsApp: Received reaction event: message=%s, emoji=%s, added=%v, sender=%s\n", targetMsgID, emoji, added, senderID)
+				
+				// Emit reaction event
+				select {
+				case w.eventChan <- core.ReactionEvent{
+					ConversationID: targetConvID,
+					MessageID:      targetMsgID,
+					UserID:         senderID,
+					Emoji:          emoji,
+					Added:          added,
+					Timestamp:      v.Info.Timestamp.Unix(),
+				}:
+					fmt.Printf("WhatsApp: ReactionEvent emitted successfully for message %s, emoji %s\n", targetMsgID, emoji)
+				default:
+					fmt.Printf("WhatsApp: WARNING - Failed to emit ReactionEvent (channel full) for message %s\n", targetMsgID)
+				}
+				break
+			}
+		}
+		
 		if w.tryHandleProtocolMessage(v, true) {
 			fmt.Printf("WhatsApp: Message event was a protocol update (handled separately)\n")
 			break
@@ -1256,7 +1293,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// If not found in cache, check database
 		if existingMsg == nil && db.DB != nil {
 			var dbMsg models.Message
-			if err := db.DB.Preload("Receipts").Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+			if err := db.DB.Preload("Receipts").Preload("Reactions").Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
 				existingMsg = &dbMsg
 				fmt.Printf("WhatsApp: Found existing message %s in database\n", msgID)
 				// Also add to cache if we found it in DB
@@ -1849,6 +1886,11 @@ func (w *WhatsAppProvider) updateCachedMessageDeletionAcrossConversations(msgID,
 func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.Message {
 	msg := evt.Message
 	if msg == nil {
+		return nil
+	}
+
+	// Skip reaction messages - they are handled separately in eventHandler
+	if msg.GetReactionMessage() != nil {
 		return nil
 	}
 
@@ -2838,8 +2880,8 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 		}
 
 		// Order by timestamp descending to get newest first, then reverse
-		// Preload receipts to include delivery and read receipts
-		query = query.Preload("Receipts").Order("timestamp DESC").Limit(limit)
+		// Preload receipts and reactions to include delivery and read receipts, and reactions
+		query = query.Preload("Receipts").Preload("Reactions").Order("timestamp DESC").Limit(limit)
 
 		if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
 			// Reverse to get oldest first
@@ -3090,9 +3132,9 @@ func (w *WhatsAppProvider) loadMessagesFromDatabaseLocked() {
 	}
 
 	// Load messages grouped by conversation
-	// Preload receipts to include delivery and read receipts
+	// Preload receipts and reactions to include delivery and read receipts, and reactions
 	var messages []models.Message
-	if err := db.DB.Preload("Receipts").Order("protocol_conv_id, timestamp ASC").Find(&messages).Error; err != nil {
+	if err := db.DB.Preload("Receipts").Preload("Reactions").Order("protocol_conv_id, timestamp ASC").Find(&messages).Error; err != nil {
 		fmt.Printf("WhatsApp: Failed to load messages from database: %v\n", err)
 		return
 	}
@@ -3659,16 +3701,170 @@ func (w *WhatsAppProvider) GetThreads(parentMessageID string) ([]models.Message,
 
 // AddReaction adds a reaction (emoji) to a message.
 func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, emoji string) error {
-	// TODO: Implement reaction adding
-	markUnused(conversationID, messageID, emoji)
-	return fmt.Errorf("reactions not yet implemented")
+	if w.client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Find the message to get its key
+	var message *models.Message
+	w.mu.RLock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == messageID {
+				message = &msg
+				break
+			}
+		}
+	}
+	w.mu.RUnlock()
+
+	// If not found in cache, try database
+	if message == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
+			message = &dbMsg
+		}
+	}
+
+	if message == nil {
+		return fmt.Errorf("message not found: %s", messageID)
+	}
+
+	// Parse the message ID to get the key
+	msgKey := &waProto.MessageKey{
+		RemoteJID: proto.String(conversationID),
+		FromMe:    proto.Bool(message.IsFromMe),
+		ID:        proto.String(messageID),
+	}
+
+	// Create reaction message
+	reactionMsg := &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key:               msgKey,
+			Text:              proto.String(emoji),
+			GroupingKey:       proto.String(messageID),
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+	}
+
+	// Send reaction
+	_, err = w.client.SendMessage(w.ctx, jid, reactionMsg)
+	if err != nil {
+		return fmt.Errorf("failed to send reaction: %w", err)
+	}
+
+	// Get current user ID
+	currentUserID := ""
+	if w.client.Store != nil && w.client.Store.ID != nil {
+		currentUserID = w.client.Store.ID.String()
+	}
+
+	// Emit reaction event
+	select {
+	case w.eventChan <- core.ReactionEvent{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		UserID:         currentUserID,
+		Emoji:          emoji,
+		Added:          true,
+		Timestamp:      time.Now().Unix(),
+	}:
+		fmt.Printf("WhatsApp: ReactionEvent emitted successfully for message %s, emoji %s\n", messageID, emoji)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit ReactionEvent (channel full) for message %s\n", messageID)
+	}
+
+	return nil
 }
 
 // RemoveReaction removes a reaction (emoji) from a message.
 func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID string, emoji string) error {
-	// TODO: Implement reaction removal
-	markUnused(conversationID, messageID, emoji)
-	return fmt.Errorf("reactions not yet implemented")
+	if w.client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Find the message to get its key
+	var message *models.Message
+	w.mu.RLock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == messageID {
+				message = &msg
+				break
+			}
+		}
+	}
+	w.mu.RUnlock()
+
+	// If not found in cache, try database
+	if message == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
+			message = &dbMsg
+		}
+	}
+
+	if message == nil {
+		return fmt.Errorf("message not found: %s", messageID)
+	}
+
+	// Parse the message ID to get the key
+	msgKey := &waProto.MessageKey{
+		RemoteJID: proto.String(conversationID),
+		FromMe:    proto.Bool(message.IsFromMe),
+		ID:        proto.String(messageID),
+	}
+
+	// Create reaction message with empty text to remove reaction
+	reactionMsg := &waE2E.Message{
+		ReactionMessage: &waE2E.ReactionMessage{
+			Key:               msgKey,
+			Text:              proto.String(""), // Empty text removes the reaction
+			GroupingKey:       proto.String(messageID),
+			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
+		},
+	}
+
+	// Send reaction removal
+	_, err = w.client.SendMessage(w.ctx, jid, reactionMsg)
+	if err != nil {
+		return fmt.Errorf("failed to remove reaction: %w", err)
+	}
+
+	// Get current user ID
+	currentUserID := ""
+	if w.client.Store != nil && w.client.Store.ID != nil {
+		currentUserID = w.client.Store.ID.String()
+	}
+
+	// Emit reaction event
+	select {
+	case w.eventChan <- core.ReactionEvent{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		UserID:         currentUserID,
+		Emoji:          emoji,
+		Added:          false,
+		Timestamp:      time.Now().Unix(),
+	}:
+		fmt.Printf("WhatsApp: ReactionEvent emitted successfully for removed reaction on message %s, emoji %s\n", messageID, emoji)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit ReactionEvent (channel full) for message %s\n", messageID)
+	}
+
+	return nil
 }
 
 // SendTypingIndicator sends a typing indicator to a conversation.

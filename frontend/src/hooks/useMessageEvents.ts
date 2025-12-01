@@ -14,6 +14,15 @@ interface ReceiptEvent {
   Timestamp: number;
 }
 
+interface ReactionEvent {
+  ConversationID: string;
+  MessageID: string;
+  UserID: string;
+  Emoji: string;
+  Added: boolean;
+  Timestamp: number;
+}
+
 export function useMessageEvents() {
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
@@ -247,5 +256,112 @@ export function useMessageEvents() {
       }
     };
   }, [queryClient, markAsReadByProtocolId, selectedContact]);
+
+  // Listen for reaction events
+  useEffect(() => {
+    if (typeof window !== "undefined" && !window.runtime) {
+      return;
+    }
+    
+    let isMounted = true;
+    const unsubscribeReaction = EventsOn("reaction", (reactionJSON: string) => {
+      console.log("useMessageEvents: *** REACTION EVENT RECEIVED ***");
+      console.log("useMessageEvents: Received reaction event (raw):", reactionJSON?.substring?.(0, 200) || reactionJSON);
+      if (!isMounted) {
+        return;
+      }
+      
+      try {
+        const reaction: ReactionEvent = JSON.parse(reactionJSON);
+        console.log("useMessageEvents: Parsed reaction event:", {
+          conversationId: reaction.ConversationID,
+          messageId: reaction.MessageID,
+          userId: reaction.UserID,
+          emoji: reaction.Emoji,
+          added: reaction.Added,
+        });
+        
+        // Update messages cache directly for all conversations, not just selected one
+        // This ensures reactions are updated even if the conversation is not currently selected
+        queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+          { queryKey: ["messages"] },
+          (oldData) => {
+            if (!oldData || !oldData.pages || !Array.isArray(oldData.pages)) {
+              return oldData;
+            }
+            
+            let found = false;
+            const updatedPages = oldData.pages.map((page) => {
+              if (!Array.isArray(page)) return page;
+              
+              return page.map((msg) => {
+                if (msg.protocolMsgId === reaction.MessageID && msg.protocolConvId === reaction.ConversationID) {
+                  found = true;
+                  const currentReactions = msg.reactions || [];
+                  
+                  if (reaction.Added) {
+                    // Add reaction if it doesn't exist
+                    const exists = currentReactions.some(
+                      (r) => r.userId === reaction.UserID && r.emoji === reaction.Emoji
+                    );
+                    if (!exists) {
+                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID);
+                      const reactionTimestamp = new Date(reaction.Timestamp * 1000);
+                      const newReaction = models.Reaction.createFrom({
+                        id: 0,
+                        messageId: msg.id,
+                        userId: reaction.UserID,
+                        emoji: reaction.Emoji,
+                        createdAt: reactionTimestamp.toISOString(),
+                        updatedAt: reactionTimestamp.toISOString(),
+                      });
+                      return models.Message.createFrom({
+                        ...msg,
+                        reactions: [...currentReactions, newReaction],
+                      });
+                    } else {
+                      console.log("useMessageEvents: Reaction already exists for message", reaction.MessageID);
+                    }
+                  } else {
+                    // Remove reaction
+                    console.log("useMessageEvents: Removing reaction from message", reaction.MessageID);
+                    const filteredReactions = currentReactions.filter(
+                      (r) => !(r.userId === reaction.UserID && r.emoji === reaction.Emoji)
+                    );
+                    return models.Message.createFrom({
+                      ...msg,
+                      reactions: filteredReactions,
+                    });
+                  }
+                }
+                return msg;
+              });
+            });
+            
+            if (!found) {
+              console.log("useMessageEvents: Message not found in cache for reaction:", reaction.MessageID, "in conversation:", reaction.ConversationID);
+            }
+            
+            return {
+              ...oldData,
+              pages: updatedPages,
+            };
+          }
+        );
+        
+        // Also invalidate metaContacts to ensure unread counts are updated
+        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+      } catch (error) {
+        console.error("useMessageEvents: Failed to parse reaction event:", error);
+      }
+    });
+    
+    return () => {
+      isMounted = false;
+      if (unsubscribeReaction) {
+        unsubscribeReaction();
+      }
+    };
+  }, [queryClient, selectedContact]);
 }
 
