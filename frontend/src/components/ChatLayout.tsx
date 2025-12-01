@@ -19,6 +19,7 @@ import { SyncStatusFooter } from "./SyncStatusFooter";
 import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
 import { useMessageEvents } from "@/hooks/useMessageEvents";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useTranslation } from "react-i18next";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 
@@ -26,6 +27,8 @@ export function ChatLayout() {
   const { t } = useTranslation();
   // Listen to real-time message events
   useMessageEvents();
+  // Handle keyboard shortcuts
+  useKeyboardShortcuts();
 
   const selectedContact = useAppStore((state) => state.selectedContact);
   const showThreads = useAppStore((state) => state.showThreads);
