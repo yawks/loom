@@ -1388,7 +1388,7 @@ export function MessageList({
                                 </span>
                               </div>
                             )}
-                            <div className="flex flex-col items-start gap-1 relative group/bubble pt-7">
+                            <div className="flex flex-col items-start gap-1 relative group/bubble">
                               <div className="flex items-start gap-2 relative w-full">
                                 <div
                                   className={bubbleClass}
@@ -1529,7 +1529,6 @@ export function MessageList({
                                   isGroup={isGroupConversation}
                                   allMessages={mainMessages}
                                   layout="bubble"
-                                  currentUserId={currentUserId}
                                 />
                               </div>
                             </div>
@@ -1772,8 +1771,8 @@ export function MessageList({
                                 {displayName}
                               </span>
                             )}
-                            <div className="w-full flex items-start gap-2">
-                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative pt-7">
+                            <div className="w-full flex items-center gap-2">
+                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
                                 {!isDeleted && editingMessageId !== messageId && (
                                   <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
                                     <MessageActions
@@ -1917,7 +1916,6 @@ export function MessageList({
                                   isGroup={isGroupConversation}
                                   allMessages={mainMessages}
                                   layout="irc"
-                                  currentUserId={currentUserId}
                                 />
                               )}
                             </div>

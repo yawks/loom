@@ -59,12 +59,11 @@ export function MessageActions({
   }, [canBeOpen, internalOpen]);
 
   return (
-    <div className={cn("flex items-center gap-1", className)}>
+    <div className={cn("flex items-center gap-1 bg-background border border-border rounded-lg shadow-sm p-1", className)}>
       {onReact && (
         <ReactionPicker
           onReactionSelect={onReact}
           currentReactions={currentReactions}
-          className="opacity-0 group-hover:opacity-100 transition-opacity"
         />
       )}
       {isFromMe && (
@@ -73,10 +72,7 @@ export function MessageActions({
             <Button
               variant="ghost"
               size="icon"
-              className={cn(
-                "h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity border bg-background",
-                className
-              )}
+              className="h-6 w-6 hover:bg-muted"
               onClick={(e) => e.stopPropagation()}
             >
               <MoreVertical className="h-4 w-4" />
