@@ -4,7 +4,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn, timeToDate } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
-import { inferDMStatus, inferGroupStatus, mergeReceipts } from "@/lib/MessageStatusInference";
 
 interface MessageStatusProps {
   message: models.Message;
@@ -12,7 +11,6 @@ interface MessageStatusProps {
   groupParticipants?: models.GroupParticipant[];
   allMessages?: models.Message[];
   layout: "irc" | "bubble";
-  currentUserId?: string; // Add currentUserId for inference
 }
 
 type MessageStatusType = "sent" | "delivered" | "read";
@@ -24,19 +22,13 @@ interface ParticipantStatus {
   timestamp?: Date;
 }
 
-function getMessageStatus(
-  receipts: models.MessageReceipt[] | undefined,
-  senderId: string,
-  mergedReceipts?: models.MessageReceipt[] // Use merged receipts if provided
-): MessageStatusType {
-  const receiptsToUse = mergedReceipts || receipts;
-
-  if (!receiptsToUse || receiptsToUse.length === 0) {
+function getMessageStatus(receipts: models.MessageReceipt[] | undefined, senderId: string): MessageStatusType {
+  if (!receipts || receipts.length === 0) {
     return "sent";
   }
 
   // Filter out receipts from the sender (we don't count ourselves)
-  const otherReceipts = receiptsToUse.filter((r) => r.userId !== senderId);
+  const otherReceipts = receipts.filter((r) => r.userId !== senderId);
 
   if (otherReceipts.length === 0) {
     return "sent";
@@ -61,11 +53,9 @@ function getParticipantStatuses(
   receipts: models.MessageReceipt[] | undefined,
   groupParticipants: models.GroupParticipant[] | undefined,
   allMessages: models.Message[] | undefined,
-  senderId: string,
-  mergedReceipts?: models.MessageReceipt[] // Use merged receipts if provided
+  senderId: string
 ): ParticipantStatus[] {
-  const receiptsToUse = mergedReceipts || receipts;
-  if (!receiptsToUse || receiptsToUse.length === 0) {
+  if (!receipts || receipts.length === 0) {
     return [];
   }
 
@@ -82,7 +72,7 @@ function getParticipantStatuses(
   }
 
   // Process all receipts, excluding the sender
-  receiptsToUse.forEach((receipt) => {
+  receipts.forEach((receipt) => {
     // Skip receipts from the sender (we don't count ourselves)
     if (receipt.userId === senderId) {
       return;
@@ -256,34 +246,18 @@ export function MessageStatus({
   groupParticipants,
   allMessages,
   layout,
-  currentUserId,
 }: MessageStatusProps) {
   const [isAnimating, setIsAnimating] = useState(false);
   const previousStatusRef = useRef<MessageStatusType | null>(null);
 
-  // Merge actual receipts with inferred receipts
-  const mergedReceipts = useMemo(() => {
-    if (!allMessages || !currentUserId) {
-      return message.receipts;
-    }
-
-    // Infer receipts based on user activity
-    const inferredReceipts = isGroup
-      ? inferGroupStatus(allMessages, groupParticipants, currentUserId, message)
-      : inferDMStatus(allMessages, currentUserId, message);
-
-    // Merge actual and inferred receipts (actual takes precedence)
-    return mergeReceipts(message.receipts, inferredReceipts);
-  }, [message, allMessages, currentUserId, isGroup, groupParticipants]);
-
   const status = useMemo(
-    () => getMessageStatus(message.receipts, message.senderId, mergedReceipts),
-    [message.receipts, message.senderId, mergedReceipts]
+    () => getMessageStatus(message.receipts, message.senderId),
+    [message.receipts, message.senderId]
   );
 
   const participantStatuses = useMemo(
-    () => getParticipantStatuses(message.receipts, groupParticipants, allMessages, message.senderId, mergedReceipts),
-    [message.receipts, groupParticipants, allMessages, message.senderId, mergedReceipts]
+    () => getParticipantStatuses(message.receipts, groupParticipants, allMessages, message.senderId),
+    [message.receipts, groupParticipants, allMessages, message.senderId]
   );
 
   // Detect status change and trigger animation
