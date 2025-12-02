@@ -2333,6 +2333,85 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 		body = msg.GetExtendedTextMessage().GetText()
 	}
 
+	// Extract quoted message information from ContextInfo
+	// ContextInfo can be present in ExtendedTextMessage, ImageMessage, VideoMessage, etc.
+	var quotedMessageID *string
+	var quotedSenderID *string
+	var quotedBody *string
+
+	var contextInfo *waE2E.ContextInfo
+
+	// Get ContextInfo from various message types
+	if msg.GetExtendedTextMessage() != nil && msg.GetExtendedTextMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetExtendedTextMessage().GetContextInfo()
+	} else if msg.GetImageMessage() != nil && msg.GetImageMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetImageMessage().GetContextInfo()
+	} else if msg.GetVideoMessage() != nil && msg.GetVideoMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetVideoMessage().GetContextInfo()
+	} else if msg.GetAudioMessage() != nil && msg.GetAudioMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetAudioMessage().GetContextInfo()
+	} else if msg.GetDocumentMessage() != nil && msg.GetDocumentMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetDocumentMessage().GetContextInfo()
+	} else if msg.GetStickerMessage() != nil && msg.GetStickerMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetStickerMessage().GetContextInfo()
+	}
+
+	if contextInfo != nil {
+		// Get quoted message ID (StanzaID)
+		if contextInfo.GetStanzaID() != "" {
+			stanzaID := contextInfo.GetStanzaID()
+			quotedMessageID = &stanzaID
+		}
+
+		// Get quoted sender ID (Participant)
+		if contextInfo.GetParticipant() != "" {
+			participant := contextInfo.GetParticipant()
+			quotedSenderID = &participant
+		}
+
+		// Get quoted message text
+		if contextInfo.GetQuotedMessage() != nil {
+			quotedMsg := contextInfo.GetQuotedMessage()
+			var quotedText string
+
+			// Try to get text from various message types
+			if quotedMsg.GetConversation() != "" {
+				quotedText = quotedMsg.GetConversation()
+			} else if quotedMsg.GetExtendedTextMessage() != nil {
+				quotedText = quotedMsg.GetExtendedTextMessage().GetText()
+			} else if quotedMsg.GetImageMessage() != nil {
+				// Image message - use caption or indicate it's an image
+				if quotedMsg.GetImageMessage().GetCaption() != "" {
+					quotedText = quotedMsg.GetImageMessage().GetCaption()
+				} else {
+					quotedText = "📷 Photo"
+				}
+			} else if quotedMsg.GetVideoMessage() != nil {
+				// Video message - use caption or indicate it's a video
+				if quotedMsg.GetVideoMessage().GetCaption() != "" {
+					quotedText = quotedMsg.GetVideoMessage().GetCaption()
+				} else {
+					quotedText = "🎥 Video"
+				}
+			} else if quotedMsg.GetAudioMessage() != nil {
+				quotedText = "🎵 Audio"
+			} else if quotedMsg.GetDocumentMessage() != nil {
+				// Document message - show filename
+				if quotedMsg.GetDocumentMessage().GetFileName() != "" {
+					quotedText = "📎 " + quotedMsg.GetDocumentMessage().GetFileName()
+				} else {
+					quotedText = "📎 Document"
+				}
+			} else if quotedMsg.GetStickerMessage() != nil {
+				quotedText = "Sticker"
+			}
+
+			if quotedText != "" {
+				quotedBody = &quotedText
+			}
+		}
+	}
+
 	// Get timestamp
 	timestamp := evt.Info.Timestamp
 
@@ -2445,6 +2524,9 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 		Timestamp:       timestamp,
 		IsFromMe:        isFromMe,
 		Attachments:     attachmentsJSON,
+		QuotedMessageID: quotedMessageID,
+		QuotedSenderID:  quotedSenderID,
+		QuotedBody:      quotedBody,
 	}
 }
 
@@ -3479,6 +3561,26 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 				}
 			}
 		}
+
+		// Enrich quoted message sender name
+		if msg.QuotedSenderID != nil && *msg.QuotedSenderID != "" {
+			quotedSenderJID, err := types.ParseJID(*msg.QuotedSenderID)
+			if err == nil {
+				var quotedSenderName string
+				if isGroup {
+					quotedSenderName = w.lookupSenderNameInGroup(quotedSenderJID, chatJID)
+				} else {
+					quotedSenderName = w.lookupSenderName(quotedSenderJID)
+				}
+				// Set the quoted sender name (not persisted, for display only)
+				if quotedSenderName != "" {
+					msg.QuotedSenderName = quotedSenderName
+				} else {
+					// Fallback to sender ID
+					msg.QuotedSenderName = *msg.QuotedSenderID
+				}
+			}
+		}
 	}
 }
 
@@ -3664,6 +3766,114 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent message %s\n", sentMessage.ProtocolMsgID)
 	default:
 		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent message %s\n", sentMessage.ProtocolMsgID)
+	}
+
+	return sentMessage, nil
+}
+
+// SendReply sends a text message as a reply to another message.
+func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
+	fmt.Printf("WhatsApp: SendReply called: conversationID=%s, quotedMessageID=%s\n", conversationID, quotedMessageID)
+	if w.client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	// Parse conversation ID (JID)
+	jid, err := types.ParseJID(conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid conversation ID: %w", err)
+	}
+
+	// Find the quoted message
+	var quotedMessage *models.Message
+	w.mu.RLock()
+	if msgs, ok := w.conversationMessages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == quotedMessageID {
+				quotedMessage = &msg
+				break
+			}
+		}
+	}
+	w.mu.RUnlock()
+
+	// If not found in cache, try database
+	if quotedMessage == nil && db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", quotedMessageID).First(&dbMsg).Error; err == nil {
+			quotedMessage = &dbMsg
+			fmt.Printf("WhatsApp: SendReply: Found quoted message in database\n")
+		} else {
+			fmt.Printf("WhatsApp: SendReply: Quoted message not found in database: %v\n", err)
+		}
+	}
+
+	if quotedMessage == nil {
+		return nil, fmt.Errorf("quoted message not found: %s", quotedMessageID)
+	}
+
+	// Parse sender JID from quoted message
+	senderJID, err := types.ParseJID(quotedMessage.SenderID)
+	if err != nil {
+		fmt.Printf("WhatsApp: SendReply: Failed to parse sender JID: %v\n", err)
+		return nil, fmt.Errorf("invalid sender ID in quoted message: %w", err)
+	}
+
+	// Create ExtendedTextMessage with ContextInfo for the quoted message
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: &text,
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    &quotedMessageID,
+				Participant: proto.String(senderJID.String()),
+				QuotedMessage: &waE2E.Message{
+					Conversation: &quotedMessage.Body,
+				},
+			},
+		},
+	}
+
+	// Send message
+	resp, err := w.client.SendMessage(w.ctx, jid, msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send reply: %w", err)
+	}
+
+	// Get quoted sender name for display
+	var quotedSenderName string
+	isGroup := jid.Server == types.GroupServer
+	if isGroup {
+		quotedSenderName = w.lookupSenderNameInGroup(senderJID, jid)
+	} else {
+		quotedSenderName = w.lookupSenderName(senderJID)
+	}
+	if quotedSenderName == "" {
+		quotedSenderName = quotedMessage.SenderID
+	}
+
+	// Convert to our Message model
+	sentMessage := &models.Message{
+		ProtocolConvID:   conversationID,
+		ProtocolMsgID:    resp.ID,
+		SenderID:         w.client.Store.ID.String(),
+		Body:             text,
+		Timestamp:        time.Now(),
+		IsFromMe:         true,
+		QuotedMessageID:  &quotedMessageID,
+		QuotedSenderID:   &quotedMessage.SenderID,
+		QuotedBody:       &quotedMessage.Body,
+		QuotedSenderName: quotedSenderName,
+	}
+
+	// Store message in conversation cache and database
+	w.appendMessageToConversation(sentMessage)
+
+	// Emit MessageEvent to notify frontend
+	select {
+	case w.eventChan <- core.MessageEvent{Message: *sentMessage}:
+		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent reply %s\n", sentMessage.ProtocolMsgID)
+	default:
+		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent reply %s\n", sentMessage.ProtocolMsgID)
 	}
 
 	return sentMessage, nil

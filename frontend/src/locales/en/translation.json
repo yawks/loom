@@ -151,5 +151,8 @@
   "typing_double": "{{user1}} and {{user2}} are typing",
   "typing_multiple": "{{users}} and {{lastUser}} are typing",
   "typing_indicator_title": "Someone is typing",
-  "admin": "Admin"
+  "admin": "Admin",
+  "reply_to_message": "Reply to message",
+  "replying_to": "Replying to",
+  "cancel_reply": "Cancel reply"
 }

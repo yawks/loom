@@ -457,6 +457,7 @@ export function MessageList({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
   const { toasts, showToast, closeToast } = useToast();
   const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
 
@@ -938,6 +939,10 @@ export function MessageList({
     });
     setDeleteConfirmOpen(true);
   }, [conversationId]);
+
+  const handleReplyClick = useCallback((message: models.Message) => {
+    setReplyingToMessage(message);
+  }, []);
 
   const handleConfirmDelete = useCallback(async () => {
     if (!messageToDelete) {
@@ -1438,8 +1443,26 @@ export function MessageList({
                                     </div>
                                   ) : (
                                     <>
+                                      {message.quotedMessageId && message.quotedBody && (
+                                        <div 
+                                          className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
+                                          onClick={() => {
+                                            const quotedElement = messageElementsRef.current.get(message.quotedMessageId || "");
+                                            if (quotedElement && scrollContainerRef.current) {
+                                              quotedElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                            }
+                                          }}
+                                        >
+                                          <div className="text-xs font-medium opacity-80 text-left">
+                                            {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                                          </div>
+                                          <div className="text-sm opacity-70 line-clamp-2 text-left">
+                                            {message.quotedBody}
+                                          </div>
+                                        </div>
+                                      )}
                                       {message.body && message.body.trim() !== "" && (
-                                        <p>{message.body}</p>
+                                        <p className="whitespace-pre-wrap">{message.body}</p>
                                       )}
                                     </>
                                   )}
@@ -1495,6 +1518,7 @@ export function MessageList({
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
                                       onEdit={() => handleEditMessage(message)}
                                       onDelete={() => handleDeleteClick(message)}
+                                      onReply={() => handleReplyClick(message)}
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
@@ -1771,7 +1795,7 @@ export function MessageList({
                                 {displayName}
                               </span>
                             )}
-                            <div className="w-full flex items-center gap-2">
+                            <div className="w-full flex items-start gap-2">
                               <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
                                 {!isDeleted && editingMessageId !== messageId && (
                                   <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
@@ -1780,6 +1804,7 @@ export function MessageList({
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
                                       onEdit={() => handleEditMessage(message)}
                                       onDelete={() => handleDeleteClick(message)}
+                                      onReply={() => handleReplyClick(message)}
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
@@ -1853,10 +1878,28 @@ export function MessageList({
                                         </div>
                                       ) : (
                                         <>
+                                          {message.quotedMessageId && message.quotedBody && (
+                                            <div 
+                                              className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
+                                              onClick={() => {
+                                                const quotedElement = messageElementsRef.current.get(message.quotedMessageId || "");
+                                                if (quotedElement && scrollContainerRef.current) {
+                                                  quotedElement.scrollIntoView({ behavior: "smooth", block: "center" });
+                                                }
+                                              }}
+                                            >
+                                              <div className="text-xs font-medium opacity-80 text-left">
+                                                {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                                              </div>
+                                              <div className="text-sm opacity-70 line-clamp-2 text-left">
+                                                {message.quotedBody}
+                                              </div>
+                                            </div>
+                                          )}
                                           {!showSender && message.body && (
                                             <p
-                                              className="text-foreground text-left m-0 leading-none"
-                                              style={{ marginTop: "10px" }}
+                                              className="text-foreground text-left m-0 leading-none whitespace-pre-wrap"
+                                              style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}
                                             >
                                               {message.body}
                                               {message.isEdited && (
@@ -1867,7 +1910,7 @@ export function MessageList({
                                             </p>
                                           )}
                                           {showSender && message.body && message.body.trim() !== "" && (
-                                            <p className="text-foreground text-left m-0">
+                                            <p className="text-foreground text-left m-0 whitespace-pre-wrap">
                                               {message.body}
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -1911,12 +1954,14 @@ export function MessageList({
                                 )}
                               </div>
                               {message.isFromMe && (
-                                <MessageStatus
-                                  message={message}
-                                  isGroup={isGroupConversation}
-                                  allMessages={mainMessages}
-                                  layout="irc"
-                                />
+                                <div className="self-end">
+                                  <MessageStatus
+                                    message={message}
+                                    isGroup={isGroupConversation}
+                                    allMessages={mainMessages}
+                                    layout="irc"
+                                  />
+                                </div>
                               )}
                             </div>
                             {message.reactions && message.reactions.length > 0 && (
@@ -2019,6 +2064,8 @@ export function MessageList({
               setPendingFilePaths(filePaths || []);
               setIsFileUploadModalOpen(true);
             }}
+            replyingToMessage={replyingToMessage}
+            onCancelReply={() => setReplyingToMessage(null)}
           />
         </div>
         <FileUploadModal
