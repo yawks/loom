@@ -151,5 +151,8 @@
   "typing_double": "{{user1}} et {{user2}} sont en train d'écrire",
   "typing_multiple": "{{users}} et {{lastUser}} sont en train d'écrire",
   "typing_indicator_title": "Quelqu'un est en train d'écrire",
-  "admin": "Admin"
+  "admin": "Admin",
+  "reply_to_message": "Répondre à",
+  "replying_to": "Répondre à",
+  "cancel_reply": "Annuler la réponse"
 }
