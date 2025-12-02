@@ -1,17 +1,21 @@
 import EmojiPicker, { Theme } from "emoji-picker-react";
-import { Paperclip, Send, Smile } from "lucide-react";
+import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, useCallback, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { SendMessage } from "../../wailsjs/go/main/App";
+import { SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import type { models } from "../../wailsjs/go/models";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
+  replyingToMessage?: models.Message | null;
+  onCancelReply?: () => void;
 }
 
 const normalizeClipboardPath = (rawValue: string | null): string | null => {
@@ -64,7 +68,7 @@ const extractPathsFromText = (text: string | null): string[] => {
     );
 };
 
-export function ChatInput({ onFileUploadRequest }: ChatInputProps) {
+export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply }: ChatInputProps) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
@@ -76,7 +80,10 @@ export function ChatInput({ onFileUploadRequest }: ChatInputProps) {
   const queryClient = useQueryClient();
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ conversationId, text }: { conversationId: string; text: string }) => {
+    mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string }) => {
+      if (quotedMessageId) {
+        return await SendReply(conversationId, text, quotedMessageId);
+      }
       return await SendMessage(conversationId, text);
     },
     onSuccess: () => {
@@ -122,14 +129,20 @@ export function ChatInput({ onFileUploadRequest }: ChatInputProps) {
   const handleSendMessage = async () => {
     if (message.trim() && selectedContact) {
       const text = message.trim();
+      const quotedMessageId = replyingToMessage?.protocolMsgId;
       setMessage("");
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
+      }
+      // Clear reply state after sending
+      if (onCancelReply) {
+        onCancelReply();
       }
       try {
         await sendMessageMutation.mutateAsync({
           conversationId: selectedContact.linkedAccounts[0].userId,
           text,
+          quotedMessageId,
         });
       } catch (error) {
         // Error handling is done in onError
@@ -288,18 +301,63 @@ export function ChatInput({ onFileUploadRequest }: ChatInputProps) {
   }, [onFileUploadRequest]);
 
   const hasMessage = message.trim().length > 0;
+  
+  // Get sender display name for reply preview
+  const getSenderDisplayName = (message: models.Message): string => {
+    if (message.isFromMe) return t("you") || "You";
+    if (message.senderName && message.senderName.trim().length > 0) {
+      return message.senderName;
+    }
+    return message.senderId;
+  };
 
   return (
-    <div
-      className={cn(
-        "p-4 border-t flex items-end space-x-2 transition-colors",
-        isDragging && "bg-muted/50"
+    <div className="flex flex-col">
+      {/* Reply preview */}
+      {replyingToMessage && (
+        <div className="px-4 pt-3 pb-2 border-t bg-muted/30 flex items-center gap-3">
+          <div className="flex-1 flex items-center gap-2 min-w-0">
+            <Avatar className="h-6 w-6 shrink-0">
+              <AvatarImage src={replyingToMessage.senderAvatarUrl} />
+              <AvatarFallback className="text-xs">
+                {getSenderDisplayName(replyingToMessage).substring(0, 2).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1 min-w-0 text-left">
+              <div className="text-xs font-medium text-muted-foreground text-left">
+                {t("replying_to")} {getSenderDisplayName(replyingToMessage)}
+              </div>
+              <div className="text-sm text-foreground truncate text-left">
+                {replyingToMessage.body && replyingToMessage.body.length > 50
+                  ? `${replyingToMessage.body.substring(0, 50)}...`
+                  : replyingToMessage.body || t("empty_message")}
+              </div>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            onClick={onCancelReply}
+            title={t("cancel_reply")}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       )}
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
-    >
+      
+      {/* Message input */}
+      <div
+        className={cn(
+          "p-4 border-t flex items-end space-x-2 transition-colors",
+          isDragging && "bg-muted/50",
+          replyingToMessage && "border-t-0"
+        )}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
       <div className="flex items-center space-x-2 flex-1">
         <Button
           variant="ghost"
@@ -363,6 +421,7 @@ export function ChatInput({ onFileUploadRequest }: ChatInputProps) {
           <Send className="h-5 w-5" />
         </Button>
       )}
+      </div>
     </div>
   );
 }

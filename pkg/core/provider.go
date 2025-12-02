@@ -70,6 +70,13 @@ type Provider interface {
 	// Returns the created message or an error.
 	SendMessage(conversationID string, text string, file *Attachment, threadID *string) (*models.Message, error)
 
+	// SendReply sends a text message as a reply to another message.
+	// conversationID is the protocol-specific conversation ID.
+	// text is the message text to send.
+	// quotedMessageID is the protocol-specific message ID being replied to.
+	// Returns the created message or an error.
+	SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error)
+
 	// SendFile sends a file to a given conversation without text.
 	// If threadID is not nil, the file will be sent as a reply in the specified thread.
 	// Returns the created message or an error.

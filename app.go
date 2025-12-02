@@ -39,6 +39,36 @@ func NewApp() *App {
 	return &App{}
 }
 
+// cleanupSelfReceipts removes receipts where the user is the sender of the message
+// This cleans up incorrectly stored receipts from previous versions
+func cleanupSelfReceipts() {
+	if db.DB == nil {
+		return
+	}
+
+	// Find all receipts where user_id matches the sender_id of the message
+	var receiptsToDelete []models.MessageReceipt
+	err := db.DB.
+		Joins("JOIN messages ON messages.id = message_receipts.message_id").
+		Where("message_receipts.user_id = messages.sender_id").
+		Find(&receiptsToDelete).Error
+
+	if err != nil {
+		log.Printf("Warning: Failed to find self receipts to clean up: %v", err)
+		return
+	}
+
+	if len(receiptsToDelete) > 0 {
+		log.Printf("Found %d self receipts to clean up", len(receiptsToDelete))
+		err = db.DB.Delete(&receiptsToDelete).Error
+		if err != nil {
+			log.Printf("Warning: Failed to delete self receipts: %v", err)
+		} else {
+			log.Printf("Successfully cleaned up %d self receipts", len(receiptsToDelete))
+		}
+	}
+}
+
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
@@ -48,6 +78,9 @@ func (a *App) startup(ctx context.Context) {
 	if err := db.InitDatabase(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Clean up incorrectly stored self receipts
+	cleanupSelfReceipts()
 
 	// Initialize provider manager
 	a.providerManager = core.NewProviderManager()
@@ -408,32 +441,37 @@ func (a *App) startEventListener(ctx context.Context) {
 						// Find the message by protocol message ID
 						var message models.Message
 						if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", e.MessageID, e.ConversationID).First(&message).Error; err == nil {
-							// Check if receipt already exists
-							var existingReceipt models.MessageReceipt
-							receiptExists := db.DB.Where("message_id = ? AND user_id = ? AND receipt_type = ?", message.ID, e.UserID, string(e.ReceiptType)).First(&existingReceipt).Error == nil
-
-							if !receiptExists {
-								// Create new receipt
-								receipt := models.MessageReceipt{
-									MessageID:   message.ID,
-									UserID:      e.UserID,
-									ReceiptType: string(e.ReceiptType),
-									Timestamp:   time.Unix(e.Timestamp, 0),
-								}
-								if err := db.DB.Create(&receipt).Error; err != nil {
-									log.Printf("Failed to save receipt to database: %v", err)
-								} else {
-									log.Printf("App: Saved receipt to database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
-								}
+							// Don't save receipts from the message sender (we don't count ourselves)
+							if e.UserID == message.SenderID {
+								log.Printf("App: Skipping receipt from sender themselves for message %s, user %s", e.MessageID, e.UserID)
 							} else {
-								// Update existing receipt timestamp if newer
-								receiptTimestamp := time.Unix(e.Timestamp, 0)
-								if receiptTimestamp.After(existingReceipt.Timestamp) {
-									existingReceipt.Timestamp = receiptTimestamp
-									if err := db.DB.Save(&existingReceipt).Error; err != nil {
-										log.Printf("Failed to update receipt in database: %v", err)
+								// Check if receipt already exists
+								var existingReceipt models.MessageReceipt
+								receiptExists := db.DB.Where("message_id = ? AND user_id = ? AND receipt_type = ?", message.ID, e.UserID, string(e.ReceiptType)).First(&existingReceipt).Error == nil
+
+								if !receiptExists {
+									// Create new receipt
+									receipt := models.MessageReceipt{
+										MessageID:   message.ID,
+										UserID:      e.UserID,
+										ReceiptType: string(e.ReceiptType),
+										Timestamp:   time.Unix(e.Timestamp, 0),
+									}
+									if err := db.DB.Create(&receipt).Error; err != nil {
+										log.Printf("Failed to save receipt to database: %v", err)
 									} else {
-										log.Printf("App: Updated receipt in database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
+										log.Printf("App: Saved receipt to database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
+									}
+								} else {
+									// Update existing receipt timestamp if newer
+									receiptTimestamp := time.Unix(e.Timestamp, 0)
+									if receiptTimestamp.After(existingReceipt.Timestamp) {
+										existingReceipt.Timestamp = receiptTimestamp
+										if err := db.DB.Save(&existingReceipt).Error; err != nil {
+											log.Printf("Failed to update receipt in database: %v", err)
+										} else {
+											log.Printf("App: Updated receipt in database for message %s, user %s, type %s", e.MessageID, e.UserID, e.ReceiptType)
+										}
 									}
 								}
 							}
@@ -824,6 +862,14 @@ func (a *App) GetParticipantNames(participantIDs []string) (map[string]string, e
 // SendMessage sends a text message.
 func (a *App) SendMessage(conversationID string, text string) (*models.Message, error) {
 	return a.provider.SendMessage(conversationID, text, nil, nil)
+}
+
+// SendReply sends a text message as a reply to another message.
+func (a *App) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
+	if a.provider == nil {
+		return nil, fmt.Errorf("no active provider")
+	}
+	return a.provider.SendReply(conversationID, text, quotedMessageID)
 }
 
 // SendFile sends a file to a conversation.

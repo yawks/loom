@@ -1,4 +1,4 @@
-import { Edit, MoreVertical, Trash2 } from "lucide-react";
+import { Edit, MoreVertical, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -16,6 +16,7 @@ interface MessageActionsProps {
   hasAttachments: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onReply?: () => void;
   onReact?: (emoji: string) => void;
   currentReactions?: string[];
   className?: string;
@@ -28,6 +29,7 @@ export function MessageActions({
   hasAttachments,
   onEdit,
   onDelete,
+  onReply,
   onReact,
   currentReactions = [],
   className,
@@ -60,6 +62,20 @@ export function MessageActions({
 
   return (
     <div className={cn("flex items-center gap-1 bg-background border border-border rounded-lg shadow-sm p-1", className)}>
+      {onReply && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 hover:bg-muted"
+          onClick={(e) => {
+            e.stopPropagation();
+            onReply();
+          }}
+          title={t("reply_to_message")}
+        >
+          <Reply className="h-4 w-4" />
+        </Button>
+      )}
       {onReact && (
         <ReactionPicker
           onReactionSelect={onReact}

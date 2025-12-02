@@ -221,6 +221,48 @@ func (m *MockProvider) SendMessage(conversationID string, text string, file *cor
 	return &newMessage, nil
 }
 
+// SendReply sends a text message as a reply to another message.
+func (m *MockProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
+	fmt.Printf("MockProvider: Sending reply '%s' to message %s in conv %s\n", text, quotedMessageID, conversationID)
+
+	// Find the quoted message
+	var quotedMessage *models.Message
+	if msgs, ok := m.messages[conversationID]; ok {
+		for _, msg := range msgs {
+			if msg.ProtocolMsgID == quotedMessageID {
+				quotedMessage = &msg
+				break
+			}
+		}
+	}
+
+	if quotedMessage == nil {
+		return nil, fmt.Errorf("quoted message not found: %s", quotedMessageID)
+	}
+
+	newMessage := models.Message{
+		ProtocolMsgID:     fmt.Sprintf("mock-msg-%d", secureRandInt(100000)),
+		ProtocolConvID:    conversationID,
+		SenderID:          "me",
+		Body:              text,
+		Timestamp:         time.Now(),
+		IsFromMe:          true,
+		QuotedMessageID:   &quotedMessageID,
+		QuotedSenderID:    &quotedMessage.SenderID,
+		QuotedSenderName:  "", // Will be filled by frontend
+		QuotedBody:        &quotedMessage.Body,
+	}
+
+	if _, ok := m.messages[conversationID]; ok {
+		m.messages[conversationID] = append(m.messages[conversationID], newMessage)
+	}
+
+	// Send the message event
+	m.eventChan <- core.MessageEvent{Message: newMessage}
+
+	return &newMessage, nil
+}
+
 // SendFile sends a file to a conversation without text.
 func (m *MockProvider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	fmt.Printf("MockProvider: Sending file '%s' to conv %s\n", file.FileName, conversationID)
