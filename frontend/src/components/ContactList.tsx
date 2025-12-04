@@ -10,6 +10,7 @@ import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTypingStore } from "@/lib/typingStore";
+import { usePresenceStore } from "@/lib/presenceStore";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useSortedContacts } from "@/hooks/useSortedContacts";
@@ -28,6 +29,14 @@ export function ContactList() {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
   const [sortBy, setSortBy] = useState<SortOption>("last_message");
+  // Use object directly - Zustand handles object reactivity better than Map
+  // Use a selector that returns a serialized version to ensure reactivity
+  const presenceMap = usePresenceStore((state) => {
+    const map = state.presenceMap;
+    console.log(`[ContactList] Store selector called, presenceMap keys:`, Object.keys(map));
+    // Return the object directly - Zustand will detect changes via shallow comparison
+    return map;
+  });
   const { data: contacts } = useSuspenseQuery<models.MetaContact[], Error>({
     queryKey: ["metaContacts"],
     queryFn: fetchMetaContacts,
@@ -56,6 +65,11 @@ export function ContactList() {
     setMetaContacts(contacts);
   }, [contacts, setMetaContacts]);
 
+  // Debug: Log when presenceMap changes
+  useEffect(() => {
+    console.log(`[ContactList] presenceMap changed, current entries:`, Object.entries(presenceMap));
+  }, [presenceMap]);
+
   // Use shared hook for sorted contacts
   const sortedContacts = useSortedContacts(sortBy);
 
@@ -79,7 +93,7 @@ export function ContactList() {
         (isRead) => !isRead
       ).length;
       counts[conversationId] = unreadCount;
-      
+
       // Log pour déboguer les compteurs incorrects
       if (unreadCount > 0) {
         const unreadMessageIds = Object.entries(conversationState)
@@ -138,6 +152,75 @@ export function ContactList() {
             const isSelected = selectedContact?.id === contact.id;
             const isTyping = (typingByConversation[conversationId]?.length ?? 0) > 0;
 
+            // Check if contact is online (only for DM, not groups)
+            const isGroup = conversationId.endsWith("@g.us");
+
+            // Helper to check if a LID in presenceMap matches any linkedAccount
+            const checkPresenceMatch = () => {
+              if (isGroup) {
+                console.log(`[ContactList] Skipping presence check for group: ${contact.displayName}`);
+                return false;
+              }
+
+              console.log(`[ContactList] Checking presence for ${contact.displayName}, linkedAccounts:`, contact.linkedAccounts.map(a => a.userId));
+              console.log(`[ContactList] Current presenceMap:`, presenceMap);
+
+              // First, try direct match
+              const directMatch = contact.linkedAccounts.some(
+                (account) => {
+                  const isOnline = presenceMap[account.userId] === true;
+                  console.log(`[ContactList] Checking direct match for ${account.userId}: ${isOnline}`);
+                  if (isOnline) {
+                    console.log(`[ContactList] ✓ Direct match found for ${contact.displayName}: ${account.userId}`);
+                  }
+                  return isOnline;
+                }
+              );
+              if (directMatch) return true;
+
+              // If no direct match, try to match by phone number
+              // LID format: "149044005437527@lid" or "216350555386047@lid"
+              // JID format: "33XXXXXXXXX@s.whatsapp.net"
+              console.log(`[ContactList] No direct match, trying phone number matching...`);
+              for (const [lid, isOnline] of Object.entries(presenceMap)) {
+                if (!isOnline || !lid.endsWith("@lid")) continue;
+
+                // Extract phone number from LID (remove @lid and any :X suffix)
+                const lidPhone = lid.replace(/@lid$/, "").replace(/:\d+$/, "");
+                console.log(`[ContactList] Checking LID ${lid} (extracted phone: ${lidPhone})`);
+
+                // Check if any linkedAccount contains this phone number
+                const phoneMatch = contact.linkedAccounts.some(account => {
+                  const jid = account.userId;
+                  // Extract phone from JID (e.g., "33677815440@s.whatsapp.net" -> "33677815440")
+                  const jidPhone = jid.split("@")[0];
+                  const matches = jidPhone === lidPhone;
+                  console.log(`[ContactList]   Comparing LID phone ${lidPhone} with JID ${jid} (phone: ${jidPhone}): ${matches}`);
+                  if (matches) {
+                    console.log(`[ContactList] ✓ Phone match: LID ${lid} (phone: ${lidPhone}) matches JID ${jid} (phone: ${jidPhone}) for contact ${contact.displayName}`);
+                  }
+                  return matches;
+                });
+
+                if (phoneMatch) {
+                  return true;
+                }
+              }
+
+              console.log(`[ContactList] ✗ No match found for ${contact.displayName}`);
+              return false;
+            };
+
+            const isOnline = checkPresenceMatch();
+            console.log(`[ContactList] Final isOnline status for ${contact.displayName}: ${isOnline}`);
+
+            // Check if this contact represents the current user
+            // In DMs, we typically don't see ourselves, but check anyway
+            // We'll identify current user by checking if any linkedAccount userId appears in presence
+            // as being from "me" - but since presence doesn't track "me", we'll skip this check for now
+            // and rely on the fact that DMs don't show self-contacts
+            const isCurrentUser = false; // TODO: Implement proper current user detection if needed
+
             return (
               <div
                 key={contact.id}
@@ -155,8 +238,14 @@ export function ContactList() {
                       {contact.displayName.substring(0, 2).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
+                  {!isCurrentUser && isOnline && (
+                    <div
+                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background"
+                      title={t("online")}
+                    />
+                  )}
                   {isTyping && (
-                    <div 
+                    <div
                       className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background animate-pulse"
                       title={t("typing_indicator_title")}
                     />

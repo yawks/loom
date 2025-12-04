@@ -36,6 +36,8 @@
   "offline": "hors ligne",
   "away": "absent",
   "busy": "occupé",
+  "active": "Actif",
+  "inactive": "Inactif",
   "conversation_details": "Détails de la conversation",
   "select_a_conversation": "Sélectionnez une conversation",
   "search_placeholder": "Rechercher...",
@@ -154,5 +156,19 @@
   "admin": "Admin",
   "reply_to_message": "Répondre à",
   "replying_to": "Répondre à",
-  "cancel_reply": "Annuler la réponse"
+  "cancel_reply": "Annuler la réponse",
+  "call": {
+    "missedVoice": "Appel vocal manqué",
+    "missedVideo": "Appel vidéo manqué",
+    "missedGroupVoice": "Appel vocal de groupe manqué",
+    "missedGroupVideo": "Appel vidéo de groupe manqué",
+    "scheduledStart": "Appel planifié démarré",
+    "scheduledCancel": "Appel planifié annulé",
+    "linkedGroupStart": "Appel de groupe lié démarré",
+    "connected": "Appel connecté ({{duration}})",
+    "connectedShort": "Appel connecté",
+    "failed": "Appel échoué",
+    "rejected": "Appel rejeté",
+    "participants": "{{count}} participants"
+  }
 }

@@ -410,8 +410,10 @@ export function useMessageEvents() {
           
           try {
             // Call the backend API to resolve the LID
-            if (window.go?.main?.App?.ResolveLID) {
-              const resolved = await window.go.main.App.ResolveLID(typing.ConversationID);
+            // Use dynamic access since ResolveLID may not be in TypeScript bindings
+            const resolveLIDFn = window.go?.main?.App?.ResolveLID as ((lid: string) => Promise<string>) | undefined;
+            if (resolveLIDFn && typeof resolveLIDFn === "function") {
+              const resolved = await resolveLIDFn(typing.ConversationID);
               if (resolved && resolved !== typing.ConversationID) {
                 resolvedConversationId = resolved;
                 console.log("useMessageEvents: Backend resolved LID", typing.ConversationID, "to", resolvedConversationId);

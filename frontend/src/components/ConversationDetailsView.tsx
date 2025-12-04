@@ -9,9 +9,9 @@ import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import type { models } from "../../wailsjs/go/models";
-import { translateBackendMessage } from "@/lib/i18n-helpers";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { usePresenceStore } from "@/lib/presenceStore";
 
 // Declare SendFileFromPath as it will be available after Wails bindings are regenerated
 declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
@@ -125,6 +125,8 @@ export function ConversationDetailsView({
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
+  // Use object directly - Zustand handles object reactivity better than Map
+  const presenceMap = usePresenceStore((state) => state.presenceMap);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -562,16 +564,31 @@ export function ConversationDetailsView({
                   participant.senderId,
                   participant.isFromMe
                 );
-                const status = selectedConversation.linkedAccounts.find(
-                  (acc) => acc.userId === participant.senderId
-                )?.status || t("offline");
+                
+                // Check if participant is online using presence store
+                const isOnline = presenceMap[participant.senderId] === true;
+                
+                // Also check by phone number matching (for LID format)
+                let presenceMatch = isOnline;
+                if (!presenceMatch && participant.senderId.includes("@")) {
+                  const jidPhone = participant.senderId.split("@")[0];
+                  for (const [lid, online] of Object.entries(presenceMap)) {
+                    if (online && lid.endsWith("@lid")) {
+                      const lidPhone = lid.replace(/@lid$/, "").replace(/:\d+$/, "");
+                      if (jidPhone === lidPhone) {
+                        presenceMatch = true;
+                        break;
+                      }
+                    }
+                  }
+                }
 
                 return (
                   <ParticipantItem
                     key={participant.senderId}
                     participant={participant}
                     displayName={displayName}
-                    status={status}
+                    isOnline={presenceMatch}
                     alias={aliases[participant.senderId]}
                     onAvatarClick={handleAvatarClick}
                     onAliasChange={async (newAlias: string) => {
@@ -606,7 +623,7 @@ interface ParticipantItemProps {
     joinedAt?: Date;
   };
   displayName: string;
-  status: string;
+  isOnline: boolean;
   alias?: string;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string) => void;
   onAliasChange: (newAlias: string) => Promise<void>;
@@ -615,7 +632,7 @@ interface ParticipantItemProps {
 function ParticipantItem({
   participant,
   displayName,
-  status,
+  isOnline,
   alias,
   onAvatarClick,
   onAliasChange,
@@ -643,7 +660,7 @@ function ParticipantItem({
   };
 
   if (participant.isFromMe) {
-    // Don't allow editing "You"
+    // Don't show status for current user
     return (
       <div className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors">
         <button
@@ -667,20 +684,6 @@ function ParticipantItem({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 mt-1">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                status === "online"
-                  ? "bg-green-500"
-                  : status === "away"
-                  ? "bg-yellow-500"
-                  : status === "busy"
-                  ? "bg-red-500"
-                  : "bg-gray-500"
-              }`}
-            />
-            <p className="text-xs text-muted-foreground capitalize">{translateBackendMessage(status)}</p>
-          </div>
         </div>
       </div>
     );
@@ -695,17 +698,25 @@ function ParticipantItem({
         }
       }}
     >
-      <button
-        onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName)}
-        className="shrink-0"
-      >
-        <Avatar className="h-10 w-10 cursor-pointer hover:opacity-80 transition-opacity">
-          <AvatarImage src={participant.senderAvatarUrl} />
-          <AvatarFallback>
-            {displayName.substring(0, 2).toUpperCase()}
-          </AvatarFallback>
-        </Avatar>
-      </button>
+      <div className="relative shrink-0">
+        <button
+          onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName)}
+          className="shrink-0"
+        >
+          <Avatar className="h-10 w-10 cursor-pointer hover:opacity-80 transition-opacity">
+            <AvatarImage src={participant.senderAvatarUrl} />
+            <AvatarFallback>
+              {displayName.substring(0, 2).toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+        </button>
+        {isOnline && (
+          <div
+            className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background"
+            title={t("active")}
+          />
+        )}
+      </div>
       <div className="flex-1 min-w-0">
         {isEditing ? (
           <div className="flex items-center gap-2">
@@ -746,18 +757,17 @@ function ParticipantItem({
           </div>
         )}
         <div className="flex items-center gap-2 mt-1">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              status === "online"
-                ? "bg-green-500"
-                : status === "away"
-                ? "bg-yellow-500"
-                : status === "busy"
-                ? "bg-red-500"
-                : "bg-gray-500"
-            }`}
-          />
-          <p className="text-xs text-muted-foreground capitalize">{translateBackendMessage(status)}</p>
+          {isOnline ? (
+            <>
+              <span className="h-2 w-2 rounded-full bg-green-500" />
+              <p className="text-xs text-muted-foreground">{t("active")}</p>
+            </>
+          ) : (
+            <>
+              <span className="h-2 w-2 rounded-full bg-gray-500" />
+              <p className="text-xs text-muted-foreground">{t("inactive")}</p>
+            </>
+          )}
         </div>
       </div>
     </div>

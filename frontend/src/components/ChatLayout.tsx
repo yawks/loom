@@ -20,6 +20,7 @@ import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
 import { useMessageEvents } from "@/hooks/useMessageEvents";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useSystemTrayBadge } from "@/hooks/useSystemTrayBadge";
 import { useTranslation } from "react-i18next";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 
@@ -29,6 +30,8 @@ export function ChatLayout() {
   useMessageEvents();
   // Handle keyboard shortcuts
   useKeyboardShortcuts();
+  // Update system tray badge with unread count
+  useSystemTrayBadge();
 
   const selectedContact = useAppStore((state) => state.selectedContact);
   const showThreads = useAppStore((state) => state.showThreads);
