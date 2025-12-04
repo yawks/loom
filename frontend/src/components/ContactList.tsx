@@ -1,11 +1,11 @@
-import { ArrowDownAZ, Clock } from "lucide-react";
+import { ArrowDownAZ, Clock, Phone } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery, useQueries } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetMetaContacts, GetMessagesForConversation } from "../../wailsjs/go/main/App";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -51,6 +51,23 @@ export function ContactList() {
       queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
       // Invalidate last message queries to update sorting
       queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
+      // Invalidate active calls queries to update call badges
+      queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [queryClient]);
+
+  // Also listen for new messages to update active call badges
+  useEffect(() => {
+    const unsubscribe = EventsOn("new-message", () => {
+      // Invalidate active calls queries when a new message arrives
+      // This ensures the badge disappears immediately when CallTerminate updates the message
+      queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
     });
 
     return () => {
@@ -105,6 +122,51 @@ export function ContactList() {
     });
     return counts;
   }, [readStateByConversation, sortedContacts]);
+
+  // Detect active incoming calls (not terminated) for each conversation
+  const activeCallsQueries = useQueries({
+    queries: sortedContacts.map((contact) => {
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      return {
+        queryKey: ["activeCalls", conversationId],
+        queryFn: async () => {
+          if (!conversationId) return false;
+          try {
+            const messages = await GetMessagesForConversation(conversationId);
+            
+            // Check if there are any active incoming call messages (not terminated)
+            // Only show badge for "incoming_call" or "incoming_group_call" types
+            const hasActiveCall = (messages || []).some((msg) => {
+              if (!msg.callType || msg.callType.trim() === "") {
+                return false;
+              }
+              // Only show badge for incoming calls that haven't been terminated yet
+              const callType = msg.callType.trim();
+              return callType === "incoming_call" || callType === "incoming_group_call";
+            });
+            
+            return hasActiveCall;
+          } catch (error) {
+            console.error(`Error checking active calls for ${conversationId}:`, error);
+            return false;
+          }
+        },
+        enabled: !!conversationId,
+        staleTime: 5000, // Cache for 5 seconds (more frequent updates for active calls)
+      };
+    }),
+  });
+
+  const hasActiveCallByConversation = useMemo(() => {
+    const calls: Record<string, boolean> = {};
+    sortedContacts.forEach((contact, index) => {
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      if (conversationId && activeCallsQueries[index]?.data) {
+        calls[conversationId] = activeCallsQueries[index].data;
+      }
+    });
+    return calls;
+  }, [sortedContacts, activeCallsQueries]);
 
   if (contacts.length === 0) {
     return (
@@ -255,16 +317,27 @@ export function ContactList() {
                   <span className="text-sm font-medium truncate">
                     {contact.displayName}
                   </span>
-                  {unreadCount > 0 && (
-                    <span
-                      className="ml-auto inline-flex min-w-[1.75rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-2 py-0.5 text-[11px] font-semibold text-white"
-                      aria-label={t("unread_badge_aria", {
-                        count: unreadCount,
-                      })}
-                    >
-                      {displayUnreadCount}
-                    </span>
-                  )}
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {hasActiveCallByConversation[conversationId] && (
+                      <div
+                        className="inline-flex items-center justify-center rounded-full bg-orange-600 dark:bg-orange-500 p-1.5"
+                        title={t("call.activeCall")}
+                        aria-label={t("call.activeCall")}
+                      >
+                        <Phone className="h-3 w-3 text-white" />
+                      </div>
+                    )}
+                    {unreadCount > 0 && (
+                      <span
+                        className="inline-flex min-w-[1.75rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-2 py-0.5 text-[11px] font-semibold text-white"
+                        aria-label={t("unread_badge_aria", {
+                          count: unreadCount,
+                        })}
+                      >
+                        {displayUnreadCount}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             );

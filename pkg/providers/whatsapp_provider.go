@@ -1973,6 +1973,319 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			default:
 			}
 		}()
+	case *events.CallOffer:
+		// Handle incoming call offer
+		fmt.Printf("WhatsApp: Received CallOffer event - CallCreator: %s (server: %s), CallID: %s\n",
+			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
+		
+		// CallID is NOT the conversation ID - it's a unique call identifier
+		// The conversation ID should be the CallCreator (the person calling us)
+		callCreatorJID := v.CallCreator
+		callID := v.CallID // Keep CallID for message ID generation
+		
+		// Resolve CallCreator LID to JID if needed (this is the actual conversation ID)
+		if callCreatorJID.Server == "lid" {
+			w.lidToJIDMu.RLock()
+			resolvedCreatorJID, found := w.lidToJIDMap[callCreatorJID.String()]
+			w.lidToJIDMu.RUnlock()
+			
+			if found && resolvedCreatorJID != "" {
+				var err error
+				callCreatorJID, err = types.ParseJID(resolvedCreatorJID)
+				if err == nil {
+					fmt.Printf("WhatsApp: Resolved CallCreator LID %s to JID %s from cache\n", v.CallCreator.String(), callCreatorJID.String())
+				}
+			} else if db.DB != nil {
+				var mapping models.LIDMapping
+				if err := db.DB.Where("lid = ? AND protocol = ?", callCreatorJID.String(), "whatsapp").First(&mapping).Error; err == nil {
+					callCreatorJID, err = types.ParseJID(mapping.JID)
+					if err == nil {
+						fmt.Printf("WhatsApp: Resolved CallCreator LID %s to JID %s from database\n", v.CallCreator.String(), callCreatorJID.String())
+						// Update cache
+						w.lidToJIDMu.Lock()
+						w.lidToJIDMap[v.CallCreator.String()] = mapping.JID
+						w.lidToJIDMu.Unlock()
+					}
+				} else {
+					fmt.Printf("WhatsApp: CallCreator LID %s not found in database\n", callCreatorJID.String())
+				}
+			}
+		}
+		
+		// The conversation ID is the CallCreator (resolved to JID if it was a LID)
+		convID := callCreatorJID.String()
+		
+		// If CallCreator is still a LID and we couldn't resolve it, we can't create the message
+		if callCreatorJID.Server == "lid" {
+			fmt.Printf("WhatsApp: WARNING - Could not resolve CallCreator LID %s to JID. Skipping call event.\n", v.CallCreator.String())
+			fmt.Printf("WhatsApp: TIP - Send or receive a message in this conversation to create the LID mapping\n")
+			return
+		}
+		
+		fmt.Printf("WhatsApp: Using conversation ID %s (resolved from CallCreator %s) for call %s\n", convID, v.CallCreator.String(), callID)
+		
+		// Determine if it's a group call
+		isGroup := strings.Contains(convID, "@g.us")
+		
+		// Determine call type based on call offer
+		// CallOffer is an incoming call (ringing), not a missed call yet
+		// The actual call type will be determined later from CallTerminate
+		callType := "incoming_call"
+		if isGroup {
+			callType = "incoming_group_call"
+		}
+		
+		// Create a call message
+		now := time.Now()
+		callMsgID := fmt.Sprintf("call_%s_%d", callID, now.Unix())
+		
+		// Use resolved CallCreator JID for sender ID
+		senderID := callCreatorJID.String()
+		if callCreatorJID.Server == "lid" {
+			// If still a LID, use original
+			senderID = v.CallCreator.String()
+		}
+		
+		callMessage := &models.Message{
+			ProtocolConvID: convID,
+			ProtocolMsgID:   callMsgID,
+			SenderID:        senderID,
+			SenderName:      "", // Will be filled from contact info if available
+			Body:            "", // Call messages don't have body text
+			Timestamp:       now,
+			IsFromMe:        false, // Incoming call
+			CallType:        callType,
+			CallIsVideo:     false, // Will be updated from call logs if available
+		}
+		
+		// Try to get sender name from contact info using resolved JID
+		if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && callCreatorJID.Server != "lid" {
+			contact, err := w.client.Store.Contacts.GetContact(w.ctx, callCreatorJID)
+			if err == nil && contact.Found {
+				if contact.FullName != "" {
+					callMessage.SenderName = contact.FullName
+				} else if contact.PushName != "" {
+					callMessage.SenderName = contact.PushName
+				} else if contact.FirstName != "" {
+					callMessage.SenderName = contact.FirstName
+				}
+			}
+		}
+		
+		// If we still don't have a name, try using GetContactName helper
+		if callMessage.SenderName == "" && senderID != "" {
+			if name, err := w.GetContactName(senderID); err == nil && name != "" {
+				callMessage.SenderName = name
+			}
+		}
+		
+		// Store the message
+		w.appendMessageToConversation(callMessage)
+		
+		// Emit as a message event so it appears in the conversation
+		select {
+		case w.eventChan <- core.MessageEvent{Message: *callMessage}:
+			fmt.Printf("WhatsApp: CallOffer message event emitted successfully for call %s in conversation %s\n", callID, convID)
+		default:
+			fmt.Printf("WhatsApp: WARNING - Failed to emit CallOffer message event (channel full) for call %s\n", callID)
+		}
+		
+		// Also emit a contact refresh to update the conversation list
+		select {
+		case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call\n")
+		default:
+		}
+	case *events.CallTerminate:
+		// Handle call termination - this might be the only event we receive for missed calls
+		// CallTerminate is sent when a call ends, including missed calls
+		fmt.Printf("WhatsApp: Received CallTerminate event - CallCreator: %s (server: %s), CallID: %s\n",
+			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
+		
+		// CallID is NOT the conversation ID - it's a unique call identifier
+		// The conversation ID should be the CallCreator (the person calling us)
+		callCreatorJID := v.CallCreator
+		callID := v.CallID // Keep CallID for message ID generation
+		
+		// Resolve CallCreator LID to JID if needed (this is the actual conversation ID)
+		if callCreatorJID.Server == "lid" {
+			w.lidToJIDMu.RLock()
+			resolvedCreatorJID, found := w.lidToJIDMap[callCreatorJID.String()]
+			w.lidToJIDMu.RUnlock()
+			
+			if found && resolvedCreatorJID != "" {
+				var err error
+				callCreatorJID, err = types.ParseJID(resolvedCreatorJID)
+				if err == nil {
+					fmt.Printf("WhatsApp: Resolved CallCreator LID %s to JID %s from cache\n", v.CallCreator.String(), callCreatorJID.String())
+				}
+			} else if db.DB != nil {
+				var mapping models.LIDMapping
+				if err := db.DB.Where("lid = ? AND protocol = ?", callCreatorJID.String(), "whatsapp").First(&mapping).Error; err == nil {
+					callCreatorJID, err = types.ParseJID(mapping.JID)
+					if err == nil {
+						fmt.Printf("WhatsApp: Resolved CallCreator LID %s to JID %s from database\n", v.CallCreator.String(), callCreatorJID.String())
+						w.lidToJIDMu.Lock()
+						w.lidToJIDMap[v.CallCreator.String()] = mapping.JID
+						w.lidToJIDMu.Unlock()
+					}
+				}
+			}
+		}
+		
+		// The conversation ID is the CallCreator (resolved to JID if it was a LID)
+		convID := callCreatorJID.String()
+		
+		// If CallCreator is still a LID and we couldn't resolve it, we can't create the message
+		if callCreatorJID.Server == "lid" {
+			fmt.Printf("WhatsApp: WARNING - Could not resolve CallCreator LID %s to JID. Skipping call terminate event.\n", v.CallCreator.String())
+			fmt.Printf("WhatsApp: TIP - Send or receive a message in this conversation to create the LID mapping\n")
+			return
+		}
+		
+		fmt.Printf("WhatsApp: Using conversation ID %s (resolved from CallCreator %s) for call %s\n", convID, v.CallCreator.String(), callID)
+		
+		// Determine if it's a group call
+		isGroup := strings.Contains(convID, "@g.us")
+		
+		// Try to find existing call message created by CallOffer
+		var existingCallMessage *models.Message
+		if db.DB != nil {
+			var dbMsg models.Message
+			// Look for call message with this CallID
+			if err := db.DB.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
+				existingCallMessage = &dbMsg
+				fmt.Printf("WhatsApp: Found existing call message for call %s, will update it\n", callID)
+			}
+		}
+		
+		// If no existing message, check in-memory cache
+		if existingCallMessage == nil {
+			w.mu.RLock()
+			if msgs, ok := w.conversationMessages[convID]; ok {
+				for i := range msgs {
+					if strings.HasPrefix(msgs[i].ProtocolMsgID, fmt.Sprintf("call_%s", callID)) {
+						existingCallMessage = &msgs[i]
+						fmt.Printf("WhatsApp: Found existing call message in cache for call %s\n", callID)
+						break
+					}
+				}
+			}
+			w.mu.RUnlock()
+		}
+		
+		callTimestamp := time.Now()
+		if !v.Timestamp.IsZero() {
+			callTimestamp = v.Timestamp
+		}
+		
+		// Determine final call type based on termination reason
+		// For now, we'll mark it as missed since CallTerminate usually means the call ended without being answered
+		// The actual outcome will be determined from call logs if available
+		var callType string
+		var callOutcome string
+		if isGroup {
+			callType = "missed_group_voice"
+		} else {
+			callType = "missed_voice"
+		}
+		callOutcome = "MISSED" // Default, will be updated from call logs if available
+		
+		if existingCallMessage != nil {
+			// Update existing message with termination info
+			existingCallMessage.CallType = callType
+			existingCallMessage.CallOutcome = callOutcome
+			existingCallMessage.Timestamp = callTimestamp // Update timestamp to termination time
+			
+			// Update in database
+			if db.DB != nil {
+				if err := db.DB.Save(existingCallMessage).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to update call message in database: %v\n", err)
+				} else {
+					fmt.Printf("WhatsApp: Updated call message in database for call %s\n", callID)
+				}
+			}
+			
+			// Update in cache
+			w.mu.Lock()
+			if msgs, ok := w.conversationMessages[convID]; ok {
+				for i := range msgs {
+					if msgs[i].ProtocolMsgID == existingCallMessage.ProtocolMsgID {
+						msgs[i] = *existingCallMessage
+						break
+					}
+				}
+			}
+			w.mu.Unlock()
+			
+			// Emit updated message event
+			select {
+			case w.eventChan <- core.MessageEvent{Message: *existingCallMessage}:
+				fmt.Printf("WhatsApp: CallTerminate updated message event emitted successfully for call %s in conversation %s\n", callID, convID)
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit CallTerminate update message event (channel full) for call %s\n", callID)
+			}
+		} else {
+			// No existing message found, create a new one (fallback case)
+			fmt.Printf("WhatsApp: No existing call message found for call %s, creating new termination message\n", callID)
+			callMsgID := fmt.Sprintf("call_%s_%d", callID, callTimestamp.Unix())
+			
+			senderID := callCreatorJID.String()
+			if callCreatorJID.Server == "lid" {
+				senderID = v.CallCreator.String()
+			}
+			
+			callMessage := &models.Message{
+				ProtocolConvID: convID,
+				ProtocolMsgID:   callMsgID,
+				SenderID:        senderID,
+				SenderName:      "",
+				Body:            "",
+				Timestamp:       callTimestamp,
+				IsFromMe:        false,
+				CallType:        callType,
+				CallIsVideo:     false,
+				CallOutcome:     callOutcome,
+			}
+			
+			// Try to get sender name
+			if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && callCreatorJID.Server != "lid" {
+				contact, err := w.client.Store.Contacts.GetContact(w.ctx, callCreatorJID)
+				if err == nil && contact.Found {
+					if contact.FullName != "" {
+						callMessage.SenderName = contact.FullName
+					} else if contact.PushName != "" {
+						callMessage.SenderName = contact.PushName
+					} else if contact.FirstName != "" {
+						callMessage.SenderName = contact.FirstName
+					}
+				}
+			}
+			
+			if callMessage.SenderName == "" && senderID != "" {
+				if name, err := w.GetContactName(senderID); err == nil && name != "" {
+					callMessage.SenderName = name
+				}
+			}
+			
+			// Store the message
+			w.appendMessageToConversation(callMessage)
+			
+			// Emit as a message event
+			select {
+			case w.eventChan <- core.MessageEvent{Message: *callMessage}:
+				fmt.Printf("WhatsApp: CallTerminate new message event emitted successfully for call %s in conversation %s\n", callID, convID)
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit CallTerminate message event (channel full) for call %s\n", callID)
+			}
+		}
+		
+		// Emit contact refresh
+		select {
+		case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call terminate\n")
+		default:
+		}
 	default:
 		// Log other events for debugging
 		fmt.Printf("WhatsApp: Unhandled event type: %T\n", evt)
