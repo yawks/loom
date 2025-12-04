@@ -1,8 +1,16 @@
-import { Clock, Phone, PhoneMissed, Video, VideoOff } from "lucide-react";
+import { Clock, Phone, Video, VideoOff, X } from "lucide-react";
 
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+
+// Custom icon component for missed calls: Phone with X overlay
+const PhoneWithX = ({ className }: { className?: string }) => (
+  <span className="relative inline-block">
+    <Phone className={className} />
+    <X className={`absolute top-0 left-0 ${className}`} strokeWidth={3} />
+  </span>
+);
 
 interface CallMessageProps {
   message: models.Message;
@@ -57,35 +65,42 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       const duration = message.callDurationSecs;
       const outcome = message.callOutcome;
       
-      // Determine outcome text
+      // Determine outcome text and icon
       let outcomeText = "";
+      let iconComponent: React.ComponentType<{ className?: string }> = Phone;
       if (outcome === "CONNECTED") {
         if (duration != null && duration > 0) {
           outcomeText = t("call.connected", { duration: formatDuration(duration) });
         } else {
           outcomeText = t("call.connectedShort");
         }
+        iconComponent = isVideo ? Video : Phone;
       } else if (outcome === "MISSED") {
         outcomeText = isVideo 
           ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
           : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
+        iconComponent = isVideo ? VideoOff : PhoneWithX;
       } else if (outcome === "FAILED") {
         outcomeText = t("call.failed");
+        iconComponent = PhoneWithX;
       } else if (outcome === "REJECTED") {
         outcomeText = t("call.rejected");
+        iconComponent = PhoneWithX;
       } else {
         // Fallback to call type
         if (callType.includes("missed")) {
           outcomeText = isVideo 
             ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
             : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
+          iconComponent = isVideo ? VideoOff : PhoneWithX;
         } else {
           outcomeText = t("call.missedVoice");
+          iconComponent = PhoneWithX;
         }
       }
       
       return {
-        icon: isVideo ? Video : Phone,
+        icon: iconComponent,
         text: outcomeText,
         duration: duration != null ? formatDuration(duration) : null,
         participantCount: participants.length,
@@ -93,7 +108,15 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
     }
     
     // No summary available, use basic call type
-    if (callType.includes("missed")) {
+    if (callType === "incoming_call" || callType === "incoming_group_call") {
+      // Incoming call (ringing) - show as active call
+      return {
+        icon: Phone,
+        text: callType === "incoming_group_call" ? t("call.incomingGroupCall") : t("call.incomingCall"),
+        duration: null,
+        participantCount: 0,
+      };
+    } else if (callType.includes("missed")) {
       if (callType.includes("video")) {
         return {
           icon: VideoOff,
@@ -102,8 +125,9 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
           participantCount: 0,
         };
       } else {
+        // For missed calls, use PhoneWithX (phone with X overlay)
         return {
-          icon: PhoneMissed,
+          icon: PhoneWithX,
           text: isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"),
           duration: null,
           participantCount: 0,
