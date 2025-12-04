@@ -15,6 +15,7 @@ import { cn, timeToDate } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
+import { CallMessage } from "./CallMessage";
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
@@ -1331,6 +1332,47 @@ export function MessageList({
                     const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
                     const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
 
+                    // Check if this is a call message
+                    if (message.callType) {
+                      return (
+                        <div key={messageId} className="space-y-2">
+                          {showDateSeparator && (
+                            <div
+                              className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                              role="separator"
+                              aria-label={formatDateSeparator(messageDate, t)}
+                            >
+                              <span className="h-px flex-1 bg-border" />
+                              <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                              <span className="h-px flex-1 bg-border" />
+                            </div>
+                          )}
+                          {showUnreadDivider && (
+                            <div
+                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                              role="separator"
+                              aria-label={t("new_messages_separator")}
+                            >
+                              <span className="h-px flex-1 bg-border" />
+                              {t("new_messages_separator")}
+                              <span className="h-px flex-1 bg-border" />
+                            </div>
+                          )}
+                          <div
+                            ref={registerMessageNode(messageId)}
+                            data-message-id={messageId}
+                            className="scroll-mt-28"
+                          >
+                            <CallMessage
+                              message={message}
+                              layout="bubble"
+                              isGroup={isGroupConversation}
+                            />
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div key={messageId} className="space-y-2">
                         {showDateSeparator && (
@@ -1695,6 +1737,47 @@ export function MessageList({
                     const showDateSeparator = isDifferentDay(messageDate, prevMessageDate);
                     const isDeletedRevealed =
                       isDeleted && revealedDeletedMessages.has(messageId);
+
+                    // Check if this is a call message
+                    if (message.callType) {
+                      return (
+                        <div key={messageId} className="space-y-1">
+                          {showDateSeparator && (
+                            <div
+                              className="flex items-center gap-2 text-xs font-medium text-muted-foreground my-4"
+                              role="separator"
+                              aria-label={formatDateSeparator(messageDate, t)}
+                            >
+                              <span className="h-px flex-1 bg-border" />
+                              <span className="px-2">{formatDateSeparator(messageDate, t)}</span>
+                              <span className="h-px flex-1 bg-border" />
+                            </div>
+                          )}
+                          {showUnreadDivider && (
+                            <div
+                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                              role="separator"
+                              aria-label={t("new_messages_separator")}
+                            >
+                              <span className="h-px flex-1 bg-border" />
+                              {t("new_messages_separator")}
+                              <span className="h-px flex-1 bg-border" />
+                            </div>
+                          )}
+                          <div
+                            ref={registerMessageNode(messageId)}
+                            data-message-id={messageId}
+                            className="scroll-mt-28"
+                          >
+                            <CallMessage
+                              message={message}
+                              layout="irc"
+                              isGroup={isGroupConversation}
+                            />
+                          </div>
+                        </div>
+                      );
+                    }
                     const showDeletedPlaceholder =
                       isDeleted && !isDeletedRevealed;
                     const deletedListWrapperClass = cn(
