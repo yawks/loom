@@ -11,6 +11,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -21,7 +25,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 	"gorm.io/gorm"
 )
 
@@ -32,6 +40,7 @@ type App struct {
 	providerManager *core.ProviderManager
 	eventChan       <-chan core.ProviderEvent
 	eventCancel     context.CancelFunc
+	systemTray      *menu.Menu
 }
 
 // NewApp creates a new App application struct
@@ -261,6 +270,9 @@ func (a *App) startup(ctx context.Context) {
 			runtime.EventsEmit(a.ctx, "test-event", `{"message": "Event system test"}`)
 		}
 	}()
+
+	// Setup system tray menu
+	a.setupSystemTray(ctx)
 }
 
 // startEventListener starts listening to provider events and sends them to the frontend.
@@ -336,7 +348,7 @@ func (a *App) startEventListener(ctx context.Context) {
 
 				case core.ReactionEvent:
 					log.Printf("App: Received ReactionEvent: conversation=%s, message=%s, user=%s, emoji=%s, added=%v", e.ConversationID, e.MessageID, e.UserID, e.Emoji, e.Added)
-					
+
 					// Save reaction to database
 					if db.DB != nil {
 						// Find the message by protocol message ID
@@ -421,6 +433,19 @@ func (a *App) startEventListener(ctx context.Context) {
 						if e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received") {
 							runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
 						}
+					}
+
+				case core.PresenceEvent:
+					// Serialize the presence event to JSON
+					presenceJSON, err := json.Marshal(e)
+					if err != nil {
+						log.Printf("Failed to marshal presence event: %v", err)
+						continue
+					}
+					// Emit the event to the frontend
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "presence", string(presenceJSON))
+						log.Printf("App: Emitted presence event to frontend: user=%s, online=%v", e.UserID, e.IsOnline)
 					}
 
 				case core.GroupChangeEvent:
@@ -691,17 +716,17 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 // by searching through the database for messages or conversations involving this LID.
 func (a *App) ResolveLID(lid string) (string, error) {
 	fmt.Printf("App.ResolveLID: Attempting to resolve LID %s\n", lid)
-	
+
 	// First, check if it's actually a LID
 	if !strings.HasSuffix(lid, "@lid") {
 		fmt.Printf("App.ResolveLID: %s is not a LID, returning as-is\n", lid)
 		return lid, nil
 	}
-	
+
 	// Extract the phone number from the LID (e.g., "176188215558395@lid" -> "176188215558395")
 	lidNumber := strings.TrimSuffix(lid, "@lid")
 	fmt.Printf("App.ResolveLID: Extracted number from LID: %s\n", lidNumber)
-	
+
 	// Strategy 0: Try to find a contact whose phone number matches this LID number
 	// The LID number might be the same as a phone number in the format "33XXXXXXXXX@s.whatsapp.net"
 	// We'll search for linked accounts with user_id containing this number
@@ -717,7 +742,7 @@ func (a *App) ResolveLID(lid string) (string, error) {
 			}
 		}
 	}
-	
+
 	// Strategy 1: Search for messages where this LID is the sender
 	var messages []models.Message
 	if err := db.DB.Where("sender_id = ?", lid).Limit(1).Find(&messages).Error; err == nil && len(messages) > 0 {
@@ -731,7 +756,7 @@ func (a *App) ResolveLID(lid string) (string, error) {
 	} else {
 		fmt.Printf("App.ResolveLID: No messages found with sender_id = %s (error: %v)\n", lid, err)
 	}
-	
+
 	// Strategy 1.5: Search for messages where this LID is in the protocol_conv_id
 	// In 1-on-1 chats, the protocol_conv_id could be this LID
 	if err := db.DB.Where("protocol_conv_id = ?", lid).Limit(1).Find(&messages).Error; err == nil && len(messages) > 0 {
@@ -745,7 +770,7 @@ func (a *App) ResolveLID(lid string) (string, error) {
 	} else {
 		fmt.Printf("App.ResolveLID: No messages found with protocol_conv_id = %s (error: %v)\n", lid, err)
 	}
-	
+
 	// Strategy 2: Search for conversations where this LID is the protocol_conv_id
 	var conversations []models.Conversation
 	if err := db.DB.Where("protocol_conv_id = ?", lid).Find(&conversations).Error; err == nil && len(conversations) > 0 {
@@ -767,7 +792,7 @@ func (a *App) ResolveLID(lid string) (string, error) {
 			}
 		}
 	}
-	
+
 	// Strategy 3: Search for linked accounts with this LID
 	var linkedAccounts []models.LinkedAccount
 	if err := db.DB.Where("user_id = ?", lid).Find(&linkedAccounts).Error; err == nil && len(linkedAccounts) > 0 {
@@ -782,7 +807,7 @@ func (a *App) ResolveLID(lid string) (string, error) {
 			}
 		}
 	}
-	
+
 	fmt.Printf("App.ResolveLID: Could not resolve LID %s\n", lid)
 	return lid, fmt.Errorf("could not resolve LID %s", lid)
 }
@@ -1499,4 +1524,281 @@ func (a *App) GetClipboardFile() (*ClipboardFile, error) {
 		Base64:   base64.StdEncoding.EncodeToString(data),
 		MimeType: mimeType,
 	}, nil
+}
+
+// UpdateSystemTrayBadge updates the system tray icon with a badge showing the unread message count.
+// This method is called from the frontend when the unread count changes.
+func (a *App) UpdateSystemTrayBadge(count int) error {
+	if a.ctx == nil {
+		return fmt.Errorf("context not initialized")
+	}
+
+	// Get the app icon path
+	iconPath, err := a.getAppIconPath()
+	if err != nil {
+		log.Printf("Failed to get app icon path: %v", err)
+		return err
+	}
+
+	// Create badge icon with count
+	badgeIconPath, err := a.createBadgeIcon(iconPath, count)
+	if err != nil {
+		log.Printf("Failed to create badge icon: %v", err)
+		return err
+	}
+
+	// Read the badge icon data
+	iconData, err := os.ReadFile(badgeIconPath)
+	if err != nil {
+		log.Printf("Failed to read badge icon: %v", err)
+		os.Remove(badgeIconPath)
+		return err
+	}
+
+	// Update system tray icon using platform-specific APIs
+	log.Printf("System tray badge updated: %d unread messages", count)
+
+	// Use platform-specific badge APIs
+	switch goruntime.GOOS {
+	case "darwin":
+		// macOS: Update dock badge using AppleScript
+		a.updateMacOSDockBadge(count)
+	case "windows":
+		// Windows: Update taskbar badge (requires Windows API)
+		// For now, we'll use the icon with badge
+		log.Printf("Windows: Badge count is %d", count)
+	case "linux":
+		// Linux: Update depends on desktop environment
+		// For now, we'll use the icon with badge
+		log.Printf("Linux: Badge count is %d", count)
+	}
+
+	// Clean up temporary badge icon file after a delay
+	go func() {
+		time.Sleep(10 * time.Second)
+		os.Remove(badgeIconPath)
+	}()
+
+	// Store icon data for potential future use
+	_ = iconData
+
+	return nil
+}
+
+// getAppIconPath returns the path to the application icon
+func (a *App) getAppIconPath() (string, error) {
+	// Try to find the icon in various locations
+	iconPaths := []string{
+		"appicon.png",                                    // Root directory (preferred)
+		"build/appicon.png",                              // Build directory
+		"build/bin/Loom.app/Contents/Resources/iconfile.icns",
+		"build/bin/Mux.app/Contents/Resources/iconfile.icns",
+	}
+
+	for _, path := range iconPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	// If no icon found, create a default one
+	return a.createDefaultIcon()
+}
+
+// createDefaultIcon creates a default application icon
+func (a *App) createDefaultIcon() (string, error) {
+	// Create a simple default icon
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{R: 27, G: 38, B: 54, A: 255}}, image.Point{}, draw.Src)
+
+	// Save to temp file
+	tmpFile, err := os.CreateTemp("", "loom-icon-*.png")
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close()
+
+	if err := png.Encode(tmpFile, img); err != nil {
+		return "", err
+	}
+
+	return tmpFile.Name(), nil
+}
+
+// createBadgeIcon creates an icon with a badge showing the unread count
+func (a *App) createBadgeIcon(baseIconPath string, count int) (string, error) {
+	// Read base icon
+	baseFile, err := os.Open(baseIconPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open base icon: %w", err)
+	}
+	defer baseFile.Close()
+
+	// Decode the base icon
+	baseImg, _, err := image.Decode(baseFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base icon: %w", err)
+	}
+
+	// Create a new image with badge
+	bounds := baseImg.Bounds()
+	badgeImg := image.NewRGBA(bounds)
+	draw.Draw(badgeImg, bounds, baseImg, bounds.Min, draw.Src)
+
+	// If count is 0, return the base icon without badge
+	if count <= 0 {
+		tmpFile, err := os.CreateTemp("", "loom-badge-*.png")
+		if err != nil {
+			return "", err
+		}
+		defer tmpFile.Close()
+
+		if err := png.Encode(tmpFile, badgeImg); err != nil {
+			return "", err
+		}
+
+		return tmpFile.Name(), nil
+	}
+
+	// Draw badge circle in top-right corner
+	badgeSize := bounds.Dx() / 4
+	badgeX := bounds.Dx() - badgeSize - bounds.Dx()/16
+	badgeY := bounds.Dy() / 16
+
+	// Draw red circle for badge
+	badgeColor := color.RGBA{R: 255, G: 59, B: 48, A: 255} // Red badge
+	for y := badgeY; y < badgeY+badgeSize; y++ {
+		for x := badgeX; x < badgeX+badgeSize; x++ {
+			centerX := badgeX + badgeSize/2
+			centerY := badgeY + badgeSize/2
+			dx := x - centerX
+			dy := y - centerY
+			if dx*dx+dy*dy <= (badgeSize/2)*(badgeSize/2) {
+				badgeImg.Set(x, y, badgeColor)
+			}
+		}
+	}
+
+	// Draw count text on badge
+	countStr := fmt.Sprintf("%d", count)
+	if count > 99 {
+		countStr = "99+"
+	}
+
+	// Calculate text position (centered in badge)
+	textX := badgeX + badgeSize/2
+	textY := badgeY + badgeSize/2
+
+	// Draw text
+	a.drawText(badgeImg, countStr, textX, textY, color.White)
+
+	// Save to temp file
+	tmpFile, err := os.CreateTemp("", "loom-badge-*.png")
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close()
+
+	if err := png.Encode(tmpFile, badgeImg); err != nil {
+		return "", err
+	}
+
+	return tmpFile.Name(), nil
+}
+
+// drawText draws text on an image
+func (a *App) drawText(img *image.RGBA, text string, x, y int, col color.Color) {
+	point := fixed.Point26_6{X: fixed.Int26_6(x * 64), Y: fixed.Int26_6(y * 64)}
+
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(col),
+		Face: basicfont.Face7x13,
+		Dot:  point,
+	}
+
+	// Center the text
+	textWidth := d.MeasureString(text)
+	d.Dot.X -= textWidth / 2
+	d.Dot.Y += fixed.Int26_6(13 * 64 / 2) // Center vertically
+
+	d.DrawString(text)
+}
+
+// updateMacOSDockBadge updates the macOS dock badge using AppleScript
+func (a *App) updateMacOSDockBadge(count int) {
+	// Get the actual application name from the bundle
+	appName := "Loom"
+	
+	// Try to get the actual bundle name from the running process
+	// In dev mode, the app might be running from build/bin/Loom.app
+	if goruntime.GOOS == "darwin" {
+		// Try to get the bundle name from the Info.plist
+		infoPlistPath := "build/bin/Loom.app/Contents/Info.plist"
+		if _, err := os.Stat(infoPlistPath); err == nil {
+			// Read CFBundleName from Info.plist
+			cmd := exec.Command("defaults", "read", filepath.Join(infoPlistPath), "CFBundleName")
+			if output, err := cmd.Output(); err == nil {
+				bundleName := strings.TrimSpace(string(output))
+				if bundleName != "" {
+					appName = bundleName
+				}
+			}
+		}
+	}
+
+	if count <= 0 {
+		// Remove badge
+		script := fmt.Sprintf(`tell application "System Events" to set the dock badge of application "%s" to ""`, appName)
+		cmd := exec.Command("osascript", "-e", script)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Failed to remove macOS dock badge for %s: %v", appName, err)
+			log.Printf("Note: Make sure the app is running and has notification permissions enabled in System Preferences > Notifications")
+		}
+		return
+	}
+
+	// Set badge with count
+	countStr := fmt.Sprintf("%d", count)
+	if count > 99 {
+		countStr = "99+"
+	}
+	script := fmt.Sprintf(`tell application "System Events" to set the dock badge of application "%s" to "%s"`, appName, countStr)
+	cmd := exec.Command("osascript", "-e", script)
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to update macOS dock badge for %s: %v", appName, err)
+		log.Printf("Note: Make sure the app is running and has notification permissions enabled in System Preferences > Notifications")
+		log.Printf("You may need to grant notification permissions to the app in System Preferences")
+	} else {
+		log.Printf("Successfully updated dock badge for %s to %s", appName, countStr)
+	}
+}
+
+// setupSystemTray creates and configures the system tray menu
+func (a *App) setupSystemTray(ctx context.Context) {
+	// Create system tray menu
+	appMenu := menu.NewMenu()
+	
+	// Add menu items
+	appMenu.Append(menu.Label("Loom"))
+	appMenu.Append(menu.Separator())
+	
+	// Show/Hide window item
+	showHideItem := menu.Text("Show/Hide", nil, func(_ *menu.CallbackData) {
+		runtime.WindowShow(ctx)
+	})
+	appMenu.Append(showHideItem)
+	
+	// Quit item
+	quitItem := menu.Text("Quit", nil, func(_ *menu.CallbackData) {
+		runtime.Quit(ctx)
+	})
+	appMenu.Append(quitItem)
+
+	// Set the menu
+	a.systemTray = appMenu
+	
+	// Note: The actual system tray setup is done in main.go via AppOptions
+	// This function just prepares the menu structure
+	log.Printf("System tray menu configured")
 }

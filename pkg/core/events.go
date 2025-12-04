@@ -15,6 +15,8 @@ const (
 	EventTypeTyping EventType = "typing"
 	// EventTypeContactStatus represents a contact status change event.
 	EventTypeContactStatus EventType = "contact_status"
+	// EventTypePresence represents a real-time presence (online/offline) event.
+	EventTypePresence EventType = "presence"
 	// EventTypeGroupChange represents a group change event (created, updated, participant added/removed, etc.).
 	EventTypeGroupChange EventType = "group_change"
 	// EventTypeReceipt represents a delivery or read receipt event.
@@ -78,6 +80,18 @@ type ContactStatusEvent struct {
 // Type returns the event type for ContactStatusEvent.
 func (e ContactStatusEvent) Type() EventType {
 	return EventTypeContactStatus
+}
+
+// PresenceEvent represents a real-time presence update (online/offline).
+type PresenceEvent struct {
+	UserID   string // Protocol user ID
+	IsOnline bool   // true if online, false if offline
+	LastSeen int64  // Unix timestamp of last seen (0 if not available or user is online)
+}
+
+// Type returns the event type for PresenceEvent.
+func (e PresenceEvent) Type() EventType {
+	return EventTypePresence
 }
 
 // GroupChangeType represents the type of group change.

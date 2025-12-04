@@ -719,11 +719,17 @@ func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, media
 		return nil
 	}
 
+	fmt.Printf("WhatsApp: Starting download of %s attachment for message %s\n", mediaType, evt.Info.ID)
 	data, err := w.client.Download(w.ctx, downloadable)
 	if err != nil {
-		fmt.Printf("WhatsApp: Failed to download %s attachment: %v\n", mediaType, err)
+		fmt.Printf("WhatsApp: Failed to download %s attachment for message %s: %v\n", mediaType, evt.Info.ID, err)
+		// Log more details about the error
+		if err != nil {
+			fmt.Printf("WhatsApp: Download error details: %T, %s\n", err, err.Error())
+		}
 		return nil
 	}
+	fmt.Printf("WhatsApp: Successfully downloaded %s attachment for message %s, size: %d bytes\n", mediaType, evt.Info.ID, len(data))
 
 	// Create the file
 	file, err := os.Create(cachePath)
@@ -1533,7 +1539,11 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Normal message processing
 		msg = w.convertWhatsAppMessage(v)
 		if msg != nil {
-			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s\n", msg.ProtocolMsgID, msg.Body)
+			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s, Attachments: %s\n", msg.ProtocolMsgID, msg.Body, msg.Attachments)
+			// Check if message has media but no attachments
+			if msg.Attachments == "" && (v.Message.GetImageMessage() != nil || v.Message.GetVideoMessage() != nil || v.Message.GetAudioMessage() != nil || v.Message.GetDocumentMessage() != nil || v.Message.GetStickerMessage() != nil) {
+				fmt.Printf("WhatsApp: WARNING - Message %s has media but no attachments were extracted! Chat: %s, Sender: %s\n", msg.ProtocolMsgID, v.Info.Chat.String(), v.Info.Sender.String())
+			}
 			w.appendMessageToConversation(msg)
 
 			// Update last sync timestamp when receiving a new message
@@ -1686,17 +1696,60 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// State can be "composing" (typing) or "paused" (stopped typing)
 
 		// Get the display name of the user who is typing
-		userName, err := w.GetContactName(conversationID)
-		if err != nil {
-			fmt.Printf("WhatsApp: Failed to get contact name for %s: %v, using fallback\n", conversationID, err)
-			// Fallback to the conversation ID if we can't get the name
-			userName = conversationID
+		// For groups, we need the name of the participant who is typing, not the group name
+		var userName string
+		conversationJID, err := types.ParseJID(conversationID)
+		if err == nil && conversationJID.Server == types.GroupServer {
+			// This is a group conversation - get the name of the participant who is typing
+			userJID, err := types.ParseJID(userID)
+			if err == nil {
+				userName = w.lookupSenderNameInGroup(userJID, conversationJID)
+				fmt.Printf("WhatsApp: Resolved participant name for group %s: %s (user: %s)\n", conversationID, userName, userID)
+			} else {
+				fmt.Printf("WhatsApp: Failed to parse userID %s as JID: %v\n", userID, err)
+				userName = userID
+			}
+		} else {
+			// This is a 1-on-1 conversation - get the name of the contact
+			userName, err = w.GetContactName(conversationID)
+			if err != nil {
+				fmt.Printf("WhatsApp: Failed to get contact name for %s: %v, using fallback\n", conversationID, err)
+				// Fallback to the conversation ID if we can't get the name
+				userName = conversationID
+			}
+			fmt.Printf("WhatsApp: Resolved contact name for %s: %s\n", conversationID, userName)
 		}
-		fmt.Printf("WhatsApp: Resolved contact name for %s: %s\n", conversationID, userName)
 
 		if v.State == types.ChatPresenceComposing {
 			// User started typing
 			fmt.Printf("WhatsApp: User %s (%s) started typing in conversation %s\n", userName, userID, conversationID)
+
+			// If user is typing, they are online - emit a presence event
+			// This ensures we show online status even if we haven't subscribed to their presence
+			select {
+			case w.eventChan <- core.PresenceEvent{
+				UserID:   userID,
+				IsOnline: true,
+				LastSeen: 0,
+			}:
+				fmt.Printf("WhatsApp: PresenceEvent (online) emitted for typing user %s\n", userID)
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit PresenceEvent for typing user\n")
+			}
+
+			// Also emit for the conversation ID if it's different (for LID resolution)
+			if conversationID != userID {
+				select {
+				case w.eventChan <- core.PresenceEvent{
+					UserID:   conversationID,
+					IsOnline: true,
+					LastSeen: 0,
+				}:
+					fmt.Printf("WhatsApp: PresenceEvent (online) emitted for conversation %s\n", conversationID)
+				default:
+				}
+			}
+
 			select {
 			case w.eventChan <- core.TypingEvent{
 				ConversationID: conversationID,
@@ -1725,7 +1778,54 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 	case *events.Presence:
 		// Handle presence updates (online/offline status)
-		fmt.Printf("WhatsApp: Received Presence event from %s, Unavailable=%v\n", v.From.String(), v.Unavailable)
+		userID := v.From.String()
+		isOnline := !v.Unavailable
+		var lastSeen int64
+		if !v.LastSeen.IsZero() {
+			lastSeen = v.LastSeen.Unix()
+		}
+
+		fmt.Printf("WhatsApp: Presence update: %s is %s (LastSeen: %v)\n",
+			userID,
+			map[bool]string{true: "online", false: "offline"}[isOnline],
+			v.LastSeen)
+
+		// Emit PresenceEvent to frontend for the original userID (might be LID)
+		select {
+		case w.eventChan <- core.PresenceEvent{
+			UserID:   userID,
+			IsOnline: isOnline,
+			LastSeen: lastSeen,
+		}:
+			fmt.Printf("WhatsApp: PresenceEvent emitted for %s\n", userID)
+		default:
+			fmt.Printf("WhatsApp: WARNING - Failed to emit PresenceEvent (channel full)\n")
+		}
+
+		// If this is a LID, also emit for the resolved JID
+		if strings.HasSuffix(userID, "@lid") {
+			// Try to resolve LID to JID
+			w.lidToJIDMu.RLock()
+			resolvedJID, found := w.lidToJIDMap[userID]
+			w.lidToJIDMu.RUnlock()
+
+			if found && resolvedJID != userID {
+				fmt.Printf("WhatsApp: Resolved LID %s to JID %s for presence\n", userID, resolvedJID)
+				// Emit presence event for the resolved JID as well
+				select {
+				case w.eventChan <- core.PresenceEvent{
+					UserID:   resolvedJID,
+					IsOnline: isOnline,
+					LastSeen: lastSeen,
+				}:
+					fmt.Printf("WhatsApp: PresenceEvent emitted for resolved JID %s\n", resolvedJID)
+				default:
+					fmt.Printf("WhatsApp: WARNING - Failed to emit PresenceEvent for resolved JID (channel full)\n")
+				}
+			} else {
+				fmt.Printf("WhatsApp: LID %s not found in mapping, only emitting for LID\n", userID)
+			}
+		}
 	case *events.QR:
 		// QR code event - this is handled by the QR channel
 		// No need to log here as it's already handled by the QR channel goroutine
@@ -1742,8 +1842,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			if err != nil {
 				fmt.Printf("WhatsApp: Warning - Failed to send presence available: %v\n", err)
 			} else {
-				fmt.Println("WhatsApp: Marked self as available - will now receive typing indicators")
+				fmt.Println("WhatsApp: Marked self as available - will now receive typing indicators and presence updates")
 			}
+
+			// Subscribe to presence updates for DM contacts
+			// This allows us to receive online/offline status updates
+			go w.subscribeToContactPresence()
 
 			// Build LID mappings from existing conversations
 			// This allows typing indicators to work immediately on existing chats
@@ -1811,6 +1915,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if v != nil && v.Data != nil {
 			w.cacheConversationsFromHistory(v.Data)
 			w.cacheMessagesFromHistory(v.Data)
+			// Process call log records to enrich call messages with summary information
+			w.processCallLogRecords(v.Data)
 
 			// Update last sync timestamp after successful history sync
 			now := time.Now()
@@ -2236,6 +2342,27 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 	convID := evt.Info.Chat.String()
 	chatJID := evt.Info.Chat
 
+	// Check if this is a call message
+	var callType string
+	if callMsg := msg.GetCall(); callMsg != nil {
+		// Extract call type from the call message
+		// Determine if it's a group or individual call
+		isGroup := chatJID.Server == types.GroupServer
+		
+		// Check if it's a video call (CallMessage has a VideoCall field)
+		// For now, we'll determine the type based on the call message structure
+		// Most call messages are missed calls, so we'll default to that
+		if isGroup {
+			// For group calls, we need to check if it's video or voice
+			// Since we can't easily determine this from the Call message alone,
+			// we'll use a generic type and let the frontend handle display
+			callType = "missed_group_voice" // Default, can be refined later
+		} else {
+			callType = "missed_voice" // Default for individual calls
+		}
+		fmt.Printf("WhatsApp: Detected call message type: %s for message %s (group: %v)\n", callType, evt.Info.ID, isGroup)
+	}
+
 	// Track groups from messages
 	if chatJID.Server == types.GroupServer {
 		// Try to get group info from client to get the name
@@ -2315,7 +2442,14 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 		senderName = w.lookupSenderName(evt.Info.Sender)
 	}
 
-	// If still empty, use push name as fallback
+	// If senderName is empty or is a formatted phone number, prefer PushName if available
+	// PushName is more reliable for real-time messages as it comes directly from WhatsApp
+	if (senderName == "" || isPhoneNumber(senderName)) && evt.Info.PushName != "" && !isPhoneNumber(evt.Info.PushName) {
+		senderName = evt.Info.PushName
+		fmt.Printf("WhatsApp: Using PushName '%s' instead of formatted phone number for sender %s\n", senderName, senderID)
+	}
+
+	// If still empty, use push name as fallback (even if it's a phone number)
 	if senderName == "" && evt.Info.PushName != "" {
 		senderName = evt.Info.PushName
 	}
@@ -2527,6 +2661,7 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 		QuotedMessageID: quotedMessageID,
 		QuotedSenderID:  quotedSenderID,
 		QuotedBody:      quotedBody,
+		CallType:        callType,
 	}
 }
 
@@ -2689,6 +2824,41 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 					}
 				}
 
+				// Check if message has attachments but they weren't extracted (download might have failed)
+				if msg.Attachments == "" {
+					// Try to extract attachments asynchronously for history messages
+					// This is done in a goroutine to avoid blocking the history sync
+					go func(evtCopy *events.Message, msgID string) {
+						fmt.Printf("WhatsApp: Attempting to extract attachments for history message %s\n", msgID)
+						attachments := w.extractAttachments(evtCopy)
+						if len(attachments) > 0 {
+							attJSON, err := json.Marshal(attachments)
+							if err == nil {
+								// Update message in database with attachments
+								if db.DB != nil {
+									var dbMsg models.Message
+									if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+										dbMsg.Attachments = string(attJSON)
+										if err := db.DB.Save(&dbMsg).Error; err == nil {
+											fmt.Printf("WhatsApp: Successfully saved attachments for history message %s\n", msgID)
+										} else {
+											fmt.Printf("WhatsApp: Failed to save attachments for history message %s: %v\n", msgID, err)
+										}
+									}
+								}
+							}
+						} else {
+							// Check if message has media but no attachments were extracted
+							msg := evtCopy.Message
+							if msg != nil && (msg.GetImageMessage() != nil || msg.GetVideoMessage() != nil || msg.GetAudioMessage() != nil || msg.GetDocumentMessage() != nil || msg.GetStickerMessage() != nil) {
+								fmt.Printf("WhatsApp: History message %s has media but attachments extraction failed or returned empty\n", msgID)
+							}
+						}
+					}(evt, msg.ProtocolMsgID)
+				} else {
+					fmt.Printf("WhatsApp: History message %s already has attachments: %s\n", msg.ProtocolMsgID, msg.Attachments)
+				}
+
 				converted = append(converted, *msg)
 			}
 		}
@@ -2702,6 +2872,156 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 
 			total := w.storeMessagesForConversation(convID, converted)
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
+		}
+	}
+}
+
+// processCallLogRecords processes call log records from HistorySync and enriches call messages with summary information
+func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistorySync) {
+	if history == nil {
+		return
+	}
+
+	callLogRecords := history.GetCallLogRecords()
+	if len(callLogRecords) == 0 {
+		return
+	}
+
+	fmt.Printf("WhatsApp: Processing %d call log records from history sync\n", len(callLogRecords))
+
+	for _, record := range callLogRecords {
+		if record == nil {
+			continue
+		}
+
+		// Get conversation ID from the record (use GroupJID if available, otherwise CallCreatorJID)
+		convID := record.GetGroupJID()
+		if convID == "" {
+			// For individual calls, we might need to find the conversation by CallCreatorJID
+			// For now, skip records without group/conversation ID
+			fmt.Printf("WhatsApp: Call log record without conversation ID, skipping\n")
+			continue
+		}
+
+		// Get call ID - we'll use this to find the corresponding message
+		callID := record.GetCallID()
+		if callID == "" {
+			fmt.Printf("WhatsApp: Call log record without call ID, skipping\n")
+			continue
+		}
+
+		// Extract call information from CallLogRecord
+		duration := record.GetDuration()
+		isVideo := record.GetIsVideo()
+		callResult := record.GetCallResult()
+		participants := record.GetParticipants()
+		callType := record.GetCallType()
+
+		var durationSecs *int32
+		if duration > 0 {
+			// Duration is in milliseconds, convert to seconds
+			secs := int32(duration / 1000)
+			durationSecs = &secs
+		}
+
+		durationStr := "N/A"
+		if durationSecs != nil {
+			durationStr = fmt.Sprintf("%ds", *durationSecs)
+		}
+		fmt.Printf("WhatsApp: Processing call log for call %s in conversation %s: duration=%s, isVideo=%v, result=%v, type=%v, participants=%d\n",
+			callID, convID, durationStr, isVideo, callResult, callType, len(participants))
+
+		// Find call messages in this conversation that match the call timestamp
+		// We'll search for call messages around the start time
+		startTime := record.GetStartTime()
+		if startTime == 0 {
+			fmt.Printf("WhatsApp: Call log record without start time, skipping\n")
+			continue
+		}
+
+		startTimestamp := time.Unix(startTime/1000, 0)
+		// Search window: 5 minutes before and after
+		timeWindow := 5 * time.Minute
+		startSearch := startTimestamp.Add(-timeWindow)
+		endSearch := startTimestamp.Add(timeWindow)
+
+		// Find and update call messages in the database
+		if db.DB != nil {
+			var dbMsgs []models.Message
+			err := db.DB.Where("protocol_conv_id = ? AND call_type != '' AND timestamp >= ? AND timestamp <= ?",
+				convID, startSearch, endSearch).Find(&dbMsgs).Error
+			if err != nil {
+				fmt.Printf("WhatsApp: Failed to find call messages for call %s: %v\n", callID, err)
+				continue
+			}
+
+			if len(dbMsgs) == 0 {
+				fmt.Printf("WhatsApp: No call messages found for call %s in conversation %s\n", callID, convID)
+				continue
+			}
+
+			// Update all matching call messages with summary information
+			for i := range dbMsgs {
+				dbMsg := &dbMsgs[i]
+
+				// Update message with call summary information
+				if durationSecs != nil {
+					dbMsg.CallDurationSecs = durationSecs
+				}
+				dbMsg.CallIsVideo = isVideo
+
+				// Store call outcome as string
+				dbMsg.CallOutcome = callResult.String()
+
+				// Store participants as JSON array
+				if len(participants) > 0 {
+					participantJIDs := make([]string, 0, len(participants))
+					for _, p := range participants {
+						if p != nil {
+							// Get user JID from participant info
+							if jid := p.GetUserJID(); jid != "" {
+								participantJIDs = append(participantJIDs, jid)
+							}
+						}
+					}
+					if len(participantJIDs) > 0 {
+						participantsJSON, err := json.Marshal(participantJIDs)
+						if err == nil {
+							dbMsg.CallParticipants = string(participantsJSON)
+						}
+					}
+				}
+
+				// Update call type if we have more specific information
+				callTypeStr := callType.String()
+				if callTypeStr != "" {
+					// Map call type from protobuf enum to our string format
+					switch callTypeStr {
+					case "REGULAR":
+						if isVideo {
+							dbMsg.CallType = "missed_video"
+						} else {
+							dbMsg.CallType = "missed_voice"
+						}
+					case "SCHEDULED_CALL":
+						dbMsg.CallType = "scheduled_start"
+					case "VOICE_CHAT":
+						dbMsg.CallType = "missed_group_voice"
+					}
+				}
+
+				// Save updated message
+				if err := db.DB.Save(dbMsg).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to update call message %s with summary: %v\n", dbMsg.ProtocolMsgID, err)
+				} else {
+					durationStr := "N/A"
+					if durationSecs != nil {
+						durationStr = fmt.Sprintf("%ds", *durationSecs)
+					}
+					fmt.Printf("WhatsApp: Successfully updated call message %s with summary (duration=%s, outcome=%s)\n",
+						dbMsg.ProtocolMsgID, durationStr, dbMsg.CallOutcome)
+				}
+			}
 		}
 	}
 }

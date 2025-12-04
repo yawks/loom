@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { timeToDate } from "./utils";
 import type { models } from "../../wailsjs/go/models";
+import { timeToDate } from "./utils";
 
 // Extend Window interface to include Wails runtime
 declare global {
@@ -9,7 +9,7 @@ declare global {
       main?: {
         App?: {
           MarkMessageAsRead?: (conversationID: string, messageID: string) => Promise<void>;
-          [key: string]: any;
+          [key: string]: unknown;
         };
       };
     };
@@ -149,16 +149,21 @@ const getMessageIdentifier = (message: models.Message): MessageId | null => {
   return Number.isNaN(timestamp) ? null : `ts-${timestamp}`;
 };
 
-export const useMessageReadStore = create<MessageReadStore>((set) => ({
-  readByConversation: loadPersistedState(),
-  syncConversation: (conversationId, messages) => {
-    if (!conversationId) {
-      return;
-    }
-    set((state) => {
-      const existingState = state.readByConversation[conversationId];
-      const hasExisting =
-        existingState && Object.keys(existingState).length > 0;
+export const useMessageReadStore = create<MessageReadStore>((set) => {
+  const initialState = loadPersistedState();
+  console.log(`messageReadStore: Loaded persisted state, ${Object.keys(initialState).length} conversations`);
+  return {
+    readByConversation: initialState,
+    syncConversation: (conversationId, messages) => {
+      if (!conversationId) {
+        return;
+      }
+      set((state) => {
+        const existingState = state.readByConversation[conversationId];
+        const hasExisting =
+          existingState && Object.keys(existingState).length > 0;
+        
+        console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting}, existingState size: ${existingState ? Object.keys(existingState).length : 0}, messages to sync: ${messages.length}`);
       
       // Create a set of message IDs that actually exist in the conversation
       const existingMessageIds = new Set<string>();
@@ -196,9 +201,21 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
 
         if (nextState[messageId] === undefined) {
           // If we already have a state for the conversation, new messages start as unread.
-          // Otherwise we assume the existing history is read to avoid highlighting everything.
-          // All messages (including isFromMe) are treated the same way
-          nextState[messageId] = hasExisting ? false : true;
+          // Otherwise, for first-time sync, mark recent messages (last 7 days) as unread
+          // to preserve unread status after app restart
+          if (hasExisting) {
+            nextState[messageId] = false; // New messages in existing conversation are unread
+          } else {
+            // First time sync: mark recent messages (last 7 days) as unread
+            // to preserve unread status after app restart
+            const messageDate = timeToDate(message.timestamp);
+            const now = new Date();
+            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            // Messages from the last 7 days are marked as unread (false), older messages as read (true)
+            // messageDate < sevenDaysAgo means message is older than 7 days → mark as read (true)
+            // messageDate >= sevenDaysAgo means message is recent → mark as unread (false)
+            nextState[messageId] = messageDate < sevenDaysAgo;
+          }
           hasChanged = true;
         }
       });
@@ -220,8 +237,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
       
       const unreadCount = Object.values(nextState).filter(r => !r).length;
       const unreadMessageIds = Object.entries(nextState)
-        .filter(([_, isRead]) => !isRead)
-        .map(([msgId, _]) => msgId);
+        .filter(([, isRead]) => !isRead)
+        .map(([msgId]) => msgId);
       console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, messages in conversation: ${messages.length}, messages in store: ${Object.keys(nextState).length}, removed: ${removedCount}, unread count: ${unreadCount}`);
       if (unreadCount > 0) {
         console.log(`messageReadStore: Unread message IDs after sync:`, unreadMessageIds.slice(0, 10));
@@ -403,5 +420,6 @@ export const useMessageReadStore = create<MessageReadStore>((set) => ({
       return { readByConversation: updatedMap };
     });
   },
-}));
+  };
+});
 

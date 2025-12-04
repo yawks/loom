@@ -7,6 +7,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/wailsapp/wails/v2 v2.11.0
 	go.mau.fi/whatsmeow v0.0.0-20251120135021-071293c6b9f0
+	golang.org/x/image v0.33.0
 	google.golang.org/protobuf v1.36.10
 	gorm.io/gorm v1.31.1
 )
