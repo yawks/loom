@@ -364,12 +364,14 @@ export function MessageList({
 
     messages.forEach((msg) => {
       // Skip empty messages (no body and no attachments)
+      // BUT keep call messages even if they have no body/attachments
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
-      const isEmpty = !hasBody && !hasAttachments;
+      const isCallMessage = msg.callType && msg.callType.trim() !== "";
+      const isEmpty = !hasBody && !hasAttachments && !isCallMessage;
 
       if (isEmpty) {
-        // Skip empty messages completely
+        // Skip empty messages completely (but not call messages)
         return;
       }
 

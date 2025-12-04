@@ -162,6 +162,8 @@
     "missedVideo": "Missed video call",
     "missedGroupVoice": "Missed group voice call",
     "missedGroupVideo": "Missed group video call",
+    "incomingCall": "Incoming call",
+    "incomingGroupCall": "Incoming group call",
     "scheduledStart": "Scheduled call started",
     "scheduledCancel": "Scheduled call cancelled",
     "linkedGroupStart": "Linked group call started",
@@ -169,6 +171,7 @@
     "connectedShort": "Call connected",
     "failed": "Call failed",
     "rejected": "Call rejected",
-    "participants": "{{count}} participants"
+    "participants": "{{count}} participants",
+    "activeCall": "Active call"
   }
 }

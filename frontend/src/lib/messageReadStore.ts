@@ -200,10 +200,12 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         }
 
         if (nextState[messageId] === undefined) {
-          // If we already have a state for the conversation, new messages start as unread.
-          // Otherwise, for first-time sync, mark recent messages (last 7 days) as unread
-          // to preserve unread status after app restart
-          if (hasExisting) {
+          // Call messages are always marked as read (they don't count as unread messages)
+          // They have their own badge indicator
+          const isCallMessage = message.callType && message.callType.trim() !== "";
+          if (isCallMessage) {
+            nextState[messageId] = true; // Call messages are always marked as read
+          } else if (hasExisting) {
             nextState[messageId] = false; // New messages in existing conversation are unread
           } else {
             // First time sync: mark recent messages (last 7 days) as unread
@@ -347,9 +349,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       }
       
       // New messages are unread if conversation already exists, otherwise assume read (existing history)
-      // All messages are treated the same way, regardless of isFromMe
-      const isRead = hasExisting ? false : true;
-      console.log(`messageReadStore: registerIncomingMessage - conversationId: ${conversationId}, messageId: ${messageId}, isFromMe: ${message.isFromMe}, hasExisting: ${hasExisting}, will be marked as read: ${isRead}`);
+      // Call messages are always marked as read (they don't count as unread messages)
+      // They have their own badge indicator
+      const isCallMessage = message.callType && message.callType.trim() !== "";
+      const isRead = isCallMessage ? true : (hasExisting ? false : true);
+      console.log(`messageReadStore: registerIncomingMessage - conversationId: ${conversationId}, messageId: ${messageId}, isFromMe: ${message.isFromMe}, isCallMessage: ${isCallMessage}, hasExisting: ${hasExisting}, will be marked as read: ${isRead}`);
       
       const updatedConversation: ConversationReadState = {
         ...existingState,
