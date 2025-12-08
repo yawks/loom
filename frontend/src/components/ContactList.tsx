@@ -33,7 +33,7 @@ export function ContactList() {
   // Use a selector that returns a serialized version to ensure reactivity
   const presenceMap = usePresenceStore((state) => {
     const map = state.presenceMap;
-    console.log(`[ContactList] Store selector called, presenceMap keys:`, Object.keys(map));
+    //console.log(`[ContactList] Store selector called, presenceMap keys:`, Object.keys(map));
     // Return the object directly - Zustand will detect changes via shallow comparison
     return map;
   });
@@ -111,7 +111,7 @@ export function ContactList() {
 
   // Debug: Log when presenceMap changes
   useEffect(() => {
-    console.log(`[ContactList] presenceMap changed, current entries:`, Object.entries(presenceMap));
+    //console.log(`[ContactList] presenceMap changed, current entries:`, Object.entries(presenceMap));
   }, [presenceMap]);
 
   // Use shared hook for sorted contacts
@@ -128,12 +128,12 @@ export function ContactList() {
         (account) => account.providerInstanceId === selectedProviderFilter
       );
       if (!hasMatchingAccount) {
-        console.log(`[ContactList] Contact ${contact.displayName} filtered out - no linkedAccount with providerInstanceId=${selectedProviderFilter}. Available:`,
-          contact.linkedAccounts.map(acc => ({ userId: acc.userId, providerInstanceId: acc.providerInstanceId })));
+        //console.log(`[ContactList] Contact ${contact.displayName} filtered out - no linkedAccount with providerInstanceId=${selectedProviderFilter}. Available:`,
+        //contact.linkedAccounts.map(acc => ({ userId: acc.userId, providerInstanceId: acc.providerInstanceId })));
       }
       return hasMatchingAccount;
     });
-    console.log(`[ContactList] Filtered contacts: ${filtered.length} out of ${sortedContactsBase.length} for providerInstanceId=${selectedProviderFilter}`);
+    //console.log(`[ContactList] Filtered contacts: ${filtered.length} out of ${sortedContactsBase.length} for providerInstanceId=${selectedProviderFilter}`);
     return filtered;
   }, [sortedContactsBase, selectedProviderFilter]);
 
@@ -306,20 +306,20 @@ export function ContactList() {
             // Helper to check if a LID in presenceMap matches any linkedAccount
             const checkPresenceMatch = () => {
               if (isGroup) {
-                console.log(`[ContactList] Skipping presence check for group: ${contact.displayName}`);
+                //console.log(`[ContactList] Skipping presence check for group: ${contact.displayName}`);
                 return false;
               }
 
-              console.log(`[ContactList] Checking presence for ${contact.displayName}, linkedAccounts:`, contact.linkedAccounts.map(a => a.userId));
-              console.log(`[ContactList] Current presenceMap:`, presenceMap);
+              //console.log(`[ContactList] Checking presence for ${contact.displayName}, linkedAccounts:`, contact.linkedAccounts.map(a => a.userId));
+              //console.log(`[ContactList] Current presenceMap:`, presenceMap);
 
               // First, try direct match
               const directMatch = contact.linkedAccounts.some(
                 (account) => {
                   const isOnline = presenceMap[account.userId] === true;
-                  console.log(`[ContactList] Checking direct match for ${account.userId}: ${isOnline}`);
+                  //console.log(`[ContactList] Checking direct match for ${account.userId}: ${isOnline}`);
                   if (isOnline) {
-                    console.log(`[ContactList] ✓ Direct match found for ${contact.displayName}: ${account.userId}`);
+                    //console.log(`[ContactList] ✓ Direct match found for ${contact.displayName}: ${account.userId}`);
                   }
                   return isOnline;
                 }
@@ -329,13 +329,13 @@ export function ContactList() {
               // If no direct match, try to match by phone number
               // LID format: "149044005437527@lid" or "216350555386047@lid"
               // JID format: "33XXXXXXXXX@s.whatsapp.net"
-              console.log(`[ContactList] No direct match, trying phone number matching...`);
+              //console.log(`[ContactList] No direct match, trying phone number matching...`);
               for (const [lid, isOnline] of Object.entries(presenceMap)) {
                 if (!isOnline || !lid.endsWith("@lid")) continue;
 
                 // Extract phone number from LID (remove @lid and any :X suffix)
                 const lidPhone = lid.replace(/@lid$/, "").replace(/:\d+$/, "");
-                console.log(`[ContactList] Checking LID ${lid} (extracted phone: ${lidPhone})`);
+                //console.log(`[ContactList] Checking LID ${lid} (extracted phone: ${lidPhone})`);
 
                 // Check if any linkedAccount contains this phone number
                 const phoneMatch = contact.linkedAccounts.some(account => {
@@ -343,9 +343,9 @@ export function ContactList() {
                   // Extract phone from JID (e.g., "33677815440@s.whatsapp.net" -> "33677815440")
                   const jidPhone = jid.split("@")[0];
                   const matches = jidPhone === lidPhone;
-                  console.log(`[ContactList]   Comparing LID phone ${lidPhone} with JID ${jid} (phone: ${jidPhone}): ${matches}`);
+                  //console.log(`[ContactList]   Comparing LID phone ${lidPhone} with JID ${jid} (phone: ${jidPhone}): ${matches}`);
                   if (matches) {
-                    console.log(`[ContactList] ✓ Phone match: LID ${lid} (phone: ${lidPhone}) matches JID ${jid} (phone: ${jidPhone}) for contact ${contact.displayName}`);
+                    //console.log(`[ContactList] ✓ Phone match: LID ${lid} (phone: ${lidPhone}) matches JID ${jid} (phone: ${jidPhone}) for contact ${contact.displayName}`);
                   }
                   return matches;
                 });
@@ -355,12 +355,12 @@ export function ContactList() {
                 }
               }
 
-              console.log(`[ContactList] ✗ No match found for ${contact.displayName}`);
+              //console.log(`[ContactList] ✗ No match found for ${contact.displayName}`);
               return false;
             };
 
             const isOnline = checkPresenceMatch();
-            console.log(`[ContactList] Final isOnline status for ${contact.displayName}: ${isOnline}`);
+            //console.log(`[ContactList] Final isOnline status for ${contact.displayName}: ${isOnline}`);
 
             // Check if this contact represents the current user
             // In DMs, we typically don't see ourselves, but check anyway

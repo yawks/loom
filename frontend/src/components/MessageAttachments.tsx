@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { GetAttachmentData } from "../../wailsjs/go/main/App";
+import { VoiceMessage } from "./VoiceMessage";
 
 interface Attachment {
   type: string;
@@ -22,6 +23,8 @@ interface Attachment {
 
 interface MessageAttachmentsProps {
   attachments: string; // JSON string from message.attachments
+  conversationID: string;
+  messageID: string;
   isFromMe: boolean;
   layout?: "bubble" | "irc";
 }
@@ -62,6 +65,8 @@ function getFileExtension(fileName: string): string {
 
 export function MessageAttachments({
   attachments,
+  conversationID,
+  messageID,
   isFromMe,
   layout = "bubble",
 }: MessageAttachmentsProps) {
@@ -138,7 +143,7 @@ export function MessageAttachments({
         setSelectedImage(cachedDataUrl);
         return;
       }
-      
+
       try {
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
@@ -155,6 +160,23 @@ export function MessageAttachments({
     <>
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
+          if (attachment.type === "voice") {
+            return (
+              <VoiceMessage
+                key={index}
+                attachment={{
+                  url: attachment.url,
+                  duration: (attachment as any).duration,
+                  fileName: attachment.fileName
+                }}
+                conversationID={conversationID}
+                messageID={messageID}
+                isFromMe={isFromMe}
+                layout={layout}
+              />
+            )
+          }
+
           const Icon = getFileIcon(attachment.mimeType, attachment.type);
           const isImage = attachment.type === "image";
           const thumbnail = attachment.thumbnail || attachment.url;
@@ -191,11 +213,10 @@ export function MessageAttachments({
                 </div>
               ) : (
                 <div
-                  className={`flex items-center gap-3 p-3 rounded-lg border ${
-                    isFromMe && layout === "bubble"
-                      ? "bg-blue-600 text-white border-blue-700"
-                      : "bg-muted text-foreground border-border"
-                  } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
+                  className={`flex items-center gap-3 p-3 rounded-lg border ${isFromMe && layout === "bubble"
+                    ? "bg-blue-600 text-white border-blue-700"
+                    : "bg-muted text-foreground border-border"
+                    } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
                   onClick={() => handleDownload(attachment)}
                 >
                   <Icon className="h-8 w-8 shrink-0" />
@@ -217,7 +238,6 @@ export function MessageAttachments({
         })}
       </div>
 
-      {/* Image preview dialog */}
       <Dialog open={selectedImage !== null} onOpenChange={() => setSelectedImage(null)}>
         <DialogContent className="max-w-4xl max-h-[90vh] p-0">
           {selectedImage && (
@@ -240,4 +260,3 @@ export function MessageAttachments({
     </>
   );
 }
-
