@@ -22,6 +22,8 @@ interface AppState {
   setSelectedAvatarUrl: (url: string | null) => void;
   metaContacts: models.MetaContact[];
   setMetaContacts: (contacts: models.MetaContact[]) => void;
+  selectedProviderFilter: string | null;
+  setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   // Navigation history
   conversationHistory: models.MetaContact[];
   historyIndex: number;
@@ -92,6 +94,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFontSize: (fontSize) => {
     set({ fontSize });
     saveToStorage("fontSize", fontSize);
+  },
+  selectedProviderFilter: loadFromStorage<string | null>("selectedProviderFilter", null),
+  setSelectedProviderFilter: (providerInstanceId) => {
+    set({ selectedProviderFilter: providerInstanceId });
+    saveToStorage("selectedProviderFilter", providerInstanceId);
   },
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),

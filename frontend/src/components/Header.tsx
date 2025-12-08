@@ -93,7 +93,6 @@ export function Header({ hasProviders = true }: HeaderProps) {
           onClick={() => setIsSettingsOpen(true)}
         >
           <Settings className="h-4 w-4" />
-          <span className="hidden sm:inline">{t("settings") || "Settings"}</span>
         </Button>
       </div>
     </header>

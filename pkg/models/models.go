@@ -19,17 +19,19 @@ type MetaContact struct {
 
 // LinkedAccount represents a protocol-specific account (WhatsApp, Slack, etc.).
 type LinkedAccount struct {
-	ID            uint           `gorm:"primarykey" json:"id"`
-	MetaContactID uint           `json:"metaContactId"`
-	Protocol      string         `gorm:"index" json:"protocol"` // "slack", "whatsapp", "google_messages"
-	UserID        string         `json:"userId"`                // User's ID on the remote platform
-	Username      string         `json:"username"`
-	AvatarURL     string         `json:"avatarUrl,omitempty"`                 // Profile picture URL from the provider
-	Status        string         `json:"status"`                              // "online", "offline", "away", "busy", etc.
-	LastSeen      *time.Time     `json:"lastSeen,omitempty"`                  // Last seen timestamp (nil if not available)
-	Conversations []Conversation `gorm:"foreignKey:LinkedAccountID" json:"-"` // Avoid JSON cycles
-	CreatedAt     time.Time      `json:"createdAt"`
-	UpdatedAt     time.Time      `json:"updatedAt"`
+	ID                 uint           `gorm:"primarykey" json:"id"`
+	MetaContactID      uint           `json:"metaContactId"`
+	Protocol           string         `gorm:"index" json:"protocol"`           // "slack", "whatsapp", "google_messages"
+	ProviderInstanceID string         `gorm:"index" json:"providerInstanceId"` // ID of the provider instance (e.g., "whatsapp-1")
+	UserID             string         `json:"userId"`                          // User's ID on the remote platform (canonical ID, e.g., phone number for WhatsApp)
+	Username           string         `json:"username"`
+	AvatarURL          string         `json:"avatarUrl,omitempty"`                 // Profile picture URL from the provider
+	Status             string         `json:"status"`                              // "online", "offline", "away", "busy", etc.
+	LastSeen           *time.Time     `json:"lastSeen,omitempty"`                  // Last seen timestamp (nil if not available)
+	Extra              string         `gorm:"type:text" json:"extra,omitempty"`    // JSON-encoded extra data (e.g., LID mappings for WhatsApp)
+	Conversations      []Conversation `gorm:"foreignKey:LinkedAccountID" json:"-"` // Avoid JSON cycles
+	CreatedAt          time.Time      `json:"createdAt"`
+	UpdatedAt          time.Time      `json:"updatedAt"`
 }
 
 // Conversation represents a chat (Direct, Group).
@@ -60,37 +62,37 @@ type GroupParticipant struct {
 
 // Message contains the content of a message.
 type Message struct {
-	ID                uint             `gorm:"primarykey" json:"id"`
-	ConversationID    uint             `json:"conversationId"`
-	ProtocolConvID    string           `json:"protocolConvId"`                     // Conversation ID on the platform
-	ProtocolMsgID     string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
-	SenderID          string           `json:"senderId"`                           // Sender's ID on the platform
-	SenderName        string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
-	SenderAvatarURL   string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
-	Body              string           `json:"body"`
-	Timestamp         time.Time        `json:"timestamp"`
-	IsFromMe          bool             `json:"isFromMe"`
-	ThreadID          *string          `gorm:"index" json:"threadId,omitempty"`                     // Nullable, for replies
-	QuotedMessageID   *string          `gorm:"index" json:"quotedMessageId,omitempty"`              // ID of the message being replied to
-	QuotedSenderID    *string          `json:"quotedSenderId,omitempty"`                            // Sender ID of the quoted message
-	QuotedSenderName  string           `gorm:"-" json:"quotedSenderName,omitempty"`                 // Sender name of the quoted message (not persisted)
-	QuotedBody        *string          `json:"quotedBody,omitempty"`                                // Body of the quoted message
-	Attachments       string           `json:"attachments"`                                         // Could be a JSON []string of URLs/paths
-	Reactions         []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"`     // Reactions to this message
-	Receipts          []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`      // Delivery and read receipts
-	IsStatusMessage   bool             `json:"isStatusMessage"`                                     // Whether this is a status message
-	IsDeleted         bool             `json:"isDeleted"`                                           // Flag when the remote client deleted the message
-	DeletedBy         string           `json:"deletedBy,omitempty"`                                 // User ID who triggered the deletion
-	DeletedReason     string           `json:"deletedReason,omitempty"`                             // Reason (e.g., "revoked")
-	DeletedTimestamp  *time.Time       `json:"deletedTimestamp,omitempty"`                          // When the deletion happened
-	IsEdited          bool             `json:"isEdited"`                                            // Flag when the message has been edited
-	EditedTimestamp   *time.Time       `json:"editedTimestamp,omitempty"`                           // When the message was edited
-	CallType          string           `json:"callType,omitempty"`                                  // Type of call: "missed_voice", "missed_video", "missed_group_voice", "missed_group_video", "scheduled_start", "scheduled_cancel", "linked_group_start"
-	CallDurationSecs   *int32           `json:"callDurationSecs,omitempty"`                           // Duration of the call in seconds (from CallLogMessage)
-	CallParticipants  string           `json:"callParticipants,omitempty"`                          // JSON array of participant JIDs (from CallLogMessage)
-	CallOutcome       string           `json:"callOutcome,omitempty"`                               // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
-	CallIsVideo       bool             `json:"callIsVideo"`                                          // Whether the call was a video call (from CallLogMessage)
-	DeletedAt         gorm.DeletedAt   `gorm:"index" json:"-"`
+	ID               uint             `gorm:"primarykey" json:"id"`
+	ConversationID   uint             `json:"conversationId"`
+	ProtocolConvID   string           `json:"protocolConvId"`                     // Conversation ID on the platform
+	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
+	SenderID         string           `json:"senderId"`                           // Sender's ID on the platform
+	SenderName       string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
+	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
+	Body             string           `json:"body"`
+	Timestamp        time.Time        `json:"timestamp"`
+	IsFromMe         bool             `json:"isFromMe"`
+	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
+	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
+	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`                        // Sender ID of the quoted message
+	QuotedSenderName string           `gorm:"-" json:"quotedSenderName,omitempty"`             // Sender name of the quoted message (not persisted)
+	QuotedBody       *string          `json:"quotedBody,omitempty"`                            // Body of the quoted message
+	Attachments      string           `json:"attachments"`                                     // Could be a JSON []string of URLs/paths
+	Reactions        []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"` // Reactions to this message
+	Receipts         []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`  // Delivery and read receipts
+	IsStatusMessage  bool             `json:"isStatusMessage"`                                 // Whether this is a status message
+	IsDeleted        bool             `json:"isDeleted"`                                       // Flag when the remote client deleted the message
+	DeletedBy        string           `json:"deletedBy,omitempty"`                             // User ID who triggered the deletion
+	DeletedReason    string           `json:"deletedReason,omitempty"`                         // Reason (e.g., "revoked")
+	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                      // When the deletion happened
+	IsEdited         bool             `json:"isEdited"`                                        // Flag when the message has been edited
+	EditedTimestamp  *time.Time       `json:"editedTimestamp,omitempty"`                       // When the message was edited
+	CallType         string           `json:"callType,omitempty"`                              // Type of call: "missed_voice", "missed_video", "missed_group_voice", "missed_group_video", "scheduled_start", "scheduled_cancel", "linked_group_start"
+	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
+	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
+	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
+	CallIsVideo      bool             `json:"callIsVideo"`                                     // Whether the call was a video call (from CallLogMessage)
+	DeletedAt        gorm.DeletedAt   `gorm:"index" json:"-"`
 }
 
 // MessageReceipt represents a delivery or read receipt for a message.
@@ -143,13 +145,15 @@ type Attachment struct {
 
 // ProviderConfiguration stores the configuration of a provider instance.
 type ProviderConfiguration struct {
-	ID         uint       `gorm:"primarykey" json:"id"`
-	ProviderID string     `gorm:"uniqueIndex;not null" json:"providerId"` // e.g., "whatsapp", "mock"
-	ConfigJSON string     `gorm:"type:text" json:"configJson"`            // JSON-encoded configuration
-	IsActive   bool       `json:"isActive"`                               // Whether this provider is currently active
-	LastSyncAt *time.Time `json:"lastSyncAt,omitempty"`                   // Last time messages were synced
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
+	ID           uint       `gorm:"primarykey" json:"id"`
+	ProviderID   string     `gorm:"index;not null" json:"providerId"` // e.g., "whatsapp", "mock"
+	InstanceID   string     `gorm:"uniqueIndex" json:"instanceId"`    // Unique instance identifier (e.g., "whatsapp-1", "whatsapp-2") - nullable for migration compatibility
+	InstanceName string     `gorm:"" json:"instanceName"`             // Display name for this instance (e.g., "WhatsApp Personal", "WhatsApp Work") - nullable for migration compatibility
+	ConfigJSON   string     `gorm:"type:text" json:"configJson"`      // JSON-encoded configuration
+	IsActive     bool       `json:"isActive"`                         // Whether this provider is currently active
+	LastSyncAt   *time.Time `json:"lastSyncAt,omitempty"`             // Last time messages were synced
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
 }
 
 // ContactAlias stores user-defined custom names for contacts.
