@@ -1,19 +1,19 @@
 import { ArrowDownAZ, Clock, Phone } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { GetMessagesForConversation, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient, useSuspenseQuery, useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetMetaContacts, GetMessagesForConversation } from "../../wailsjs/go/main/App";
+import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
-import { useTypingStore } from "@/lib/typingStore";
 import { usePresenceStore } from "@/lib/presenceStore";
-import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
 import { useSortedContacts } from "@/hooks/useSortedContacts";
+import { useTranslation } from "react-i18next";
+import { useTypingStore } from "@/lib/typingStore";
 
 type SortOption = "alphabetical" | "last_message";
 
@@ -42,6 +42,33 @@ export function ContactList() {
     queryFn: fetchMetaContacts,
   });
   const typingByConversation = useTypingStore((state) => state.typingByConversation);
+
+  // Track sync status to gray out/hide empty conversations
+  const [syncStatus, setSyncStatus] = useState<"syncing" | "completed" | null>(null);
+
+  // Listen for sync status events
+  useEffect(() => {
+    const unsubscribe = EventsOn("sync-status", (statusJSON: string) => {
+      try {
+        const rawStatus: Record<string, any> = JSON.parse(statusJSON);
+        const status = (rawStatus.Status || rawStatus.status || null) as string;
+
+        if (status === "completed") {
+          setSyncStatus("completed");
+        } else if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
+          setSyncStatus("syncing");
+        }
+      } catch (error) {
+        console.error("Failed to parse sync status in ContactList:", error);
+      }
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, []);
 
   // Listen for contact refresh events
   useEffect(() => {
@@ -88,7 +115,27 @@ export function ContactList() {
   }, [presenceMap]);
 
   // Use shared hook for sorted contacts
-  const sortedContacts = useSortedContacts(sortBy);
+  const sortedContactsBase = useSortedContacts(sortBy);
+
+  // Filter contacts by selected provider
+  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
+  const sortedContacts = useMemo(() => {
+    if (!selectedProviderFilter) {
+      return sortedContactsBase;
+    }
+    const filtered = sortedContactsBase.filter((contact) => {
+      const hasMatchingAccount = contact.linkedAccounts.some(
+        (account) => account.providerInstanceId === selectedProviderFilter
+      );
+      if (!hasMatchingAccount) {
+        console.log(`[ContactList] Contact ${contact.displayName} filtered out - no linkedAccount with providerInstanceId=${selectedProviderFilter}. Available:`,
+          contact.linkedAccounts.map(acc => ({ userId: acc.userId, providerInstanceId: acc.providerInstanceId })));
+      }
+      return hasMatchingAccount;
+    });
+    console.log(`[ContactList] Filtered contacts: ${filtered.length} out of ${sortedContactsBase.length} for providerInstanceId=${selectedProviderFilter}`);
+    return filtered;
+  }, [sortedContactsBase, selectedProviderFilter]);
 
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
@@ -133,7 +180,7 @@ export function ContactList() {
           if (!conversationId) return false;
           try {
             const messages = await GetMessagesForConversation(conversationId);
-            
+
             // Check if there are any active incoming call messages (not terminated)
             // Only show badge for "incoming_call" or "incoming_group_call" types
             const hasActiveCall = (messages || []).some((msg) => {
@@ -144,7 +191,7 @@ export function ContactList() {
               const callType = msg.callType.trim();
               return callType === "incoming_call" || callType === "incoming_group_call";
             });
-            
+
             return hasActiveCall;
           } catch (error) {
             console.error(`Error checking active calls for ${conversationId}:`, error);
@@ -167,6 +214,43 @@ export function ContactList() {
     });
     return calls;
   }, [sortedContacts, activeCallsQueries]);
+
+  // Get message counts for each conversation to determine if empty
+  const messageCountQueries = useQueries({
+    queries: sortedContacts.map((contact) => {
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      return {
+        queryKey: ["messageCount", conversationId],
+        queryFn: async () => {
+          if (!conversationId) return 0;
+          try {
+            const messages = await GetMessagesForConversation(conversationId);
+            return messages?.length ?? 0;
+          } catch (error) {
+            console.error(`Error getting message count for ${conversationId}:`, error);
+            return 0;
+          }
+        },
+        enabled: !!conversationId,
+        staleTime: 30000, // Cache for 30 seconds
+      };
+    }),
+  });
+
+  const messageCountByConversation = useMemo(() => {
+    const counts: Record<string, number> = {};
+    sortedContacts.forEach((contact, index) => {
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      if (conversationId) {
+        counts[conversationId] = messageCountQueries[index]?.data ?? 0;
+      }
+    });
+    return counts;
+  }, [sortedContacts, messageCountQueries]);
+
+  // Don't filter contacts based on message count - just show all
+  // We only gray them out during sync, but keep them visible
+  const filteredContacts = sortedContacts;
 
   if (contacts.length === 0) {
     return (
@@ -206,13 +290,15 @@ export function ContactList() {
       </div>
       <div className="flex-1 overflow-y-auto scroll-area">
         <div className="space-y-1 p-2">
-          {sortedContacts.map((contact) => {
+          {filteredContacts.map((contact) => {
             const conversationId = contact.linkedAccounts[0]?.userId ?? "";
             const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
             const displayUnreadCount =
               unreadCount > 99 ? "99+" : unreadCount.toString();
             const isSelected = selectedContact?.id === contact.id;
             const isTyping = (typingByConversation[conversationId]?.length ?? 0) > 0;
+            const messageCount = messageCountByConversation[conversationId] ?? 0;
+            const isEmptyDuringSync = syncStatus === "syncing" && messageCount === 0;
 
             // Check if contact is online (only for DM, not groups)
             const isGroup = conversationId.endsWith("@g.us");
@@ -289,7 +375,8 @@ export function ContactList() {
                 className={cn(
                   "flex items-center space-x-3 p-2 rounded-lg cursor-pointer transition-colors border border-transparent",
                   "hover:bg-muted",
-                  isSelected && "ring-1 ring-primary/40"
+                  isSelected && "ring-1 ring-primary/40",
+                  isEmptyDuringSync && "opacity-50"
                 )}
                 onClick={() => setSelectedContact(contact)}
               >

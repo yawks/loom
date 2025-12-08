@@ -24,7 +24,7 @@ export function SyncStatusFooter() {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const rawStatus: Record<string, any> = JSON.parse(statusJSON);
-        
+
         // Normalize field names (Go uses capital case, TypeScript uses camelCase)
         const normalizedStatus: SyncStatus = {
           status: (rawStatus.Status || rawStatus.status || null) as SyncStatus["status"],
@@ -32,22 +32,22 @@ export function SyncStatusFooter() {
           conversationId: rawStatus.ConversationID || rawStatus.ConversationId || rawStatus.conversationId,
           progress: rawStatus.Progress !== undefined ? rawStatus.Progress : (rawStatus.progress !== undefined ? rawStatus.progress : -1),
         };
-        
+
         // If we receive a "completed" status, always clear any pending status
         // and set up the auto-hide timeout
         if (normalizedStatus.status === "completed") {
           // Mark that we've received a completed status
           hasCompletedRef.current = true;
-          
+
           // Clear any existing timeout
           if (timeoutId) {
             clearTimeout(timeoutId);
             timeoutId = null;
           }
-          
+
           // Set the completed status
           setSyncStatus(normalizedStatus);
-          
+
           // Auto-hide after 2 seconds
           timeoutId = setTimeout(() => {
             setSyncStatus(null);
@@ -56,20 +56,20 @@ export function SyncStatusFooter() {
           }, 2000);
           return; // Don't process further
         }
-        
+
         // For error status
         if (normalizedStatus.status === "error") {
           // Reset completed flag on error
           hasCompletedRef.current = false;
-          
+
           // Clear any existing timeout
           if (timeoutId) {
             clearTimeout(timeoutId);
             timeoutId = null;
           }
-          
+
           setSyncStatus(normalizedStatus);
-          
+
           // Show error for 5 seconds
           timeoutId = setTimeout(() => {
             setSyncStatus(null);
@@ -77,21 +77,17 @@ export function SyncStatusFooter() {
           }, 5000);
           return; // Don't process further
         }
-        
+
         // For other statuses (fetching_contacts, fetching_history, fetching_avatars)
-        // If we've already received a "completed" status, ignore these events
-        // They are likely late events from the previous sync cycle
-        // Exception: fetching_avatars can come after completed, so we allow it
-        if (hasCompletedRef.current && normalizedStatus.status !== "fetching_avatars") {
-          return; // Ignore late events (except avatars which can load after sync)
-        }
-        
+        // Allow these to show even after a "completed" was received
+        // This handles the case where WhatsApp sends HistorySync events after OfflineSyncCompleted
+
         // Clear any existing timeout (but don't auto-hide for these)
         if (timeoutId) {
           clearTimeout(timeoutId);
           timeoutId = null;
         }
-        
+
         setSyncStatus(normalizedStatus);
       } catch (error) {
         console.error("Failed to parse sync status:", error);

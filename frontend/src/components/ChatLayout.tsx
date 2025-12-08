@@ -3,26 +3,27 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { Suspense, useCallback, useEffect, useState } from "react";
 
 import { AvatarModal } from "./AvatarModal";
 import { Button } from "@/components/ui/button";
 import { ContactList } from "./ContactList";
 import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 import { Header } from "./Header";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
+import { ProviderFilterBar } from "./ProviderFilterBar";
 import { ProvidersModal } from "./ProvidersModal";
-import { Rocket } from "lucide-react";
-import { Suspense, useEffect, useState } from "react";
 import { SyncStatusFooter } from "./SyncStatusFooter";
 import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
-import { useMessageEvents } from "@/hooks/useMessageEvents";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useMessageEvents } from "@/hooks/useMessageEvents";
 import { useSystemTrayBadge } from "@/hooks/useSystemTrayBadge";
 import { useTranslation } from "react-i18next";
-import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 
 export function ChatLayout() {
   const { t } = useTranslation();
@@ -42,44 +43,50 @@ export function ChatLayout() {
   const theme = useAppStore((state) => state.theme);
 
   // State for provider checking and onboarding
-  const [_, setHasProviders] = useState<boolean | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showProvidersModal, setShowProvidersModal] = useState(false);
 
+  // Function to check providers and update onboarding state
+  const checkProviders = useCallback(async () => {
+    try {
+      const providers = await GetConfiguredProviders();
+      const hasConfiguredProviders = providers && providers.length > 0;
+      setShowOnboarding(!hasConfiguredProviders);
+    } catch (error) {
+      console.error("Failed to check providers:", error);
+      // Assume providers exist on error to avoid blocking the UI
+      setShowOnboarding(false);
+    }
+  }, []);
+
   // Check if providers are configured on mount
   useEffect(() => {
-    const checkProviders = async () => {
-      try {
-        const providers = await GetConfiguredProviders();
-        const hasConfiguredProviders = providers && providers.length > 0;
-        setHasProviders(hasConfiguredProviders);
-        if (!hasConfiguredProviders) {
-          setShowOnboarding(true);
-        }
-      } catch (error) {
-        console.error("Failed to check providers:", error);
-        // Assume providers exist on error to avoid blocking the UI
-        setHasProviders(true);
+    // This is a valid use case: initializing state from async data on mount
+    // The setState is called asynchronously inside checkProviders, not directly in the effect
+    checkProviders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Listen for contacts-refresh events (triggered when providers are added/removed)
+  useEffect(() => {
+    const unsubscribe = EventsOn("contacts-refresh", () => {
+      // Recheck providers when contacts are refreshed (usually means provider was added/removed)
+      checkProviders();
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
       }
     };
-    checkProviders();
-  }, []);
+  }, [checkProviders]);
 
   // Refresh provider check when ProvidersModal closes
   const handleProvidersModalClose = async (open: boolean) => {
     setShowProvidersModal(open);
     if (!open) {
       // Recheck providers when modal closes
-      try {
-        const providers = await GetConfiguredProviders();
-        const hasConfiguredProviders = providers && providers.length > 0;
-        setHasProviders(hasConfiguredProviders);
-        if (hasConfiguredProviders) {
-          setShowOnboarding(false);
-        }
-      } catch (error) {
-        console.error("Failed to recheck providers:", error);
-      }
+      await checkProviders();
     }
   };
 
@@ -101,14 +108,16 @@ export function ChatLayout() {
 
   return (
     <div className="flex flex-col h-screen">
+      {/* macOS title bar drag area */}
+      <div className="h-[28px] bg-background" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
       <Header hasProviders={!showOnboarding} />
       {showOnboarding ? (
         // Onboarding screen when no providers configured
         <div className="flex-1 flex items-center justify-center bg-background">
           <div className="max-w-md mx-auto p-8 text-center space-y-6">
             <div className="flex items-center justify-center mb-6">
-              <div className="rounded-full bg-primary/10 p-6">
-                <Rocket className="h-16 w-16 text-primary" />
+              <div className="rounded-full bg-primary/10 p-2">
+                <img src="/appicon.png" alt="Loom" className="h-16 w-16" />
               </div>
             </div>
             <div className="space-y-3">
@@ -134,6 +143,7 @@ export function ChatLayout() {
         // Normal chat layout when providers are configured
         <>
           <ResizablePanelGroup direction="horizontal" className="flex-1">
+            <ProviderFilterBar />
             <ResizablePanel id="contacts-panel" defaultSize={25} minSize={15}>
               <Suspense fallback={<ContactListSkeleton />}>
                 <ContactList />

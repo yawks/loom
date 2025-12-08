@@ -127,44 +127,58 @@ func (a *App) startup(ctx context.Context) {
 		configs = []models.ProviderConfiguration{}
 	}
 	fmt.Printf("App.startup: Loaded %d provider configs from database\n", len(configs))
+	if len(configs) == 0 {
+		fmt.Printf("App.startup: No provider configs found in database, skipping restoration\n")
+	}
 
 	// Restore providers from database
 	var activeProvider core.Provider
+	restoredCount := 0
 	for _, config := range configs {
 		// Capture config for goroutine
 		providerConfig := config
-		fmt.Printf("App.startup: Attempting to restore provider %s (IsActive: %v)\n", providerConfig.ProviderID, providerConfig.IsActive)
+		fmt.Printf("App.startup: Attempting to restore provider %s (InstanceID: %s, InstanceName: %s, IsActive: %v)\n",
+			providerConfig.ProviderID, providerConfig.InstanceID, providerConfig.InstanceName, providerConfig.IsActive)
 
-		fmt.Printf("App.startup: About to call RestoreProvider for %s\n", providerConfig.ProviderID)
+		fmt.Printf("App.startup: About to call RestoreProvider for %s (instanceID: %s)\n", providerConfig.ProviderID, providerConfig.InstanceID)
 		provider, err := a.providerManager.RestoreProvider(providerConfig)
 		if err != nil {
 			fmt.Printf("App.startup: ERROR - Failed to restore provider %s: %v\n", providerConfig.ProviderID, err)
 			continue
 		}
-		fmt.Printf("App.startup: Successfully restored provider %s from database, provider is nil: %v\n", providerConfig.ProviderID, provider == nil)
+		fmt.Printf("App.startup: Successfully restored provider %s (instanceID: %s) from database, provider is nil: %v\n",
+			providerConfig.ProviderID, providerConfig.InstanceID, provider == nil)
+		restoredCount++
+
+		// Store the instanceID for later use
+		instanceID := providerConfig.InstanceID
+		if instanceID == "" {
+			instanceID = fmt.Sprintf("%s-1", providerConfig.ProviderID)
+		}
 
 		// Only connect the provider if it's already authenticated
 		// Providers that need authentication (like WhatsApp) should only be connected
 		// when the user explicitly requests it via the UI
 		isAuth := provider.IsAuthenticated()
-		fmt.Printf("App.startup: Provider %s IsAuthenticated: %v\n", providerConfig.ProviderID, isAuth)
+		fmt.Printf("App.startup: Provider %s (instanceID: %s) IsAuthenticated: %v\n", providerConfig.ProviderID, instanceID, isAuth)
 		if isAuth {
 			if err := provider.Connect(); err != nil {
 				log.Printf("Warning: Failed to connect provider %s: %v", providerConfig.ProviderID, err)
 				continue
 			}
-			log.Printf("Provider %s connected successfully", providerConfig.ProviderID)
+			log.Printf("Provider %s (instanceID: %s) connected successfully", providerConfig.ProviderID, instanceID)
 		} else {
-			log.Printf("Provider %s is not authenticated yet, skipping auto-connect. User must configure it first.", providerConfig.ProviderID)
+			log.Printf("Provider %s (instanceID: %s) is not authenticated yet, skipping auto-connect. User must configure it first.", providerConfig.ProviderID, instanceID)
 			// Don't set as active if not authenticated
 			if providerConfig.IsActive {
 				log.Printf("Warning: Provider %s is marked as active but not authenticated, clearing active status", providerConfig.ProviderID)
 				// Clear active status in database
 				if db.DB != nil {
-					db.DB.Model(&models.ProviderConfiguration{}).Where("provider_id = ?", providerConfig.ProviderID).Update("is_active", false)
+					db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", false)
 				}
 				providerConfig.IsActive = false
 			}
+			// Continue to next provider, but the provider is still in pm.providers from RestoreProvider
 			continue
 		}
 
@@ -172,47 +186,63 @@ func (a *App) startup(ctx context.Context) {
 		if providerConfig.LastSyncAt != nil {
 			timeSinceLastSync := time.Since(*providerConfig.LastSyncAt)
 			if timeSinceLastSync > time.Minute {
-				go func(p core.Provider, providerID string, lastSync time.Time) {
+				go func(p core.Provider, instID string, lastSync time.Time) {
 					if err := p.SyncHistory(lastSync); err != nil {
-						log.Printf("Warning: Failed to sync history for provider %s: %v", providerID, err)
+						log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
 					} else {
 						// Update last sync time
 						now := time.Now()
 						if db.DB != nil {
-							db.DB.Model(&models.ProviderConfiguration{}).Where("provider_id = ?", providerID).Update("last_sync_at", now)
+							db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
 						}
 					}
-				}(provider, providerConfig.ProviderID, *providerConfig.LastSyncAt)
+				}(provider, instanceID, *providerConfig.LastSyncAt)
 			}
 		} else {
 			// First time sync - sync last 1 year to get all conversations
 			// WhatsApp will automatically sync via HistorySync events, but we trigger a manual sync
 			// with a long period to ensure we get all available conversations
-			go func(p core.Provider, providerID string) {
+			go func(p core.Provider, instID string) {
 				since := time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
-				fmt.Printf("App.startup: First time sync for provider %s, syncing since %s\n", providerID, since.Format("2006-01-02 15:04:05"))
+				fmt.Printf("App.startup: First time sync for provider instance %s, syncing since %s\n", instID, since.Format("2006-01-02 15:04:05"))
 				if err := p.SyncHistory(since); err != nil {
-					log.Printf("Warning: Failed to sync history for provider %s: %v", providerID, err)
+					log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
 				} else {
 					// Update last sync time
 					now := time.Now()
 					if db.DB != nil {
-						db.DB.Model(&models.ProviderConfiguration{}).Where("provider_id = ?", providerID).Update("last_sync_at", now)
+						db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
 					}
 				}
-			}(provider, providerConfig.ProviderID)
+			}(provider, instanceID)
 		}
 
 		// Set as active provider if marked as active
 		if providerConfig.IsActive {
 			activeProvider = provider
 			a.provider = provider
-			fmt.Printf("App.startup: Set provider %s as active provider\n", providerConfig.ProviderID)
+			// Also set the active instance ID in the provider manager
+			instanceID := providerConfig.InstanceID
+			if instanceID == "" {
+				instanceID = fmt.Sprintf("%s-1", providerConfig.ProviderID)
+			}
+			if err := a.providerManager.SetActiveProvider(instanceID); err != nil {
+				log.Printf("Warning: Failed to set active provider instance %s: %v", instanceID, err)
+			} else {
+				fmt.Printf("App.startup: Set provider %s (instanceID: %s) as active provider\n", providerConfig.ProviderID, instanceID)
+			}
 		}
 	}
 
-	fmt.Printf("App.startup: Finished restoring providers. Active provider: %v\n", activeProvider != nil)
+	fmt.Printf("App.startup: Finished restoring providers. Restored %d/%d providers. Active provider: %v\n",
+		restoredCount, len(configs), activeProvider != nil)
 	fmt.Printf("App.startup: a.provider is nil: %v\n", a.provider == nil)
+
+	// Log current state of pm.providers
+	if a.providerManager != nil {
+		configured := a.providerManager.GetConfiguredProviders()
+		fmt.Printf("App.startup: GetConfiguredProviders returns %d providers after restoration\n", len(configured))
+	}
 
 	// If no active provider was restored, check if MockProvider exists in database
 	// Only create it if it doesn't exist (wasn't explicitly deleted by user)
@@ -566,34 +596,122 @@ func (a *App) shutdown(_ context.Context) {
 
 // GetMetaContacts returns a list of unified contacts.
 func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
-	// TODO: Implement logic to merge contacts from different providers from the database.
-	// For this mock, we create meta contacts from the mock provider's data.
+	// Load contacts from database for all configured providers
+	// This allows filtering by provider instance
+	var linkedAccounts []models.LinkedAccount
+	var needToSave bool
 
-	// Get the active provider from the manager instead of using a.provider directly
-	// This ensures we always use the correct active provider
-	activeProvider, err := a.providerManager.GetActiveProvider()
-	if err != nil {
-		log.Printf("GetMetaContacts: No active provider found, trying a.provider: %v", err)
-		if a.provider == nil {
-			log.Printf("Warning: No provider available, returning empty contacts")
-			return []models.MetaContact{}, nil
+	if db.DB != nil {
+		// Load all LinkedAccounts from database
+		if err := db.DB.Preload("Conversations").Find(&linkedAccounts).Error; err != nil {
+			log.Printf("GetMetaContacts: Error loading linked accounts from database: %v", err)
+			needToSave = true
+		} else if len(linkedAccounts) == 0 {
+			// Database is empty, need to fetch from providers and save
+			log.Printf("GetMetaContacts: Database is empty, fetching from providers")
+			needToSave = true
+		} else {
+			log.Printf("GetMetaContacts: Loaded %d linked accounts from database", len(linkedAccounts))
+			// Log ProviderInstanceID distribution
+			accountsByInstance := make(map[string]int)
+			accountsWithoutInstance := 0
+			for _, acc := range linkedAccounts {
+				if acc.ProviderInstanceID != "" {
+					accountsByInstance[acc.ProviderInstanceID]++
+				} else {
+					accountsWithoutInstance++
+				}
+			}
+			log.Printf("GetMetaContacts: Accounts by instance: %v, accounts without instance: %d", accountsByInstance, accountsWithoutInstance)
+
+			// Check if we have contacts for all configured providers
+			configuredProviders := a.providerManager.GetConfiguredProviders()
+			log.Printf("GetMetaContacts: Found %d configured providers", len(configuredProviders))
+			providerInstanceIDs := make(map[string]bool)
+			for _, p := range configuredProviders {
+				if p.InstanceID != "" {
+					providerInstanceIDs[p.InstanceID] = true
+					log.Printf("GetMetaContacts: Configured provider instance: %s", p.InstanceID)
+				}
+			}
+			// If any configured provider has no contacts, fetch and save
+			for instanceID := range providerInstanceIDs {
+				if accountsByInstance[instanceID] == 0 {
+					log.Printf("GetMetaContacts: Provider %s has no contacts in database, will fetch", instanceID)
+					needToSave = true
+					break
+				} else {
+					log.Printf("GetMetaContacts: Provider %s has %d contacts in database", instanceID, accountsByInstance[instanceID])
+				}
+			}
 		}
-		activeProvider = a.provider
+	} else {
+		needToSave = false // Can't save if DB is not available
+		log.Printf("GetMetaContacts: Database not available, cannot save")
 	}
 
-	log.Printf("GetMetaContacts: Calling GetContacts on provider %T (active: %v)", activeProvider, activeProvider != nil)
-	linkedAccounts, err := activeProvider.GetContacts()
-	if err != nil {
-		log.Printf("GetMetaContacts: Error getting contacts: %v", err)
-		return nil, err
+	log.Printf("GetMetaContacts: needToSave = %v", needToSave)
+
+	// If we need to fetch from providers, get all configured providers
+	if needToSave && db.DB != nil {
+		configuredProviders := a.providerManager.GetConfiguredProviders()
+		log.Printf("GetMetaContacts: Fetching contacts from %d configured providers", len(configuredProviders))
+
+		allProviderAccounts := make([]models.LinkedAccount, 0)
+		for _, providerInfo := range configuredProviders {
+			instanceID := providerInfo.InstanceID
+			if instanceID == "" {
+				continue
+			}
+
+			provider, err := a.providerManager.GetProvider(instanceID)
+			if err != nil {
+				log.Printf("GetMetaContacts: Failed to get provider %s: %v", instanceID, err)
+				continue
+			}
+
+			providerAccounts, err := provider.GetContacts()
+			if err != nil {
+				log.Printf("GetMetaContacts: Error getting contacts from provider %s: %v", instanceID, err)
+				continue
+			}
+
+			log.Printf("GetMetaContacts: Provider %s returned %d contacts before setting ProviderInstanceID", instanceID, len(providerAccounts))
+
+			// Set ProviderInstanceID for each account
+			for i := range providerAccounts {
+				providerAccounts[i].ProviderInstanceID = instanceID
+				log.Printf("GetMetaContacts: Contact %d: UserID=%s, Username=%s, ProviderInstanceID=%s", i+1, providerAccounts[i].UserID, providerAccounts[i].Username, providerAccounts[i].ProviderInstanceID)
+			}
+
+			allProviderAccounts = append(allProviderAccounts, providerAccounts...)
+			log.Printf("GetMetaContacts: Fetched %d contacts from provider %s (total so far: %d)", len(providerAccounts), instanceID, len(allProviderAccounts))
+		}
+
+		linkedAccounts = allProviderAccounts
+		log.Printf("GetMetaContacts: Total contacts to save: %d", len(linkedAccounts))
+
+		// Save LinkedAccounts and MetaContacts to database
+		if err := a.saveContactsToDatabase(linkedAccounts); err != nil {
+			log.Printf("GetMetaContacts: Error saving contacts to database: %v", err)
+			// Continue anyway to return the contacts
+		} else {
+			log.Printf("GetMetaContacts: Saved %d contacts to database", len(linkedAccounts))
+		}
 	}
-	log.Printf("GetMetaContacts: Retrieved %d linked accounts", len(linkedAccounts))
 
 	// This is a simulation of contact grouping.
 	// A real implementation would involve more complex logic from the database.
+	log.Printf("GetMetaContacts: Processing %d linked accounts to create MetaContacts", len(linkedAccounts))
+	if len(linkedAccounts) == 0 {
+		log.Printf("GetMetaContacts: WARNING - No linked accounts to process! This might indicate a problem.")
+	}
 	metaContactsMap := make(map[string]*models.MetaContact)
 
-	for _, acc := range linkedAccounts {
+	for i, acc := range linkedAccounts {
+		if i < 10 {
+			log.Printf("GetMetaContacts: Processing account %d: UserID=%s, Username=%s, ProviderInstanceID=%s", i+1, acc.UserID, acc.Username, acc.ProviderInstanceID)
+		}
 		// Use Username, but if empty, try to format UserID nicely
 		displayName := acc.Username
 		if displayName == "" {
@@ -708,7 +826,146 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 		metaContacts = append(metaContacts, *contact)
 	}
 
+	log.Printf("GetMetaContacts: Returning %d MetaContacts (from %d linked accounts)", len(metaContacts), len(linkedAccounts))
 	return metaContacts, nil
+}
+
+// saveContactsToDatabase saves LinkedAccounts and creates/updates MetaContacts in the database
+func (a *App) saveContactsToDatabase(linkedAccounts []models.LinkedAccount) error {
+	if db.DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	log.Printf("saveContactsToDatabase: Saving %d linked accounts", len(linkedAccounts))
+
+	// Log first few accounts for debugging
+	for i, acc := range linkedAccounts {
+		if i < 5 {
+			log.Printf("saveContactsToDatabase: Account %d: UserID=%s, Username=%s, ProviderInstanceID=%s", i+1, acc.UserID, acc.Username, acc.ProviderInstanceID)
+		}
+	}
+
+	// Group LinkedAccounts by UserID to create MetaContacts
+	metaContactsMap := make(map[string]*models.MetaContact)
+	accountsByUserID := make(map[string][]models.LinkedAccount)
+
+	// First pass: group accounts by UserID and prepare MetaContacts
+	for _, acc := range linkedAccounts {
+		// Use Username, but if empty, try to format UserID nicely
+		displayName := acc.Username
+		if displayName == "" {
+			// Try to format UserID as a display name
+			// For WhatsApp IDs like "33631207926@s.whatsapp.net", extract phone number
+			if whatsappMatch := regexp.MustCompile(`^(\d+)@s\.whatsapp\.net$`).FindStringSubmatch(acc.UserID); whatsappMatch != nil {
+				phoneNumber := whatsappMatch[1]
+				if phoneNumber != "" {
+					displayName = phoneNumber
+				}
+			}
+			if displayName == "" {
+				// Fallback to UserID
+				displayName = acc.UserID
+			}
+		}
+
+		// Use UserID as the key to avoid collisions when multiple accounts have same display name
+		key := acc.UserID
+		accountsByUserID[key] = append(accountsByUserID[key], acc)
+
+		// Get or create MetaContact entry in map
+		if _, exists := metaContactsMap[key]; !exists {
+			// Try to load from database first
+			var existingMeta models.MetaContact
+			err := db.DB.Where("id IN (SELECT meta_contact_id FROM linked_accounts WHERE user_id = ?)", key).First(&existingMeta).Error
+			if err == nil {
+				metaContactsMap[key] = &existingMeta
+			} else {
+				// Create new MetaContact
+				avatarURL := acc.AvatarURL
+				if avatarURL == "" {
+					avatarURL = fmt.Sprintf("https://api.dicebear.com/7.x/initials/svg?seed=%s", displayName)
+				}
+				metaContactsMap[key] = &models.MetaContact{
+					DisplayName:    displayName,
+					AvatarURL:      avatarURL,
+					LinkedAccounts: []models.LinkedAccount{},
+				}
+			}
+		}
+
+		// Update display name if better one is available
+		metaContact := metaContactsMap[key]
+		if displayName != "" && (metaContact.DisplayName == "" || metaContact.DisplayName == acc.UserID) {
+			metaContact.DisplayName = displayName
+		}
+
+		// Update avatar if available and current is dicebear
+		if acc.AvatarURL != "" {
+			isDicebear := strings.HasPrefix(metaContact.AvatarURL, "https://api.dicebear.com/") || metaContact.AvatarURL == ""
+			if isDicebear {
+				metaContact.AvatarURL = acc.AvatarURL
+			}
+		}
+	}
+
+	// Second pass: Save MetaContacts first
+	savedMetaContacts := 0
+	failedMetaContacts := 0
+	for userID, metaContact := range metaContactsMap {
+		// Save or update MetaContact
+		if metaContact.ID == 0 {
+			// Create new MetaContact
+			if err := db.DB.Create(metaContact).Error; err != nil {
+				log.Printf("saveContactsToDatabase: Error creating MetaContact for %s: %v", userID, err)
+				failedMetaContacts++
+				continue
+			}
+			log.Printf("saveContactsToDatabase: Created MetaContact ID %d for %s", metaContact.ID, userID)
+			savedMetaContacts++
+		} else {
+			// Update existing MetaContact
+			if err := db.DB.Save(metaContact).Error; err != nil {
+				log.Printf("saveContactsToDatabase: Error updating MetaContact for %s: %v", userID, err)
+				failedMetaContacts++
+				continue
+			}
+			savedMetaContacts++
+		}
+
+		// Third pass: Save LinkedAccounts for this MetaContact
+		for _, acc := range accountsByUserID[userID] {
+			acc.MetaContactID = metaContact.ID
+
+			// Check if LinkedAccount already exists
+			var existing models.LinkedAccount
+			err := db.DB.Where("provider_instance_id = ? AND user_id = ?", acc.ProviderInstanceID, acc.UserID).First(&existing).Error
+			if err == nil {
+				// Update existing
+				existing.Username = acc.Username
+				existing.AvatarURL = acc.AvatarURL
+				existing.Status = acc.Status
+				existing.MetaContactID = metaContact.ID
+				existing.UpdatedAt = time.Now()
+				if err := db.DB.Save(&existing).Error; err != nil {
+					log.Printf("saveContactsToDatabase: Error updating LinkedAccount %s: %v", acc.UserID, err)
+				} else {
+					log.Printf("saveContactsToDatabase: Updated LinkedAccount %s (instance: %s)", acc.UserID, acc.ProviderInstanceID)
+				}
+			} else if err == gorm.ErrRecordNotFound {
+				// Create new
+				if err := db.DB.Create(&acc).Error; err != nil {
+					log.Printf("saveContactsToDatabase: Error creating LinkedAccount %s: %v", acc.UserID, err)
+				} else {
+					log.Printf("saveContactsToDatabase: Created LinkedAccount %s (instance: %s)", acc.UserID, acc.ProviderInstanceID)
+				}
+			} else {
+				log.Printf("saveContactsToDatabase: Error checking LinkedAccount %s: %v", acc.UserID, err)
+			}
+		}
+	}
+
+	log.Printf("saveContactsToDatabase: Successfully saved %d MetaContacts (%d failed), %d LinkedAccounts to database", savedMetaContacts, failedMetaContacts, len(linkedAccounts))
+	return nil
 }
 
 // GetMessagesForConversation returns messages for a given conversation ID.
@@ -1170,45 +1427,66 @@ func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 }
 
 // CreateProvider creates a new provider instance.
-func (a *App) CreateProvider(providerID string, config core.ProviderConfig) error {
-	provider, err := a.providerManager.CreateProvider(providerID, config)
+// instanceName is optional - if empty, a default name will be generated.
+// If existingInstanceID is provided and not empty (for edit mode), it will be used instead of generating a new one.
+func (a *App) CreateProvider(providerID string, config core.ProviderConfig, instanceName string, existingInstanceID string) (string, error) {
+	instanceID, provider, err := a.providerManager.CreateProvider(providerID, config, instanceName, existingInstanceID)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// If this is the first provider or we want to switch, make it active
 	if a.provider == nil {
 		if err := provider.Connect(); err != nil {
-			return fmt.Errorf("failed to connect provider: %w", err)
+			return instanceID, fmt.Errorf("failed to connect provider: %w", err)
 		}
 		a.provider = provider
-		a.providerManager.SetActiveProvider(providerID)
+		a.providerManager.SetActiveProvider(instanceID)
+	} else {
+		// For additional providers, still call Connect() if not authenticated
+		// This ensures QR code is generated for new instances
+		if !provider.IsAuthenticated() {
+			log.Printf("CreateProvider: Provider %s is not authenticated, calling Connect() to generate QR code", instanceID)
+			if err := provider.Connect(); err != nil {
+				log.Printf("CreateProvider: Warning - Failed to connect provider %s: %v (QR code may not be available)", instanceID, err)
+				// Don't return error, allow provider creation to succeed
+			}
+		}
 	}
 
 	// Update last sync time when creating a new provider
 	if db.DB != nil {
 		var providerConfig models.ProviderConfiguration
-		if err := db.DB.Where("provider_id = ?", providerID).First(&providerConfig).Error; err == nil {
+		if err := db.DB.Where("instance_id = ?", instanceID).First(&providerConfig).Error; err == nil {
 			now := time.Now()
 			db.DB.Model(&providerConfig).Update("last_sync_at", now)
 		}
 	}
 
-	return nil
+	return instanceID, nil
 }
 
-// GetProviderQRCode returns the latest QR code for a provider (if applicable).
-func (a *App) GetProviderQRCode(providerID string) (string, error) {
-	provider, err := a.providerManager.GetProvider(providerID)
+// GetProviderQRCode returns the latest QR code for a provider instance (if applicable).
+func (a *App) GetProviderQRCode(instanceID string) (string, error) {
+	log.Printf("GetProviderQRCode: Called with instanceID=%s", instanceID)
+	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
+		log.Printf("GetProviderQRCode: ERROR - Failed to get provider: %v", err)
 		return "", err
 	}
-	return provider.GetQRCode()
+	log.Printf("GetProviderQRCode: Provider found, calling GetQRCode()")
+	qrCode, err := provider.GetQRCode()
+	if err != nil {
+		log.Printf("GetProviderQRCode: ERROR - Provider.GetQRCode() failed: %v", err)
+		return "", err
+	}
+	log.Printf("GetProviderQRCode: QR code retrieved successfully (length: %d)", len(qrCode))
+	return qrCode, nil
 }
 
-// ConnectProvider connects a provider and updates the database.
-func (a *App) ConnectProvider(providerID string) error {
-	provider, err := a.providerManager.GetProvider(providerID)
+// ConnectProvider connects a provider instance and updates the database.
+func (a *App) ConnectProvider(instanceID string) error {
+	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
 		return err
 	}
@@ -1219,55 +1497,95 @@ func (a *App) ConnectProvider(providerID string) error {
 
 	// Set as active provider
 	a.provider = provider
-	if err := a.providerManager.SetActiveProvider(providerID); err != nil {
+	if err := a.providerManager.SetActiveProvider(instanceID); err != nil {
 		log.Printf("Warning: Failed to set active provider: %v", err)
 	} else {
-		log.Printf("ConnectProvider: Successfully set provider %s as active", providerID)
+		log.Printf("ConnectProvider: Successfully set provider instance %s as active", instanceID)
 	}
 
 	// Restart event listener with the new provider
-	log.Printf("ConnectProvider: Restarting event listener for provider %s", providerID)
+	log.Printf("ConnectProvider: Restarting event listener for provider instance %s", instanceID)
 	a.startEventListener(a.ctx)
 
 	// Update last sync time after connection
 	if db.DB != nil {
 		now := time.Now()
-		db.DB.Model(&models.ProviderConfiguration{}).Where("provider_id = ?", providerID).Updates(map[string]interface{}{
+		db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Updates(map[string]interface{}{
 			"last_sync_at": now,
 			"is_active":    true,
 		})
 	}
 
-	log.Printf("ConnectProvider: Provider %s connected and set as active", providerID)
+	log.Printf("ConnectProvider: Provider instance %s connected and set as active", instanceID)
 
 	return nil
 }
 
-// RemoveProvider removes a provider and deletes its config directory.
-func (a *App) RemoveProvider(providerID string) error {
+// RemoveProvider removes a provider instance and deletes its config directory.
+func (a *App) RemoveProvider(instanceID string) error {
+	log.Printf("RemoveProvider: Called with instanceID=%s", instanceID)
+
 	// Cancel event listener if this is the active provider
 	if a.provider != nil {
 		currentProvider, _ := a.providerManager.GetActiveProvider()
 		if currentProvider == a.provider && a.eventCancel != nil {
+			log.Printf("RemoveProvider: Cancelling event listener for active provider")
 			a.eventCancel()
 			a.eventCancel = nil
 		}
 	}
 
-	// Remove provider (this will disconnect it and delete all associated data)
-	if err := a.providerManager.RemoveProvider(providerID); err != nil {
-		return err
+	// Extract providerID from instanceID for config directory cleanup
+	parts := strings.Split(instanceID, "-")
+	providerID := instanceID
+	if len(parts) >= 2 {
+		providerID = strings.Join(parts[:len(parts)-1], "-")
+	}
+	log.Printf("RemoveProvider: Extracted providerID=%s from instanceID=%s", providerID, instanceID)
+
+	// Check if there are other instances of this provider before deleting config directory
+	// Only delete the config directory if this is the last instance of the provider
+	// Note: We check BEFORE calling RemoveProvider, because RemoveProvider removes from the map
+	remainingInstances := 0
+	if db.DB != nil {
+		var remainingConfigs []models.ProviderConfiguration
+		if err := db.DB.Where("provider_id = ? AND instance_id != ?", providerID, instanceID).Find(&remainingConfigs).Error; err == nil {
+			remainingInstances = len(remainingConfigs)
+		}
 	}
 
-	// Delete provider's config directory
+	// Remove provider (this will disconnect it and delete all associated data)
+	log.Printf("RemoveProvider: Calling providerManager.RemoveProvider with instanceID=%s", instanceID)
+	if err := a.providerManager.RemoveProvider(instanceID); err != nil {
+		log.Printf("RemoveProvider: ERROR - providerManager.RemoveProvider failed: %v", err)
+		return err
+	}
+	log.Printf("RemoveProvider: providerManager.RemoveProvider succeeded")
+
+	// Always delete the instance-specific config directory (e.g., configDir/Loom/whatsapp-1/)
+	// This contains the WhatsApp database and credentials for this specific instance
 	configDir, err := os.UserConfigDir()
 	if err == nil {
-		providerConfigDir := filepath.Join(configDir, "Loom", providerID)
-		if err := os.RemoveAll(providerConfigDir); err != nil {
-			log.Printf("Warning: Failed to delete provider config directory %s: %v", providerConfigDir, err)
+		instanceConfigDir := filepath.Join(configDir, "Loom", instanceID)
+		if err := os.RemoveAll(instanceConfigDir); err != nil {
+			log.Printf("Warning: Failed to delete instance config directory %s: %v", instanceConfigDir, err)
 		} else {
-			log.Printf("Deleted provider config directory: %s", providerConfigDir)
+			log.Printf("Deleted instance config directory: %s", instanceConfigDir)
 		}
+	}
+
+	// Only delete provider's shared config directory if no other instances exist
+	if remainingInstances == 0 {
+		if err == nil {
+			providerConfigDir := filepath.Join(configDir, "Loom", providerID)
+			if err := os.RemoveAll(providerConfigDir); err != nil {
+				log.Printf("Warning: Failed to delete provider config directory %s: %v", providerConfigDir, err)
+			} else {
+				log.Printf("Deleted provider config directory: %s (last instance removed)", providerConfigDir)
+			}
+		}
+	} else {
+		log.Printf("Not deleting provider config directory: %d other instance(s) still exist", remainingInstances)
 	}
 
 	// If this was the active provider, clear it and switch to MockProvider if available
@@ -1589,8 +1907,8 @@ func (a *App) UpdateSystemTrayBadge(count int) error {
 func (a *App) getAppIconPath() (string, error) {
 	// Try to find the icon in various locations
 	iconPaths := []string{
-		"appicon.png",                                    // Root directory (preferred)
-		"build/appicon.png",                              // Build directory
+		"appicon.png",       // Root directory (preferred)
+		"build/appicon.png", // Build directory
 		"build/bin/Loom.app/Contents/Resources/iconfile.icns",
 		"build/bin/Mux.app/Contents/Resources/iconfile.icns",
 	}
@@ -1729,7 +2047,7 @@ func (a *App) drawText(img *image.RGBA, text string, x, y int, col color.Color) 
 func (a *App) updateMacOSDockBadge(count int) {
 	// Get the actual application name from the bundle
 	appName := "Loom"
-	
+
 	// Try to get the actual bundle name from the running process
 	// In dev mode, the app might be running from build/bin/Loom.app
 	if goruntime.GOOS == "darwin" {
@@ -1778,17 +2096,17 @@ func (a *App) updateMacOSDockBadge(count int) {
 func (a *App) setupSystemTray(ctx context.Context) {
 	// Create system tray menu
 	appMenu := menu.NewMenu()
-	
+
 	// Add menu items
 	appMenu.Append(menu.Label("Loom"))
 	appMenu.Append(menu.Separator())
-	
+
 	// Show/Hide window item
 	showHideItem := menu.Text("Show/Hide", nil, func(_ *menu.CallbackData) {
 		runtime.WindowShow(ctx)
 	})
 	appMenu.Append(showHideItem)
-	
+
 	// Quit item
 	quitItem := menu.Text("Quit", nil, func(_ *menu.CallbackData) {
 		runtime.Quit(ctx)
@@ -1797,7 +2115,7 @@ func (a *App) setupSystemTray(ctx context.Context) {
 
 	// Set the menu
 	a.systemTray = appMenu
-	
+
 	// Note: The actual system tray setup is done in main.go via AppOptions
 	// This function just prepares the menu structure
 	log.Printf("System tray menu configured")

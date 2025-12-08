@@ -61,6 +61,16 @@ export function ProviderConfigForm({
     return defaults;
   });
 
+  const [instanceName, setInstanceName] = useState<string>(() => {
+    // Use instanceName from provider if available, otherwise default to empty
+    return provider.instanceName || "";
+  });
+
+  const [currentInstanceID, setCurrentInstanceID] = useState<string>(() => {
+    // Use instanceId from provider if available, otherwise use provider.id as fallback
+    return provider.instanceId || provider.id;
+  });
+
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
@@ -80,6 +90,14 @@ export function ProviderConfigForm({
     });
   }, [schema]);
 
+  // Update currentInstanceID when provider changes (e.g., after refresh)
+  useEffect(() => {
+    if (provider.instanceId && provider.instanceId !== currentInstanceID) {
+      console.log(`ProviderConfigForm: Updating currentInstanceID from ${currentInstanceID} to ${provider.instanceId}`);
+      setCurrentInstanceID(provider.instanceId);
+    }
+  }, [provider.instanceId, currentInstanceID]);
+
   const handleChange = (key: string, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));
   };
@@ -88,7 +106,10 @@ export function ProviderConfigForm({
     setIsSaving(true);
     setSaveMessage(null);
     try {
-      await CreateProvider(provider.id, values);
+      // In edit mode, use existing instanceID if available
+      const existingInstanceID = mode === "edit" && provider.instanceId ? provider.instanceId : "";
+      const instanceID = await CreateProvider(provider.id, values, instanceName, existingInstanceID);
+      setCurrentInstanceID(instanceID); // Store the instanceID for QR code fetching
       await onRefresh();
       setSaveMessage(t("configuration_saved"));
     } catch (error) {
@@ -97,35 +118,74 @@ export function ProviderConfigForm({
     } finally {
       setIsSaving(false);
     }
-  }, [provider.id, values, onRefresh]);
+  }, [provider.id, provider.instanceId, values, instanceName, mode, onRefresh, t]);
 
   const fetchQRCode = useCallback(async () => {
     try {
-      const code = await GetProviderQRCode(provider.id);
+      // Use the current instanceID (either from provider or from creation)
+      // Prefer provider.instanceId if available, otherwise use currentInstanceID
+      const instanceID = provider.instanceId || currentInstanceID;
+      console.log(`ProviderConfigForm.fetchQRCode: Fetching QR code for instanceID: ${instanceID} (provider.instanceId: ${provider.instanceId}, currentInstanceID: ${currentInstanceID})`);
+      
+      // Don't try to fetch QR code if we don't have a valid instanceID
+      if (!instanceID || instanceID === provider.id) {
+        console.warn(`ProviderConfigForm.fetchQRCode: Skipping - Invalid instanceID ${instanceID}. Provider instanceId: ${provider.instanceId}`);
+        return;
+      }
+      
+      const code = await GetProviderQRCode(instanceID);
+      console.log(`ProviderConfigForm.fetchQRCode: QR code received: ${code ? 'yes' : 'no'}`);
       setQrCode(code ?? "");
       setPollError(null);
     } catch (error) {
-      console.error("Failed to fetch QR code:", error);
+      console.error("ProviderConfigForm.fetchQRCode: Failed to fetch QR code:", error);
       setPollError(t("qr_code_fetch_error"));
     }
-  }, [provider.id]);
+  }, [currentInstanceID, provider.id, provider.instanceId, t]);
 
   const handleConnect = useCallback(async () => {
     setConnectState("connecting");
     setPollError(null);
     try {
-      await CreateProvider(provider.id, values);
+      console.log(`ProviderConfigForm.handleConnect: Creating provider with id=${provider.id}, instanceName=${instanceName}`);
+      // In edit mode, use existing instanceID if available
+      const existingInstanceID = mode === "edit" && provider.instanceId ? provider.instanceId : "";
+      const instanceID = await CreateProvider(provider.id, values, instanceName, existingInstanceID);
+      console.log(`ProviderConfigForm.handleConnect: Created provider, instanceID=${instanceID}`);
+      
+      // Update currentInstanceID BEFORE onRefresh to ensure it's available for any callbacks
+      setCurrentInstanceID(instanceID);
+      console.log(`ProviderConfigForm.handleConnect: Updated currentInstanceID to ${instanceID}`);
+      
+      // Use a small delay to ensure state is updated before onRefresh triggers re-render
+      await new Promise(resolve => setTimeout(resolve, 0));
+      
       await onRefresh();
-      await ConnectProvider(provider.id);
+      console.log(`ProviderConfigForm.handleConnect: Refreshed providers list`);
+      
+      await ConnectProvider(instanceID);
+      console.log(`ProviderConfigForm.handleConnect: Connected provider ${instanceID}`);
+      
       setConnectState("connected");
       setIsPollingQR(true);
-      await fetchQRCode();
+      
+      // Fetch QR code directly with the new instanceID (don't use fetchQRCode from closure)
+      try {
+        console.log(`ProviderConfigForm.handleConnect: Fetching QR code for instanceID: ${instanceID}`);
+        const code = await GetProviderQRCode(instanceID);
+        console.log(`ProviderConfigForm.handleConnect: QR code received: ${code ? 'yes' : 'no'}`);
+        setQrCode(code ?? "");
+        setPollError(null);
+      } catch (error) {
+        console.error("ProviderConfigForm.handleConnect: Failed to fetch QR code:", error);
+        setPollError(t("qr_code_fetch_error"));
+      }
     } catch (error) {
       console.error("Failed to connect provider:", error);
       setConnectState("idle");
       setPollError(t("provider_connect_error"));
     }
-  }, [provider.id, values, onRefresh, fetchQRCode]);
+  }, [provider.id, provider.instanceId, values, instanceName, mode, onRefresh, t]);
 
   useEffect(() => {
     if (!isPollingQR) {
@@ -149,7 +209,23 @@ export function ProviderConfigForm({
         <p className="text-sm text-muted-foreground">{provider.description}</p>
       </div>
 
-      {hasFields ? (
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("instance_name")}</CardTitle>
+          <CardDescription>
+            {t("instance_name_description")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Input
+            value={instanceName}
+            onChange={(event) => setInstanceName(event.target.value)}
+            placeholder={t("instance_name_placeholder", { providerName: provider.name })}
+          />
+        </CardContent>
+      </Card>
+
+      {hasFields && (
         <Card>
           <CardHeader>
             <CardTitle>
@@ -185,13 +261,6 @@ export function ProviderConfigForm({
             </Button>
           </CardFooter>
         </Card>
-      ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("no_configuration_required")}</CardTitle>
-            <CardDescription>{t("no_configuration_description")}</CardDescription>
-          </CardHeader>
-        </Card>
       )}
 
       <Card>
@@ -202,11 +271,18 @@ export function ProviderConfigForm({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button onClick={handleConnect} disabled={connectState === "connecting"}>
-            {connectState === "connecting" ? t("connecting") : t("connect")}
+          <Button onClick={handleConnect} disabled={connectState === "connecting" || connectState === "connected"}>
+            {connectState === "connecting" ? t("connecting") : connectState === "connected" ? t("show_qr_code") : t("show_qr_code")}
           </Button>
 
           {pollError && <p className="text-sm text-destructive">{pollError}</p>}
+
+          {connectState === "connecting" && !qrCode && (
+            <div className="flex flex-col items-center gap-2">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              <p className="text-sm text-muted-foreground">{t("loading_qr_code")}</p>
+            </div>
+          )}
 
           {qrCode ? (
             <div className="flex flex-col items-center gap-2">
@@ -224,7 +300,7 @@ export function ProviderConfigForm({
               </p>
             </div>
           ) : (
-            connectState === "connected" && (
+            connectState === "connected" && !isPollingQR && (
               <p className="text-sm text-muted-foreground">
                 {t("waiting_for_qr_code")}
               </p>
