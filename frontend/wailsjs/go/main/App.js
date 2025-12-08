@@ -10,6 +10,10 @@ export function ConnectProvider(arg1) {
   return window['go']['main']['App']['ConnectProvider'](arg1);
 }
 
+export function CreateGroup(arg1, arg2) {
+  return window['go']['main']['App']['CreateGroup'](arg1, arg2);
+}
+
 export function CreateProvider(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateProvider'](arg1, arg2, arg3, arg4);
 }
