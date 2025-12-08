@@ -1,10 +1,12 @@
 package whatsapp
 
 import (
+	"Loom/pkg/models"
 	"fmt"
 	"strings"
 	"time"
-	"Loom/pkg/models"
+
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -40,9 +42,77 @@ func (w *WhatsAppProvider) cacheGroupParticipants(groupJID types.JID) {
 }
 
 func (w *WhatsAppProvider) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
-	// TODO: Implement group creation
-	markUnused(groupName, participantIDs)
-	return nil, fmt.Errorf("group creation not yet implemented")
+	w.mu.RLock()
+	client := w.client
+	ctx := w.ctx
+	w.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	// Parse participant IDs to JIDs
+	participants := make([]types.JID, 0, len(participantIDs))
+	for _, id := range participantIDs {
+		// Clean up ID if needed (remove prefixes etc)
+		cleanID := strings.TrimPrefix(id, "whatsapp-")
+
+		// Parse JID
+		jid, err := types.ParseJID(cleanID)
+		if err != nil {
+			// Try adding suffix if missing (assuming phone number)
+			if !strings.Contains(cleanID, "@") {
+				jid, err = types.ParseJID(cleanID + "@s.whatsapp.net")
+			}
+
+			if err != nil {
+				return nil, fmt.Errorf("invalid participant ID %s: %w", id, err)
+			}
+		}
+		participants = append(participants, jid)
+	}
+
+	// Create group
+	resp, err := client.CreateGroup(ctx, whatsmeow.ReqCreateGroup{
+		Name:         groupName,
+		Participants: participants,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create group: %w", err)
+	}
+
+	// Format conversation ID
+	conversationID := resp.JID.String()
+
+	// Create conversation model
+	conversation := &models.Conversation{
+		ProtocolConvID:    conversationID,
+		GroupName:         groupName,
+		IsGroup:           true,
+		GroupParticipants: make([]models.GroupParticipant, 0, len(participants)+1),
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+	}
+
+	// Add self as participant (admin)
+	if w.client.Store.ID != nil {
+		conversation.GroupParticipants = append(conversation.GroupParticipants, models.GroupParticipant{
+			UserID:   w.client.Store.ID.ToNonAD().String(),
+			IsAdmin:  true,
+			JoinedAt: time.Now(),
+		})
+	}
+
+	// Add other participants
+	for _, jid := range participants {
+		conversation.GroupParticipants = append(conversation.GroupParticipants, models.GroupParticipant{
+			UserID:   jid.String(),
+			IsAdmin:  false,
+			JoinedAt: time.Now(),
+		})
+	}
+
+	return conversation, nil
 }
 
 func (w *WhatsAppProvider) UpdateGroupName(conversationID string, newName string) error {

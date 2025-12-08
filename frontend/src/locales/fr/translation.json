@@ -178,5 +178,13 @@
     "rejected": "Appel rejeté",
     "participants": "{{count}} participants",
     "activeCall": "Appel en cours"
-  }
+  },
+  "new_conversation": "Nouvelle Conversation",
+  "conversation_title": "Titre de la conversation",
+  "optional_group_title": "Titre du groupe (optionnel)",
+  "search_contacts": "Rechercher des contacts...",
+  "no_contacts_found": "Aucun contact trouvé",
+  "create_group": "Créer le groupe",
+  "open_chat": "Ouvrir la discussion",
+  "creating": "Création..."
 }
