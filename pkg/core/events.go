@@ -136,6 +136,8 @@ const (
 	ReceiptTypeDelivery ReceiptType = "delivery"
 	// ReceiptTypeRead indicates a message was read.
 	ReceiptTypeRead ReceiptType = "read"
+	// ReceiptTypePlayed indicates a voice message was played.
+	ReceiptTypePlayed ReceiptType = "played"
 )
 
 // ReceiptEvent represents a delivery or read receipt for a message.
