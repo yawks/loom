@@ -1459,6 +1459,14 @@ func (a *App) GetAvailableProviders() ([]core.ProviderInfo, error) {
 	return providers, nil
 }
 
+// CreateGroup creates a new group conversation.
+func (a *App) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
+	if a.provider == nil {
+		return nil, fmt.Errorf("no active provider")
+	}
+	return a.provider.CreateGroup(groupName, participantIDs)
+}
+
 // GetConfiguredProviders returns a list of configured providers.
 func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 	fmt.Printf("App.GetConfiguredProviders: called\n")

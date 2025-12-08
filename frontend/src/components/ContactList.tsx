@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Clock, Phone } from "lucide-react";
+import { ArrowDownAZ, Clock, Phone, Plus } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetMessagesForConversation, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
@@ -16,6 +16,8 @@ import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
 
 type SortOption = "alphabetical" | "last_message";
+
+import { NewConversationModal } from "./NewConversationModal";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -45,6 +47,7 @@ export function ContactList() {
 
   // Track sync status to gray out/hide empty conversations
   const [syncStatus, setSyncStatus] = useState<"syncing" | "completed" | null>(null);
+  const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
 
   // Listen for sync status events
   useEffect(() => {
@@ -431,6 +434,23 @@ export function ContactList() {
           })}
         </div>
       </div>
+
+      {/* Floating Action Button for New Conversation */}
+      <div className="absolute bottom-6 right-6 z-10">
+        <Button
+          size="icon"
+          className="h-12 w-12 rounded-full shadow-lg hover:shadow-xl transition-shadow"
+          onClick={() => setIsNewConversationModalOpen(true)}
+          title={t("new_conversation")}
+        >
+          <Plus className="h-6 w-6" />
+        </Button>
+      </div>
+
+      <NewConversationModal
+        open={isNewConversationModalOpen}
+        onOpenChange={setIsNewConversationModalOpen}
+      />
     </div>
   );
 }
