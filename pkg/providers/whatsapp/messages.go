@@ -202,9 +202,7 @@ func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, media
 	if err != nil {
 		fmt.Printf("WhatsApp: Failed to download %s attachment for message %s: %v\n", mediaType, evt.Info.ID, err)
 		// Log more details about the error
-		if err != nil {
-			fmt.Printf("WhatsApp: Download error details: %T, %s\n", err, err.Error())
-		}
+		fmt.Printf("WhatsApp: Download error details: %T, %s\n", err, err.Error())
 		return nil
 	}
 	fmt.Printf("WhatsApp: Successfully downloaded %s attachment for message %s, size: %d bytes\n", mediaType, evt.Info.ID, len(data))
@@ -853,7 +851,33 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 					quotedText = "🎥 Video"
 				}
 			} else if quotedMsg.GetAudioMessage() != nil {
-				quotedText = "🎵 Audio"
+				if quotedMsg.GetAudioMessage().GetPTT() {
+					quotedText = "🎤 Voice Message"
+				} else {
+					quotedText = "🎵 Audio"
+				}
+			} else if quotedMsg.GetViewOnceMessage() != nil {
+				// Handle ViewOnce messages (could be voice or image/video)
+				if quotedMsg.GetViewOnceMessage().GetMessage().GetAudioMessage() != nil {
+					if quotedMsg.GetViewOnceMessage().GetMessage().GetAudioMessage().GetPTT() {
+						quotedText = "🎤 Voice Message"
+					} else {
+						quotedText = "🎵 Audio"
+					}
+				} else if quotedMsg.GetViewOnceMessage().GetMessage().GetVideoMessage() != nil {
+					quotedText = "🎥 Video (View Once)"
+				} else if quotedMsg.GetViewOnceMessage().GetMessage().GetImageMessage() != nil {
+					quotedText = "📷 Photo (View Once)"
+				}
+			} else if quotedMsg.GetViewOnceMessageV2() != nil {
+				// Handle ViewOnceV2 messages
+				if quotedMsg.GetViewOnceMessageV2().GetMessage().GetAudioMessage() != nil {
+					if quotedMsg.GetViewOnceMessageV2().GetMessage().GetAudioMessage().GetPTT() {
+						quotedText = "🎤 Voice Message"
+					} else {
+						quotedText = "🎵 Audio"
+					}
+				}
 			} else if quotedMsg.GetDocumentMessage() != nil {
 				// Document message - show filename
 				if quotedMsg.GetDocumentMessage().GetFileName() != "" {
@@ -1854,6 +1878,30 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 		quotedSenderName = quotedMessage.SenderID
 	}
 
+	// Determine quoted body text
+	quotedBodyText := quotedMessage.Body
+	if quotedBodyText == "" && quotedMessage.Attachments != "" {
+		// Check for voice message in attachments
+		var atts []models.Attachment
+		if err := json.Unmarshal([]byte(quotedMessage.Attachments), &atts); err == nil {
+			if len(atts) > 0 && atts[0].Type == "voice" {
+				quotedBodyText = "🎤 Voice Message"
+			} else if len(atts) > 0 && atts[0].Type == "audio" {
+				quotedBodyText = "🎵 Audio"
+			} else if len(atts) > 0 && atts[0].Type == "image" {
+				quotedBodyText = "📷 Photo"
+			} else if len(atts) > 0 && atts[0].Type == "video" {
+				quotedBodyText = "🎥 Video"
+			} else if len(atts) > 0 && atts[0].Type == "document" {
+				if atts[0].FileName != "" {
+					quotedBodyText = "📎 " + atts[0].FileName
+				} else {
+					quotedBodyText = "📎 Document"
+				}
+			}
+		}
+	}
+
 	// Convert to our Message model
 	sentMessage := &models.Message{
 		ProtocolConvID:   conversationID,
@@ -1864,7 +1912,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 		IsFromMe:         true,
 		QuotedMessageID:  &quotedMessageID,
 		QuotedSenderID:   &quotedMessage.SenderID,
-		QuotedBody:       &quotedMessage.Body,
+		QuotedBody:       &quotedBodyText,
 		QuotedSenderName: quotedSenderName,
 	}
 
