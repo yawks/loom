@@ -968,6 +968,34 @@ func (a *App) saveContactsToDatabase(linkedAccounts []models.LinkedAccount) erro
 	return nil
 }
 
+// ForceSyncCompletion forces the emission of a sync completion event.
+// This is used when the frontend decides to stop waiting for history sync.
+func (a *App) ForceSyncCompletion() {
+	log.Printf("App: ForceSyncCompletion called by frontend")
+
+	// Create a completed status event
+	completeEvent := core.SyncStatusEvent{
+		Status:   core.SyncStatusCompleted,
+		Message:  "Sync stopped by user",
+		Progress: 100,
+	}
+
+	// Marshal and emit
+	statusJSON, err := json.Marshal(completeEvent)
+	if err != nil {
+		log.Printf("Failed to marshal sync status: %v", err)
+		return
+	}
+
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "sync-status", string(statusJSON))
+		log.Printf("App: Emitted forced sync completion event")
+
+		// Also trigger a refresh to ensure contact list is updated
+		runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+	}
+}
+
 // GetMessagesForConversation returns messages for a given conversation ID.
 // ResolveLID attempts to resolve a WhatsApp Local ID (LID) to a standard JID
 // by searching through the database for messages or conversations involving this LID.
@@ -1301,6 +1329,21 @@ func (a *App) MarkMessageAsRead(conversationID string, messageID string) error {
 	return nil
 }
 
+// MarkMessageAsPlayed sends a played receipt for a specific voice message.
+func (a *App) MarkMessageAsPlayed(conversationID string, messageID string) error {
+	log.Printf("App: MarkMessageAsPlayed called for conversation %s, message %s", conversationID, messageID)
+	if a.provider == nil {
+		return fmt.Errorf("no active provider")
+	}
+	err := a.provider.MarkMessageAsPlayed(conversationID, messageID)
+	if err != nil {
+		log.Printf("App: Failed to mark message as played: %v", err)
+		return err
+	}
+	log.Printf("App: Successfully marked message %s as played in conversation %s", messageID, conversationID)
+	return nil
+}
+
 // GetAvatar returns the avatar image as a base64 data URL.
 
 // GetAttachmentData reads an attachment file and returns it as a base64 data URL.
@@ -1347,6 +1390,8 @@ func (a *App) GetAttachmentData(filePath string) (string, error) {
 		mimeType = "application/pdf"
 	case ".xls", ".xlsx":
 		mimeType = "application/vnd.ms-excel"
+	case ".ogg":
+		mimeType = "audio/ogg"
 	}
 
 	// Encode to base64

@@ -1488,7 +1488,7 @@ export function MessageList({
                                   ) : (
                                     <>
                                       {message.quotedMessageId && message.quotedBody && (
-                                        <div 
+                                        <div
                                           className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
                                           onClick={() => {
                                             const quotedElement = messageElementsRef.current.get(message.quotedMessageId || "");
@@ -1516,6 +1516,8 @@ export function MessageList({
                                         attachments={message.attachments}
                                         isFromMe={message.isFromMe}
                                         layout="bubble"
+                                        conversationID={conversationId}
+                                        messageID={String(message.id)}
                                       />
                                     )}
                                   {(!message.body || message.body.trim() === "") &&
@@ -1964,7 +1966,7 @@ export function MessageList({
                                       ) : (
                                         <>
                                           {message.quotedMessageId && message.quotedBody && (
-                                            <div 
+                                            <div
                                               className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
                                               onClick={() => {
                                                 const quotedElement = messageElementsRef.current.get(message.quotedMessageId || "");
@@ -2009,6 +2011,9 @@ export function MessageList({
                                               <MessageAttachments
                                                 attachments={message.attachments}
                                                 isFromMe={message.isFromMe}
+                                                conversationID={conversationId}
+                                                messageID={String(message.id)}
+                                                layout={messageLayout as "bubble" | "irc"}
                                               />
                                             )}
                                           {!showSender && (
@@ -2017,11 +2022,15 @@ export function MessageList({
                                                 attachments={message.attachments || ""}
                                                 isFromMe={message.isFromMe}
                                                 layout="bubble"
+                                                conversationID={conversationId}
+                                                messageID={String(message.id)}
                                               />
                                               <MessageAttachments
                                                 attachments={message.attachments || ""}
                                                 isFromMe={message.isFromMe}
                                                 layout="irc"
+                                                conversationID={conversationId}
+                                                messageID={String(message.id)}
                                               />
                                             </>
                                           )}

@@ -141,6 +141,7 @@ type Attachment struct {
 	FileSize  int64  `json:"fileSize"`            // File size in bytes
 	MimeType  string `json:"mimeType"`            // MIME type (e.g., "image/jpeg", "application/pdf")
 	Thumbnail string `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
+	Duration  uint32 `json:"duration,omitempty"`  // Duration in seconds (for audio/video)
 }
 
 // ProviderConfiguration stores the configuration of a provider instance.

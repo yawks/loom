@@ -241,16 +241,16 @@ func (m *MockProvider) SendReply(conversationID string, text string, quotedMessa
 	}
 
 	newMessage := models.Message{
-		ProtocolMsgID:     fmt.Sprintf("mock-msg-%d", secureRandInt(100000)),
-		ProtocolConvID:    conversationID,
-		SenderID:          "me",
-		Body:              text,
-		Timestamp:         time.Now(),
-		IsFromMe:          true,
-		QuotedMessageID:   &quotedMessageID,
-		QuotedSenderID:    &quotedMessage.SenderID,
-		QuotedSenderName:  "", // Will be filled by frontend
-		QuotedBody:        &quotedMessage.Body,
+		ProtocolMsgID:    fmt.Sprintf("mock-msg-%d", secureRandInt(100000)),
+		ProtocolConvID:   conversationID,
+		SenderID:         "me",
+		Body:             text,
+		Timestamp:        time.Now(),
+		IsFromMe:         true,
+		QuotedMessageID:  &quotedMessageID,
+		QuotedSenderID:   &quotedMessage.SenderID,
+		QuotedSenderName: "", // Will be filled by frontend
+		QuotedBody:       &quotedMessage.Body,
 	}
 
 	if _, ok := m.messages[conversationID]; ok {
@@ -882,6 +882,22 @@ func (m *MockProvider) MarkMessageAsRead(conversationID string, messageID string
 		ConversationID: conversationID,
 		MessageID:      messageID,
 		ReceiptType:    core.ReceiptTypeRead,
+		UserID:         "me",
+		Timestamp:      time.Now().Unix(),
+	}
+
+	return nil
+}
+
+// MarkMessageAsPlayed marks a voice message as played (listened to).
+func (m *MockProvider) MarkMessageAsPlayed(conversationID string, messageID string) error {
+	fmt.Printf("MockProvider: Marking message %s as played in conv %s\n", messageID, conversationID)
+
+	// Emit receipt event
+	m.eventChan <- core.ReceiptEvent{
+		ConversationID: conversationID,
+		MessageID:      messageID,
+		ReceiptType:    core.ReceiptTypePlayed,
 		UserID:         "me",
 		Timestamp:      time.Now().Unix(),
 	}

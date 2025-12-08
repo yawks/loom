@@ -202,6 +202,12 @@ type Provider interface {
 	// Returns an error if the conversation could not be marked as read.
 	MarkConversationAsRead(conversationID string) error
 
+	// MarkMessageAsPlayed marks a voice message as played (listened to).
+	// conversationID is the protocol-specific conversation ID.
+	// messageID is the protocol-specific message ID.
+	// Returns an error if the message could not be marked as played.
+	MarkMessageAsPlayed(conversationID string, messageID string) error
+
 	// --- App State (Pin/Mute) ---
 
 	// PinConversation pins a conversation.
