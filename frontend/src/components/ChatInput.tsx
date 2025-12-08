@@ -61,9 +61,9 @@ const extractPathsFromText = (text: string | null): string[] => {
       (normalizedPath): normalizedPath is string =>
         Boolean(
           normalizedPath &&
-            (normalizedPath.startsWith("/") ||
-              normalizedPath.match(/^[A-Za-z]:[\\/]/)) &&
-            normalizedPath.match(/\.[a-zA-Z0-9]+$/)
+          (normalizedPath.startsWith("/") ||
+            normalizedPath.match(/^[A-Za-z]:[\\/]/)) &&
+          normalizedPath.match(/\.[a-zA-Z0-9]+$/)
         )
     );
 };
@@ -219,7 +219,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (clipboardData.items && clipboardData.items.length > 0) {
       for (let i = 0; i < clipboardData.items.length; i++) {
         const item = clipboardData.items[i];
-        
+
         // Check for file type
         if (item.kind === "file") {
           const file = item.getAsFile();
@@ -301,7 +301,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }, [onFileUploadRequest]);
 
   const hasMessage = message.trim().length > 0;
-  
+
   // Get sender display name for reply preview
   const getSenderDisplayName = (message: models.Message): string => {
     if (message.isFromMe) return t("you") || "You";
@@ -328,9 +328,26 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                 {t("replying_to")} {getSenderDisplayName(replyingToMessage)}
               </div>
               <div className="text-sm text-foreground truncate text-left">
-                {replyingToMessage.body && replyingToMessage.body.length > 50
-                  ? `${replyingToMessage.body.substring(0, 50)}...`
-                  : replyingToMessage.body || t("empty_message")}
+                {(() => {
+                  const body = replyingToMessage.body;
+                  if (body && body.trim().length > 0) {
+                    return body.length > 50 ? `${body.substring(0, 50)}...` : body;
+                  }
+
+                  // Check for voice message in attachments
+                  if (replyingToMessage.attachments) {
+                    try {
+                      const atts = JSON.parse(replyingToMessage.attachments);
+                      if (Array.isArray(atts) && atts.length > 0 && atts[0].type === "voice") {
+                        return "🎤 " + t("voice_message");
+                      }
+                    } catch (e) {
+                      // ignore parse error
+                    }
+                  }
+
+                  return t("empty_message");
+                })()}
               </div>
             </div>
           </div>
@@ -345,7 +362,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           </Button>
         </div>
       )}
-      
+
       {/* Message input */}
       <div
         className={cn(
@@ -358,69 +375,69 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
-      <div className="flex items-center space-x-2 flex-1">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => fileInputRef.current?.click()}
-          className="shrink-0"
-          title={t("attach_files")}
-        >
-          <Paperclip className="h-5 w-5" />
-        </Button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={handleFileSelect}
-        />
+        <div className="flex items-center space-x-2 flex-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+            className="shrink-0"
+            title={t("attach_files")}
+          >
+            <Paperclip className="h-5 w-5" />
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
 
-        <Popover open={isEmojiPickerOpen} onOpenChange={setIsEmojiPickerOpen}>
-          <PopoverTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0"
-              title={t("add_emoji")}
-            >
-              <Smile className="h-5 w-5" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-auto p-0 border-0" align="start">
-            <Suspense fallback={<div className="w-[352px] h-[435px]" />}>
-              <EmojiPicker
-                onEmojiClick={handleEmojiClick}
-                theme={theme === "dark" ? Theme.DARK : Theme.LIGHT}
-                width={352}
-                height={435}
-              />
-            </Suspense>
-          </PopoverContent>
-        </Popover>
+          <Popover open={isEmojiPickerOpen} onOpenChange={setIsEmojiPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                title={t("add_emoji")}
+              >
+                <Smile className="h-5 w-5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0 border-0" align="start">
+              <Suspense fallback={<div className="w-[352px] h-[435px]" />}>
+                <EmojiPicker
+                  onEmojiClick={handleEmojiClick}
+                  theme={theme === "dark" ? Theme.DARK : Theme.LIGHT}
+                  width={352}
+                  height={435}
+                />
+              </Suspense>
+            </PopoverContent>
+          </Popover>
 
-        <textarea
-          ref={textareaRef}
-          value={message}
-          onChange={handleMessageChange}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={t("type_a_message")}
-          className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          rows={1}
-        />
-      </div>
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={handleMessageChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={t("type_a_message")}
+            className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            rows={1}
+          />
+        </div>
 
-      {hasMessage && (
-        <Button
-          onClick={handleSendMessage}
-          size="icon"
-          className="shrink-0"
-          title={t("send")}
-        >
-          <Send className="h-5 w-5" />
-        </Button>
-      )}
+        {hasMessage && (
+          <Button
+            onClick={handleSendMessage}
+            size="icon"
+            className="shrink-0"
+            title={t("send")}
+          >
+            <Send className="h-5 w-5" />
+          </Button>
+        )}
       </div>
     </div>
   );
