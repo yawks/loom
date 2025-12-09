@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ContactList } from "./ContactList";
 import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
+import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 import { Header } from "./Header";
@@ -179,9 +180,11 @@ export function ChatLayout() {
               <>
                 <ResizableHandle withHandle />
                 <ResizablePanel id="details-panel" defaultSize={25} minSize={15}>
-                  <ConversationDetailsView
-                    selectedConversation={selectedContact!}
-                  />
+                  <Suspense fallback={<ConversationDetailsViewSkeleton />}>
+                    <ConversationDetailsView
+                      selectedConversation={selectedContact!}
+                    />
+                  </Suspense>
                 </ResizablePanel>
               </>
             )}

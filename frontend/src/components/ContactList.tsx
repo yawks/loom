@@ -417,7 +417,8 @@ export function ContactList() {
                   "flex items-center space-x-3 p-2 rounded-lg cursor-pointer transition-colors border border-transparent",
                   "hover:bg-muted",
                   isSelected && "ring-1 ring-primary/40",
-                  isEmptyDuringSync && "opacity-50"
+                  isEmptyDuringSync && "opacity-50",
+                  unreadCount > 0 && !isSelected && "bg-muted/50 font-medium"
                 )}
                 onClick={() => setSelectedContact(contact)}
               >

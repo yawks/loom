@@ -1507,6 +1507,7 @@ export function MessageList({
                                               providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                               isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                               emojiSize={14}
+                                              isFromMe={message.isFromMe}
                                             />
                                           </div>
                                         </div>
@@ -1517,6 +1518,7 @@ export function MessageList({
                                           providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                           isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                           className="whitespace-pre-wrap"
+                                          isFromMe={message.isFromMe}
                                         />
                                       )}
                                     </>
@@ -1995,6 +1997,7 @@ export function MessageList({
                                                   providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                                   isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                   emojiSize={14}
+                                                  isFromMe={message.isFromMe}
                                                 />
                                               </div>
                                             </div>
@@ -2009,6 +2012,7 @@ export function MessageList({
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
+                                                isFromMe={message.isFromMe}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -2024,6 +2028,7 @@ export function MessageList({
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
+                                                isFromMe={message.isFromMe}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">

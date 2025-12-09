@@ -183,6 +183,7 @@ export function ThreadView() {
                     providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
                     isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
                     emojiSize={14}
+                    isFromMe={message.isFromMe}
                   />
                   <p className={`text-xs mt-1 ${
                     message.isFromMe ? "text-blue-100" : "text-muted-foreground"
@@ -262,6 +263,7 @@ export function ThreadView() {
                             providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
                             emojiSize={14}
                             isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                            isFromMe={message.isFromMe}
                           />
                         </>
                       ) : (
@@ -270,6 +272,7 @@ export function ThreadView() {
                           providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
                           isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
                           emojiSize={14}
+                          isFromMe={message.isFromMe}
                         />
                       )}
                     </div>
