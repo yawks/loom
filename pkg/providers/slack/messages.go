@@ -3,6 +3,7 @@ package slack
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"bytes"
 	"fmt"
@@ -93,7 +94,49 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.
+// It first checks the database, and if not enough messages are found, fetches from Slack API and stores them.
 func (p *SlackProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
+	if conversationID == "" {
+		return []models.Message{}, fmt.Errorf("conversation ID is required")
+	}
+
+	// Default limit to 20 if not specified
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// First, try to load from database
+	if db.DB != nil {
+		var dbMessages []models.Message
+		query := db.DB.Where("protocol_conv_id = ?", conversationID)
+
+		// If beforeTimestamp is specified, only get messages before that timestamp
+		if beforeTimestamp != nil {
+			query = query.Where("timestamp < ?", *beforeTimestamp)
+		}
+
+		// Order by timestamp descending to get newest first, then reverse
+		query = query.Preload("Receipts").Preload("Reactions").Order("timestamp DESC").Limit(limit)
+
+		if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
+			// Reverse to get oldest first
+			for i, j := 0, len(dbMessages)-1; i < j; i, j = i+1, j-1 {
+				dbMessages[i], dbMessages[j] = dbMessages[j], dbMessages[i]
+			}
+
+			// Enrich messages with sender names and avatars from cache
+			p.enrichMessagesWithSenderInfo(dbMessages)
+
+			// If beforeTimestamp is nil (initial load) and we have enough messages, return them
+			// If beforeTimestamp is set (loading older messages), return what we have
+			if beforeTimestamp != nil || len(dbMessages) >= limit {
+				p.log("SlackProvider.GetConversationHistory: Loaded %d messages from database for conversation %s\n", len(dbMessages), conversationID)
+				return dbMessages, nil
+			}
+		}
+	}
+
+	// Not enough messages in database or beforeTimestamp specified, fetch from Slack API
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -154,7 +197,48 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
+	// Store messages in database
+	if len(messages) > 0 {
+		p.storeMessagesForConversation(conversationID, messages)
+	}
+
 	return messages, nil
+}
+
+// storeMessagesForConversation stores messages in the database for a conversation
+func (p *SlackProvider) storeMessagesForConversation(convID string, messages []models.Message) int {
+	if convID == "" || len(messages) == 0 {
+		return 0
+	}
+
+	// Persist messages to database
+	if db.DB != nil {
+		for _, msg := range messages {
+			if msg.ProtocolMsgID == "" {
+				continue
+			}
+			var existingMsg models.Message
+			err := db.DB.Where("protocol_msg_id = ?", msg.ProtocolMsgID).First(&existingMsg).Error
+			if err != nil {
+				// Message doesn't exist, create it
+				msg.ProtocolConvID = convID
+				if err := db.DB.Create(&msg).Error; err != nil {
+					p.log("SlackProvider.storeMessagesForConversation: Failed to persist message %s: %v\n", msg.ProtocolMsgID, err)
+				} else {
+					p.log("SlackProvider.storeMessagesForConversation: Stored message %s to database for conversation %s\n", msg.ProtocolMsgID, convID)
+				}
+			} else {
+				// Message exists, update it if needed
+				msg.ID = existingMsg.ID
+				msg.ProtocolConvID = convID
+				if err := db.DB.Save(&msg).Error; err != nil {
+					p.log("SlackProvider.storeMessagesForConversation: Failed to update message %s: %v\n", msg.ProtocolMsgID, err)
+				}
+			}
+		}
+	}
+
+	return len(messages)
 }
 
 // GetThreads loads all messages in a discussion thread.
@@ -280,6 +364,91 @@ func parseSlackTimestamp(tsStr string) time.Time {
 	sec := int64(f)
 	nsec := int64((f - float64(sec)) * 1e9)
 	return time.Unix(sec, nsec)
+}
+
+// enrichMessagesWithSenderInfo enriches messages with sender names and avatars from the user cache.
+// This is used when loading messages from the database to ensure sender information is up to date.
+func (p *SlackProvider) enrichMessagesWithSenderInfo(messages []models.Message) {
+	if len(messages) == 0 {
+		return
+	}
+
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return
+	}
+
+	for i := range messages {
+		msg := &messages[i]
+
+		// Skip only if both name and avatar are already populated
+		// We still enrich if one is missing
+		if msg.SenderName != "" && msg.SenderAvatarURL != "" {
+			continue
+		}
+
+		// Only enrich if we have a SenderID
+		if msg.SenderID == "" {
+			continue
+		}
+
+		// Check cache first
+		var user *slack.User
+		var cached bool
+		p.userCacheMu.RLock()
+		user, cached = p.userCache[msg.SenderID]
+		p.userCacheMu.RUnlock()
+
+		if !cached {
+			// Try to get user info from Slack API
+			var err error
+			p.mu.RLock()
+			if p.client != nil {
+				user, err = p.client.GetUserInfo(msg.SenderID)
+			}
+			p.mu.RUnlock()
+
+			if err == nil && user != nil {
+				// Cache the user info
+				p.userCacheMu.Lock()
+				p.userCache[msg.SenderID] = user
+				p.userCacheMu.Unlock()
+			}
+		}
+
+		if user != nil {
+			// Update sender name if not set
+			if msg.SenderName == "" {
+				// Use RealName if available, fallback to DisplayName, then Name
+				msg.SenderName = user.RealName
+				if msg.SenderName == "" && user.Profile.DisplayName != "" {
+					msg.SenderName = user.Profile.DisplayName
+				}
+				if msg.SenderName == "" {
+					msg.SenderName = user.Name
+				}
+			}
+
+			// Update avatar URL if not set
+			if msg.SenderAvatarURL == "" {
+				// Get avatar URL with fallback to different sizes
+				if user.Profile.Image512 != "" {
+					msg.SenderAvatarURL = user.Profile.Image512
+				} else if user.Profile.Image192 != "" {
+					msg.SenderAvatarURL = user.Profile.Image192
+				} else if user.Profile.Image72 != "" {
+					msg.SenderAvatarURL = user.Profile.Image72
+				} else if user.Profile.Image48 != "" {
+					msg.SenderAvatarURL = user.Profile.Image48
+				} else if user.Profile.Image32 != "" {
+					msg.SenderAvatarURL = user.Profile.Image32
+				}
+			}
+		}
+	}
 }
 
 // SendTypingIndicator sends a typing indicator.
