@@ -8,6 +8,7 @@
   "contact": "Contact",
   "switch_protocol": "Switch to {{protocol}}",
   "loading": "Loading...",
+  "loading_messages": "Loading messages...",
   "disconnect": "Disconnect",
   "message_layout": "Message Layout",
   "messages_bubble": "Messages Bubble",

@@ -206,42 +206,7 @@ func (a *App) startup(ctx context.Context) {
 			continue
 		}
 
-		// Sync missed messages if last sync was more than 1 minute ago
-		if providerConfig.LastSyncAt != nil {
-			timeSinceLastSync := time.Since(*providerConfig.LastSyncAt)
-			if timeSinceLastSync > time.Minute {
-				go func(p core.Provider, instID string, lastSync time.Time) {
-					if err := p.SyncHistory(lastSync); err != nil {
-						log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
-					} else {
-						// Update last sync time
-						now := time.Now()
-						if db.DB != nil {
-							db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
-						}
-					}
-				}(provider, instanceID, *providerConfig.LastSyncAt)
-			}
-		} else {
-			// First time sync - sync last 1 year to get all conversations
-			// WhatsApp will automatically sync via HistorySync events, but we trigger a manual sync
-			// with a long period to ensure we get all available conversations
-			go func(p core.Provider, instID string) {
-				since := time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
-				fmt.Printf("App.startup: First time sync for provider instance %s, syncing since %s\n", instID, since.Format("2006-01-02 15:04:05"))
-				if err := p.SyncHistory(since); err != nil {
-					log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
-				} else {
-					// Update last sync time
-					now := time.Now()
-					if db.DB != nil {
-						db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
-					}
-				}
-			}(provider, instanceID)
-		}
-
-		// Set as active provider if marked as active
+		// Set as active provider if marked as active (BEFORE sync to ensure events are captured)
 		if providerConfig.IsActive {
 			activeProvider = provider
 			a.provider = provider
@@ -254,6 +219,48 @@ func (a *App) startup(ctx context.Context) {
 				log.Printf("Warning: Failed to set active provider instance %s: %v", instanceID, err)
 			} else {
 				fmt.Printf("App.startup: Set provider %s (instanceID: %s) as active provider\n", providerConfig.ProviderID, instanceID)
+			}
+
+			// Sync missed messages if last sync was more than 1 minute ago
+			// Do this AFTER setting as active provider so events are captured
+			if providerConfig.LastSyncAt != nil {
+				timeSinceLastSync := time.Since(*providerConfig.LastSyncAt)
+				if timeSinceLastSync > time.Minute {
+					go func(p core.Provider, instID string, lastSync time.Time) {
+						// Wait longer to ensure event listener is started and ready
+						time.Sleep(2 * time.Second)
+						if err := p.SyncHistory(lastSync); err != nil {
+							log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
+						} else {
+							// Update last sync time
+							now := time.Now()
+							if db.DB != nil {
+								db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
+							}
+						}
+					}(provider, instanceID, *providerConfig.LastSyncAt)
+				}
+			} else {
+				// First time sync - sync last 1 year to get all conversations
+				// WhatsApp will automatically sync via HistorySync events, but we trigger a manual sync
+				// with a long period to ensure we get all available conversations
+				// Wait a bit to ensure startEventListener is ready to capture events
+				go func(p core.Provider, instID string) {
+					// Wait longer to ensure event listener is started and ready
+					// startEventListener is called after startup() completes, so we need to wait
+					time.Sleep(2 * time.Second)
+					since := time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
+					fmt.Printf("App.startup: First time sync for provider instance %s, syncing since %s\n", instID, since.Format("2006-01-02 15:04:05"))
+					if err := p.SyncHistory(since); err != nil {
+						log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
+					} else {
+						// Update last sync time
+						now := time.Now()
+						if db.DB != nil {
+							db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
+						}
+					}
+				}(provider, instanceID)
 			}
 		}
 	}
@@ -591,8 +598,12 @@ func (a *App) startEventListener(ctx context.Context) {
 						continue
 					}
 					// Emit the event to the frontend
+					log.Printf("App: Received SyncStatusEvent: status=%s, message=%s, progress=%d\n", e.Status, e.Message, e.Progress)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+						log.Printf("App: Emitted sync-status event to frontend: %s\n", string(syncStatusJSON))
+					} else {
+						log.Printf("App: WARNING - ctx is nil, cannot emit sync-status event\n")
 					}
 				}
 			case <-eventCtx.Done():
