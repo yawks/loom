@@ -9,7 +9,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
+import { SlackEmoji } from "./SlackEmoji";
 import { cn } from "@/lib/utils";
+import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
@@ -140,12 +142,33 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                   )}
                   onClick={() => handleSelectContact(contact)}
                 >
-                  <Avatar>
-                    <AvatarImage src={contact.avatarUrl} alt={contact.displayName} />
-                    <AvatarFallback>
-                      {contact.displayName.substring(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
+                  <div className="relative">
+                    <Avatar>
+                      <AvatarImage src={contact.avatarUrl} alt={contact.displayName} />
+                      <AvatarFallback>
+                        {contact.displayName.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    {/* Status emoji overlay */}
+                    {(() => {
+                      const statusEmojiData = getContactStatusEmoji(contact);
+                      if (statusEmojiData) {
+                        return (
+                          <div
+                            className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
+                            title={statusEmojiData.emoji}
+                          >
+                            <SlackEmoji
+                              emoji={statusEmojiData.emoji}
+                              providerInstanceId={statusEmojiData.providerInstanceId}
+                              size={12}
+                            />
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
                   <span className="font-medium">{contact.displayName}</span>
                 </div>
               ))}

@@ -25,9 +25,9 @@ func (w *WhatsAppProvider) loadLastSyncTimestampLocked() {
 	err := db.DB.Where("provider_id = ?", "whatsapp").First(&config).Error
 	if err == nil && config.LastSyncAt != nil {
 		w.lastSyncTimestamp = config.LastSyncAt
-		fmt.Printf("WhatsApp: Loaded last sync timestamp: %s\n", config.LastSyncAt.Format("2006-01-02 15:04:05"))
+		w.log("WhatsApp: Loaded last sync timestamp: %s\n", config.LastSyncAt.Format("2006-01-02 15:04:05"))
 	} else {
-		fmt.Printf("WhatsApp: No previous sync timestamp found (first sync)\n")
+		w.log("WhatsApp: No previous sync timestamp found (first sync)\n")
 	}
 }
 
@@ -47,9 +47,9 @@ func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
 		config.LastSyncAt = &timestamp
 		config.UpdatedAt = time.Now()
 		if err := db.DB.Save(&config).Error; err != nil {
-			fmt.Printf("WhatsApp: Failed to save last sync timestamp: %v\n", err)
+			w.log("WhatsApp: Failed to save last sync timestamp: %v\n", err)
 		} else {
-			fmt.Printf("WhatsApp: Saved last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
+			w.log("WhatsApp: Saved last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
 		}
 	} else {
 		// Create new
@@ -61,9 +61,9 @@ func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
 			UpdatedAt:  time.Now(),
 		}
 		if err := db.DB.Create(&config).Error; err != nil {
-			fmt.Printf("WhatsApp: Failed to create provider configuration: %v\n", err)
+			w.log("WhatsApp: Failed to create provider configuration: %v\n", err)
 		} else {
-			fmt.Printf("WhatsApp: Created provider configuration with last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
+			w.log("WhatsApp: Created provider configuration with last sync timestamp: %s\n", timestamp.Format("2006-01-02 15:04:05"))
 		}
 	}
 }
@@ -84,7 +84,7 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 	if store == nil || store.ID == nil {
 		// Client is not connected yet, return without error
-		fmt.Printf("WhatsApp: SyncHistory called but client not connected yet, skipping...\n")
+		w.log("WhatsApp: SyncHistory called but client not connected yet, skipping...\n")
 		return nil
 	}
 
@@ -96,18 +96,18 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 	if since.IsZero() || since.Before(time.Now().Add(-24*time.Hour)) {
 		if lastSync != nil {
 			since = *lastSync
-			fmt.Printf("WhatsApp: Using last sync timestamp: %s\n", since.Format("2006-01-02 15:04:05"))
+			w.log("WhatsApp: Using last sync timestamp: %s\n", since.Format("2006-01-02 15:04:05"))
 		} else {
 			// First sync - sync from 30 days ago
 			since = time.Now().Add(-30 * 24 * time.Hour)
-			fmt.Printf("WhatsApp: First sync - syncing from 30 days ago: %s\n", since.Format("2006-01-02 15:04:05"))
+			w.log("WhatsApp: First sync - syncing from 30 days ago: %s\n", since.Format("2006-01-02 15:04:05"))
 		}
 	}
 
 	// Emit sync status event
 	w.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing history since %s...", since.Format("2006-01-02 15:04:05")), -1)
 
-	fmt.Printf("WhatsApp: SyncHistory called for messages since %s\n", since.Format("2006-01-02 15:04:05"))
+	w.log("WhatsApp: SyncHistory called for messages since %s\n", since.Format("2006-01-02 15:04:05"))
 
 	// WhatsApp automatically syncs history when connected via HistorySync events
 	// We need to force a refresh of contacts to get the latest conversations
@@ -122,12 +122,12 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 		contacts, err := w.GetContacts()
 		if err != nil {
-			fmt.Printf("WhatsApp: Failed to refresh contacts during sync: %v\n", err)
+			w.log("WhatsApp: Failed to refresh contacts during sync: %v\n", err)
 			w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
 			return
 		}
 
-		fmt.Printf("WhatsApp: Refreshed %d conversations during sync\n", len(contacts))
+		w.log("WhatsApp: Refreshed %d conversations during sync\n", len(contacts))
 
 		// Emit contact refresh event
 		select {
@@ -136,9 +136,9 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 		}
 
 		// Emit completed status - this is the final event for manual sync
-		fmt.Printf("WhatsApp: Emitting completed sync status for manual sync with %d conversations\n", len(contacts))
+		w.log("WhatsApp: Emitting completed sync status for manual sync with %d conversations\n", len(contacts))
 		w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
-		fmt.Printf("WhatsApp: Completed sync status emitted for manual sync\n")
+		w.log("WhatsApp: Completed sync status emitted for manual sync\n")
 	}()
 
 	return nil
@@ -159,7 +159,7 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 		// Get the reaction key to identify the sender
 		key := reaction.GetKey()
 		if key == nil {
-			fmt.Printf("WhatsApp: Reaction has no key, skipping\n")
+			w.log("WhatsApp: Reaction has no key, skipping\n")
 			continue
 		}
 
@@ -188,7 +188,7 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 		}
 
 		if userID == "" {
-			fmt.Printf("WhatsApp: Could not determine user ID for reaction, skipping\n")
+			w.log("WhatsApp: Could not determine user ID for reaction, skipping\n")
 			continue
 		}
 
@@ -197,7 +197,7 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 
 		// Empty emoji means the reaction was removed - skip it
 		if emoji == "" {
-			fmt.Printf("WhatsApp: Reaction with empty emoji (removed), skipping\n")
+			w.log("WhatsApp: Reaction with empty emoji (removed), skipping\n")
 			continue
 		}
 
@@ -205,7 +205,7 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 		timestampMS := reaction.GetSenderTimestampMS()
 		timestamp := time.Unix(0, timestampMS*int64(time.Millisecond))
 
-		fmt.Printf("WhatsApp: Converting history reaction: user=%s, emoji=%s, timestamp=%v\n", userID, emoji, timestamp)
+		w.log("WhatsApp: Converting history reaction: user=%s, emoji=%s, timestamp=%v\n", userID, emoji, timestamp)
 
 		converted = append(converted, models.Reaction{
 			UserID:    userID,
@@ -246,7 +246,7 @@ func (w *WhatsAppProvider) convertMessageStatus(status waProto.WebMessageInfo_St
 	if len(conversationID) > 5 && conversationID[len(conversationID)-5:] == "@g.us" {
 		// Group chat - we can't determine individual participants from status alone
 		// Skip creating receipts for groups from history sync status
-		fmt.Printf("WhatsApp: Skipping receipt creation for group chat %s (status: %v)\n", conversationID, status)
+		w.log("WhatsApp: Skipping receipt creation for group chat %s (status: %v)\n", conversationID, status)
 		return nil
 	}
 
@@ -262,7 +262,7 @@ func (w *WhatsAppProvider) convertMessageStatus(status waProto.WebMessageInfo_St
 		UpdatedAt:   time.Now(),
 	}
 
-	fmt.Printf("WhatsApp: Created %s receipt for message %s from status %v\n", receiptType, messageID, status)
+	w.log("WhatsApp: Created %s receipt for message %s from status %v\n", receiptType, messageID, status)
 
 	return []models.MessageReceipt{receipt}
 }

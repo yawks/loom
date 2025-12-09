@@ -13,7 +13,7 @@ export function useKeyboardShortcuts() {
   );
 
   // Get sorted contacts using the same logic as ContactList
-  const sortedContacts = useSortedContacts("last_message");
+  const { sortedContacts } = useSortedContacts("last_message");
 
   const navigateToUnreadConversation = useCallback((direction: "up" | "down") => {
     if (!selectedContact || sortedContacts.length === 0) {

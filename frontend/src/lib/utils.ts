@@ -22,3 +22,21 @@ export function timeToDate(time: any): Date {
   // Fallback: convert to string first (handles Time type from Wails)
   return new Date(String(time));
 }
+
+/**
+ * Transforms Slack URL format <URL|text> to Markdown format [text](URL)
+ * Also handles simple <URL> format (without pipe) -> [URL](URL)
+ */
+export function transformSlackUrls(text: string): string {
+  if (!text) return text;
+  
+  // Pattern to match <URL|text> or <URL>
+  // This regex matches:
+  // - <https://example.com|Link Text> -> [Link Text](https://example.com)
+  // - <https://example.com> -> [https://example.com](https://example.com)
+  return text.replace(/<([^|>]+)(?:\|([^>]+))?>/g, (_match, url, text) => {
+    // If text is provided, use it; otherwise use the URL as text
+    const linkText = text || url;
+    return `[${linkText}](${url})`;
+  });
+}

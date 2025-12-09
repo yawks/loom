@@ -25,6 +25,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
 import { MessageReactions } from "./MessageReactions";
 import { MessageStatus } from "./MessageStatus";
+import { MessageText } from "./MessageText";
 import { TypingIndicator } from "./TypingIndicator";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
@@ -1501,12 +1502,22 @@ export function MessageList({
                                             {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
                                           </div>
                                           <div className="text-sm opacity-70 line-clamp-2 text-left">
-                                            {message.quotedBody}
+                                            <MessageText
+                                              text={message.quotedBody}
+                                              providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                              isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                              emojiSize={14}
+                                            />
                                           </div>
                                         </div>
                                       )}
                                       {message.body && message.body.trim() !== "" && (
-                                        <p className="whitespace-pre-wrap">{message.body}</p>
+                                        <MessageText
+                                          text={message.body}
+                                          providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                          isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                          className="whitespace-pre-wrap"
+                                        />
                                       )}
                                     </>
                                   )}
@@ -1979,32 +1990,47 @@ export function MessageList({
                                                 {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
                                               </div>
                                               <div className="text-sm opacity-70 line-clamp-2 text-left">
-                                                {message.quotedBody}
+                                                <MessageText
+                                                  text={message.quotedBody}
+                                                  providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                                  emojiSize={14}
+                                                />
                                               </div>
                                             </div>
                                           )}
                                           {!showSender && message.body && (
-                                            <p
-                                              className="text-foreground text-left m-0 leading-none whitespace-pre-wrap"
+                                            <div
+                                              className="text-foreground text-left m-0 leading-none"
                                               style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}
                                             >
-                                              {message.body}
+                                              <MessageText
+                                                text={message.body}
+                                                providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                                emojiSize={16}
+                                              />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
                                                   ({t("edited")})
                                                 </span>
                                               )}
-                                            </p>
+                                            </div>
                                           )}
                                           {showSender && message.body && message.body.trim() !== "" && (
-                                            <p className="text-foreground text-left m-0 whitespace-pre-wrap">
-                                              {message.body}
+                                            <div className="text-foreground text-left m-0">
+                                              <MessageText
+                                                text={message.body}
+                                                providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                                emojiSize={16}
+                                              />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
                                                   ({t("edited")})
                                                 </span>
                                               )}
-                                            </p>
+                                            </div>
                                           )}
                                           {message.attachments &&
                                             message.attachments.trim() !== "" && (

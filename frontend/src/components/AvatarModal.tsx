@@ -1,7 +1,10 @@
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
+
 import { useAppStore } from "@/lib/store";
 
 export function AvatarModal() {
@@ -15,6 +18,9 @@ export function AvatarModal() {
       }
     }}>
       <DialogContent className="max-w-2xl p-0">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Avatar Preview</DialogTitle>
+        </DialogHeader>
         {selectedAvatarUrl && (
           <div className="flex items-center justify-center p-8">
             <img
