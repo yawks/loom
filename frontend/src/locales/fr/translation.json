@@ -8,6 +8,7 @@
   "contact": "Contact",
   "switch_protocol": "Passer à {{protocol}}",
   "loading": "Chargement...",
+  "loading_messages": "Chargement des messages...",
   "disconnect": "Déconnecter",
   "message_layout": "Mise en page des messages",
   "messages_bubble": "Bulles de messages",
