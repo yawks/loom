@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Clock, Phone, Plus } from "lucide-react";
+import { ArrowDownAZ, Calendar, Clock, Phone, Plus } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetMessagesForConversation, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
@@ -6,7 +6,11 @@ import { useQueries, useQueryClient, useSuspenseQuery } from "@tanstack/react-qu
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { MessageText } from "./MessageText";
+import { NewConversationModal } from "./NewConversationModal";
+import { SlackEmoji } from "./SlackEmoji";
 import { cn } from "@/lib/utils";
+import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -17,7 +21,6 @@ import { useTypingStore } from "@/lib/typingStore";
 
 type SortOption = "alphabetical" | "last_message";
 
-import { NewConversationModal } from "./NewConversationModal";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -92,6 +95,33 @@ export function ContactList() {
     };
   }, [queryClient]);
 
+  // Listen for contact status change events
+  useEffect(() => {
+    const unsubscribe = EventsOn("contact-status", (statusJSON: string) => {
+      try {
+        JSON.parse(statusJSON) as {
+          UserID: string;
+          Status: string;
+          StatusEmoji?: string;
+          StatusText?: string;
+        };
+        
+        // Invalidate contacts query to refetch with updated status
+        // This ensures the UI reflects the latest status and emoji
+        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
+      } catch (error) {
+        console.error("Failed to parse contact-status event:", error, statusJSON);
+      }
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [queryClient]);
+
   // Also listen for new messages to update active call badges
   useEffect(() => {
     const unsubscribe = EventsOn("new-message", () => {
@@ -118,7 +148,7 @@ export function ContactList() {
   }, [presenceMap]);
 
   // Use shared hook for sorted contacts
-  const sortedContactsBase = useSortedContacts(sortBy);
+  const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
 
   // Filter contacts by selected provider
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
@@ -313,6 +343,14 @@ export function ContactList() {
                 return false;
               }
 
+              // First, check if any linkedAccount has status "online" (for Slack and other providers)
+              const statusMatch = contact.linkedAccounts.some(
+                (account) => account.status === "online"
+              );
+              if (statusMatch) {
+                return true;
+              }
+
               //console.log(`[ContactList] Checking presence for ${contact.displayName}, linkedAccounts:`, contact.linkedAccounts.map(a => a.userId));
               //console.log(`[ContactList] Current presenceMap:`, presenceMap);
 
@@ -390,12 +428,77 @@ export function ContactList() {
                       {contact.displayName.substring(0, 2).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
-                  {!isCurrentUser && isOnline && (
+                  {/* Status emoji overlay */}
+                  {!isCurrentUser && (() => {
+                    const statusEmojiData = getContactStatusEmoji(contact);
+                    if (statusEmojiData) {
+                      return (
+                        <div
+                          className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
+                          title={statusEmojiData.emoji}
+                        >
+                          <SlackEmoji
+                            emoji={statusEmojiData.emoji}
+                            providerInstanceId={statusEmojiData.providerInstanceId}
+                            size={12}
+                          />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                  {!isCurrentUser && !isTyping && (() => {
+                    // Get status from linked accounts (prefer first account with a status)
+                    const accountStatus = contact.linkedAccounts.find(acc => acc.status && acc.status !== "offline")?.status || null;
+                    const status = accountStatus || (isOnline ? "online" : null);
+                    
+                    if (!status) return null;
+                    
+                    // Special handling for meeting status - show calendar icon
+                    if (status === "meeting") {
+                      return (
                     <div
-                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background"
-                      title={t("online")}
+                          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
+                          title={t("meeting") || "En réunion"}
+                        >
+                          <Calendar className="h-2 w-2 text-white" />
+                        </div>
+                      );
+                    }
+                    
+                    // Determine status badge color and title for other statuses
+                    let bgColor = "";
+                    let titleText = "";
+                    
+                    switch (status) {
+                      case "online":
+                        bgColor = "bg-green-500";
+                        titleText = t("online");
+                        break;
+                      case "away":
+                        bgColor = "bg-yellow-500";
+                        titleText = t("away") || "Away";
+                        break;
+                      case "busy":
+                        bgColor = "bg-red-500";
+                        titleText = t("busy") || "Busy";
+                        break;
+                      case "holiday":
+                        bgColor = "bg-purple-500";
+                        titleText = t("holiday") || "Holiday";
+                        break;
+                      default:
+                        bgColor = "bg-gray-500";
+                        titleText = status;
+                    }
+                    
+                    return (
+                      <div
+                        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-background`}
+                        title={titleText}
                     />
-                  )}
+                    );
+                  })()}
                   {isTyping && (
                     <div
                       className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background animate-pulse"
@@ -403,7 +506,8 @@ export function ContactList() {
                     />
                   )}
                 </div>
-                <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="flex flex-col flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
                   <span className="text-sm font-medium truncate">
                     {contact.displayName}
                   </span>
@@ -428,6 +532,26 @@ export function ContactList() {
                       </span>
                     )}
                   </div>
+                  </div>
+                  {/* Last message preview */}
+                  {(() => {
+                    const lastMessage = lastMessages[conversationId];
+                    if (lastMessage?.body) {
+                      return (
+                        <div className="text-xs text-muted-foreground mt-0.5 text-left overflow-hidden whitespace-nowrap text-ellipsis">
+                          <MessageText
+                            text={lastMessage.body}
+                            providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}
+                            isSlack={contact.linkedAccounts[0]?.protocol === "slack"}
+                            emojiSize={12}
+                            className="inline"
+                            preview={true}
+                          />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
             );

@@ -43,6 +43,8 @@ export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, s
 
 export function GetProviderQRCode(arg1:string):Promise<string>;
 
+export function GetSlackEmojiURL(arg1:string,arg2:string):Promise<string>;
+
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
 
 export function MarkMessageAsPlayed(arg1:string,arg2:string):Promise<void>;

@@ -77,6 +77,19 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     return dates;
   }, [lastMessagesQueries, contactsWithAliases]);
 
+  // Créer un map des derniers messages par conversation ID
+  const lastMessages = useMemo(() => {
+    const messages: Record<string, models.Message | null> = {};
+    lastMessagesQueries.forEach((query, index) => {
+      const contact = contactsWithAliases[index];
+      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      if (conversationId) {
+        messages[conversationId] = query.data || null;
+      }
+    });
+    return messages;
+  }, [lastMessagesQueries, contactsWithAliases]);
+
   const sortedContacts = useMemo(() => {
     const sorted = [...contactsWithAliases];
 
@@ -106,6 +119,6 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     return sorted;
   }, [contactsWithAliases, sortBy, lastMessageDates]);
 
-  return sortedContacts;
+  return { sortedContacts, lastMessages };
 }
 

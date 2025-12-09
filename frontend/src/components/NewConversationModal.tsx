@@ -1,4 +1,5 @@
-
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Check, Search, X } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -8,15 +9,15 @@ import {
 } from "@/components/ui/dialog";
 import { useEffect, useMemo, useState } from "react";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Check, Search, X } from "lucide-react";
 import { CreateGroup } from "../../wailsjs/go/main/App";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SlackEmoji } from "./SlackEmoji";
 import { cn } from "@/lib/utils";
+import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
@@ -221,6 +222,25 @@ export function NewConversationModal({
                                                             {contact.displayName.substring(0, 2).toUpperCase()}
                                                         </AvatarFallback>
                                                     </Avatar>
+                                                    {/* Status emoji overlay */}
+                                                    {(() => {
+                                                        const statusEmojiData = getContactStatusEmoji(contact);
+                                                        if (statusEmojiData) {
+                                                            return (
+                                                                <div
+                                                                    className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
+                                                                    title={statusEmojiData.emoji}
+                                                                >
+                                                                    <SlackEmoji
+                                                                        emoji={statusEmojiData.emoji}
+                                                                        providerInstanceId={statusEmojiData.providerInstanceId}
+                                                                        size={12}
+                                                                    />
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    })()}
                                                     {isSelected && (
                                                         <div className="absolute -bottom-1 -right-1 bg-primary text-primary-foreground rounded-full p-0.5 border-2 border-background">
                                                             <Check className="h-3 w-3" />

@@ -1,17 +1,19 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetContactAliases, GetGroupParticipants, GetMessagesForConversation, GetParticipantNames, SendFile, SetContactAlias } from "../../wailsjs/go/main/App";
 import { cn, timeToDate } from "@/lib/utils";
+import { getProviderInstanceId, getStatusEmoji } from "@/lib/statusEmoji";
 import { useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
+import { SlackEmoji } from "./SlackEmoji";
 import { X } from "lucide-react";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
-import { useTranslation } from "react-i18next";
 import { usePresenceStore } from "@/lib/presenceStore";
+import { useTranslation } from "react-i18next";
 
 // Declare SendFileFromPath as it will be available after Wails bindings are regenerated
 declare const SendFileFromPath: ((conversationID: string, filePath: string) => Promise<models.Message>) | undefined;
@@ -583,6 +585,13 @@ export function ConversationDetailsView({
                   }
                 }
 
+                // Find the linked account for this participant to get status emoji
+                const linkedAccount = selectedConversation.linkedAccounts?.find(
+                  acc => acc.userId === participant.senderId
+                );
+                const statusEmoji = linkedAccount ? getStatusEmoji(linkedAccount) : null;
+                const providerInstanceId = linkedAccount ? getProviderInstanceId(linkedAccount) : null;
+
                 return (
                   <ParticipantItem
                     key={participant.senderId}
@@ -590,6 +599,8 @@ export function ConversationDetailsView({
                     displayName={displayName}
                     isOnline={presenceMatch}
                     alias={aliases[participant.senderId]}
+                    statusEmoji={statusEmoji}
+                    providerInstanceId={providerInstanceId || undefined}
                     onAvatarClick={handleAvatarClick}
                     onAliasChange={async (newAlias: string) => {
                       await SetContactAlias(participant.senderId, newAlias);
@@ -625,6 +636,8 @@ interface ParticipantItemProps {
   displayName: string;
   isOnline: boolean;
   alias?: string;
+  statusEmoji?: string | null;
+  providerInstanceId?: string;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string) => void;
   onAliasChange: (newAlias: string) => Promise<void>;
 }
@@ -634,6 +647,8 @@ function ParticipantItem({
   displayName,
   isOnline,
   alias,
+  statusEmoji,
+  providerInstanceId,
   onAvatarClick,
   onAliasChange,
 }: ParticipantItemProps) {
@@ -710,6 +725,19 @@ function ParticipantItem({
             </AvatarFallback>
           </Avatar>
         </button>
+        {/* Status emoji overlay */}
+        {statusEmoji && (
+          <div
+            className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
+            title={statusEmoji}
+          >
+            <SlackEmoji
+              emoji={statusEmoji}
+              providerInstanceId={providerInstanceId}
+              size={12}
+            />
+          </div>
+        )}
         {isOnline && (
           <div
             className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background"

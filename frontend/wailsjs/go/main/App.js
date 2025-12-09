@@ -78,6 +78,10 @@ export function GetProviderQRCode(arg1) {
   return window['go']['main']['App']['GetProviderQRCode'](arg1);
 }
 
+export function GetSlackEmojiURL(arg1, arg2) {
+  return window['go']['main']['App']['GetSlackEmojiURL'](arg1, arg2);
+}
+
 export function GetThreads(arg1) {
   return window['go']['main']['App']['GetThreads'](arg1);
 }

@@ -17,7 +17,12 @@
     }
   },
   "author": {
-    "name": "Jules",
-    "email": "jules@example.com"
+    "name": "Mat",
+    "email": "mat@yawks.net"
+  },
+  "macos": {
+    "info": {
+      "NSUserNotificationsUsageDescription": "Loom needs notification permissions to alert you about new messages."
+    }
   }
 }

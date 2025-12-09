@@ -2,13 +2,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 import { Button } from "@/components/ui/button";
 import { GetThreads } from "../../wailsjs/go/main/App";
+import { MessageText } from "./MessageText";
 import { X } from "lucide-react";
 import type { models } from "../../wailsjs/go/models";
+import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { timeToDate } from "@/lib/utils";
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -71,6 +72,7 @@ export function ThreadView() {
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
+  const selectedContact = useAppStore((state) => state.selectedContact);
 
   const handleClose = () => {
     setSelectedThreadId(null);
@@ -176,7 +178,12 @@ export function ThreadView() {
                       : "bg-muted text-foreground"
                   }`}
                 >
-                  <p>{message.body}</p>
+                  <MessageText
+                    text={message.body}
+                    providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
+                    isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                    emojiSize={14}
+                  />
                   <p className={`text-xs mt-1 ${
                     message.isFromMe ? "text-blue-100" : "text-muted-foreground"
                   }`}>
@@ -250,10 +257,20 @@ export function ThreadView() {
                           >
                             {displayName}
                           </span>
-                          <p className="text-foreground text-left m-0">{message.body}</p>
+                          <MessageText
+                            text={message.body}
+                            providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
+                            emojiSize={14}
+                            isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                          />
                         </>
                       ) : (
-                        <p className="text-foreground text-left m-0 leading-none" style={{ marginTop: '10px' }}>{message.body}</p>
+                        <MessageText
+                          text={message.body}
+                          providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
+                          isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                          emojiSize={14}
+                        />
                       )}
                     </div>
                   </div>

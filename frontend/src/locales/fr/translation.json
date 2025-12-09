@@ -37,6 +37,8 @@
   "offline": "hors ligne",
   "away": "absent",
   "busy": "occupé",
+  "holiday": "en vacances",
+  "meeting": "en réunion",
   "active": "Actif",
   "inactive": "Inactif",
   "conversation_details": "Détails de la conversation",
@@ -162,6 +164,14 @@
   "reply_to_message": "Répondre à",
   "replying_to": "Répondre à",
   "cancel_reply": "Annuler la réponse",
+  "sync": {
+    "steps": {
+      "fetching_contacts": "Récupération des contacts...",
+      "fetching_history": "Récupération de l'historique des messages...",
+      "fetching_avatars": "Récupération des avatars..."
+    },
+    "completed": "Synchronisation terminée"
+  },
   "call": {
     "missedVoice": "Appel vocal manqué",
     "missedVideo": "Appel vidéo manqué",

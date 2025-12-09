@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/logging"
 	"Loom/pkg/models"
 	"context"
 	"fmt"
@@ -50,23 +51,33 @@ type WhatsAppProvider struct {
 	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
 	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
 	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
+	logger               *logging.ProviderLogger         // Logger for this provider instance
+}
+
+func (w *WhatsAppProvider) log(format string, args ...interface{}) {
+	if w.logger != nil {
+		w.logger.Logf(format, args...)
+	} else {
+		// Fallback to fmt.Printf if logger not initialized
+		fmt.Printf(format, args...)
+	}
 }
 
 func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message string, progress int) {
 	// Use recover to prevent panic if channel is closed
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("WhatsApp: PANIC in emitSyncStatus (channel may be closed): %v, status=%s, message=%s\n", r, status, message)
+			w.log("WhatsApp: PANIC in emitSyncStatus (channel may be closed): %v, status=%s, message=%s\n", r, status, message)
 		}
 	}()
 
 	if w.eventChan == nil {
-		fmt.Printf("WhatsApp: Warning - eventChan is nil, cannot emit sync status: %s\n", message)
+		w.log("WhatsApp: Warning - eventChan is nil, cannot emit sync status: %s\n", message)
 		return
 	}
 
 	// Log the event being emitted for debugging
-	fmt.Printf("WhatsApp: Emitting sync status: status=%s, message=%s, progress=%d\n", status, message, progress)
+	w.log("WhatsApp: Emitting sync status: status=%s, message=%s, progress=%d\n", status, message, progress)
 
 	// Use a timeout to ensure important events (like "completed") are not lost
 	// For "completed" and "error" status, we use a longer timeout to ensure delivery
@@ -85,10 +96,10 @@ func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message st
 		Progress: progress,
 	}:
 		// Event sent successfully
-		fmt.Printf("WhatsApp: Sync status event sent successfully: %s\n", message)
+		w.log("WhatsApp: Sync status event sent successfully: %s\n", message)
 	case <-ctx.Done():
 		// Timeout - log but don't block
-		fmt.Printf("WhatsApp: ERROR - sync status event not sent (channel may be full or timeout): status=%s, message=%s\n", status, message)
+		w.log("WhatsApp: ERROR - sync status event not sent (channel may be full or timeout): status=%s, message=%s\n", status, message)
 	}
 }
 
@@ -111,7 +122,6 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 }
 
 func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
-	fmt.Printf("WhatsAppProvider.Init: called with config: %v\n", config != nil)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -120,78 +130,94 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	} else {
 		w.config = make(core.ProviderConfig)
 	}
-	fmt.Printf("WhatsAppProvider.Init: config set, proceeding with initialization\n")
+
+	// Get instanceID for logger initialization
+	instanceID, _ := w.config["_instance_id"].(string)
+	if instanceID == "" {
+		instanceID = "whatsapp-1" // Default instance ID
+	}
+
+	// Initialize logger
+	logger, err := logging.GetLogger("whatsapp", instanceID)
+	if err != nil {
+		// Log error but continue - fallback to fmt.Printf
+		fmt.Printf("WhatsAppProvider.Init: WARNING - failed to initialize logger: %v\n", err)
+	} else {
+		w.logger = logger
+	}
+
+	w.log("WhatsAppProvider.Init: called with config: %v\n", config != nil)
+	w.log("WhatsAppProvider.Init: config set, proceeding with initialization\n")
 
 	// Automatically determine database path (never ask user for this)
-	fmt.Printf("WhatsAppProvider.Init: Getting config directory...\n")
+	w.log("WhatsAppProvider.Init: Getting config directory...\n")
 	configDir, err := os.UserConfigDir()
 	if err != nil {
-		fmt.Printf("WhatsAppProvider.Init: ERROR - failed to get config directory: %v\n", err)
+		w.log("WhatsAppProvider.Init: ERROR - failed to get config directory: %v\n", err)
 		return fmt.Errorf("failed to get config directory: %w", err)
 	}
-	fmt.Printf("WhatsAppProvider.Init: Config directory: %s\n", configDir)
+	w.log("WhatsAppProvider.Init: Config directory: %s\n", configDir)
 
 	// Use instanceID from config to create isolated storage for each instance
 	var dbPath string
-	instanceID, _ := w.config["_instance_id"].(string)
 	if instanceID != "" {
 		// Use instanceID in path: configDir/Loom/whatsapp-1/whatsapp.db
 		dbPath = filepath.Join(configDir, "Loom", instanceID, "whatsapp.db")
-		fmt.Printf("WhatsAppProvider.Init: Database path (with instanceID): %s\n", dbPath)
+		w.log("WhatsAppProvider.Init: Database path (with instanceID): %s\n", dbPath)
 	} else {
 		// Fallback to old path for backward compatibility
 		dbPath = filepath.Join(configDir, "Loom", "whatsapp", "whatsapp.db")
-		fmt.Printf("WhatsAppProvider.Init: Database path (legacy): %s\n", dbPath)
+		w.log("WhatsAppProvider.Init: Database path (legacy): %s\n", dbPath)
 	}
 
 	// Ensure directory exists
-	fmt.Printf("WhatsAppProvider.Init: Creating directory...\n")
+	w.log("WhatsAppProvider.Init: Creating directory...\n")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
-		fmt.Printf("WhatsAppProvider.Init: ERROR - failed to create directory: %v\n", err)
+		w.log("WhatsAppProvider.Init: ERROR - failed to create directory: %v\n", err)
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	fmt.Printf("WhatsAppProvider.Init: Directory created successfully\n")
+	w.log("WhatsAppProvider.Init: Directory created successfully\n")
 
 	// Create database connection string
 	dbConnStr := fmt.Sprintf("file:%s?_foreign_keys=on", dbPath)
-	fmt.Printf("WhatsAppProvider.Init: Database connection string created\n")
+	w.log("WhatsAppProvider.Init: Database connection string created\n")
 
 	// Initialize database logger
 	dbLog := waLog.Stdout("Database", "DEBUG", false)
-	fmt.Printf("WhatsAppProvider.Init: Database logger initialized\n")
+	w.log("WhatsAppProvider.Init: Database logger initialized\n")
 
 	// Create container
-	fmt.Printf("WhatsAppProvider.Init: Creating store container...\n")
+	w.log("WhatsAppProvider.Init: Creating store container...\n")
 	container, err := sqlstore.New(w.ctx, "sqlite3", dbConnStr, dbLog)
 	if err != nil {
-		fmt.Printf("WhatsAppProvider.Init: ERROR - failed to create store container: %v\n", err)
+		w.log("WhatsAppProvider.Init: ERROR - failed to create store container: %v\n", err)
 		return fmt.Errorf("failed to create store container: %w", err)
 	}
 	w.container = container
-	fmt.Printf("WhatsAppProvider.Init: Store container created successfully\n")
+	w.log("WhatsAppProvider.Init: Store container created successfully\n")
 
 	// Get device store
-	fmt.Printf("WhatsAppProvider.Init: Getting device store...\n")
+	w.log("WhatsAppProvider.Init: Getting device store...\n")
 	deviceStore, err := container.GetFirstDevice(w.ctx)
 	if err != nil {
-		fmt.Printf("WhatsAppProvider.Init: ERROR - failed to get device store: %v\n", err)
+		w.log("WhatsAppProvider.Init: ERROR - failed to get device store: %v\n", err)
 		return fmt.Errorf("failed to get device store: %w", err)
 	}
 	w.deviceStore = deviceStore
-	fmt.Printf("WhatsAppProvider.Init: Device store retrieved successfully\n")
+	w.log("WhatsAppProvider.Init: Device store retrieved successfully\n")
 
 	// Initialize client logger
 	clientLog := waLog.Stdout("Client", "DEBUG", false)
-	fmt.Printf("WhatsAppProvider.Init: Client logger initialized\n")
+	w.log("WhatsAppProvider.Init: Client logger initialized\n")
 
 	// Set custom OS info for WhatsApp registration
 	// This changes the connector name from "whatsmeow" to "Loom"
 	store.SetOSInfo("Loom", [3]uint32{1, 0, 0})
-	fmt.Printf("WhatsAppProvider.Init: Custom OS info set to 'Loom'\n")
+	w.log("WhatsAppProvider.Init: Custom OS info set to 'Loom'\n")
 
 	// Enable call log history in DeviceProps
 	// This must be done before creating the client
-	fmt.Printf("WhatsAppProvider.Init: Enabling call log history support...\n")
+	w.log("WhatsAppProvider.Init: Enabling call log history support...\n")
 	// Enable call log history support
 	// Enable call log history support via reflection
 	// We use reflection because DeviceProps might be unexported or we want to be safe
@@ -221,49 +247,49 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 
 					if supportCallLogHistoryField.IsValid() && supportCallLogHistoryField.CanSet() {
 						supportCallLogHistoryField.Set(reflect.ValueOf(proto.Bool(true)))
-						fmt.Printf("WhatsAppProvider.Init: Call log history support enabled successfully\n")
+						w.log("WhatsAppProvider.Init: Call log history support enabled successfully\n")
 					} else {
-						fmt.Printf("WhatsAppProvider.Init: SupportCallLogHistory field not found or unsettable\n")
+						w.log("WhatsAppProvider.Init: SupportCallLogHistory field not found or unsettable\n")
 					}
 				}
 			} else {
-				fmt.Printf("WhatsAppProvider.Init: HistorySyncConfig field not found\n")
+				w.log("WhatsAppProvider.Init: HistorySyncConfig field not found\n")
 			}
 		} else {
-			fmt.Printf("WhatsAppProvider.Init: DeviceProps is nil\n")
+			w.log("WhatsAppProvider.Init: DeviceProps is nil\n")
 		}
 	} else {
 		// Log but don't error out - maybe field is missing or unexported
-		fmt.Printf("WhatsAppProvider.Init: DeviceProps field not found in deviceStore\n")
+		w.log("WhatsAppProvider.Init: DeviceProps field not found in deviceStore\n")
 	}
 
 	// Create client
-	fmt.Printf("WhatsAppProvider.Init: Creating WhatsApp client...\n")
+	w.log("WhatsAppProvider.Init: Creating WhatsApp client...\n")
 	w.client = whatsmeow.NewClient(deviceStore, clientLog)
-	fmt.Printf("WhatsAppProvider.Init: WhatsApp client created successfully\n")
+	w.log("WhatsAppProvider.Init: WhatsApp client created successfully\n")
 
 	// Load cached messages from database on startup
 	// Note: w.mu is already locked, so we call the internal version that doesn't lock
-	fmt.Printf("WhatsAppProvider.Init: Loading messages from database...\n")
+	w.log("WhatsAppProvider.Init: Loading messages from database...\n")
 	w.loadMessagesFromDatabaseLocked()
-	fmt.Printf("WhatsAppProvider.Init: Messages loaded from database\n")
+	w.log("WhatsAppProvider.Init: Messages loaded from database\n")
 
 	// Load avatar failures cache
-	fmt.Printf("WhatsAppProvider.Init: Loading avatar failures cache...\n")
+	w.log("WhatsAppProvider.Init: Loading avatar failures cache...\n")
 	w.loadAvatarFailures()
-	fmt.Printf("WhatsAppProvider.Init: Avatar failures cache loaded\n")
+	w.log("WhatsAppProvider.Init: Avatar failures cache loaded\n")
 
 	// Load last sync timestamp from database
 	// Note: w.mu is already locked, so we call the internal version that doesn't lock
-	fmt.Printf("WhatsAppProvider.Init: Loading last sync timestamp...\n")
+	w.log("WhatsAppProvider.Init: Loading last sync timestamp...\n")
 	w.loadLastSyncTimestampLocked()
-	fmt.Printf("WhatsAppProvider.Init: Last sync timestamp loaded\n")
+	w.log("WhatsAppProvider.Init: Last sync timestamp loaded\n")
 
 	// Add event handler
-	fmt.Printf("WhatsAppProvider.Init: Adding event handler...\n")
+	w.log("WhatsAppProvider.Init: Adding event handler...\n")
 	w.client.AddEventHandler(w.eventHandler)
-	fmt.Printf("WhatsAppProvider.Init: Event handler added successfully\n")
-	fmt.Printf("WhatsAppProvider.Init: Initialization completed successfully\n")
+	w.log("WhatsAppProvider.Init: Event handler added successfully\n")
+	w.log("WhatsAppProvider.Init: Initialization completed successfully\n")
 
 	return nil
 }
@@ -284,9 +310,9 @@ func (w *WhatsAppProvider) SetConfig(config core.ProviderConfig) error {
 func (w *WhatsAppProvider) GetQRCode() (string, error) {
 	w.qrMu.RLock()
 	defer w.qrMu.RUnlock()
-	fmt.Printf("WhatsApp.GetQRCode: Returning QR code (length: %d, empty: %v)\n", len(w.latestQRCode), w.latestQRCode == "")
+	w.log("WhatsApp.GetQRCode: Returning QR code (length: %d, empty: %v)\n", len(w.latestQRCode), w.latestQRCode == "")
 	if w.latestQRCode == "" {
-		fmt.Printf("WhatsApp.GetQRCode: WARNING - QR code is empty. IsAuthenticated=%v, client.Store.ID=%v\n",
+		w.log("WhatsApp.GetQRCode: WARNING - QR code is empty. IsAuthenticated=%v, client.Store.ID=%v\n",
 			w.IsAuthenticated(), w.client != nil && w.client.Store != nil && w.client.Store.ID != nil)
 	}
 	return w.latestQRCode, nil
@@ -347,14 +373,14 @@ func (w *WhatsAppProvider) Connect() error {
 	if w.client.IsConnected() {
 		if w.client.Store.ID == nil {
 			// Connected but not authenticated - disconnect to allow QR code flow
-			fmt.Println("WhatsApp: Client is connected but not authenticated, disconnecting to allow QR code flow...")
+			w.log("WhatsApp: Client is connected but not authenticated, disconnecting to allow QR code flow...\n")
 			w.client.Disconnect()
 			// Reset QR channel state
 			w.qrChanSet = false
 			w.qrChan = nil
 		} else {
 			// Already connected and authenticated
-			fmt.Printf("WhatsApp: Already connected and logged in as %s\n", w.client.Store.ID)
+			w.log("WhatsApp: Already connected and logged in as %s\n", w.client.Store.ID)
 			return nil
 		}
 	}
@@ -362,23 +388,23 @@ func (w *WhatsAppProvider) Connect() error {
 	// If not logged in, get QR code channel BEFORE connecting
 	// According to whatsmeow docs, GetQRChannel MUST be called before Connect()
 	if w.client.Store.ID == nil {
-		fmt.Printf("WhatsApp.Connect: Client not authenticated (Store.ID is nil), will get QR channel\n")
+		w.log("WhatsApp.Connect: Client not authenticated (Store.ID is nil), will get QR channel\n")
 		// Always get a fresh QR channel if not already set
 		if !w.qrChanSet {
-			fmt.Printf("WhatsApp.Connect: Getting QR channel...\n")
+			w.log("WhatsApp.Connect: Getting QR channel...\n")
 			qrChan, err := w.client.GetQRChannel(w.ctx)
 			if err != nil {
-				fmt.Printf("WhatsApp.Connect: ERROR - Failed to get QR channel: %v\n", err)
+				w.log("WhatsApp.Connect: ERROR - Failed to get QR channel: %v\n", err)
 				return fmt.Errorf("failed to get QR channel: %w", err)
 			}
 			w.qrChan = qrChan
 			w.qrChanSet = true
-			fmt.Println("WhatsApp: QR channel obtained successfully")
+			w.log("WhatsApp: QR channel obtained successfully\n")
 		} else {
-			fmt.Printf("WhatsApp.Connect: QR channel already set, reusing existing channel\n")
+			w.log("WhatsApp.Connect: QR channel already set, reusing existing channel\n")
 		}
 
-		fmt.Println("WhatsApp: Starting to listen for QR events...")
+		w.log("WhatsApp: Starting to listen for QR events...\n")
 
 		// Start goroutine to handle QR code updates
 		go func() {
@@ -387,12 +413,12 @@ func (w *WhatsAppProvider) Connect() error {
 				select {
 				case <-w.ctx.Done():
 					// Provider was disconnected, exit goroutine
-					fmt.Printf("WhatsApp: QR code handler goroutine exiting - context cancelled\n")
+					w.log("WhatsApp: QR code handler goroutine exiting - context cancelled\n")
 					return
 				case evt, ok := <-w.qrChan:
 					if !ok {
 						// Channel closed, exit goroutine
-						fmt.Printf("WhatsApp: QR code channel closed, exiting handler goroutine\n")
+						w.log("WhatsApp: QR code channel closed, exiting handler goroutine\n")
 						return
 					}
 
@@ -407,18 +433,18 @@ func (w *WhatsAppProvider) Connect() error {
 							qrCodeCount++
 							// Only log the first QR code and every 10th update to reduce log spam
 							if qrCodeCount == 1 || qrCodeCount%10 == 0 {
-								fmt.Printf("WhatsApp: QR code updated (update #%d, expires in ~30 seconds)\n", qrCodeCount)
+								w.log("WhatsApp: QR code updated (update #%d, expires in ~30 seconds)\n", qrCodeCount)
 							}
 						}
 					} else if evt.Event == "success" {
-						fmt.Println("WhatsApp: ✅ QR code scanned successfully! Login in progress...")
+						w.log("WhatsApp: ✅ QR code scanned successfully! Login in progress...\n")
 						w.qrMu.Lock()
 						w.latestQRCode = ""
 						w.qrMu.Unlock()
 						// Don't return here, wait for the connection to complete
 						// The Connected event will be received via eventHandler
 					} else if evt.Event == "timeout" {
-						fmt.Println("WhatsApp: ⏱️ QR code expired. Please reconnect to get a new one.")
+						w.log("WhatsApp: ⏱️ QR code expired. Please reconnect to get a new one.\n")
 						w.qrMu.Lock()
 						w.latestQRCode = ""
 						w.qrMu.Unlock()
@@ -430,30 +456,30 @@ func (w *WhatsAppProvider) Connect() error {
 						w.mu.Unlock()
 					} else {
 						// Only log unknown events, not every code update
-						fmt.Printf("WhatsApp: QR channel event: %s\n", evt.Event)
+						w.log("WhatsApp: QR channel event: %s\n", evt.Event)
 					}
 				}
 			}
 		}()
 	} else {
-		fmt.Printf("WhatsApp: Already logged in as %s, no QR code needed\n", w.client.Store.ID)
-		fmt.Printf("WhatsApp.Connect: WARNING - Client is authenticated, QR code will not be generated\n")
+		w.log("WhatsApp: Already logged in as %s, no QR code needed\n", w.client.Store.ID)
+		w.log("WhatsApp.Connect: WARNING - Client is authenticated, QR code will not be generated\n")
 	}
 
 	// Connect (this must be called after getting the QR channel)
 	// Note: GetQRChannel must be called before Connect() according to whatsmeow docs
-	fmt.Println("WhatsApp: Attempting to connect client...")
+	w.log("WhatsApp: Attempting to connect client...\n")
 	if err := w.client.Connect(); err != nil {
 		// Check if error is because already connected
 		if err.Error() == "websocket is already connected" {
-			fmt.Println("WhatsApp: Client is already connected, skipping Connect()")
+			w.log("WhatsApp: Client is already connected, skipping Connect()\n")
 			return nil
 		}
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	fmt.Println("WhatsApp: Client connected, waiting for QR scan...")
-	fmt.Println("WhatsApp: IMPORTANT - Make sure to scan the QR code using WhatsApp > Settings > Linked Devices on your phone")
+	w.log("WhatsApp: Client connected, waiting for QR scan...\n")
+	w.log("WhatsApp: IMPORTANT - Make sure to scan the QR code using WhatsApp > Settings > Linked Devices on your phone\n")
 
 	return nil
 }
@@ -466,6 +492,8 @@ func (w *WhatsAppProvider) Disconnect() error {
 		// Already disconnected, skip
 		return nil
 	}
+
+	w.log("WhatsApp: Disconnecting...\n")
 
 	if w.client != nil {
 		w.client.Disconnect()
@@ -493,6 +521,14 @@ func (w *WhatsAppProvider) Disconnect() error {
 	w.disconnected = true
 	w.qrChanSet = false
 	w.qrChan = nil
+
+	// Close logger
+	if w.logger != nil {
+		w.logger.Close()
+		w.logger = nil
+	}
+
+	w.log("WhatsApp: Disconnected\n")
 	return nil
 }
 

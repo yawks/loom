@@ -72,9 +72,11 @@ func (e TypingEvent) Type() EventType {
 
 // ContactStatusEvent represents a change in contact status (online/offline, last seen, etc.).
 type ContactStatusEvent struct {
-	UserID   string // Protocol user ID
-	Status   string // "online", "offline", "away", "busy", etc.
-	LastSeen *int64 // Unix timestamp of last seen (nil if not available)
+	UserID      string // Protocol user ID
+	Status      string // "online", "offline", "away", "busy", etc.
+	LastSeen    *int64 // Unix timestamp of last seen (nil if not available)
+	StatusEmoji string // Emoji associated with the status (e.g., ":calendar:", "📅")
+	StatusText  string // Status text (e.g., "en réunion", "in a meeting")
 }
 
 // Type returns the event type for ContactStatusEvent.

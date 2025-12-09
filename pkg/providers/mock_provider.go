@@ -3,6 +3,7 @@ package providers
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/logging"
 	"Loom/pkg/models"
 	cryptoRand "crypto/rand"
 	"fmt"
@@ -24,6 +25,7 @@ type MockProvider struct {
 	config        core.ProviderConfig
 	mu            sync.RWMutex
 	disconnected  bool // Track if already disconnected
+	logger        *logging.ProviderLogger
 }
 
 var loremIpsum = []string{
@@ -57,17 +59,42 @@ func NewMockProvider() *MockProvider {
 	}
 }
 
+func (m *MockProvider) log(format string, args ...interface{}) {
+	if m.logger != nil {
+		m.logger.Logf(format, args...)
+	} else {
+		// Fallback to fmt.Printf if logger not initialized
+		fmt.Printf(format, args...)
+	}
+}
+
 // Init initializes the mock provider with fake data.
 func (m *MockProvider) Init(config core.ProviderConfig) error {
-	fmt.Println("MockProvider: Initializing...")
 	if config != nil {
 		m.config = config
 	} else {
 		m.config = make(core.ProviderConfig)
 	}
+
+	// Get instanceID for logger initialization
+	instanceID, _ := m.config["_instance_id"].(string)
+	if instanceID == "" {
+		instanceID = "mock-1" // Default instance ID
+	}
+
+	// Initialize logger
+	logger, err := logging.GetLogger("mock", instanceID)
+	if err != nil {
+		// Log error but continue - fallback to fmt.Printf
+		fmt.Printf("MockProvider.Init: WARNING - failed to initialize logger: %v\n", err)
+	} else {
+		m.logger = logger
+	}
+
+	m.log("MockProvider: Initializing...\n")
 	m.generateFakeData()
 	go m.simulateRealtimeEvents()
-	fmt.Println("MockProvider: Initialized.")
+	m.log("MockProvider: Initialized.\n")
 	return nil
 }
 
@@ -94,9 +121,9 @@ func (m *MockProvider) IsAuthenticated() bool {
 
 // Connect simulates a connection to the mock provider.
 func (m *MockProvider) Connect() error {
-	fmt.Println("MockProvider: 'Connecting'...")
+	m.log("MockProvider: 'Connecting'...\n")
 	time.Sleep(500 * time.Millisecond) // Simulate a network connection
-	fmt.Println("MockProvider: 'Connected'.")
+	m.log("MockProvider: 'Connected'.\n")
 	return nil
 }
 
@@ -110,7 +137,7 @@ func (m *MockProvider) Disconnect() error {
 		return nil
 	}
 
-	fmt.Println("MockProvider: 'Disconnecting'...")
+	m.log("MockProvider: 'Disconnecting'...\n")
 
 	// Close channels safely
 	select {
@@ -128,13 +155,20 @@ func (m *MockProvider) Disconnect() error {
 	}
 
 	m.disconnected = true
-	fmt.Println("MockProvider: 'Disconnected'.")
+
+	// Close logger
+	if m.logger != nil {
+		m.logger.Close()
+		m.logger = nil
+	}
+
+	m.log("MockProvider: 'Disconnected'.\n")
 	return nil
 }
 
 // SyncHistory simulates syncing message history since a given time.
 func (m *MockProvider) SyncHistory(since time.Time) error {
-	fmt.Printf("MockProvider: Syncing history since %v...\n", since)
+	m.log("MockProvider: Syncing history since %v...\n", since)
 	// TODO: Integrate logic here for `whatsmeow` or `slack-go` to fetch history.
 	return nil
 }
@@ -146,7 +180,7 @@ func (m *MockProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 
 // SendMessage sends a text message (optionally with a file attachment) to a conversation.
 func (m *MockProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
-	fmt.Printf("MockProvider: Sending message '%s' to conv %s\n", text, conversationID)
+	m.log("MockProvider: Sending message '%s' to conv %s\n", text, conversationID)
 
 	body := text
 	if file != nil {
@@ -223,7 +257,7 @@ func (m *MockProvider) SendMessage(conversationID string, text string, file *cor
 
 // SendReply sends a text message as a reply to another message.
 func (m *MockProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
-	fmt.Printf("MockProvider: Sending reply '%s' to message %s in conv %s\n", text, quotedMessageID, conversationID)
+	m.log("MockProvider: Sending reply '%s' to message %s in conv %s\n", text, quotedMessageID, conversationID)
 
 	// Find the quoted message
 	var quotedMessage *models.Message
@@ -265,7 +299,7 @@ func (m *MockProvider) SendReply(conversationID string, text string, quotedMessa
 
 // SendFile sends a file to a conversation without text.
 func (m *MockProvider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
-	fmt.Printf("MockProvider: Sending file '%s' to conv %s\n", file.FileName, conversationID)
+	m.log("MockProvider: Sending file '%s' to conv %s\n", file.FileName, conversationID)
 
 	newMessage := models.Message{
 		ProtocolMsgID:  fmt.Sprintf("mock-file-%d", secureRandInt(100000)),
@@ -367,7 +401,7 @@ func (m *MockProvider) DeleteMessage(conversationID string, messageID string) er
 
 // GetThreads loads all messages in a discussion thread from a parent message ID.
 func (m *MockProvider) GetThreads(parentMessageID string) ([]models.Message, error) {
-	fmt.Printf("MockProvider: Getting threads for message %s\n", parentMessageID)
+	m.log("MockProvider: Getting threads for message %s\n", parentMessageID)
 	// Find all messages that have this message as their ThreadID
 	var threadMessages []models.Message
 	for _, messages := range m.messages {
@@ -405,7 +439,7 @@ func (m *MockProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 // GetConversationHistory retrieves the message history for a specific conversation.
 func (m *MockProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
-	fmt.Printf("MockProvider: Getting conversation history for %s (limit: %d, beforeTimestamp: %v)\n", conversationID, limit, beforeTimestamp)
+	m.log("MockProvider: Getting conversation history for %s (limit: %d, beforeTimestamp: %v)\n", conversationID, limit, beforeTimestamp)
 
 	messages, ok := m.messages[conversationID]
 	if !ok {
@@ -501,7 +535,7 @@ func (m *MockProvider) generateFakeData() {
 
 // AddReaction adds a reaction (emoji) to a message.
 func (m *MockProvider) AddReaction(conversationID string, messageID string, emoji string) error {
-	fmt.Printf("MockProvider: Adding reaction %s to message %s in conv %s\n", emoji, messageID, conversationID)
+	m.log("MockProvider: Adding reaction %s to message %s in conv %s\n", emoji, messageID, conversationID)
 
 	// Find the message and add reaction
 	for convID, messages := range m.messages {
@@ -537,7 +571,7 @@ func (m *MockProvider) AddReaction(conversationID string, messageID string, emoj
 
 // RemoveReaction removes a reaction (emoji) from a message.
 func (m *MockProvider) RemoveReaction(conversationID string, messageID string, emoji string) error {
-	fmt.Printf("MockProvider: Removing reaction %s from message %s in conv %s\n", emoji, messageID, conversationID)
+	m.log("MockProvider: Removing reaction %s from message %s in conv %s\n", emoji, messageID, conversationID)
 
 	// Remove reaction from storage
 	reactions, ok := m.reactions[messageID]
@@ -568,7 +602,7 @@ func (m *MockProvider) RemoveReaction(conversationID string, messageID string, e
 
 // SendTypingIndicator sends a typing indicator to a conversation.
 func (m *MockProvider) SendTypingIndicator(conversationID string, isTyping bool) error {
-	fmt.Printf("MockProvider: Sending typing indicator (isTyping: %v) to conv %s\n", isTyping, conversationID)
+	m.log("MockProvider: Sending typing indicator (isTyping: %v) to conv %s\n", isTyping, conversationID)
 
 	// Emit typing event
 	m.eventChan <- core.TypingEvent{
@@ -584,7 +618,7 @@ func (m *MockProvider) SendTypingIndicator(conversationID string, isTyping bool)
 
 // CreateGroup creates a new group conversation.
 func (m *MockProvider) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
-	fmt.Printf("MockProvider: Creating group '%s' with %d participants\n", groupName, len(participantIDs))
+	m.log("MockProvider: Creating group '%s' with %d participants\n", groupName, len(participantIDs))
 
 	groupID := fmt.Sprintf("group-%s-%d", strings.ToLower(strings.ReplaceAll(groupName, " ", "-")), secureRandInt(10000))
 	conv := models.Conversation{
@@ -611,7 +645,7 @@ func (m *MockProvider) CreateGroup(groupName string, participantIDs []string) (*
 
 // UpdateGroupName updates the name of a group.
 func (m *MockProvider) UpdateGroupName(conversationID string, newName string) error {
-	fmt.Printf("MockProvider: Updating group name to '%s' for conv %s\n", newName, conversationID)
+	m.log("MockProvider: Updating group name to '%s' for conv %s\n", newName, conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -637,7 +671,7 @@ func (m *MockProvider) UpdateGroupName(conversationID string, newName string) er
 
 // AddGroupParticipants adds participants to a group.
 func (m *MockProvider) AddGroupParticipants(conversationID string, participantIDs []string) error {
-	fmt.Printf("MockProvider: Adding %d participants to group %s\n", len(participantIDs), conversationID)
+	m.log("MockProvider: Adding %d participants to group %s\n", len(participantIDs), conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -662,7 +696,7 @@ func (m *MockProvider) AddGroupParticipants(conversationID string, participantID
 
 // RemoveGroupParticipants removes participants from a group.
 func (m *MockProvider) RemoveGroupParticipants(conversationID string, participantIDs []string) error {
-	fmt.Printf("MockProvider: Removing %d participants from group %s\n", len(participantIDs), conversationID)
+	m.log("MockProvider: Removing %d participants from group %s\n", len(participantIDs), conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -687,7 +721,7 @@ func (m *MockProvider) RemoveGroupParticipants(conversationID string, participan
 
 // LeaveGroup leaves a group conversation.
 func (m *MockProvider) LeaveGroup(conversationID string) error {
-	fmt.Printf("MockProvider: Leaving group %s\n", conversationID)
+	m.log("MockProvider: Leaving group %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -710,7 +744,7 @@ func (m *MockProvider) LeaveGroup(conversationID string) error {
 
 // PromoteGroupAdmins promotes participants to admin in a group.
 func (m *MockProvider) PromoteGroupAdmins(conversationID string, participantIDs []string) error {
-	fmt.Printf("MockProvider: Promoting %d participants to admin in group %s\n", len(participantIDs), conversationID)
+	m.log("MockProvider: Promoting %d participants to admin in group %s\n", len(participantIDs), conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -735,7 +769,7 @@ func (m *MockProvider) PromoteGroupAdmins(conversationID string, participantIDs 
 
 // DemoteGroupAdmins demotes admins to regular participants in a group.
 func (m *MockProvider) DemoteGroupAdmins(conversationID string, participantIDs []string) error {
-	fmt.Printf("MockProvider: Demoting %d admins in group %s\n", len(participantIDs), conversationID)
+	m.log("MockProvider: Demoting %d admins in group %s\n", len(participantIDs), conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -760,7 +794,7 @@ func (m *MockProvider) DemoteGroupAdmins(conversationID string, participantIDs [
 
 // GetGroupParticipants returns the list of participants in a group.
 func (m *MockProvider) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
-	fmt.Printf("MockProvider: Getting participants for group %s\n", conversationID)
+	m.log("MockProvider: Getting participants for group %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -806,7 +840,7 @@ func (m *MockProvider) GetContactName(contactID string) (string, error) {
 
 // CreateGroupInviteLink creates an invite link for a group.
 func (m *MockProvider) CreateGroupInviteLink(conversationID string) (string, error) {
-	fmt.Printf("MockProvider: Creating invite link for group %s\n", conversationID)
+	m.log("MockProvider: Creating invite link for group %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -822,7 +856,7 @@ func (m *MockProvider) CreateGroupInviteLink(conversationID string) (string, err
 
 // RevokeGroupInviteLink revokes the current invite link for a group.
 func (m *MockProvider) RevokeGroupInviteLink(conversationID string) error {
-	fmt.Printf("MockProvider: Revoking invite link for group %s\n", conversationID)
+	m.log("MockProvider: Revoking invite link for group %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -865,7 +899,7 @@ func (m *MockProvider) JoinGroupByInviteLink(inviteLink string) (*models.Convers
 
 // JoinGroupByInviteMessage joins a group using an invite message.
 func (m *MockProvider) JoinGroupByInviteMessage(inviteMessageID string) (*models.Conversation, error) {
-	fmt.Printf("MockProvider: Joining group via invite message: %s\n", inviteMessageID)
+	m.log("MockProvider: Joining group via invite message: %s\n", inviteMessageID)
 
 	// Similar to JoinGroupByInviteLink
 	return m.JoinGroupByInviteLink(fmt.Sprintf("invite-from-msg-%s", inviteMessageID))
@@ -875,7 +909,7 @@ func (m *MockProvider) JoinGroupByInviteMessage(inviteMessageID string) (*models
 
 // MarkMessageAsRead marks a message as read.
 func (m *MockProvider) MarkMessageAsRead(conversationID string, messageID string) error {
-	fmt.Printf("MockProvider: Marking message %s as read in conv %s\n", messageID, conversationID)
+	m.log("MockProvider: Marking message %s as read in conv %s\n", messageID, conversationID)
 
 	// Emit receipt event
 	m.eventChan <- core.ReceiptEvent{
@@ -891,7 +925,7 @@ func (m *MockProvider) MarkMessageAsRead(conversationID string, messageID string
 
 // MarkMessageAsPlayed marks a voice message as played (listened to).
 func (m *MockProvider) MarkMessageAsPlayed(conversationID string, messageID string) error {
-	fmt.Printf("MockProvider: Marking message %s as played in conv %s\n", messageID, conversationID)
+	m.log("MockProvider: Marking message %s as played in conv %s\n", messageID, conversationID)
 
 	// Emit receipt event
 	m.eventChan <- core.ReceiptEvent{
@@ -907,7 +941,7 @@ func (m *MockProvider) MarkMessageAsPlayed(conversationID string, messageID stri
 
 // MarkConversationAsRead marks all messages in a conversation as read.
 func (m *MockProvider) MarkConversationAsRead(conversationID string) error {
-	fmt.Printf("MockProvider: Marking all messages as read in conv %s\n", conversationID)
+	m.log("MockProvider: Marking all messages as read in conv %s\n", conversationID)
 
 	messages, ok := m.messages[conversationID]
 	if !ok {
@@ -928,7 +962,7 @@ func (m *MockProvider) MarkConversationAsRead(conversationID string) error {
 
 // PinConversation pins a conversation.
 func (m *MockProvider) PinConversation(conversationID string) error {
-	fmt.Printf("MockProvider: Pinning conversation %s\n", conversationID)
+	m.log("MockProvider: Pinning conversation %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -943,7 +977,7 @@ func (m *MockProvider) PinConversation(conversationID string) error {
 
 // UnpinConversation unpins a conversation.
 func (m *MockProvider) UnpinConversation(conversationID string) error {
-	fmt.Printf("MockProvider: Unpinning conversation %s\n", conversationID)
+	m.log("MockProvider: Unpinning conversation %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -958,7 +992,7 @@ func (m *MockProvider) UnpinConversation(conversationID string) error {
 
 // MuteConversation mutes a conversation.
 func (m *MockProvider) MuteConversation(conversationID string) error {
-	fmt.Printf("MockProvider: Muting conversation %s\n", conversationID)
+	m.log("MockProvider: Muting conversation %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -973,7 +1007,7 @@ func (m *MockProvider) MuteConversation(conversationID string) error {
 
 // UnmuteConversation unmutes a conversation.
 func (m *MockProvider) UnmuteConversation(conversationID string) error {
-	fmt.Printf("MockProvider: Unmuting conversation %s\n", conversationID)
+	m.log("MockProvider: Unmuting conversation %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -988,7 +1022,7 @@ func (m *MockProvider) UnmuteConversation(conversationID string) error {
 
 // GetConversationState returns the state of a conversation (pin/mute status, etc.).
 func (m *MockProvider) GetConversationState(conversationID string) (*models.Conversation, error) {
-	fmt.Printf("MockProvider: Getting conversation state for %s\n", conversationID)
+	m.log("MockProvider: Getting conversation state for %s\n", conversationID)
 
 	conv, ok := m.conversations[conversationID]
 	if !ok {
@@ -1002,7 +1036,7 @@ func (m *MockProvider) GetConversationState(conversationID string) (*models.Conv
 
 // SendRetryReceipt sends a retry receipt when message decryption fails.
 func (m *MockProvider) SendRetryReceipt(conversationID string, messageID string) error {
-	fmt.Printf("MockProvider: Sending retry receipt for message %s in conv %s\n", messageID, conversationID)
+	m.log("MockProvider: Sending retry receipt for message %s in conv %s\n", messageID, conversationID)
 
 	// Emit retry receipt event
 	m.eventChan <- core.RetryReceiptEvent{
@@ -1019,7 +1053,7 @@ func (m *MockProvider) SendRetryReceipt(conversationID string, messageID string)
 
 // SendStatusMessage sends a status message (broadcast to all contacts).
 func (m *MockProvider) SendStatusMessage(text string, file *core.Attachment) (*models.Message, error) {
-	fmt.Printf("MockProvider: Sending status message: %s\n", text)
+	m.log("MockProvider: Sending status message: %s\n", text)
 
 	body := text
 	if file != nil {
