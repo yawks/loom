@@ -120,6 +120,30 @@ func (a *App) startup(ctx context.Context) {
 		return providers.NewWhatsAppProvider()
 	})
 
+	a.providerManager.RegisterProvider("slack", core.ProviderInfo{
+		ID:          "slack",
+		Name:        "Slack",
+		Description: "Slack messaging provider",
+		ConfigSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"token": map[string]interface{}{
+					"type":        "string",
+					"title":       "Auth Token",
+					"description": "Bot (xoxb-), User (xoxp-), or Client (xoxc-) Token",
+				},
+				"d_cookie": map[string]interface{}{
+					"type":        "string",
+					"title":       "d Cookie (Optional)",
+					"description": "Required for Client Tokens (xoxc). Enter the 'd' cookie value (starts with xoxd-).",
+				},
+			},
+			"required": []string{"token"},
+		},
+	}, func() core.Provider {
+		return providers.NewSlackProvider()
+	})
+
 	// Load and restore providers from database
 	configs, err := a.providerManager.LoadProviderConfigs()
 	if err != nil {
@@ -764,12 +788,18 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 			// Check if current avatar is dicebear fallback
 			isDicebear := strings.HasPrefix(meta.AvatarURL, "https://api.dicebear.com/") || meta.AvatarURL == ""
 			if isDicebear {
-				// Check if file exists before trying to convert
-				if _, err := os.Stat(acc.AvatarURL); err == nil {
-					// Convert local file path to base64 data URL
-					avatarURL := a.GetAvatar(acc.AvatarURL)
-					if avatarURL != "" {
-						meta.AvatarURL = avatarURL
+				// Check if it's an HTTP/HTTPS URL (e.g., Slack avatars)
+				if strings.HasPrefix(acc.AvatarURL, "http://") || strings.HasPrefix(acc.AvatarURL, "https://") {
+					// Use the URL directly for HTTP/HTTPS avatars
+					meta.AvatarURL = acc.AvatarURL
+				} else {
+					// Check if file exists before trying to convert (local file path)
+					if _, err := os.Stat(acc.AvatarURL); err == nil {
+						// Convert local file path to base64 data URL
+						avatarURL := a.GetAvatar(acc.AvatarURL)
+						if avatarURL != "" {
+							meta.AvatarURL = avatarURL
+						}
 					}
 				}
 			}
@@ -903,6 +933,7 @@ func (a *App) saveContactsToDatabase(linkedAccounts []models.LinkedAccount) erro
 		if acc.AvatarURL != "" {
 			isDicebear := strings.HasPrefix(metaContact.AvatarURL, "https://api.dicebear.com/") || metaContact.AvatarURL == ""
 			if isDicebear {
+				// For HTTP/HTTPS URLs, use directly; for local files, use as-is (will be converted later if needed)
 				metaContact.AvatarURL = acc.AvatarURL
 			}
 		}
@@ -1399,6 +1430,33 @@ func (a *App) GetAttachmentData(filePath string) (string, error) {
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
 }
 
+// GetSlackEmojiURL returns the URL for a Slack emoji given the provider instance ID and emoji name
+// emojiName can be with or without colons (e.g., ":calendar:" or "calendar")
+func (a *App) GetSlackEmojiURL(providerInstanceID string, emojiName string) string {
+	if a.providerManager == nil || providerInstanceID == "" {
+		fmt.Printf("[App.GetSlackEmojiURL] ERROR: providerManager is nil or providerInstanceID is empty (providerInstanceID: %s)\n", providerInstanceID)
+		return ""
+	}
+
+	provider, err := a.providerManager.GetProvider(providerInstanceID)
+	if err != nil || provider == nil {
+		fmt.Printf("[App.GetSlackEmojiURL] ERROR: failed to get provider %s: %v\n", providerInstanceID, err)
+		return ""
+	}
+
+	// Check if provider has GetEmojiURL method using type assertion
+	if slackProvider, ok := provider.(interface {
+		GetEmojiURL(string) string
+	}); ok {
+		url := slackProvider.GetEmojiURL(emojiName)
+		fmt.Printf("[App.GetSlackEmojiURL] providerInstanceID=%s, emojiName=%s -> url=%s\n", providerInstanceID, emojiName, url)
+		return url
+	}
+
+	fmt.Printf("[App.GetSlackEmojiURL] ERROR: provider %s does not implement GetEmojiURL method\n", providerInstanceID)
+	return ""
+}
+
 // GetAvatar reads an avatar file and returns it as a base64 data URL.
 // If the path is empty or the file doesn't exist, returns empty string.
 func (a *App) GetAvatar(filePath string) string {
@@ -1483,26 +1541,44 @@ func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 // instanceName is optional - if empty, a default name will be generated.
 // If existingInstanceID is provided and not empty (for edit mode), it will be used instead of generating a new one.
 func (a *App) CreateProvider(providerID string, config core.ProviderConfig, instanceName string, existingInstanceID string) (string, error) {
+	log.Printf("CreateProvider: Starting for providerID=%s, instanceName=%s, existingInstanceID=%s", providerID, instanceName, existingInstanceID)
 	instanceID, provider, err := a.providerManager.CreateProvider(providerID, config, instanceName, existingInstanceID)
 	if err != nil {
+		log.Printf("CreateProvider: ERROR - failed to create provider: %v", err)
 		return "", err
 	}
+	log.Printf("CreateProvider: Provider created successfully with instanceID=%s", instanceID)
 
 	// If this is the first provider or we want to switch, make it active
 	if a.provider == nil {
+		log.Printf("CreateProvider: First provider, connecting and making active")
 		if err := provider.Connect(); err != nil {
+			log.Printf("CreateProvider: ERROR - failed to connect first provider: %v", err)
 			return instanceID, fmt.Errorf("failed to connect provider: %w", err)
 		}
 		a.provider = provider
 		a.providerManager.SetActiveProvider(instanceID)
+		log.Printf("CreateProvider: First provider connected and set as active")
 	} else {
-		// For additional providers, still call Connect() if not authenticated
-		// This ensures QR code is generated for new instances
-		if !provider.IsAuthenticated() {
+		// For additional providers, check if authenticated
+		isAuth := provider.IsAuthenticated()
+		log.Printf("CreateProvider: Additional provider, IsAuthenticated=%v", isAuth)
+		if isAuth {
+			log.Printf("CreateProvider: Provider %s is authenticated, calling Connect() to verify credentials", instanceID)
+			if err := provider.Connect(); err != nil {
+				log.Printf("CreateProvider: ERROR - failed to verify provider credentials: %v", err)
+				// If credentials are provided but invalid, we should return an error
+				return instanceID, fmt.Errorf("failed to verify provider credentials: %w", err)
+			}
+			log.Printf("CreateProvider: Provider %s credentials verified successfully", instanceID)
+		} else {
+			// If not authenticated (needs QR), try to connect to generating QR code
 			log.Printf("CreateProvider: Provider %s is not authenticated, calling Connect() to generate QR code", instanceID)
 			if err := provider.Connect(); err != nil {
 				log.Printf("CreateProvider: Warning - Failed to connect provider %s: %v (QR code may not be available)", instanceID, err)
-				// Don't return error, allow provider creation to succeed
+				// Don't return error here as we might just be waiting for QR scan
+			} else {
+				log.Printf("CreateProvider: Provider %s connected (waiting for QR scan)", instanceID)
 			}
 		}
 	}

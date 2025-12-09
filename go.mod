@@ -5,6 +5,7 @@ go 1.24.9
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/slack-go/slack v0.17.3
 	github.com/wailsapp/wails/v2 v2.11.0
 	go.mau.fi/whatsmeow v0.0.0-20251120135021-071293c6b9f0
 	golang.org/x/image v0.33.0
