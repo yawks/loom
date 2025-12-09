@@ -12,6 +12,7 @@ interface MessageTextProps {
   emojiSize?: number;
   isSlack?: boolean; // If true, use Slack emoji parsing
   preview?: boolean; // If true, render as preview (no blue links, single line)
+  isFromMe?: boolean; // If true, message is from current user (for link color contrast)
 }
 
 /**
@@ -26,6 +27,7 @@ export function MessageText({
   emojiSize = 16,
   isSlack = false,
   preview = false,
+  isFromMe = false,
 }: MessageTextProps) {
   if (!text || text.trim() === "") {
     return null;
@@ -49,6 +51,7 @@ export function MessageText({
         className={className}
         emojiSize={emojiSize}
         preview={preview}
+        isFromMe={isFromMe}
       />
     );
   }
@@ -76,7 +79,11 @@ export function MessageText({
                 {...props}
                 href={href}
                 onClick={handleClick}
-                className="text-blue-500 hover:text-blue-600 hover:underline cursor-pointer"
+                className={
+                  isFromMe
+                    ? "text-blue-100 hover:text-white hover:underline cursor-pointer"
+                    : "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline cursor-pointer"
+                }
               >
                 {children}
               </a>
@@ -126,3 +133,4 @@ export function MessageText({
     </div>
   );
 }
+

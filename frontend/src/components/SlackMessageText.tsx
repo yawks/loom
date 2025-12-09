@@ -13,6 +13,7 @@ interface SlackMessageTextProps {
   className?: string;
   emojiSize?: number; // Size for emojis/avatars in pixels (default: 16)
   preview?: boolean; // If true, render as preview (no blue links, single line)
+  isFromMe?: boolean; // If true, message is from current user (for link color contrast)
 }
 
 /**
@@ -26,6 +27,7 @@ export function SlackMessageText({
   className = "",
   emojiSize = 16,
   preview = false,
+  isFromMe = false,
 }: SlackMessageTextProps) {
   const parsedContent = useMemo(() => {
     if (!text) return null;
@@ -137,7 +139,11 @@ export function SlackMessageText({
                   {...props}
                   href={href}
                   onClick={handleClick}
-                  className="text-blue-500 hover:text-blue-600 hover:underline cursor-pointer"
+                  className={
+                    isFromMe
+                      ? "text-blue-100 hover:text-white hover:underline cursor-pointer"
+                      : "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline cursor-pointer"
+                  }
                 >
                   {children}
                 </a>
@@ -263,7 +269,13 @@ export function SlackMessageText({
                         {...props}
                         href={href}
                         onClick={handleClick}
-                        className="text-blue-500 hover:text-blue-600 hover:underline cursor-pointer inline"
+                        className={
+                          isPreview
+                            ? ""
+                            : isFromMe
+                            ? "text-blue-100 hover:text-white hover:underline cursor-pointer inline"
+                            : "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline cursor-pointer inline"
+                        }
                       >
                         {children}
                       </a>
