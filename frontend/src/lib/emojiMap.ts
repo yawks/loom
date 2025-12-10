@@ -5255,6 +5255,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "squid": "🦑",
   "squiggle": "➰",
   "squinting_face_with_tongue": "😝",
+  "tuck_out_tongue": "😋",
   "squirrel": "🐿️",
   "squirt": "🔫",
   "sr": "🇸🇷",

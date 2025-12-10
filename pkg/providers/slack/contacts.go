@@ -172,3 +172,30 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	p.log("SlackProvider.GetContacts: Total contacts (users + channels): %d\n", len(contacts))
 	return contacts, nil
 }
+
+// GetContactName returns the display name for a Slack user ID.
+func (p *SlackProvider) GetContactName(contactID string) (string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.client == nil {
+		return "", fmt.Errorf("slack client not initialized")
+	}
+
+	// Get user info from Slack API
+	user, err := p.client.GetUserInfo(contactID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	// Use RealName if available, fallback to DisplayName, then Name
+	displayName := user.RealName
+	if displayName == "" && user.Profile.DisplayName != "" {
+		displayName = user.Profile.DisplayName
+	}
+	if displayName == "" {
+		displayName = user.Name
+	}
+
+	return displayName, nil
+}

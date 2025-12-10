@@ -1,11 +1,11 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
-import type { ReactElement } from "react";
+import React, { type ReactElement, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { SlackEmoji } from "./SlackEmoji";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { transformSlackUrls } from "../lib/utils";
-import { useMemo } from "react";
+import { cleanSlackEmoji } from "../lib/userDisplayNames";
 
 interface SlackMessageTextProps {
   text: string; // Message text that may contain Slack emojis/avatars (e.g., ":calendar:", ":avatar_name:")
@@ -32,11 +32,8 @@ export function SlackMessageText({
   const parsedContent = useMemo(() => {
     if (!text) return null;
 
-    console.log(`[SlackMessageText] Original text: "${text}"`);
-
     // First, transform Slack URLs to Markdown format
     let processedText = transformSlackUrls(text);
-    console.log(`[SlackMessageText] After URL transform: "${processedText}"`);
 
     // In preview mode, replace newlines with spaces to keep content on one line
     if (preview) {
@@ -44,16 +41,14 @@ export function SlackMessageText({
     }
 
     // Remove skin-tone modifiers from the text (they should not be displayed)
-    // Pattern: :skin-tone-2: through :skin-tone-6:
-    const textWithoutSkinTones = processedText.replace(/:skin-tone-[2-6]:/g, "");
-    console.log(`[SlackMessageText] After skin tone removal: "${textWithoutSkinTones}"`);
+    // Handles cases like ":+1::skin-tone-2:" -> ":+1:"
+    const textWithoutSkinTones = cleanSlackEmoji(processedText);
 
     // Use the text without skin tones for processing
     const textWithPreservedNewlines = textWithoutSkinTones;
 
     const parts: (string | ReactElement)[] = [];
     let lastIndex = 0;
-    let emojiCount = 0;
 
     // Find all emoji matches first to avoid regex state issues
     const matches: Array<{ index: number; match: RegExpExecArray }> = [];
@@ -65,18 +60,29 @@ export function SlackMessageText({
 
     // Process matches
     for (const { index, match: emojiMatch } of matches) {
-      emojiCount++;
-      console.log(`[SlackMessageText] Found emoji #${emojiCount}: "${emojiMatch[0]}" at index ${index}`);
       
       // Add text before the match (this includes any newlines)
+      // Convert newlines to <br /> elements so they render correctly
       if (index > lastIndex) {
         const textBefore = textWithPreservedNewlines.substring(lastIndex, index);
-        parts.push(textBefore);
+        // Split by newlines and add <br /> between them
+        const lines = textBefore.split("\n");
+        lines.forEach((line, lineIdx) => {
+          if (lineIdx > 0) {
+            parts.push(<br key={`br-${index}-${lineIdx}`} />);
+          }
+          if (line) {
+            parts.push(line);
+          }
+        });
       } else if (index === 0 && textWithPreservedNewlines.startsWith("\n")) {
         // Handle case where text starts with newline followed by emoji
         const leadingNewlines = textWithPreservedNewlines.match(/^(\n+)/)?.[1] || "";
         if (leadingNewlines) {
-          parts.push(leadingNewlines);
+          // Add <br /> for each newline
+          for (let i = 0; i < leadingNewlines.length; i++) {
+            parts.push(<br key={`br-start-${i}`} />);
+          }
           lastIndex = leadingNewlines.length;
           // Adjust the emoji index to account for the newlines we just added
           continue;
@@ -98,20 +104,26 @@ export function SlackMessageText({
       lastIndex = index + emojiMatch[0].length;
     }
 
-    console.log(`[SlackMessageText] Total emojis found: ${emojiCount}`);
-
     // Add remaining text after the last match
+    // Convert newlines to <br /> elements so they render correctly
     if (lastIndex < textWithPreservedNewlines.length) {
-      parts.push(textWithPreservedNewlines.substring(lastIndex));
+      const remainingText = textWithPreservedNewlines.substring(lastIndex);
+      const lines = remainingText.split("\n");
+      lines.forEach((line, lineIdx) => {
+        if (lineIdx > 0) {
+          parts.push(<br key={`br-end-${lineIdx}`} />);
+        }
+        if (line) {
+          parts.push(line);
+        }
+      });
     }
 
     // If no matches found, return the text with preserved newlines
     if (parts.length === 0) {
-      console.log(`[SlackMessageText] No emojis found, returning plain text`);
       return textWithPreservedNewlines;
     }
 
-    console.log(`[SlackMessageText] Returning ${parts.length} parts (text + emojis)`);
     return parts;
   }, [text, providerInstanceId, emojiSize, preview]);
 

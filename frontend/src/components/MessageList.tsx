@@ -1,4 +1,4 @@
-import { AddReaction, DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,15 +11,17 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ToastContainer, useToast } from "@/components/ui/toast";
+import { cleanSlackEmoji, getSenderDisplayName as getSenderDisplayNameUtil } from "@/lib/userDisplayNames";
 import { cn, timeToDate } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import { CallMessage } from "./CallMessage";
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
 import { Input } from "@/components/ui/input";
 import type { KeyboardEvent } from "react";
+import { AlertTriangle, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
@@ -27,7 +29,7 @@ import { MessageReactions } from "./MessageReactions";
 import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { TypingIndicator } from "./TypingIndicator";
-import type { models } from "../../wailsjs/go/models";
+import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
@@ -94,48 +96,6 @@ function getColorFromString(str: string): string {
   // Use a moderate saturation and lightness for good contrast
   // Adjust these values based on light/dark mode if needed
   return `hsl(${hue}, 70%, 50%)`;
-}
-
-// Get display name for a message sender
-function getSenderDisplayName(
-  senderName: string | undefined,
-  senderId: string,
-  isFromMe: boolean,
-  t: (key: string) => string
-): string {
-  if (isFromMe) return t("you") || "You";
-  if (senderName && senderName.trim().length > 0) {
-    return senderName;
-  }
-
-  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
-  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    // Format phone number with spaces for readability
-    // Example: 33631207926 -> +33 6 31 20 79 26
-    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French phone number format: +33 followed by 9 digits (without leading 0)
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      // Format as +33 X XX XX XX XX
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
-      return formatted;
-    } else {
-      // Other formats: add spaces every 2 digits
-      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
-      return `+${formatted}`;
-    }
-  }
-
-  // Fallback for other ID formats
-  return senderId
-    .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
 }
 
 // Wrapper function to use Wails with React Query's infinite query
@@ -475,16 +435,21 @@ export function MessageList({
     return undefined;
   }, [messages]);
 
-  // Load participant names for groups
+  // Load participant names for groups and reactions (even in 1-on-1 conversations)
   useEffect(() => {
-    if (!isGroupConversation || !conversationId) {
+    if (!conversationId) {
       return;
     }
     const loadParticipantNames = async () => {
       try {
-        // Get unique user IDs from reactions
+        // Get unique user IDs from reactions and messages
         const userIds = new Set<string>();
         messages.forEach((msg) => {
+          // Add sender IDs
+          if (msg.senderId) {
+            userIds.add(msg.senderId);
+          }
+          // Add reaction user IDs
           if (msg.reactions) {
             msg.reactions.forEach((reaction) => {
               userIds.add(reaction.userId);
@@ -515,23 +480,90 @@ export function MessageList({
       }
     };
     loadParticipantNames();
-  }, [isGroupConversation, conversationId, messages]);
+  }, [conversationId, messages]);
 
   // Handle reaction
   const handleReaction = useCallback(async (message: models.Message, emoji: string) => {
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
-    const hasReaction = messageReactions.some(
-      (r) => r.emoji === emoji && r.userId === currentUserId
+    
+    // For Slack, we need to clean both the emoji parameter and the stored reactions
+    // to properly compare them (because old reactions might have skin-tone modifiers)
+    const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
+    const cleanedEmoji = isSlack ? cleanSlackEmoji(emoji) : emoji;
+    
+    const hasReaction = messageReactions.some((r) => {
+      const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
+      return storedEmoji === cleanedEmoji && r.userId === currentUserId;
+    });
+
+    // Optimistic update: update the cache immediately
+    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+      { queryKey: ["messages", conversationId] },
+      (oldData: InfiniteData<models.Message[]> | undefined) => {
+        if (!oldData || !oldData.pages || !Array.isArray(oldData.pages)) {
+          return oldData;
+        }
+
+        const updatedPages = oldData.pages.map((page: models.Message[]) => {
+          if (!Array.isArray(page)) return page;
+          
+          return page.map((msg: models.Message) => {
+            if (msg.id === message.id || (msg.protocolMsgId === protocolMsgId && msg.protocolConvId === conversationId)) {
+              const currentReactions = msg.reactions || [];
+              let updatedReactions: models.Reaction[];
+              
+              if (hasReaction) {
+                // Remove reaction
+                updatedReactions = currentReactions.filter((r: models.Reaction) => {
+                  const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
+                  return !(storedEmoji === cleanedEmoji && r.userId === currentUserId);
+                });
+              } else {
+                // Add reaction
+                const reactionExists = currentReactions.some((r: models.Reaction) => {
+                  const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
+                  return storedEmoji === cleanedEmoji && r.userId === currentUserId;
+                });
+                
+                if (!reactionExists) {
+                  const newReaction = models.Reaction.createFrom({
+                    id: 0,
+                    messageId: msg.id,
+                    userId: currentUserId || "",
+                    emoji: cleanedEmoji,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                  });
+                  updatedReactions = [...currentReactions, newReaction];
+                } else {
+                  updatedReactions = currentReactions;
+                }
+              }
+              
+              return models.Message.createFrom({
+                ...msg,
+                reactions: updatedReactions,
+              });
+            }
+            return msg;
+          });
+        });
+
+        return {
+          ...oldData,
+          pages: updatedPages,
+        };
+      }
     );
 
     try {
       if (hasReaction) {
-        await RemoveReaction(conversationId, protocolMsgId, emoji);
+        await RemoveReaction(conversationId, protocolMsgId, cleanedEmoji);
       } else {
-        await AddReaction(conversationId, protocolMsgId, emoji);
+        await AddReaction(conversationId, protocolMsgId, cleanedEmoji);
       }
-      // Invalidate and refetch messages
+      // Refetch to ensure consistency with backend
       queryClient.invalidateQueries({
         queryKey: ["messages", conversationId],
       });
@@ -541,8 +573,108 @@ export function MessageList({
     } catch (error) {
       console.error("Failed to handle reaction:", error);
       showToast(t("error"), "error");
+      // Revert optimistic update on error
+      queryClient.invalidateQueries({
+        queryKey: ["messages", conversationId],
+      });
+      queryClient.refetchQueries({
+        queryKey: ["messages", conversationId],
+      });
     }
-  }, [conversationId, currentUserId, queryClient, t, showToast]);
+  }, [conversationId, currentUserId, queryClient, t, showToast, selectedConversation]);
+
+  // Retry a failed optimistic send
+  const handleRetrySend = useCallback(async (message: models.Message) => {
+    if (!conversationId) return;
+    const tempId = (message as any).tempId || message.protocolMsgId;
+    if (!tempId) return;
+
+    // Mark as sending locally
+    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+      { queryKey: ["messages", conversationId] },
+      (old) => {
+        if (!old || !old.pages) return old;
+        const updatedPages = old.pages.map((page) =>
+          Array.isArray(page)
+            ? page.map((msg) =>
+                (msg as any).tempId === tempId || msg.protocolMsgId === tempId
+                  ? ({ ...msg, localStatus: "sending" } as any)
+                  : msg
+              )
+            : page
+        );
+        return { ...old, pages: updatedPages };
+      }
+    );
+
+    try {
+      const result = message.quotedMessageId
+        ? await SendReply(conversationId, message.body, message.quotedMessageId)
+        : await SendMessage(conversationId, message.body);
+
+      // Replace temp with actual message
+      queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+        { queryKey: ["messages", conversationId] },
+        (old) => {
+          if (!old || !old.pages) return old;
+          const updatedPages = old.pages.map((page) =>
+            Array.isArray(page)
+              ? page
+                  .map((msg) =>
+                    (msg as any).tempId === tempId || msg.protocolMsgId === tempId ? result : msg
+                  )
+                  .sort(
+                    (a, b) =>
+                      timeToDate(b.timestamp).getTime() - timeToDate(a.timestamp).getTime()
+                  )
+              : page
+          );
+          return { ...old, pages: updatedPages };
+        }
+      );
+    } catch (error) {
+      console.error("Retry send failed:", error);
+      queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+        { queryKey: ["messages", conversationId] },
+        (old) => {
+          if (!old || !old.pages) return old;
+          const updatedPages = old.pages.map((page) =>
+            Array.isArray(page)
+              ? page.map((msg) =>
+                  (msg as any).tempId === tempId || msg.protocolMsgId === tempId
+                    ? ({ ...msg, localStatus: "error" } as any)
+                    : msg
+                )
+              : page
+          );
+          return { ...old, pages: updatedPages };
+        }
+      );
+    }
+  }, [conversationId, queryClient]);
+
+  // Delete a local optimistic message (after failed send)
+  const handleDeleteLocalMessage = useCallback((message: models.Message) => {
+    if (!conversationId) return;
+    const tempId = (message as any).tempId || message.protocolMsgId;
+    if (!tempId) return;
+
+    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+      { queryKey: ["messages", conversationId] },
+      (old) => {
+        if (!old || !old.pages) return old;
+        const updatedPages = old.pages.map((page) =>
+          Array.isArray(page)
+            ? page.filter(
+                (msg) =>
+                  (msg as any).tempId !== tempId && msg.protocolMsgId !== tempId
+              )
+            : page
+        );
+        return { ...old, pages: updatedPages };
+      }
+    );
+  }, [conversationId, queryClient]);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -1275,11 +1407,12 @@ export function MessageList({
                     const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
                     const threadCount = getThreadCount(message.protocolMsgId);
                     const hasThread = threadCount > 0;
-                    const displayName = getSenderDisplayName(
+                    const displayName = getSenderDisplayNameUtil(
                       message.senderName,
                       message.senderId,
                       message.isFromMe,
-                      t
+                      t,
+                      { participantNames, allMessages: mainMessages }
                     );
                     const isUnread = conversationReadState[messageId] === false;
                     const showUnreadDivider =
@@ -1297,6 +1430,10 @@ export function MessageList({
                       isDeleted && revealedDeletedMessages.has(messageId);
                     const showDeletedPlaceholder =
                       isDeleted && !isDeletedRevealed;
+                    const localStatus = (message as any).localStatus as
+                      | "sending"
+                      | "error"
+                      | undefined;
                     const baseBubbleColorClass = message.isFromMe
                       ? "bg-blue-600 text-white"
                       : "bg-muted text-foreground";
@@ -1317,6 +1454,8 @@ export function MessageList({
                       "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
                       isDeleted &&
                       "border-dashed border-destructive/60 cursor-pointer group"
+                    ,
+                      localStatus === "sending" && "opacity-75"
                     );
                     const deletedInteractionHandlers = isDeleted
                       ? {
@@ -1583,9 +1722,13 @@ export function MessageList({
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
-                                        .map((r) => r.emoji)}
+                                        .map((r) => {
+                                          const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
+                                          return isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
+                                        })}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
+                                      isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                     />
                                   </div>
                                 )}
@@ -1601,12 +1744,42 @@ export function MessageList({
                               {message.reactions && message.reactions.length > 0 && (
                                 <MessageReactions
                                   reactions={message.reactions}
-                                  isGroup={isGroupConversation}
                                   participantNames={participantNames}
                                   currentUserId={currentUserId}
                                   onReactionClick={(emoji) => handleReaction(message, emoji)}
                                   className={message.isFromMe ? "self-end" : "self-start"}
+                                  providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                  allMessages={mainMessages}
                                 />
+                              )}
+                              {message.isFromMe && localStatus === "sending" && (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground self-end">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  {t("sending") || "Envoi..."}
+                                </div>
+                              )}
+                              {message.isFromMe && localStatus === "error" && (
+                                <div className="flex items-center gap-3 text-xs text-destructive self-end">
+                                  <div className="flex items-center gap-1">
+                                    <AlertTriangle className="h-4 w-4" />
+                                    {t("send_failed") || "Échec de l'envoi"}
+                                  </div>
+                                  <button
+                                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                                    onClick={() => handleRetrySend(message)}
+                                  >
+                                    <RotateCcw className="h-4 w-4" />
+                                    {t("retry") || "Réessayer"}
+                                  </button>
+                                  <button
+                                    className="inline-flex items-center gap-1 text-muted-foreground hover:text-destructive"
+                                    onClick={() => handleDeleteLocalMessage(message)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                    {t("delete") || "Supprimer"}
+                                  </button>
+                                </div>
                               )}
                               <div className={message.isFromMe ? "self-end" : "self-start"}>
                                 <MessageStatus
@@ -1650,11 +1823,12 @@ export function MessageList({
                                 onClick={() =>
                                   handleAvatarClick(
                                     lastThreadMsg.senderAvatarUrl,
-                                    getSenderDisplayName(
+                                    getSenderDisplayNameUtil(
                                       lastThreadMsg.senderName,
                                       lastThreadMsg.senderId,
                                       lastThreadMsg.isFromMe,
-                                      t
+                                      t,
+                                      { participantNames, allMessages: mainMessages }
                                     )
                                   )
                                 }
@@ -1663,11 +1837,12 @@ export function MessageList({
                                 <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
                                   <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
                                   <AvatarFallback className="text-xs">
-                                    {getSenderDisplayName(
+                                    {getSenderDisplayNameUtil(
                                       lastThreadMsg.senderName,
                                       lastThreadMsg.senderId,
                                       lastThreadMsg.isFromMe,
-                                      t
+                                      t,
+                                      { participantNames, allMessages: mainMessages }
                                     )
                                       .substring(0, 2)
                                       .toUpperCase()}
@@ -1733,11 +1908,12 @@ export function MessageList({
                       prevMessage.isFromMe !== message.isFromMe ||
                       timeDiffMinutes >= 5 ||
                       shouldShowSenderForDeleted;
-                    const displayName = getSenderDisplayName(
+                    const displayName = getSenderDisplayNameUtil(
                       message.senderName,
                       message.senderId,
                       message.isFromMe,
-                      t
+                      t,
+                      { participantNames, allMessages: mainMessages }
                     );
                     const senderColor = getColorFromString(message.senderId);
                     const timeString = `${timestamp
@@ -1910,9 +2086,13 @@ export function MessageList({
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
-                                        .map((r) => r.emoji)}
+                                        .map((r) => {
+                                          const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
+                                          return isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
+                                        })}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
+                                      isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                     />
                                   </div>
                                 )}
@@ -2094,10 +2274,12 @@ export function MessageList({
                             {message.reactions && message.reactions.length > 0 && (
                               <MessageReactions
                                 reactions={message.reactions}
-                                isGroup={isGroupConversation}
                                 participantNames={participantNames}
                                 currentUserId={currentUserId}
                                 onReactionClick={(emoji) => handleReaction(message, emoji)}
+                                providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                allMessages={mainMessages}
                               />
                             )}
                             {isUnread && (
@@ -2116,11 +2298,12 @@ export function MessageList({
                               onClick={() =>
                                 handleAvatarClick(
                                   lastThreadMsg.senderAvatarUrl,
-                                  getSenderDisplayName(
+                                  getSenderDisplayNameUtil(
                                     lastThreadMsg.senderName,
                                     lastThreadMsg.senderId,
                                     lastThreadMsg.isFromMe,
-                                    t
+                                    t,
+                                    { participantNames, allMessages: mainMessages }
                                   )
                                 )
                               }
@@ -2129,11 +2312,12 @@ export function MessageList({
                               <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
                                 <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
                                 <AvatarFallback className="text-xs">
-                                  {getSenderDisplayName(
+                                  {getSenderDisplayNameUtil(
                                     lastThreadMsg.senderName,
                                     lastThreadMsg.senderId,
                                     lastThreadMsg.isFromMe,
-                                    t
+                                    t,
+                                    { participantNames, allMessages: mainMessages }
                                   )
                                     .substring(0, 2)
                                     .toUpperCase()}

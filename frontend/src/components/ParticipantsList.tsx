@@ -1,17 +1,19 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetGroupParticipants, GetParticipantNames, SetContactAlias } from "../../wailsjs/go/main/App";
-import { timeToDate } from "@/lib/utils";
 import { getProviderInstanceId, getStatusEmoji } from "@/lib/statusEmoji";
 import { useEffect, useMemo } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SlackEmoji } from "./SlackEmoji";
 import { X } from "lucide-react";
+import { getSenderDisplayName } from "@/lib/userDisplayNames";
 import type { models } from "../../wailsjs/go/models";
+import { timeToDate } from "@/lib/utils";
 import { usePresenceStore } from "@/lib/presenceStore";
-import { useTranslation } from "react-i18next";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 
 interface ParticipantsListProps {
   conversationId: string;
@@ -43,48 +45,7 @@ async function fetchParticipantsData(conversationId: string): Promise<{
   }
 }
 
-// Get display name for a message sender
-function getSenderDisplayName(
-  senderName: string | undefined,
-  senderId: string,
-  isFromMe: boolean,
-  t: (key: string) => string
-): string {
-  if (isFromMe) return t("you") || "You";
-  if (senderName && senderName.trim().length > 0) {
-    return senderName;
-  }
-  // Robust handling: extract local part from various WhatsApp ID formats
-  // Supports: "33603018166@s.whatsapp.net", "186560595132538:6@lid", "187119343554767:7@lid"
-  let phoneNumber: string | null = null;
-  
-  // Match "digits" optionally followed by ":digits@server"
-  const match = senderId.match(/^(\d+)(?::\d+)?@/);
-  if (match) {
-    phoneNumber = match[1];
-  }
-  
-  if (phoneNumber) {
-    // If this looks like a French number (starts with 33 and 11 digits) format nicely
-    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
-      const countryCode = phoneNumber.substring(0, 2); // "33"
-      const rest = phoneNumber.substring(2); // 9 digits
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
-      return formatted;
-    }
-    // For other numeric local parts, return with a leading + and no odd grouping
-    return `+${phoneNumber}`;
-  }
 
-  // Fallback for other ID formats: try to return a readable label
-  return senderId
-    .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
 
 export function ParticipantsList({
   conversationId,

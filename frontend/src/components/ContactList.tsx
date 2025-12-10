@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Calendar, Clock, Phone, Plus } from "lucide-react";
+import { ArrowDownAZ, Calendar, Clock, Phone, Plus, Smile } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetMessagesForConversation, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
@@ -51,6 +51,9 @@ export function ContactList() {
   // Track sync status to gray out/hide empty conversations
   const [syncStatus, setSyncStatus] = useState<"syncing" | "completed" | null>(null);
   const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
+  
+  // Track conversations with new reactions (pastille)
+  const [conversationsWithNewReactions, setConversationsWithNewReactions] = useState<Set<string>>(new Set());
 
   // Listen for sync status events
   useEffect(() => {
@@ -61,6 +64,8 @@ export function ContactList() {
 
         if (status === "completed") {
           setSyncStatus("completed");
+          // Invalidate all last messages to update sidebar previews after sync
+          queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
         } else if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
           setSyncStatus("syncing");
         }
@@ -74,7 +79,7 @@ export function ContactList() {
         unsubscribe();
       }
     };
-  }, []);
+  }, [queryClient]);
 
   // Listen for contact refresh events
   useEffect(() => {
@@ -136,6 +141,52 @@ export function ContactList() {
       }
     };
   }, [queryClient]);
+
+  // Listen for reaction events to show badge on conversations
+  useEffect(() => {
+    const unsubscribe = EventsOn("reaction", (reactionJSON: string) => {
+      try {
+        const reaction: {
+          ConversationID: string;
+          MessageID: string;
+          UserID: string;
+          Emoji: string;
+          Added: boolean;
+          Timestamp: number;
+        } = JSON.parse(reactionJSON);
+        
+        // Only show badge for reactions added (not removed)
+        // The badge will be cleared when the conversation is opened
+        if (reaction.Added && reaction.ConversationID) {
+          setConversationsWithNewReactions((prev) => {
+            const next = new Set(prev);
+            next.add(reaction.ConversationID);
+            return next;
+          });
+        }
+      } catch (error) {
+        console.error("Failed to parse reaction event in ContactList:", error);
+      }
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, []);
+
+  // Clear reaction badge when conversation is selected
+  useEffect(() => {
+    if (selectedContact?.linkedAccounts?.[0]?.userId) {
+      const conversationId = selectedContact.linkedAccounts[0].userId;
+      setConversationsWithNewReactions((prev) => {
+        const next = new Set(prev);
+        next.delete(conversationId);
+        return next;
+      });
+    }
+  }, [selectedContact]);
 
   // Update metaContacts in store
   useEffect(() => {
@@ -520,6 +571,15 @@ export function ContactList() {
                         aria-label={t("call.activeCall")}
                       >
                         <Phone className="h-3 w-3 text-white" />
+                      </div>
+                    )}
+                    {conversationsWithNewReactions.has(conversationId) && (
+                      <div
+                        className="inline-flex items-center justify-center rounded-full bg-purple-600 dark:bg-purple-500 p-1.5"
+                        title={t("new_reaction_badge")}
+                        aria-label={t("new_reaction_badge")}
+                      >
+                        <Smile className="h-3 w-3 text-white" />
                       </div>
                     )}
                     {unreadCount > 0 && (

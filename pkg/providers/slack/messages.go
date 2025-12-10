@@ -7,18 +7,130 @@ import (
 	"Loom/pkg/models"
 	"bytes"
 	"fmt"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
 )
 
+// CleanSlackEmoji removes skin-tone modifiers from Slack emoji strings.
+// This is exported so it can be used by app.go when processing reaction events.
+// Examples:
+//
+//	":santa::skin-tone-2:" -> ":santa:"
+//	":+1::skin-tone-2:" -> ":+1:"
+//	":thumbsup::skin-tone-3:" -> ":thumbsup:"
+func CleanSlackEmoji(emoji string) string {
+	// Remove skin-tone modifiers (skin-tone-2 through skin-tone-6)
+	// Pattern matches :skin-tone-X: anywhere in the string
+	re := regexp.MustCompile(`:skin-tone-[2-6]:`)
+	return re.ReplaceAllString(emoji, "")
+}
+
+// cleanSlackEmoji is an alias for CleanSlackEmoji for internal use
+func cleanSlackEmoji(emoji string) string {
+	return CleanSlackEmoji(emoji)
+}
+
+// getCurrentUserInfo gets the current authenticated user's ID, name, and avatar
+// Uses cache to avoid repeated API calls
+func (p *SlackProvider) getCurrentUserInfo() (userID string, userName string, avatarURL string, err error) {
+	// Check cache first
+	p.currentUserIDMu.RLock()
+	if p.currentUserID != "" {
+		userID = p.currentUserID
+		p.currentUserIDMu.RUnlock()
+		// Get user info from cache
+		p.userCacheMu.RLock()
+		user, cached := p.userCache[userID]
+		p.userCacheMu.RUnlock()
+		if cached && user != nil {
+			userName = user.RealName
+			if userName == "" && user.Profile.DisplayName != "" {
+				userName = user.Profile.DisplayName
+			}
+			if userName == "" {
+				userName = user.Name
+			}
+			// Get avatar URL with fallback to different sizes
+			if user.Profile.Image512 != "" {
+				avatarURL = user.Profile.Image512
+			} else if user.Profile.Image192 != "" {
+				avatarURL = user.Profile.Image192
+			} else if user.Profile.Image72 != "" {
+				avatarURL = user.Profile.Image72
+			} else if user.Profile.Image48 != "" {
+				avatarURL = user.Profile.Image48
+			} else if user.Profile.Image32 != "" {
+				avatarURL = user.Profile.Image32
+			}
+			return userID, userName, avatarURL, nil
+		}
+	} else {
+		p.currentUserIDMu.RUnlock()
+	}
+
+	// Not in cache, get from API
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return "", "", "", fmt.Errorf("slack client not initialized")
+	}
+
+	authTest, err := client.AuthTest()
+	if err != nil || authTest == nil {
+		return "", "", "", fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	userID = authTest.UserID
+	// Cache the user ID
+	p.currentUserIDMu.Lock()
+	p.currentUserID = userID
+	p.currentUserIDMu.Unlock()
+
+	// Get user info and cache it
+	user, err := client.GetUserInfo(userID)
+	if err == nil && user != nil {
+		// Cache the user info
+		p.userCacheMu.Lock()
+		p.userCache[userID] = user
+		p.userCacheMu.Unlock()
+
+		userName = user.RealName
+		if userName == "" && user.Profile.DisplayName != "" {
+			userName = user.Profile.DisplayName
+		}
+		if userName == "" {
+			userName = user.Name
+		}
+		// Get avatar URL with fallback to different sizes
+		if user.Profile.Image512 != "" {
+			avatarURL = user.Profile.Image512
+		} else if user.Profile.Image192 != "" {
+			avatarURL = user.Profile.Image192
+		} else if user.Profile.Image72 != "" {
+			avatarURL = user.Profile.Image72
+		} else if user.Profile.Image48 != "" {
+			avatarURL = user.Profile.Image48
+		} else if user.Profile.Image32 != "" {
+			avatarURL = user.Profile.Image32
+		}
+	}
+
+	return userID, userName, avatarURL, nil
+}
+
 // SendMessage sends a text message to a given conversation.
 func (p *SlackProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	if p.client == nil {
+	if client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
@@ -33,20 +145,49 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 		opts = append(opts, slack.MsgOptionTS(*threadID))
 	}
 
-	_, timestamp, err := p.client.PostMessage(conversationID, opts...)
+	_, timestamp, err := client.PostMessage(conversationID, opts...)
 	if err != nil {
 		return nil, err
 	}
 
 	ts := parseSlackTimestamp(timestamp)
 
-	return &models.Message{
-		ProtocolMsgID:  timestamp,
-		ProtocolConvID: conversationID,
-		Body:           text,
-		Timestamp:      ts,
-		IsFromMe:       true,
-	}, nil
+	// Get current user info for sender details
+	currentUserID, currentUserName, currentAvatarURL, err := p.getCurrentUserInfo()
+	if err != nil {
+		p.log("SlackProvider.SendMessage: WARNING - failed to get current user info: %v\n", err)
+		// Continue without user info - IsFromMe will still be true
+	}
+
+	sentMessage := &models.Message{
+		ProtocolMsgID:   timestamp,
+		ProtocolConvID:  conversationID,
+		Body:            text,
+		SenderID:        currentUserID,
+		SenderName:      currentUserName,
+		SenderAvatarURL: currentAvatarURL,
+		Timestamp:       ts,
+		IsFromMe:        true,
+	}
+
+	// Store message in database
+	if db.DB != nil {
+		if err := db.DB.Create(sentMessage).Error; err != nil {
+			p.log("SlackProvider.SendMessage: Failed to store sent message %s: %v\n", timestamp, err)
+		} else {
+			p.log("SlackProvider.SendMessage: Stored sent message %s to database\n", timestamp)
+		}
+	}
+
+	// Emit MessageEvent to notify frontend (similar to WhatsApp)
+	select {
+	case p.eventChan <- core.MessageEvent{Message: *sentMessage}:
+		p.log("SlackProvider.SendMessage: MessageEvent emitted successfully for sent message %s\n", timestamp)
+	default:
+		p.log("SlackProvider.SendMessage: WARNING - Failed to emit MessageEvent (channel full) for sent message %s\n", timestamp)
+	}
+
+	return sentMessage, nil
 }
 
 // SendReply sends a text message as a reply to another message.
@@ -84,12 +225,22 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	// without extra call or if we assume it creates one.
 	// For now we use the file ID as a placeholder if we must return something unique.
 
+	// Get current user info for sender details
+	currentUserID, currentUserName, currentAvatarURL, err := p.getCurrentUserInfo()
+	if err != nil {
+		p.log("SlackProvider.SendFile: WARNING - failed to get current user info: %v\n", err)
+		// Continue without user info - IsFromMe will still be true
+	}
+
 	return &models.Message{
-		ProtocolMsgID:  fileUpload.ID, // Warning based on above limitation
-		ProtocolConvID: conversationID,
-		Body:           fmt.Sprintf("Sent file: %s", file.FileName),
-		Timestamp:      time.Now(),
-		IsFromMe:       true,
+		ProtocolMsgID:   fileUpload.ID, // Warning based on above limitation
+		ProtocolConvID:  conversationID,
+		Body:            fmt.Sprintf("Sent file: %s", file.FileName),
+		SenderID:        currentUserID,
+		SenderName:      currentUserName,
+		SenderAvatarURL: currentAvatarURL,
+		Timestamp:       time.Now(),
+		IsFromMe:        true,
 	}, nil
 }
 
@@ -116,9 +267,46 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		}
 
 		// Order by timestamp descending to get newest first, then reverse
-		query = query.Preload("Receipts").Preload("Reactions").Order("timestamp DESC").Limit(limit)
+		// Load messages first without Preload to reduce DB contention
+		query = query.Order("timestamp DESC").Limit(limit)
 
 		if err := query.Find(&dbMessages).Error; err == nil && len(dbMessages) > 0 {
+			// Reverse to get oldest first
+			for i, j := 0, len(dbMessages)-1; i < j; i, j = i+1, j-1 {
+				dbMessages[i], dbMessages[j] = dbMessages[j], dbMessages[i]
+			}
+
+			// Load receipts and reactions separately in a single batch query to reduce DB contention
+			if len(dbMessages) > 0 {
+				messageIDs := make([]uint, len(dbMessages))
+				for i, msg := range dbMessages {
+					messageIDs[i] = msg.ID
+				}
+
+				// Batch load receipts
+				var receipts []models.MessageReceipt
+				if err := db.DB.Where("message_id IN ?", messageIDs).Find(&receipts).Error; err == nil {
+					receiptsMap := make(map[uint][]models.MessageReceipt)
+					for _, receipt := range receipts {
+						receiptsMap[receipt.MessageID] = append(receiptsMap[receipt.MessageID], receipt)
+					}
+					for i := range dbMessages {
+						dbMessages[i].Receipts = receiptsMap[dbMessages[i].ID]
+					}
+				}
+
+				// Batch load reactions
+				var reactions []models.Reaction
+				if err := db.DB.Where("message_id IN ?", messageIDs).Find(&reactions).Error; err == nil {
+					reactionsMap := make(map[uint][]models.Reaction)
+					for _, reaction := range reactions {
+						reactionsMap[reaction.MessageID] = append(reactionsMap[reaction.MessageID], reaction)
+					}
+					for i := range dbMessages {
+						dbMessages[i].Reactions = reactionsMap[dbMessages[i].ID]
+					}
+				}
+			}
 			// Reverse to get oldest first
 			for i, j := 0, len(dbMessages)-1; i < j; i, j = i+1, j-1 {
 				dbMessages[i], dbMessages[j] = dbMessages[j], dbMessages[i]
@@ -179,8 +367,13 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		Limit:     limit,
 	}
 	if beforeTimestamp != nil {
+		// If beforeTimestamp is provided, it means we want messages BEFORE that timestamp
+		// This is used for pagination (loading older messages)
 		params.Latest = fmt.Sprintf("%f", float64(beforeTimestamp.Unix()))
 	}
+	// Note: To get messages SINCE a date, we would use Oldest parameter
+	// But GetConversationHistory is designed for pagination (beforeTimestamp)
+	// For SyncHistory, we'll fetch recent messages and filter client-side
 
 	history, err := p.client.GetConversationHistory(params)
 	if err != nil {
@@ -211,29 +404,85 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 		return 0
 	}
 
-	// Persist messages to database
-	if db.DB != nil {
-		for _, msg := range messages {
-			if msg.ProtocolMsgID == "" {
-				continue
+	// Persist messages to database using batch operations to reduce DB contention
+	if db.DB != nil && len(messages) > 0 {
+		// Filter out messages without ProtocolMsgID
+		validMessages := make([]models.Message, 0, len(messages))
+		protocolMsgIDs := make([]string, 0, len(messages))
+		for i := range messages {
+			if messages[i].ProtocolMsgID != "" {
+				messages[i].ProtocolConvID = convID
+				validMessages = append(validMessages, messages[i])
+				protocolMsgIDs = append(protocolMsgIDs, messages[i].ProtocolMsgID)
 			}
-			var existingMsg models.Message
-			err := db.DB.Where("protocol_msg_id = ?", msg.ProtocolMsgID).First(&existingMsg).Error
-			if err != nil {
-				// Message doesn't exist, create it
-				msg.ProtocolConvID = convID
-				if err := db.DB.Create(&msg).Error; err != nil {
-					p.log("SlackProvider.storeMessagesForConversation: Failed to persist message %s: %v\n", msg.ProtocolMsgID, err)
-				} else {
-					p.log("SlackProvider.storeMessagesForConversation: Stored message %s to database for conversation %s\n", msg.ProtocolMsgID, convID)
-				}
+		}
+
+		if len(validMessages) == 0 {
+			return 0
+		}
+
+		// Batch check which messages already exist
+		var existingMessages []models.Message
+		if err := db.DB.Where("protocol_msg_id IN ?", protocolMsgIDs).Find(&existingMessages).Error; err != nil {
+			p.log("SlackProvider.storeMessagesForConversation: Failed to check existing messages: %v\n", err)
+			return 0
+		}
+
+		// Create a map of existing messages by ProtocolMsgID
+		existingMap := make(map[string]models.Message)
+		for _, existing := range existingMessages {
+			existingMap[existing.ProtocolMsgID] = existing
+		}
+
+		// Separate new messages from updates
+		var toCreate []models.Message
+		var toUpdate []models.Message
+		for i := range validMessages {
+			if existing, exists := existingMap[validMessages[i].ProtocolMsgID]; exists {
+				validMessages[i].ID = existing.ID
+				toUpdate = append(toUpdate, validMessages[i])
 			} else {
-				// Message exists, update it if needed
-				msg.ID = existingMsg.ID
-				msg.ProtocolConvID = convID
-				if err := db.DB.Save(&msg).Error; err != nil {
-					p.log("SlackProvider.storeMessagesForConversation: Failed to update message %s: %v\n", msg.ProtocolMsgID, err)
+				toCreate = append(toCreate, validMessages[i])
+			}
+		}
+
+		// Batch create new messages
+		if len(toCreate) > 0 {
+			// Use CreateInBatches to reduce transaction overhead
+			if err := db.DB.CreateInBatches(toCreate, 50).Error; err != nil {
+				p.log("SlackProvider.storeMessagesForConversation: Failed to batch create messages: %v\n", err)
+			} else {
+				p.log("SlackProvider.storeMessagesForConversation: Batch created %d new messages for conversation %s\n", len(toCreate), convID)
+			}
+		}
+
+		// Batch update existing messages (only if there are updates)
+		if len(toUpdate) > 0 {
+			// Update in smaller batches to avoid long transactions
+			batchSize := 20
+			for i := 0; i < len(toUpdate); i += batchSize {
+				end := i + batchSize
+				if end > len(toUpdate) {
+					end = len(toUpdate)
 				}
+				batch := toUpdate[i:end]
+				for j := range batch {
+					if err := db.DB.Model(&models.Message{}).Where("id = ?", batch[j].ID).Updates(map[string]interface{}{
+						"body":              batch[j].Body,
+						"timestamp":         batch[j].Timestamp,
+						"is_from_me":        batch[j].IsFromMe,
+						"attachments":       batch[j].Attachments,
+						"is_status_message": batch[j].IsStatusMessage,
+						"is_deleted":        batch[j].IsDeleted,
+						"is_edited":         batch[j].IsEdited,
+						"edited_timestamp":  batch[j].EditedTimestamp,
+					}).Error; err != nil {
+						p.log("SlackProvider.storeMessagesForConversation: Failed to update message %s: %v\n", batch[j].ProtocolMsgID, err)
+					}
+				}
+			}
+			if len(toUpdate) > 0 {
+				p.log("SlackProvider.storeMessagesForConversation: Batch updated %d existing messages for conversation %s\n", len(toUpdate), convID)
 			}
 		}
 	}
@@ -336,11 +585,49 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 	}
 
 	// Check if message is from me (compare with authenticated user)
+	// Use cached currentUserID to avoid repeated API calls
 	isFromMe := false
-	if p.client != nil {
-		authTest, err := p.client.AuthTest()
-		if err == nil && authTest != nil && authTest.UserID == msg.User {
-			isFromMe = true
+	if msg.User != "" {
+		p.currentUserIDMu.RLock()
+		cachedUserID := p.currentUserID
+		p.currentUserIDMu.RUnlock()
+
+		if cachedUserID != "" {
+			// Use cached ID
+			isFromMe = (cachedUserID == msg.User)
+		} else if p.client != nil {
+			// Not cached, get from API and cache it
+			authTest, err := p.client.AuthTest()
+			if err == nil && authTest != nil {
+				// Cache the user ID
+				p.currentUserIDMu.Lock()
+				p.currentUserID = authTest.UserID
+				p.currentUserIDMu.Unlock()
+				isFromMe = (authTest.UserID == msg.User)
+			}
+		}
+	}
+
+	// Convert Slack reactions to our Reaction model
+	var reactions []models.Reaction
+	if len(msg.Reactions) > 0 {
+		for _, slackReaction := range msg.Reactions {
+			// Each Slack reaction has a Name (emoji), Count, and Users (user IDs)
+			// We need to create a Reaction for each user who reacted
+
+			// Clean emoji name by removing skin-tone modifiers
+			// Slack stores emojis like "+1::skin-tone-2:" or "thumbsup::skin-tone-3:"
+			emojiName := slackReaction.Name
+			cleanedEmoji := cleanSlackEmoji(emojiName)
+
+			for _, userID := range slackReaction.Users {
+				reactions = append(reactions, models.Reaction{
+					UserID:    userID,
+					Emoji:     cleanedEmoji,
+					CreatedAt: ts, // Use message timestamp as fallback (Slack doesn't provide individual reaction timestamps)
+					UpdatedAt: ts,
+				})
+			}
 		}
 	}
 
@@ -353,6 +640,7 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		SenderAvatarURL: senderAvatarURL,
 		Timestamp:       ts,
 		IsFromMe:        isFromMe,
+		Reactions:       reactions,
 	}
 }
 
@@ -469,7 +757,12 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		Channel:   conversationID,
 		Timestamp: messageID,
 	}
-	return p.client.AddReaction(emoji, item)
+	err := p.client.AddReaction(emoji, item)
+	// Ignore "already_reacted" error as it's not really an error for our use case
+	if err != nil && strings.Contains(err.Error(), "already_reacted") {
+		return nil
+	}
+	return err
 }
 
 // RemoveReaction removes a reaction (emoji) from a message.
@@ -485,5 +778,10 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		Channel:   conversationID,
 		Timestamp: messageID,
 	}
-	return p.client.RemoveReaction(emoji, item)
+	err := p.client.RemoveReaction(emoji, item)
+	// Ignore "no_reaction" error as it's not really an error for our use case
+	if err != nil && strings.Contains(err.Error(), "no_reaction") {
+		return nil
+	}
+	return err
 }
