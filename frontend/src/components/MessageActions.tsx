@@ -7,9 +7,9 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ReactionPicker } from "./ReactionPicker";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
-import { ReactionPicker } from "./ReactionPicker";
 
 interface MessageActionsProps {
   isFromMe: boolean;
@@ -22,6 +22,7 @@ interface MessageActionsProps {
   className?: string;
   messageId?: string;
   openActionsMessageId?: string | null;
+  isSlack?: boolean;
 }
 
 export function MessageActions({
@@ -35,6 +36,7 @@ export function MessageActions({
   className,
   messageId,
   openActionsMessageId,
+  isSlack = false,
 }: MessageActionsProps) {
   const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
@@ -80,6 +82,7 @@ export function MessageActions({
         <ReactionPicker
           onReactionSelect={onReact}
           currentReactions={currentReactions}
+          isSlack={isSlack}
         />
       )}
       {isFromMe && (

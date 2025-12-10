@@ -1,16 +1,17 @@
 import EmojiPicker, { Theme } from "emoji-picker-react";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Suspense, useCallback, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-import type { models } from "../../wailsjs/go/models";
+import { models } from "../../wailsjs/go/models";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { getSenderDisplayName as getSenderDisplayNameUtil } from "@/lib/userDisplayNames";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -79,6 +80,13 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const theme = useAppStore((state) => state.theme);
   const queryClient = useQueryClient();
 
+  // Auto-focus the textarea whenever the selected conversation changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [selectedContact?.id]);
+
   const sendMessageMutation = useMutation({
     mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string }) => {
       if (quotedMessageId) {
@@ -86,26 +94,104 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
       return await SendMessage(conversationId, text);
     },
-    onSuccess: () => {
-      // Invalidate and refetch messages after sending
-      if (selectedContact && selectedContact.linkedAccounts[0]?.userId) {
-        const conversationId = selectedContact.linkedAccounts[0].userId;
-        queryClient.invalidateQueries({
-          queryKey: ["messages", conversationId],
-        });
-        // Force a refetch to ensure the new message appears
-        queryClient.refetchQueries({
-          queryKey: ["messages", conversationId],
-        });
-      }
+    // Optimistic update so the message appears instantly
+    onMutate: async ({ conversationId, text, quotedMessageId }) => {
+      const tempId = `temp-${Date.now()}`;
+      await queryClient.cancelQueries({ queryKey: ["messages", conversationId] });
+
+      const previousData = queryClient.getQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId]
+      );
+
+      const existingMessages =
+        (previousData?.pages?.flat?.() as models.Message[] | undefined) ?? [];
+      const currentUserId =
+        existingMessages.find((m: models.Message) => m.isFromMe && m.senderId)?.senderId || "";
+
+      const now = new Date();
+      const optimisticMessage = models.Message.createFrom({
+        protocolMsgId: tempId,
+        protocolConvId: conversationId,
+        body: text,
+        senderId: currentUserId,
+        timestamp: now.toISOString(),
+        isFromMe: true,
+        quotedMessageId,
+        // Frontend-only status fields
+        localStatus: "sending",
+        tempId,
+      } as any);
+
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (old) => {
+          if (!old || !Array.isArray(old.pages)) {
+            return { pages: [[optimisticMessage]], pageParams: [] } as InfiniteData<models.Message[]>;
+          }
+          const newPages = [...old.pages];
+          if (newPages.length === 0) {
+            newPages.push([optimisticMessage]);
+          } else if (Array.isArray(newPages[0])) {
+            newPages[0] = [optimisticMessage, ...newPages[0]];
+          } else {
+            newPages[0] = [optimisticMessage];
+          }
+          return { ...old, pages: newPages };
+        }
+      );
+
+      return { previousData, tempId, conversationId };
     },
-    onError: () => {
-      // If sending fails, also invalidate to ensure we have the latest state
-      if (selectedContact && selectedContact.linkedAccounts[0]?.userId) {
-        const conversationId = selectedContact.linkedAccounts[0].userId;
-        queryClient.invalidateQueries({
-          queryKey: ["messages", conversationId],
-        });
+    onError: (_error, _vars, context) => {
+      if (!context) return;
+      const { conversationId, tempId } = context;
+      // Mark the optimistic message as failed
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (old) => {
+          if (!old || !old.pages) return old;
+          const updatedPages = old.pages.map((page) =>
+            Array.isArray(page)
+              ? page.map((msg) =>
+                  (msg as any).tempId === tempId
+                    ? ({ ...msg, localStatus: "error" } as any)
+                    : msg
+                )
+              : page
+          );
+          return { ...old, pages: updatedPages };
+        }
+      );
+    },
+    onSuccess: (result, _vars, context) => {
+      if (!context) return;
+      const { conversationId, tempId } = context;
+      // Replace the optimistic message with the real one
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (old) => {
+          if (!old || !old.pages) return old;
+          const updatedPages = old.pages.map((page) => {
+            if (!Array.isArray(page)) return page;
+            return page
+              .map((msg) =>
+                (msg as any).tempId === tempId || msg.protocolMsgId === tempId ? result : msg
+              )
+              // Ensure newest first
+              .sort(
+                (a, b) =>
+                  new Date(b.timestamp as any).getTime() - new Date(a.timestamp as any).getTime()
+              );
+          });
+          return { ...old, pages: updatedPages };
+        }
+      );
+    },
+    onSettled: (_data, _error, _vars, context) => {
+      if (context?.conversationId) {
+        queryClient.invalidateQueries({ queryKey: ["messages", context.conversationId] });
+        // Invalidate last message to update sidebar preview
+        queryClient.invalidateQueries({ queryKey: ["lastMessage", context.conversationId] });
       }
     },
   });
@@ -304,11 +390,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   // Get sender display name for reply preview
   const getSenderDisplayName = (message: models.Message): string => {
-    if (message.isFromMe) return t("you") || "You";
-    if (message.senderName && message.senderName.trim().length > 0) {
-      return message.senderName;
-    }
-    return message.senderId;
+    return getSenderDisplayNameUtil(message.senderName, message.senderId, message.isFromMe, t);
   };
 
   return (
@@ -423,6 +505,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={t("type_a_message")}
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
             className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             rows={1}
           />

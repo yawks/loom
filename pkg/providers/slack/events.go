@@ -99,32 +99,28 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	for idx, contact := range contacts {
 		conversationID := contact.UserID
 
-		// Check if we already have messages in DB for this conversation since 'since'
-		var existingCount int64
+		// Find the last message in DB for this conversation to sync from that point
+		var lastMessage models.Message
+		conversationSince := since // Default to global since timestamp
 		if db.DB != nil {
-			db.DB.Model(&models.Message{}).
-				Where("protocol_conv_id = ? AND timestamp >= ?", conversationID, since).
-				Count(&existingCount)
-		}
-
-		// If we already have recent messages, skip (they're already in DB)
-		if existingCount > 0 {
-			p.log("SlackProvider.SyncHistory: Conversation %s already has %d messages since %s, skipping\n",
-				conversationID, existingCount, since.Format("2006-01-02 15:04:05"))
-			// Update progress even for skipped conversations
-			if (idx+1)%10 == 0 || idx == len(contacts)-1 {
-				progress := -1
-				if len(contacts) > 0 {
-					progress = int((float64(idx+1) / float64(len(contacts))) * 100)
-				}
-				p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing messages (%d/%d conversations)...", idx+1, len(contacts)), progress)
+			if err := db.DB.Where("protocol_conv_id = ?", conversationID).
+				Order("timestamp DESC").
+				First(&lastMessage).Error; err == nil {
+				// Found last message - sync from that timestamp (exclusive, so we get new messages)
+				conversationSince = lastMessage.Timestamp
+				p.log("SlackProvider.SyncHistory: Conversation %s has last message at %s, syncing from there\n",
+					conversationID, conversationSince.Format("2006-01-02 15:04:05"))
+			} else {
+				// No messages in DB - use global since timestamp
+				p.log("SlackProvider.SyncHistory: Conversation %s has no messages in DB, using global since: %s\n",
+					conversationID, conversationSince.Format("2006-01-02 15:04:05"))
 			}
-			continue
 		}
 
-		// Fetch messages from Slack API since 'since'
-		// Use a reasonable limit (100 messages per conversation)
-		messages, err := p.GetConversationHistory(conversationID, 100, &since)
+		// Fetch recent messages directly from Slack API (not from DB)
+		// This ensures we always get the latest messages, even if DB has old messages
+		// Pass conversationSince as oldest to only fetch messages after this timestamp
+		messages, err := p.getRecentMessages(conversationID, 100, &conversationSince)
 		if err != nil {
 			p.log("SlackProvider.SyncHistory: WARNING - failed to get history for conversation %s: %v\n", conversationID, err)
 			// Update progress even on error
@@ -138,10 +134,32 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 			continue
 		}
 
-		if len(messages) > 0 {
-			p.log("SlackProvider.SyncHistory: Fetched %d messages for conversation %s\n", len(messages), conversationID)
-			// Messages are already stored in DB by GetConversationHistory via storeMessagesForConversation
+		// All returned messages are after conversationSince (API filters them)
+		// But we still filter to be strictly after (not equal) to avoid duplicates
+		var newMessages []models.Message
+		for _, msg := range messages {
+			if msg.Timestamp.After(conversationSince) {
+				newMessages = append(newMessages, msg)
+			}
+		}
+
+		if len(newMessages) > 0 {
+			p.log("SlackProvider.SyncHistory: Found %d new messages (out of %d total) since %s for conversation %s\n",
+				len(newMessages), len(messages), conversationSince.Format("2006-01-02 15:04:05"), conversationID)
+			// Store the new messages
+			p.storeMessagesForConversation(conversationID, newMessages)
+
+			// Check for new reactions ONLY on the new messages to avoid DB overload
+			// Reactions on older messages will be updated during polling or next sync
+			for i := range newMessages {
+				p.checkNewReactions(&newMessages[i], conversationID)
+			}
+
 			totalSynced++
+		} else {
+			// No new messages - skip reaction checking to speed up sync
+			// Reactions will be updated during polling
+			p.log("SlackProvider.SyncHistory: No new messages for conversation %s\n", conversationID)
 		}
 
 		// Update progress periodically (every 10 conversations or at the end)

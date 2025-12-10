@@ -110,6 +110,9 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                 setSelectedIndex(0);
               }}
               onKeyDown={handleKeyDown}
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
               className="pl-10"
             />
           </div>

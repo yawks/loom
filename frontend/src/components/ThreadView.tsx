@@ -10,6 +10,7 @@ import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { getSenderDisplayName } from "@/lib/userDisplayNames";
 
 // Generate a deterministic color from a string (username)
 function getColorFromString(str: string): string {
@@ -25,39 +26,6 @@ function getColorFromString(str: string): string {
   return `hsl(${hue}, 70%, 50%)`;
 }
 
-// Get display name for a message sender
-function getSenderDisplayName(senderId: string, isFromMe: boolean, t: (key: string) => string): string {
-  if (isFromMe) return t("you") || "You";
-  
-  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
-  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    // Format phone number with spaces for readability
-    // Example: 33631207926 -> +33 6 31 20 79 26
-    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French phone number format: +33 followed by 9 digits (without leading 0)
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      // Format as +33 X XX XX XX XX
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
-      return formatted;
-    } else {
-      // Other formats: add spaces every 2 digits
-      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
-      return `+${formatted}`;
-    }
-  }
-  
-  // Fallback for other ID formats
-  return senderId
-    .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
 
 const fetchThreads = async (parentMessageID: string) => {
   return GetThreads(parentMessageID);
@@ -150,7 +118,7 @@ export function ThreadView() {
         ) : messageLayout === "bubble" ? (
           <div className="space-y-4">
             {sortedThreadMessages.map((message) => {
-              const displayName = getSenderDisplayName(message.senderId, message.isFromMe, t);
+              const displayName = getSenderDisplayName(undefined, message.senderId, message.isFromMe, t);
               return (
                 <div
                   key={message.protocolMsgId || `thread-${message.id}`}
@@ -220,7 +188,7 @@ export function ThreadView() {
                 prevMessage.senderId !== message.senderId ||
                 prevMessage.isFromMe !== message.isFromMe ||
                 timeDiffMinutes >= 5;
-              const displayName = getSenderDisplayName(message.senderId, message.isFromMe, t);
+              const displayName = getSenderDisplayName(undefined, message.senderId, message.isFromMe, t);
               const senderColor = getColorFromString(message.senderId);
               const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
 

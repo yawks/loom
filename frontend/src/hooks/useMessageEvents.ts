@@ -1,11 +1,12 @@
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import type { InfiniteData } from "@tanstack/react-query";
+import { cleanSlackEmoji } from "@/lib/userDisplayNames";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useEffect } from "react";
 import { useMessageReadStore } from "@/lib/messageReadStore";
-import { useTypingStore } from "@/lib/typingStore";
 import { useQueryClient } from "@tanstack/react-query";
+import { useTypingStore } from "@/lib/typingStore";
 
 interface ReceiptEvent {
   ConversationID: string;
@@ -83,7 +84,9 @@ export function useMessageEvents() {
         
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
         queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-        console.log("useMessageEvents: Invalidated and refetched metaContacts");
+        // Invalidate last message for this conversation to update sidebar preview
+        queryClient.invalidateQueries({ queryKey: ["lastMessage", message.protocolConvId] });
+        console.log("useMessageEvents: Invalidated and refetched metaContacts and lastMessage");
         
         // Update the cache for the conversation that received the message
         if (selectedContact) {
@@ -283,11 +286,19 @@ export function useMessageEvents() {
       
       try {
         const reaction: ReactionEvent = JSON.parse(reactionJSON);
+        
+        // Clean emoji if it contains skin-tone modifier (Slack)
+        // This ensures reactions are stored consistently in the cache
+        const cleanedEmoji = reaction.Emoji.includes(":skin-tone-") 
+          ? cleanSlackEmoji(reaction.Emoji) 
+          : reaction.Emoji;
+        
         console.log("useMessageEvents: Parsed reaction event:", {
           conversationId: reaction.ConversationID,
           messageId: reaction.MessageID,
           userId: reaction.UserID,
           emoji: reaction.Emoji,
+          cleanedEmoji: cleanedEmoji,
           added: reaction.Added,
         });
         
@@ -310,18 +321,20 @@ export function useMessageEvents() {
                   const currentReactions = msg.reactions || [];
                   
                   if (reaction.Added) {
-                    // Add reaction if it doesn't exist
-                    const exists = currentReactions.some(
-                      (r) => r.userId === reaction.UserID && r.emoji === reaction.Emoji
-                    );
+                    // Check if reaction already exists (comparing cleaned emojis)
+                    // Clean existing reactions for comparison (in case some have skin-tone modifiers)
+                    const exists = currentReactions.some((r) => {
+                      const rCleaned = r.emoji.includes(":skin-tone-") ? cleanSlackEmoji(r.emoji) : r.emoji;
+                      return r.userId === reaction.UserID && rCleaned === cleanedEmoji;
+                    });
                     if (!exists) {
-                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID);
+                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID, "emoji:", cleanedEmoji);
                       const reactionTimestamp = new Date(reaction.Timestamp * 1000);
                       const newReaction = models.Reaction.createFrom({
                         id: 0,
                         messageId: msg.id,
                         userId: reaction.UserID,
-                        emoji: reaction.Emoji,
+                        emoji: cleanedEmoji, // Store cleaned emoji
                         createdAt: reactionTimestamp.toISOString(),
                         updatedAt: reactionTimestamp.toISOString(),
                       });
@@ -333,11 +346,12 @@ export function useMessageEvents() {
                       console.log("useMessageEvents: Reaction already exists for message", reaction.MessageID);
                     }
                   } else {
-                    // Remove reaction
+                    // Remove reaction (comparing cleaned emojis)
                     console.log("useMessageEvents: Removing reaction from message", reaction.MessageID);
-                    const filteredReactions = currentReactions.filter(
-                      (r) => !(r.userId === reaction.UserID && r.emoji === reaction.Emoji)
-                    );
+                    const filteredReactions = currentReactions.filter((r) => {
+                      const rCleaned = r.emoji.includes(":skin-tone-") ? cleanSlackEmoji(r.emoji) : r.emoji;
+                      return !(r.userId === reaction.UserID && rCleaned === cleanedEmoji);
+                    });
                     return models.Message.createFrom({
                       ...msg,
                       reactions: filteredReactions,
