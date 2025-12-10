@@ -157,6 +157,9 @@ export function NewConversationModal({
                             placeholder={t("search_contacts")}
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
+                            autoCorrect="off"
+                            autoCapitalize="none"
+                            spellCheck={false}
                             className="pl-9"
                         />
                     </div>

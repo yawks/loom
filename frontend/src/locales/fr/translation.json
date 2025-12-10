@@ -157,6 +157,7 @@
   "shortcut_navigate_list_up": "Aller à la conversation au-dessus dans la liste",
   "shortcut_navigate_list_down": "Aller à la conversation en dessous dans la liste",
   "react": "Réagir",
+  "new_reaction_badge": "Nouvelle réaction",
   "typing_single": "{{user}} est en train d'écrire",
   "typing_double": "{{user1}} et {{user2}} sont en train d'écrire",
   "typing_multiple": "{{users}} et {{lastUser}} sont en train d'écrire",

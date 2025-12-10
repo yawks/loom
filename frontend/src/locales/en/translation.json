@@ -157,6 +157,7 @@
   "shortcut_navigate_list_up": "Navigate to conversation above in list",
   "shortcut_navigate_list_down": "Navigate to conversation below in list",
   "react": "React",
+  "new_reaction_badge": "New reaction",
   "typing_single": "{{user}} is typing",
   "typing_double": "{{user1}} and {{user2}} are typing",
   "typing_multiple": "{{users}} and {{lastUser}} are typing",

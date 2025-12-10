@@ -221,47 +221,41 @@ func (a *App) startup(ctx context.Context) {
 				fmt.Printf("App.startup: Set provider %s (instanceID: %s) as active provider\n", providerConfig.ProviderID, instanceID)
 			}
 
-			// Sync missed messages if last sync was more than 1 minute ago
+			// Sync missed messages on startup
 			// Do this AFTER setting as active provider so events are captured
-			if providerConfig.LastSyncAt != nil {
-				timeSinceLastSync := time.Since(*providerConfig.LastSyncAt)
-				if timeSinceLastSync > time.Minute {
-					go func(p core.Provider, instID string, lastSync time.Time) {
-						// Wait longer to ensure event listener is started and ready
-						time.Sleep(2 * time.Second)
-						if err := p.SyncHistory(lastSync); err != nil {
-							log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
-						} else {
-							// Update last sync time
-							now := time.Now()
-							if db.DB != nil {
-								db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
-							}
-						}
-					}(provider, instanceID, *providerConfig.LastSyncAt)
-				}
-			} else {
-				// First time sync - sync last 1 year to get all conversations
-				// WhatsApp will automatically sync via HistorySync events, but we trigger a manual sync
-				// with a long period to ensure we get all available conversations
-				// Wait a bit to ensure startEventListener is ready to capture events
-				go func(p core.Provider, instID string) {
-					// Wait longer to ensure event listener is started and ready
-					// startEventListener is called after startup() completes, so we need to wait
-					time.Sleep(2 * time.Second)
-					since := time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
-					fmt.Printf("App.startup: First time sync for provider instance %s, syncing since %s\n", instID, since.Format("2006-01-02 15:04:05"))
-					if err := p.SyncHistory(since); err != nil {
-						log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
+			// Always sync on startup to ensure we have the latest messages and show the sync status
+			go func(p core.Provider, instID string) {
+				// Wait longer to ensure event listener is started and ready
+				// startEventListener is called after startup() completes, so we need to wait
+				time.Sleep(2 * time.Second)
+
+				var since time.Time
+				if providerConfig.LastSyncAt != nil {
+					// Use last sync time, but ensure we sync at least the last 24 hours
+					lastSync := *providerConfig.LastSyncAt
+					oneDayAgo := time.Now().Add(-24 * time.Hour)
+					if lastSync.Before(oneDayAgo) {
+						since = oneDayAgo
 					} else {
-						// Update last sync time
-						now := time.Now()
-						if db.DB != nil {
-							db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
-						}
+						since = lastSync
 					}
-				}(provider, instanceID)
-			}
+					fmt.Printf("App.startup: Syncing provider instance %s since last sync: %s\n", instID, since.Format("2006-01-02 15:04:05"))
+				} else {
+					// First time sync - sync last 1 year to get all conversations
+					since = time.Now().Add(-365 * 24 * time.Hour) // 1 year ago
+					fmt.Printf("App.startup: First time sync for provider instance %s, syncing since %s\n", instID, since.Format("2006-01-02 15:04:05"))
+				}
+
+				if err := p.SyncHistory(since); err != nil {
+					log.Printf("Warning: Failed to sync history for provider instance %s: %v", instID, err)
+				} else {
+					// Update last sync time
+					now := time.Now()
+					if db.DB != nil {
+						db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", now)
+					}
+				}
+			}(provider, instanceID)
 		}
 	}
 
@@ -410,50 +404,62 @@ func (a *App) startEventListener(ctx context.Context) {
 				case core.ReactionEvent:
 					log.Printf("App: Received ReactionEvent: conversation=%s, message=%s, user=%s, emoji=%s, added=%v", e.ConversationID, e.MessageID, e.UserID, e.Emoji, e.Added)
 
+					// Clean emoji if it's from Slack (contains skin-tone modifier)
+					// This ensures reactions are stored consistently regardless of source
+					cleanedEmoji := e.Emoji
+					if strings.Contains(e.Emoji, ":skin-tone-") {
+						// Use regex to remove skin-tone modifiers (same logic as Slack provider)
+						re := regexp.MustCompile(`:skin-tone-[2-6]:`)
+						cleanedEmoji = re.ReplaceAllString(e.Emoji, "")
+					}
+
 					// Save reaction to database
 					if db.DB != nil {
 						// Find the message by protocol message ID
 						var message models.Message
 						if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", e.MessageID, e.ConversationID).First(&message).Error; err == nil {
 							if e.Added {
-								// Check if reaction already exists
+								// Check if reaction already exists (using cleaned emoji for comparison)
 								var existingReaction models.Reaction
-								reactionExists := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).First(&existingReaction).Error == nil
+								reactionExists := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, cleanedEmoji).First(&existingReaction).Error == nil
 
 								if !reactionExists {
-									// Create new reaction
+									// Create new reaction with cleaned emoji
 									reaction := models.Reaction{
 										MessageID: message.ID,
 										UserID:    e.UserID,
-										Emoji:     e.Emoji,
+										Emoji:     cleanedEmoji,
 										CreatedAt: time.Unix(e.Timestamp, 0),
 										UpdatedAt: time.Unix(e.Timestamp, 0),
 									}
 									if err := db.DB.Create(&reaction).Error; err != nil {
 										log.Printf("App: Failed to save reaction to database: %v", err)
 									} else {
-										log.Printf("App: Saved reaction to database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+										log.Printf("App: Saved reaction to database for message %s, user %s, emoji %s (cleaned from %s)", e.MessageID, e.UserID, cleanedEmoji, e.Emoji)
 									}
 								} else {
-									log.Printf("App: Reaction already exists in database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+									log.Printf("App: Reaction already exists in database for message %s, user %s, emoji %s", e.MessageID, e.UserID, cleanedEmoji)
 								}
 							} else {
-								// Remove reaction
+								// Remove reaction (using cleaned emoji for comparison)
 								var existingReaction models.Reaction
-								if err := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).First(&existingReaction).Error; err == nil {
+								if err := db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, cleanedEmoji).First(&existingReaction).Error; err == nil {
 									if err := db.DB.Delete(&existingReaction).Error; err != nil {
 										log.Printf("App: Failed to delete reaction from database: %v", err)
 									} else {
-										log.Printf("App: Deleted reaction from database for message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+										log.Printf("App: Deleted reaction from database for message %s, user %s, emoji %s", e.MessageID, e.UserID, cleanedEmoji)
 									}
 								} else {
-									log.Printf("App: Reaction not found in database for deletion: message %s, user %s, emoji %s", e.MessageID, e.UserID, e.Emoji)
+									log.Printf("App: Reaction not found in database for deletion: message %s, user %s, emoji %s", e.MessageID, e.UserID, cleanedEmoji)
 								}
 							}
 						} else {
 							log.Printf("App: Message not found in database for reaction: conversation %s, message %s (this is OK if message hasn't been loaded yet)", e.ConversationID, e.MessageID)
 						}
 					}
+
+					// Update the event with cleaned emoji before emitting to frontend
+					e.Emoji = cleanedEmoji
 
 					// Always emit the event to the frontend, even if message wasn't found in database
 					// The frontend will handle updating the UI when the message is loaded
@@ -1358,16 +1364,15 @@ func (a *App) RemoveReaction(conversationID string, messageID string, emoji stri
 
 // MarkMessageAsRead sends a read receipt for a specific message.
 func (a *App) MarkMessageAsRead(conversationID string, messageID string) error {
-	log.Printf("App: MarkMessageAsRead called for conversation %s, message %s", conversationID, messageID)
 	if a.provider == nil {
 		return fmt.Errorf("no active provider")
 	}
 	err := a.provider.MarkMessageAsRead(conversationID, messageID)
 	if err != nil {
-		log.Printf("App: Failed to mark message as read: %v", err)
+		log.Printf("App: Failed to mark message %s as read in conversation %s: %v", messageID, conversationID, err)
 		return err
 	}
-	log.Printf("App: Successfully marked message %s as read in conversation %s", messageID, conversationID)
+	// Only log errors, not every successful call to reduce log noise
 	return nil
 }
 

@@ -3,7 +3,9 @@ package slack
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/logging"
+	"Loom/pkg/models"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,18 +17,22 @@ import (
 
 // SlackProvider implements the core.Provider interface for Slack.
 type SlackProvider struct {
-	config        core.ProviderConfig
-	client        *slack.Client
-	mu            sync.RWMutex
-	logger        *logging.ProviderLogger
-	userCache     map[string]*slack.User // Cache for user info to avoid repeated API calls
-	userCacheMu   sync.RWMutex
-	emojiCache    map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
-	emojiCacheMu  sync.RWMutex
-	eventChan     chan core.ProviderEvent // Channel for emitting events
-	stopChan      chan struct{}           // Channel to signal polling goroutine to stop
-	statusCache   map[string]userStatus   // Cache of last known status for each user
-	statusCacheMu sync.RWMutex            // Mutex for status cache
+	config            core.ProviderConfig
+	client            *slack.Client
+	mu                sync.RWMutex
+	logger            *logging.ProviderLogger
+	userCache         map[string]*slack.User // Cache for user info to avoid repeated API calls
+	userCacheMu       sync.RWMutex
+	emojiCache        map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
+	emojiCacheMu      sync.RWMutex
+	eventChan         chan core.ProviderEvent // Channel for emitting events
+	stopChan          chan struct{}           // Channel to signal polling goroutine to stop
+	statusCache       map[string]userStatus   // Cache of last known status for each user
+	statusCacheMu     sync.RWMutex            // Mutex for status cache
+	lastPollTimestamp time.Time               // Last timestamp when we polled for new messages
+	lastPollMu        sync.RWMutex            // Mutex for lastPollTimestamp
+	currentUserID     string                  // Cached current user ID
+	currentUserIDMu   sync.RWMutex            // Mutex for currentUserID
 }
 
 // userStatus represents the cached status information for a user
@@ -48,7 +54,6 @@ func (t *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(cookiePreview) > 20 {
 		cookiePreview = cookiePreview[:20] + "..."
 	}
-	fmt.Printf("cookieTransport.RoundTrip: Adding cookie header: %s\n", cookiePreview)
 	req.Header.Add("Cookie", t.Cookie)
 	// Some xoxc endpoints also check for d-s cookie, but usually d is the main auth one.
 	return t.Transport.RoundTrip(req)
@@ -219,6 +224,14 @@ func (p *SlackProvider) Connect() error {
 
 	// Start polling goroutine for status updates
 	go p.pollStatusUpdates()
+
+	// Initialize last poll timestamp to now
+	p.lastPollMu.Lock()
+	p.lastPollTimestamp = time.Now()
+	p.lastPollMu.Unlock()
+
+	// Start polling goroutine for messages and reactions
+	go p.pollMessagesAndReactions()
 
 	return nil
 }
@@ -498,6 +511,288 @@ func (p *SlackProvider) checkStatusChanges() {
 				status:      newStatus,
 				statusEmoji: newStatusEmoji,
 				statusText:  newStatusText,
+			}
+		}
+	}
+}
+
+// pollMessagesAndReactions periodically checks for new messages and reactions
+func (p *SlackProvider) pollMessagesAndReactions() {
+	// Temporarily disabled to avoid DB deadlocks
+	// TODO: Re-enable with proper DB connection pooling and transaction management
+	// ticker := time.NewTicker(30 * time.Second) // Poll every 30 seconds to reduce DB load
+	// defer ticker.Stop()
+
+	// for {
+	// 	select {
+	// 	case <-ticker.C:
+	// 		p.checkNewMessagesAndReactions()
+	// 	case <-p.stopChan:
+	// 		p.log("SlackProvider.pollMessagesAndReactions: stopping polling goroutine\n")
+	// 		return
+	// 	}
+	// }
+
+	// Wait for stop signal only
+	<-p.stopChan
+	p.log("SlackProvider.pollMessagesAndReactions: stopping polling goroutine\n")
+}
+
+// checkNewMessagesAndReactions checks for new messages and reactions since last poll
+func (p *SlackProvider) checkNewMessagesAndReactions() {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return
+	}
+
+	// Get last poll timestamp
+	p.lastPollMu.RLock()
+	lastPoll := p.lastPollTimestamp
+	p.lastPollMu.Unlock()
+
+	// Get only recently active conversations from DB (messages in last 24 hours)
+	// This avoids checking all conversations and reduces DB load significantly
+	var activeConversationIDs []string
+	if db.DB != nil {
+		recentCutoff := time.Now().Add(-24 * time.Hour)
+		var recentMessages []models.Message
+		if err := db.DB.Where("timestamp >= ?", recentCutoff).
+			Select("DISTINCT protocol_conv_id").
+			Find(&recentMessages).Error; err == nil {
+			for _, msg := range recentMessages {
+				if msg.ProtocolConvID != "" {
+					activeConversationIDs = append(activeConversationIDs, msg.ProtocolConvID)
+				}
+			}
+		}
+	}
+
+	// If no active conversations found, skip this poll cycle
+	if len(activeConversationIDs) == 0 {
+		return
+	}
+
+	// Limit to first 10 active conversations to avoid overwhelming the DB
+	maxConversations := 10
+	if len(activeConversationIDs) > maxConversations {
+		activeConversationIDs = activeConversationIDs[:maxConversations]
+	}
+
+	// Check each active conversation for new messages (with rate limiting to avoid DB deadlocks)
+	for i, conversationID := range activeConversationIDs {
+		// Add delay between conversations to reduce DB contention
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Get recent messages (last 10 messages to reduce load)
+		// We'll filter to only those after lastPoll
+		messages, err := p.getRecentMessages(conversationID, 10, nil)
+		if err != nil {
+			p.log("SlackProvider.checkNewMessagesAndReactions: WARNING - failed to get messages for %s: %v\n", conversationID, err)
+			continue
+		}
+
+		// Filter to only messages after last poll
+		for _, msg := range messages {
+			if msg.Timestamp.After(lastPoll) {
+				// Check if message already exists in DB (to avoid duplicates)
+				// Use a simple query without Preload to reduce DB load
+				var existingMsg models.Message
+				if db.DB != nil {
+					if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msg.ProtocolMsgID, conversationID).
+						Select("id").First(&existingMsg).Error; err == nil {
+						// Message already exists, just check for new reactions
+						p.checkNewReactions(&msg, conversationID)
+						continue
+					}
+				}
+
+				// New message found, emit event
+				select {
+				case p.eventChan <- core.MessageEvent{Message: msg}:
+					p.log("SlackProvider.checkNewMessagesAndReactions: emitted new message event: %s in %s\n", msg.ProtocolMsgID, conversationID)
+				default:
+					p.log("SlackProvider.checkNewMessagesAndReactions: WARNING - event channel full, dropping message event\n")
+				}
+
+				// Check for new reactions on this message
+				p.checkNewReactions(&msg, conversationID)
+			}
+		}
+	}
+
+	// Update last poll timestamp
+	p.lastPollMu.Lock()
+	p.lastPollTimestamp = time.Now()
+	p.lastPollMu.Unlock()
+}
+
+// getRecentMessages gets recent messages for a conversation (from API, not DB)
+// If oldest is not nil, only messages after this timestamp will be fetched
+func (p *SlackProvider) getRecentMessages(conversationID string, limit int, oldest *time.Time) ([]models.Message, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+
+	// Handle different ID types for Slack conversations
+	actualChannelID := conversationID
+
+	// If conversationID is a user ID (starts with "U"), we need to open the DM conversation
+	if len(conversationID) > 0 && conversationID[0] == 'U' {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{conversationID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to open DM conversation with user %s: %w", conversationID, err)
+		}
+		if channel == nil || channel.ID == "" {
+			return nil, fmt.Errorf("failed to get DM channel ID for user %s", conversationID)
+		}
+		actualChannelID = channel.ID
+	} else if len(conversationID) > 0 && conversationID[0] == 'D' {
+		// For DM channel IDs, ensure the conversation is open
+		_, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			ChannelID: conversationID,
+		})
+		if err != nil {
+			// Log but don't fail - the conversation might already be open
+			p.log("SlackProvider.getRecentMessages: Warning - failed to open DM conversation %s: %v (may already be open)\n", conversationID, err)
+		}
+	}
+
+	// Get recent messages from Slack API
+	params := &slack.GetConversationHistoryParameters{
+		ChannelID: actualChannelID,
+		Limit:     limit,
+	}
+
+	// If oldest timestamp is provided, only fetch messages after this timestamp
+	if oldest != nil {
+		// Convert to Slack timestamp format (Unix timestamp as string with microseconds)
+		oldestStr := fmt.Sprintf("%d.%06d", oldest.Unix(), oldest.Nanosecond()/1000)
+		params.Oldest = oldestStr
+		p.log("SlackProvider.getRecentMessages: Fetching messages for %s since %s (oldest: %s)\n",
+			conversationID, oldest.Format("2006-01-02 15:04:05"), oldestStr)
+	}
+
+	history, err := client.GetConversationHistory(params)
+	if err != nil {
+		return nil, err
+	}
+
+	var messages []models.Message
+	for _, msg := range history.Messages {
+		messages = append(messages, p.convertSlackMessage(msg, actualChannelID))
+	}
+
+	// Reverse to oldest first
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	return messages, nil
+}
+
+// checkNewReactions checks for new reactions on a message
+func (p *SlackProvider) checkNewReactions(msg *models.Message, conversationID string) {
+	// Get existing reactions from database for this message
+	// Use a direct query instead of Preload to reduce DB load
+	var existingReactions []models.Reaction
+	if db.DB != nil {
+		var dbMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msg.ProtocolMsgID, conversationID).
+			Select("id").First(&dbMsg).Error; err == nil {
+			// Load reactions separately to avoid Preload overhead
+			db.DB.Where("message_id = ?", dbMsg.ID).Find(&existingReactions)
+		}
+	}
+
+	// Create a map of existing reactions for quick lookup (using cleaned emojis for Slack)
+	existingMap := make(map[string]map[string]bool) // emoji -> userId -> true
+	for _, r := range existingReactions {
+		cleanedEmoji := CleanSlackEmoji(r.Emoji)
+		if existingMap[cleanedEmoji] == nil {
+			existingMap[cleanedEmoji] = make(map[string]bool)
+		}
+		existingMap[cleanedEmoji][r.UserID] = true
+	}
+
+	// Check for new reactions (compare with cleaned emojis)
+	currentReactions := msg.Reactions
+	if len(currentReactions) == 0 {
+		// No current reactions, check if any were removed
+		for _, existingReaction := range existingReactions {
+			cleanedExistingEmoji := CleanSlackEmoji(existingReaction.Emoji)
+			select {
+			case p.eventChan <- core.ReactionEvent{
+				ConversationID: conversationID,
+				MessageID:      msg.ProtocolMsgID,
+				UserID:         existingReaction.UserID,
+				Emoji:          cleanedExistingEmoji,
+				Added:          false,
+				Timestamp:      time.Now().Unix(),
+			}:
+				p.log("SlackProvider.checkNewReactions: emitted removed reaction event: %s on %s by %s\n", cleanedExistingEmoji, msg.ProtocolMsgID, existingReaction.UserID)
+			default:
+				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction removal event\n")
+			}
+		}
+		return
+	}
+
+	for _, reaction := range currentReactions {
+		cleanedEmoji := CleanSlackEmoji(reaction.Emoji)
+		if existingMap[cleanedEmoji] == nil || !existingMap[cleanedEmoji][reaction.UserID] {
+			// New reaction found, emit event
+			select {
+			case p.eventChan <- core.ReactionEvent{
+				ConversationID: conversationID,
+				MessageID:      msg.ProtocolMsgID,
+				UserID:         reaction.UserID,
+				Emoji:          cleanedEmoji, // Use cleaned emoji
+				Added:          true,
+				Timestamp:      reaction.CreatedAt.Unix(),
+			}:
+				p.log("SlackProvider.checkNewReactions: emitted new reaction event: %s on %s by %s\n", cleanedEmoji, msg.ProtocolMsgID, reaction.UserID)
+			default:
+				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction event\n")
+			}
+		}
+	}
+
+	// Check for removed reactions (reactions that exist in DB but not in current message)
+	for _, existingReaction := range existingReactions {
+		cleanedExistingEmoji := CleanSlackEmoji(existingReaction.Emoji)
+		found := false
+		for _, currentReaction := range currentReactions {
+			cleanedCurrentEmoji := CleanSlackEmoji(currentReaction.Emoji)
+			if cleanedCurrentEmoji == cleanedExistingEmoji && currentReaction.UserID == existingReaction.UserID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Reaction was removed, emit event
+			select {
+			case p.eventChan <- core.ReactionEvent{
+				ConversationID: conversationID,
+				MessageID:      msg.ProtocolMsgID,
+				UserID:         existingReaction.UserID,
+				Emoji:          cleanedExistingEmoji, // Use cleaned emoji
+				Added:          false,
+				Timestamp:      time.Now().Unix(),
+			}:
+				p.log("SlackProvider.checkNewReactions: emitted removed reaction event: %s on %s by %s\n", cleanedExistingEmoji, msg.ProtocolMsgID, existingReaction.UserID)
+			default:
+				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction removal event\n")
 			}
 		}
 	}
