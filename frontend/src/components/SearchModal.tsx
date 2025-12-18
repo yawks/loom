@@ -31,15 +31,89 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const contacts = useAppStore((state) => state.metaContacts);
 
-  // Filter contacts based on search query
+  // Calculate relevance score for a contact name based on search query
+  const calculateRelevanceScore = (name: string, query: string): number => {
+    const lowerName = name.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    
+    // Exact match at the start (highest score)
+    if (lowerName === lowerQuery) {
+      return 1000;
+    }
+    
+    // Starts with query (very high score)
+    if (lowerName.startsWith(lowerQuery)) {
+      return 900 - (lowerName.length - lowerQuery.length); // Prefer shorter names
+    }
+    
+    // Contains query at word boundary (high score)
+    const wordBoundaryRegex = new RegExp(`\\b${lowerQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+    if (wordBoundaryRegex.test(lowerName)) {
+      const index = lowerName.indexOf(lowerQuery);
+      return 800 - index; // Prefer matches earlier in the name
+    }
+    
+    // Contains query anywhere (medium score)
+    if (lowerName.includes(lowerQuery)) {
+      const index = lowerName.indexOf(lowerQuery);
+      return 700 - index; // Prefer matches earlier in the name
+    }
+    
+    // Calculate Levenshtein distance for fuzzy matching (lower score)
+    const distance = levenshteinDistance(lowerName, lowerQuery);
+    const maxLength = Math.max(lowerName.length, lowerQuery.length);
+    if (maxLength === 0) return 0;
+    const similarity = 1 - distance / maxLength;
+    return 600 * similarity; // Scale to 0-600 range
+  };
+
+  // Simple Levenshtein distance implementation
+  const levenshteinDistance = (str1: string, str2: string): number => {
+    const matrix: number[][] = [];
+    
+    for (let i = 0; i <= str2.length; i++) {
+      matrix[i] = [i];
+    }
+    
+    for (let j = 0; j <= str1.length; j++) {
+      matrix[0][j] = j;
+    }
+    
+    for (let i = 1; i <= str2.length; i++) {
+      for (let j = 1; j <= str1.length; j++) {
+        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1,     // insertion
+            matrix[i - 1][j] + 1      // deletion
+          );
+        }
+      }
+    }
+    
+    return matrix[str2.length][str1.length];
+  };
+
+  // Filter and sort contacts based on search query
   const filteredContacts = useMemo(() => {
     if (!searchQuery.trim()) {
       return contacts;
     }
-    const query = searchQuery.toLowerCase().trim();
-    return contacts.filter((contact) =>
-      contact.displayName.toLowerCase().includes(query)
-    );
+    const query = searchQuery.trim();
+    
+    // Filter contacts that match the query
+    const matchingContacts = contacts
+      .map((contact) => ({
+        contact,
+        score: calculateRelevanceScore(contact.displayName, query),
+      }))
+      .filter((item) => item.score > 0) // Only keep contacts with some relevance
+      .sort((a, b) => b.score - a.score) // Sort by score descending
+      .map((item) => item.contact); // Extract just the contacts
+    
+    return matchingContacts;
   }, [contacts, searchQuery]);
 
   // Focus input when modal opens
@@ -110,10 +184,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                 setSelectedIndex(0);
               }}
               onKeyDown={handleKeyDown}
-              autoCorrect="off"
-              autoCapitalize="none"
-              spellCheck={false}
               className="pl-10"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck="false"
             />
           </div>
         </div>

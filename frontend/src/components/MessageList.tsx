@@ -11,17 +11,16 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ToastContainer, useToast } from "@/components/ui/toast";
-import { cleanSlackEmoji, getSenderDisplayName as getSenderDisplayNameUtil } from "@/lib/userDisplayNames";
 import { cn, timeToDate } from "@/lib/utils";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CallMessage } from "./CallMessage";
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
+import type { InfiniteData } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import type { KeyboardEvent } from "react";
-import { AlertTriangle, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageHeader } from "./MessageHeader";
@@ -30,6 +29,7 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { TypingIndicator } from "./TypingIndicator";
 import { models } from "../../wailsjs/go/models";
+import { unicodeToSlackEmojiName } from "@/lib/emojiMap";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
@@ -84,10 +84,15 @@ async function compressImageFile(file: File): Promise<File> {
 }
 
 // Generate a deterministic color from a string (username)
-function getColorFromString(str: string): string {
+function getColorFromString(str: string | undefined | null): string {
+  const safe = (str ?? "").toString();
+  if (safe.length === 0) {
+    return "hsl(0, 0%, 50%)"; // neutral fallback
+  }
+
   let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  for (let i = 0; i < safe.length; i++) {
+    hash = safe.charCodeAt(i) + ((hash << 5) - hash);
   }
 
   // Generate a hue between 0 and 360
@@ -96,6 +101,48 @@ function getColorFromString(str: string): string {
   // Use a moderate saturation and lightness for good contrast
   // Adjust these values based on light/dark mode if needed
   return `hsl(${hue}, 70%, 50%)`;
+}
+
+// Get display name for a message sender
+function getSenderDisplayName(
+  senderName: string | undefined,
+  senderId: string,
+  isFromMe: boolean,
+  t: (key: string) => string
+): string {
+  if (isFromMe) return t("you") || "You";
+  if (senderName && senderName.trim().length > 0) {
+    return senderName;
+  }
+
+  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
+  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
+  if (whatsappMatch) {
+    const phoneNumber = whatsappMatch[1];
+    // Format phone number with spaces for readability
+    // Example: 33631207926 -> +33 6 31 20 79 26
+    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
+      // French phone number format: +33 followed by 9 digits (without leading 0)
+      const countryCode = phoneNumber.substring(0, 2);
+      const rest = phoneNumber.substring(2);
+      // Format as +33 X XX XX XX XX
+      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
+      return formatted;
+    } else {
+      // Other formats: add spaces every 2 digits
+      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
+      return `+${formatted}`;
+    }
+  }
+
+  // Fallback for other ID formats
+  return senderId
+    .replace(/^user-/, "")
+    .replace(/^whatsapp-/, "")
+    .replace(/^slack-/, "")
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 // Wrapper function to use Wails with React Query's infinite query
@@ -204,6 +251,11 @@ export function MessageList({
 }: {
   selectedConversation: models.MetaContact;
 }) {
+  // Reset typing state when conversation changes
+  const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
+  useEffect(() => {
+    setIsTypingInInput(false);
+  }, [selectedConversation?.id, setIsTypingInInput]);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
@@ -232,6 +284,7 @@ export function MessageList({
     hasNextPage,
     isFetchingNextPage,
     isLoading,
+    isFetching,
   } = useInfiniteQuery<models.Message[], Error>({
     queryKey: ["messages", conversationId],
     queryFn: ({ pageParam }) => {
@@ -257,21 +310,32 @@ export function MessageList({
       if (!lastPage || !Array.isArray(lastPage) || lastPage.length === 0) {
         return undefined;
       }
+
       // Get the oldest message timestamp from all loaded pages
       if (!allPages || !Array.isArray(allPages)) {
         return undefined;
       }
+
       const allMessages = allPages.flat();
       if (allMessages.length === 0) {
         return undefined;
       }
+
       // Find the oldest message
       const oldestMessage = allMessages.reduce((oldest, msg) => {
         const msgTime = timeToDate(msg.timestamp);
         const oldestTime = timeToDate(oldest.timestamp);
         return msgTime < oldestTime ? msg : oldest;
       });
-      return timeToDate(oldestMessage.timestamp).toISOString();
+
+      const oldestTimestamp = timeToDate(oldestMessage.timestamp).toISOString();
+
+      // Only continue if we got a full page (50 messages) - this indicates there might be more
+      if (lastPage.length < 50) {
+        return undefined;
+      }
+
+      return oldestTimestamp;
     },
     initialPageParam: undefined,
   });
@@ -323,7 +387,9 @@ export function MessageList({
     const main: models.Message[] = [];
     const threads: Record<string, models.Message[]> = {};
 
-    messages.forEach((msg) => {
+    console.log(`[MessageList] Processing ${messages.length} total messages for conversation ${conversationId}`);
+
+    messages.forEach((msg, index) => {
       // Skip empty messages (no body and no attachments)
       // BUT keep call messages even if they have no body/attachments
       const hasBody = msg.body && msg.body.trim() !== "";
@@ -331,22 +397,41 @@ export function MessageList({
       const isCallMessage = msg.callType && msg.callType.trim() !== "";
       const isEmpty = !hasBody && !hasAttachments && !isCallMessage;
 
+      if (index < 3) {
+        console.log(`[MessageList] Message ${index}:`, {
+          protocolMsgId: msg.protocolMsgId,
+          threadId: msg.threadId,
+          hasBody,
+          hasAttachments,
+          isCallMessage,
+          isEmpty,
+          bodyPreview: msg.body?.substring(0, 30)
+        });
+      }
+
       if (isEmpty) {
         // Skip empty messages completely (but not call messages)
+        console.log(`[MessageList] Skipping empty message ${msg.protocolMsgId}`);
         return;
       }
 
-      if (!msg.threadId) {
-        // This is a main message
+      // In Slack, parent messages of threads have threadId = protocolMsgId (they reference themselves)
+      // Thread replies have threadId = parent's protocolMsgId (different from their own ID)
+      const isThreadReply = msg.threadId && msg.threadId !== msg.protocolMsgId;
+
+      if (!msg.threadId || msg.threadId === msg.protocolMsgId) {
+        // This is a main message (no thread OR parent of a thread)
         main.push(msg);
-      } else {
-        // This is a thread reply
+      } else if (isThreadReply) {
+        // This is a thread reply (threadId points to a different message)
         if (!threads[msg.threadId]) {
           threads[msg.threadId] = [];
         }
         threads[msg.threadId].push(msg);
       }
     });
+
+    console.log(`[MessageList] After processing: ${main.length} main messages, ${Object.keys(threads).length} thread groups`);
 
     // Sort main messages by timestamp
     main.sort(
@@ -407,6 +492,7 @@ export function MessageList({
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
+  const isTypingInInput = useAppStore((state) => state.isTypingInInput);
   const messageLayout = useAppStore((state) => state.messageLayout);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -418,6 +504,7 @@ export function MessageList({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState<string>("");
   const [originalEditText, setOriginalEditText] = useState<string>("");
+  const editingInputRef = useRef<HTMLInputElement | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
@@ -435,7 +522,7 @@ export function MessageList({
     return undefined;
   }, [messages]);
 
-  // Load participant names for groups and reactions (even in 1-on-1 conversations)
+  // Load participant names for groups and Slack conversations
   useEffect(() => {
     if (!conversationId) {
       return;
@@ -445,7 +532,7 @@ export function MessageList({
         // Get unique user IDs from reactions and messages
         const userIds = new Set<string>();
         messages.forEach((msg) => {
-          // Add sender IDs
+          // Add sender ID
           if (msg.senderId) {
             userIds.add(msg.senderId);
           }
@@ -457,9 +544,16 @@ export function MessageList({
           }
         });
         if (userIds.size > 0) {
-          // Normalize IDs by removing ":digits" part (LID format)
+          // Normalize IDs by removing ":digits" part (LID format for WhatsApp)
           // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
-          const normalizedIds = Array.from(userIds).map(id => id.replace(/:\d+@/, "@"));
+          // For Slack IDs (U1234567890), keep as-is
+          const normalizedIds = Array.from(userIds).map(id => {
+            // Only normalize WhatsApp IDs, not Slack IDs
+            if (id.includes("@s.whatsapp.net") || id.includes("@g.us")) {
+              return id.replace(/:\d+@/, "@");
+            }
+            return id;
+          });
           const names = await GetParticipantNames(normalizedIds);
 
           // Create a map that includes both normalized and original IDs
@@ -473,6 +567,14 @@ export function MessageList({
               namesMap.set(normalizedId, name);
             }
           });
+          
+          // Also add names from message senderName fields (for Slack)
+          messages.forEach((msg) => {
+            if (msg.senderId && msg.senderName && msg.senderName.trim().length > 0) {
+              namesMap.set(msg.senderId, msg.senderName);
+            }
+          });
+          
           setParticipantNames(namesMap);
         }
       } catch (error) {
@@ -487,93 +589,126 @@ export function MessageList({
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
     
-    // For Slack, we need to clean both the emoji parameter and the stored reactions
-    // to properly compare them (because old reactions might have skin-tone modifiers)
-    const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
-    const cleanedEmoji = isSlack ? cleanSlackEmoji(emoji) : emoji;
+    // Determine the Slack emoji name to use
+    let slackEmojiName: string;
     
-    const hasReaction = messageReactions.some((r) => {
-      const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
-      return storedEmoji === cleanedEmoji && r.userId === currentUserId;
-    });
-
-    // Optimistic update: update the cache immediately
-    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
-      { queryKey: ["messages", conversationId] },
-      (oldData: InfiniteData<models.Message[]> | undefined) => {
-        if (!oldData || !oldData.pages || !Array.isArray(oldData.pages)) {
-          return oldData;
+    if (emoji.startsWith(":") && emoji.endsWith(":")) {
+      // Already in Slack format (e.g., ":thumbsup:" or ":+1:")
+      // Remove colons for API call
+      slackEmojiName = emoji.slice(1, -1);
+    } else {
+      // Unicode emoji (e.g., "👍") - convert to Slack name
+      const converted = unicodeToSlackEmojiName(emoji);
+      if (!converted) {
+        console.error("Failed to convert emoji to Slack format:", emoji);
+        showToast(t("error"), "error");
+        return;
+      }
+      slackEmojiName = converted;
+    }
+    
+    // Normalized emoji for DB comparison (with colons)
+    const normalizedEmojiForComparison = `:${slackEmojiName}:`;
+    
+    // Debug: Log all reactions for this message
+    console.log(`handleReaction: DEBUG - All reactions for message:`, messageReactions.map(r => ({
+      emoji: r.emoji,
+      userId: r.userId,
+      isCurrentUser: r.userId === currentUserId
+    })));
+    
+    // Check if current user already has this reaction
+    const hasReaction = messageReactions.some(
+      (r) => {
+        // Ensure reaction.emoji has colons for comparison
+        let reactionEmoji = r.emoji;
+        if (!reactionEmoji.startsWith(":")) reactionEmoji = `:${reactionEmoji}`;
+        if (!reactionEmoji.endsWith(":")) reactionEmoji = `${reactionEmoji}:`;
+        
+        const matches = reactionEmoji === normalizedEmojiForComparison && r.userId === currentUserId;
+        if (matches || (reactionEmoji === normalizedEmojiForComparison && currentUserId)) {
+          console.log(`handleReaction: DEBUG - Checking reaction: emoji="${reactionEmoji}" vs "${normalizedEmojiForComparison}", userId="${r.userId}" vs "${currentUserId}", matches=${matches}`);
         }
+        
+        return matches;
+      }
+    );
+    
+    console.log(`handleReaction: emoji="${emoji}" -> slackName="${slackEmojiName}", normalized="${normalizedEmojiForComparison}", hasReaction=${hasReaction}, currentUser=${currentUserId}`);
 
-        const updatedPages = oldData.pages.map((page: models.Message[]) => {
-          if (!Array.isArray(page)) return page;
-          
-          return page.map((msg: models.Message) => {
-            if (msg.id === message.id || (msg.protocolMsgId === protocolMsgId && msg.protocolConvId === conversationId)) {
-              const currentReactions = msg.reactions || [];
-              let updatedReactions: models.Reaction[];
-              
-              if (hasReaction) {
-                // Remove reaction
-                updatedReactions = currentReactions.filter((r: models.Reaction) => {
-                  const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
-                  return !(storedEmoji === cleanedEmoji && r.userId === currentUserId);
-                });
-              } else {
-                // Add reaction
-                const reactionExists = currentReactions.some((r: models.Reaction) => {
-                  const storedEmoji = isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
-                  return storedEmoji === cleanedEmoji && r.userId === currentUserId;
-                });
-                
-                if (!reactionExists) {
-                  const newReaction = models.Reaction.createFrom({
-                    id: 0,
-                    messageId: msg.id,
-                    userId: currentUserId || "",
-                    emoji: cleanedEmoji,
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                  });
-                  updatedReactions = [...currentReactions, newReaction];
-                } else {
-                  updatedReactions = currentReactions;
-                }
-              }
-              
-              return models.Message.createFrom({
-                ...msg,
-                reactions: updatedReactions,
-              });
-            }
-            return msg;
-          });
-        });
-
+    // Optimistic update: immediately update the cache
+    queryClient.setQueryData<InfiniteData<models.Message[]>>(
+      ["messages", conversationId],
+      (oldData) => {
+        if (!oldData) return oldData;
+        
         return {
           ...oldData,
-          pages: updatedPages,
+          pages: oldData.pages.map(page => 
+            page.map(msg => {
+              if (msg.protocolMsgId === protocolMsgId || getMessageDomId(msg) === protocolMsgId) {
+                const updatedReactions = hasReaction
+                  ? // Remove reaction
+                    (msg.reactions || []).filter(r => {
+                      let reactionEmoji = r.emoji;
+                      if (!reactionEmoji.startsWith(":")) reactionEmoji = `:${reactionEmoji}`;
+                      if (!reactionEmoji.endsWith(":")) reactionEmoji = `${reactionEmoji}:`;
+                      return !(reactionEmoji === normalizedEmojiForComparison && r.userId === currentUserId);
+                    })
+                  : // Add reaction
+                    [
+                      ...(msg.reactions || []),
+                      models.Reaction.createFrom({
+                        id: 0, // Will be set by backend
+                        messageId: msg.id,
+                        userId: currentUserId || "",
+                        emoji: normalizedEmojiForComparison,
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                      })
+                    ];
+                
+                console.log(`Optimistic update: ${hasReaction ? 'removed' : 'added'} reaction ${normalizedEmojiForComparison} for message ${protocolMsgId}`);
+                
+                // Create a new Message instance with updated reactions
+                return models.Message.createFrom({
+                  ...msg,
+                  reactions: updatedReactions
+                });
+              }
+              return msg;
+            })
+          ),
         };
       }
     );
 
     try {
+      // Call API
       if (hasReaction) {
-        await RemoveReaction(conversationId, protocolMsgId, cleanedEmoji);
+        console.log(`handleReaction: Calling RemoveReaction("${conversationId}", "${protocolMsgId}", "${slackEmojiName}")`);
+        await RemoveReaction(conversationId, protocolMsgId, slackEmojiName);
       } else {
-        await AddReaction(conversationId, protocolMsgId, cleanedEmoji);
+        console.log(`handleReaction: Calling AddReaction("${conversationId}", "${protocolMsgId}", "${slackEmojiName}")`);
+        await AddReaction(conversationId, protocolMsgId, slackEmojiName);
       }
-      // Refetch to ensure consistency with backend
-      queryClient.invalidateQueries({
-        queryKey: ["messages", conversationId],
-      });
-      queryClient.refetchQueries({
-        queryKey: ["messages", conversationId],
-      });
+      
+      // Don't refetch immediately - the optimistic update is enough
+      // The DB will be updated via RTM events in the background
+      // If we refetch too soon, we'll get the old state from DB before RTM event arrives
+      console.log(`Reaction ${hasReaction ? 'removed' : 'added'} successfully, keeping optimistic update`);
+      
+      // Optional: Refetch after a delay to ensure RTM event has been processed
+      // setTimeout(() => {
+      //   queryClient.refetchQueries({
+      //     queryKey: ["messages", conversationId],
+      //   });
+      // }, 2000);
     } catch (error) {
       console.error("Failed to handle reaction:", error);
       showToast(t("error"), "error");
-      // Revert optimistic update on error
+      
+      // Rollback optimistic update on error
       queryClient.invalidateQueries({
         queryKey: ["messages", conversationId],
       });
@@ -581,100 +716,7 @@ export function MessageList({
         queryKey: ["messages", conversationId],
       });
     }
-  }, [conversationId, currentUserId, queryClient, t, showToast, selectedConversation]);
-
-  // Retry a failed optimistic send
-  const handleRetrySend = useCallback(async (message: models.Message) => {
-    if (!conversationId) return;
-    const tempId = (message as any).tempId || message.protocolMsgId;
-    if (!tempId) return;
-
-    // Mark as sending locally
-    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
-      { queryKey: ["messages", conversationId] },
-      (old) => {
-        if (!old || !old.pages) return old;
-        const updatedPages = old.pages.map((page) =>
-          Array.isArray(page)
-            ? page.map((msg) =>
-                (msg as any).tempId === tempId || msg.protocolMsgId === tempId
-                  ? ({ ...msg, localStatus: "sending" } as any)
-                  : msg
-              )
-            : page
-        );
-        return { ...old, pages: updatedPages };
-      }
-    );
-
-    try {
-      const result = message.quotedMessageId
-        ? await SendReply(conversationId, message.body, message.quotedMessageId)
-        : await SendMessage(conversationId, message.body);
-
-      // Replace temp with actual message
-      queryClient.setQueriesData<InfiniteData<models.Message[]>>(
-        { queryKey: ["messages", conversationId] },
-        (old) => {
-          if (!old || !old.pages) return old;
-          const updatedPages = old.pages.map((page) =>
-            Array.isArray(page)
-              ? page
-                  .map((msg) =>
-                    (msg as any).tempId === tempId || msg.protocolMsgId === tempId ? result : msg
-                  )
-                  .sort(
-                    (a, b) =>
-                      timeToDate(b.timestamp).getTime() - timeToDate(a.timestamp).getTime()
-                  )
-              : page
-          );
-          return { ...old, pages: updatedPages };
-        }
-      );
-    } catch (error) {
-      console.error("Retry send failed:", error);
-      queryClient.setQueriesData<InfiniteData<models.Message[]>>(
-        { queryKey: ["messages", conversationId] },
-        (old) => {
-          if (!old || !old.pages) return old;
-          const updatedPages = old.pages.map((page) =>
-            Array.isArray(page)
-              ? page.map((msg) =>
-                  (msg as any).tempId === tempId || msg.protocolMsgId === tempId
-                    ? ({ ...msg, localStatus: "error" } as any)
-                    : msg
-                )
-              : page
-          );
-          return { ...old, pages: updatedPages };
-        }
-      );
-    }
-  }, [conversationId, queryClient]);
-
-  // Delete a local optimistic message (after failed send)
-  const handleDeleteLocalMessage = useCallback((message: models.Message) => {
-    if (!conversationId) return;
-    const tempId = (message as any).tempId || message.protocolMsgId;
-    if (!tempId) return;
-
-    queryClient.setQueriesData<InfiniteData<models.Message[]>>(
-      { queryKey: ["messages", conversationId] },
-      (old) => {
-        if (!old || !old.pages) return old;
-        const updatedPages = old.pages.map((page) =>
-          Array.isArray(page)
-            ? page.filter(
-                (msg) =>
-                  (msg as any).tempId !== tempId && msg.protocolMsgId !== tempId
-              )
-            : page
-        );
-        return { ...old, pages: updatedPages };
-      }
-    );
-  }, [conversationId, queryClient]);
+  }, [conversationId, currentUserId, queryClient, t, showToast]);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -722,29 +764,77 @@ export function MessageList({
       return;
     }
 
-    // Mark all loaded messages as read
-    if (mainMessages.length > 0) {
-      mainMessages.forEach((msg) => {
-        const messageId = getMessageDomId(msg);
-        if (conversationReadState[messageId] === false) {
-          markMessageAsRead(conversationId, messageId);
-        }
-      });
-    }
-
-    // Also mark all unread messages in the store as read (including obsolete ones)
-    // This ensures that when a conversation is opened, all messages are marked as read
+    // Check if there are unread messages
     const unreadMessages = Object.entries(conversationReadState)
       .filter(([, isRead]) => !isRead)
       .map(([msgId]) => msgId);
 
-    if (unreadMessages.length > 0) {
+    if (unreadMessages.length === 0) {
+      return; // No unread messages, nothing to do
+    }
+
+    // For Slack, optimize by calling MarkConversationAsRead once instead of MarkMessageAsRead for each message
+    const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
+    
+    if (isSlack) {
+      // Call MarkConversationAsRead once for Slack to mark entire conversation as read
+      const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
+        return new Promise((resolve, reject) => {
+          if (typeof window === "undefined" || !window.go?.main?.App) {
+            reject(new Error("Wails runtime not available"));
+            return;
+          }
+          const fn = (window.go.main.App as any).MarkConversationAsRead;
+          if (!fn || typeof fn !== 'function') {
+            reject(new Error("MarkConversationAsRead not available"));
+            return;
+          }
+          fn(convId)
+            .then(() => {
+              console.log(`MessageList: Successfully marked Slack conversation ${convId} as read`);
+              resolve();
+            })
+            .catch((error: Error) => {
+              console.error(`MessageList: Error marking Slack conversation as read:`, error);
+              reject(error);
+            });
+        });
+      };
+
+      console.log(`MessageList: Marking Slack conversation ${conversationId} as read (${unreadMessages.length} unread messages)`);
+      markConversationAsReadOnServer(conversationId)
+        .then(() => {
+          // Mark all messages as read in the store
+          unreadMessages.forEach((msgId) => {
+            markMessageAsRead(conversationId, msgId);
+          });
+        })
+        .catch((error) => {
+          console.error(`MessageList: Failed to mark Slack conversation as read, falling back to individual marks:`, error);
+          // Fallback: mark each message individually
+          unreadMessages.forEach((msgId) => {
+            markMessageAsRead(conversationId, msgId);
+          });
+        });
+    } else {
+      // For other providers (WhatsApp), mark each message individually
+      // Mark all loaded messages as read
+      if (mainMessages.length > 0) {
+        mainMessages.forEach((msg) => {
+          const messageId = getMessageDomId(msg);
+          if (conversationReadState[messageId] === false) {
+            markMessageAsRead(conversationId, messageId);
+          }
+        });
+      }
+
+      // Also mark all unread messages in the store as read (including obsolete ones)
       console.log(`MessageList: Marking ${unreadMessages.length} unread messages as read for conversation ${conversationId}`);
       unreadMessages.forEach((msgId) => {
         markMessageAsRead(conversationId, msgId);
       });
     }
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState]);
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation]);
 
   const firstUnreadMessageId = useMemo(() => {
     for (const message of mainMessages) {
@@ -767,6 +857,17 @@ export function MessageList({
   useEffect(() => {
     setRevealedDeletedMessages(new Set());
   }, [conversationId]);
+
+  // Invalidate sorting queries when messages are loaded for the first time
+  // This ensures the conversation appears in the "Recent" tab with correct sorting
+  useEffect(() => {
+    if (messages.length > 0 && !isLoading) {
+      // Invalidate queries used for sorting conversations
+      queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+      queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+      queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
+    }
+  }, [messages.length, isLoading, queryClient]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -808,6 +909,9 @@ export function MessageList({
 
       // Load more messages when scrolling near the top (within 200px, including negative for overscroll)
       // On WebKit with column-reverse, scrollTop becomes negative when scrolling up past the content
+      // Check if the last loaded page was empty to avoid infinite loops
+      const lastPageWasEmpty = data?.pages && data.pages.length > 0 && data.pages[data.pages.length - 1].length === 0;
+
       if (
         isNearTop &&
         hasNextPage &&
@@ -815,9 +919,11 @@ export function MessageList({
         !isLoadingMoreRef.current &&
         hasUserScrolledRef.current &&
         !isInitialLoadRef.current &&
+        !lastPageWasEmpty && // Don't load if last page was empty
         scrollDelta < 0 // User scrolled up (toward old messages)
       ) {
 
+        console.log(`[MessageList] Loading more messages (hasNextPage: ${hasNextPage}, lastPageWasEmpty: ${lastPageWasEmpty})`);
         isLoadingMoreRef.current = true;
         fetchNextPage();
       }
@@ -966,6 +1072,7 @@ export function MessageList({
 
   const handleThreadClick = (parentMsgId: string) => {
     setSelectedThreadId(parentMsgId);
+    setShowThreads(true); // Open the threads sidebar
   };
 
   const showConversationDetails = useAppStore(
@@ -1010,6 +1117,232 @@ export function MessageList({
     setOriginalEditText(body);
   }, []);
 
+  // Navigate to edit previous/next message sent by current user
+  const handleNavigateToEdit = useCallback((direction: "up" | "down", returnFocusToInput?: () => void) => {
+    console.log("[MessageList] handleNavigateToEdit called", {
+      direction,
+      editingMessageId,
+      messagesCount: messages.length,
+      hasReturnFocusToInput: !!returnFocusToInput
+    });
+
+    // Get all messages sent by current user, sorted by timestamp (newest first)
+    const sentMessages = messages
+      .filter((msg) => msg.isFromMe && msg.body && msg.body.trim() !== "")
+      .sort((a, b) => {
+        const timeA = timeToDate(a.timestamp).getTime();
+        const timeB = timeToDate(b.timestamp).getTime();
+        return timeB - timeA; // Newest first (index 0 = most recent)
+      });
+
+    console.log("[MessageList] Filtered sent messages", {
+      sentMessagesCount: sentMessages.length,
+      sentMessages: sentMessages.map((msg, idx) => ({
+        index: idx,
+        id: getMessageDomId(msg),
+        body: msg.body?.substring(0, 50),
+        timestamp: msg.timestamp
+      }))
+    });
+
+    if (sentMessages.length === 0) {
+      console.log("[MessageList] No sent messages found");
+      return;
+    }
+
+    let targetMessage: models.Message | null = null;
+
+    if (editingMessageId) {
+      // We're already editing a message, find the next/previous one
+      const currentIndex = sentMessages.findIndex(
+        (msg) => getMessageDomId(msg) === editingMessageId
+      );
+
+      console.log("[MessageList] Currently editing message", {
+        editingMessageId,
+        currentIndex,
+        totalSentMessages: sentMessages.length
+      });
+
+      if (currentIndex !== -1) {
+        if (direction === "up") {
+          // Go to previous (older) message
+          if (currentIndex < sentMessages.length - 1) {
+            targetMessage = sentMessages[currentIndex + 1];
+            console.log("[MessageList] Navigating UP to older message", {
+              fromIndex: currentIndex,
+              toIndex: currentIndex + 1,
+              targetMessageId: getMessageDomId(targetMessage)
+            });
+          } else {
+            console.log("[MessageList] Already at oldest message, cannot go up");
+          }
+          // If already at the oldest message, do nothing
+        } else {
+          // Go to next (newer) message
+          if (currentIndex > 0) {
+            targetMessage = sentMessages[currentIndex - 1];
+            console.log("[MessageList] Navigating DOWN to newer message", {
+              fromIndex: currentIndex,
+              toIndex: currentIndex - 1,
+              targetMessageId: getMessageDomId(targetMessage)
+            });
+          } else {
+            // At the newest message (index 0), exit edit mode and return focus to input
+            console.log("[MessageList] At newest message, exiting edit mode");
+            setEditingMessageId(null);
+            setEditingText("");
+            setOriginalEditText("");
+            if (returnFocusToInput) {
+              console.log("[MessageList] Calling returnFocusToInput");
+              returnFocusToInput();
+            }
+            return;
+          }
+        }
+      } else {
+        console.warn("[MessageList] Current editing message not found in sent messages", {
+          editingMessageId
+        });
+      }
+    } else {
+      // Not editing, start with the most recent message
+      if (direction === "up") {
+        targetMessage = sentMessages[0]; // Most recent
+        console.log("[MessageList] Starting edit mode with most recent message", {
+          targetMessageId: getMessageDomId(targetMessage),
+          index: 0
+        });
+      } else {
+        console.log("[MessageList] Not editing and direction is down, doing nothing");
+      }
+      // If direction is "down" and we're not editing, do nothing
+    }
+
+    if (targetMessage) {
+      console.log("[MessageList] Setting target message to edit mode", {
+        targetMessageId: getMessageDomId(targetMessage),
+        body: targetMessage.body?.substring(0, 50)
+      });
+      handleEditMessage(targetMessage);
+      // Scroll to the message being edited
+      const messageId = getMessageDomId(targetMessage);
+      const messageElement = document.getElementById(messageId);
+      if (messageElement) {
+        console.log("[MessageList] Scrolling to message element", { messageId });
+        messageElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        console.warn("[MessageList] Message element not found in DOM", { messageId });
+      }
+    } else {
+      console.log("[MessageList] No target message to edit");
+    }
+  }, [messages, editingMessageId, handleEditMessage]);
+
+  // Attach keyboard event listener directly to the editing input element
+  useEffect(() => {
+    if (!editingMessageId) {
+      return;
+    }
+
+    // Wait for the input to be rendered in the DOM
+    const timeoutId = setTimeout(() => {
+      const inputElement = editingInputRef.current;
+      if (!inputElement) {
+        console.warn("[MessageList] Edit input element not found in DOM", {
+          editingMessageId,
+          hasRef: !!editingInputRef.current
+        });
+        return;
+      }
+
+      console.log("[MessageList] Setting up keyboard listener on edit input", {
+        editingMessageId,
+        hasInputElement: !!inputElement,
+        inputValue: inputElement.value?.substring(0, 20)
+      });
+
+      const handleKeyDown = (e: Event) => {
+        const keyboardEvent = e as globalThis.KeyboardEvent;
+        console.log("[MessageList] Key pressed in edit input (direct listener)", {
+          key: keyboardEvent.key,
+          shiftKey: keyboardEvent.shiftKey,
+          ctrlKey: keyboardEvent.ctrlKey,
+          metaKey: keyboardEvent.metaKey,
+          altKey: keyboardEvent.altKey,
+          target: keyboardEvent.target,
+          currentTarget: keyboardEvent.currentTarget
+        });
+
+        // Handle navigation to previous/next message
+        if (keyboardEvent.key === "ArrowUp" && !keyboardEvent.shiftKey && !keyboardEvent.ctrlKey && !keyboardEvent.metaKey && !keyboardEvent.altKey) {
+          const input = keyboardEvent.target as HTMLInputElement;
+          const currentText = input?.value || editingText;
+          const canNavigate = (input?.selectionStart === 0) || currentText.trim() === "";
+          console.log("[MessageList] ArrowUp in edit input (direct listener)", {
+            selectionStart: input?.selectionStart,
+            valueLength: input?.value?.length,
+            editingTextTrimmed: currentText.trim().length,
+            canNavigate
+          });
+          
+          if (canNavigate) {
+            keyboardEvent.preventDefault();
+            keyboardEvent.stopPropagation();
+            keyboardEvent.stopImmediatePropagation();
+            console.log("[MessageList] Calling handleNavigateToEdit('up') from direct listener");
+            if (handleNavigateToEdit) {
+              handleNavigateToEdit("up");
+            }
+          }
+          return;
+        }
+
+        if (keyboardEvent.key === "ArrowDown" && !keyboardEvent.shiftKey && !keyboardEvent.ctrlKey && !keyboardEvent.metaKey && !keyboardEvent.altKey) {
+          const input = keyboardEvent.target as HTMLInputElement;
+          const currentText = input?.value || editingText;
+          const canNavigate = (input?.selectionStart === input?.value?.length) || currentText.trim() === "";
+          console.log("[MessageList] ArrowDown in edit input (direct listener)", {
+            selectionStart: input?.selectionStart,
+            valueLength: input?.value?.length,
+            editingTextTrimmed: currentText.trim().length,
+            canNavigate
+          });
+          
+          if (canNavigate) {
+            keyboardEvent.preventDefault();
+            keyboardEvent.stopPropagation();
+            keyboardEvent.stopImmediatePropagation();
+            console.log("[MessageList] Calling handleNavigateToEdit('down') from direct listener");
+            if (handleNavigateToEdit) {
+              handleNavigateToEdit("down", () => {
+                // Return focus to chat input
+                const chatInput = document.querySelector('textarea[placeholder*="message"], textarea[placeholder*="Message"]') as HTMLTextAreaElement;
+                if (chatInput) {
+                  setTimeout(() => {
+                    chatInput.focus();
+                  }, 0);
+                }
+              });
+            }
+          }
+          return;
+        }
+      };
+
+      inputElement.addEventListener("keydown", handleKeyDown, true); // Use capture phase
+
+      return () => {
+        console.log("[MessageList] Removing keyboard listener from edit input");
+        inputElement.removeEventListener("keydown", handleKeyDown, true);
+      };
+    }, 100); // Small delay to ensure DOM is updated
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [editingMessageId, editingText, handleNavigateToEdit]);
+
   const handleSaveEdit = useCallback(async (skipValidation = false) => {
     if (!editingMessageId || typeof EditMessage !== "function") {
       return;
@@ -1048,15 +1381,18 @@ export function MessageList({
     } catch (error) {
       console.error("Failed to edit message:", error);
       // Restore original text in the message
-      queryClient.setQueryData(["messages", conversationId], (oldData: models.Message[] | undefined) => {
-        if (!oldData) return oldData;
-        return oldData.map((msg) => {
-          if (msg.protocolMsgId === messageId) {
-            return { ...msg, body: originalText };
-          }
-          return msg;
-        });
-      });
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (oldData: InfiniteData<models.Message[]> | undefined) => {
+          if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+          const pages = oldData.pages.map((page) => {
+            if (!Array.isArray(page)) return page as models.Message[];
+            const typedPage = page as models.Message[];
+            return typedPage.map((msg) => (msg.protocolMsgId === messageId ? { ...msg, body: originalText } : msg));
+          });
+          return { ...oldData, pages: pages as models.Message[][] };
+        }
+      );
       // Show error toast
       showToast(t("edit_failed"), "error");
     }
@@ -1066,6 +1402,98 @@ export function MessageList({
     setEditingMessageId(null);
     setEditingText("");
   }, []);
+
+  // Helpers for optimistic cache updates (failed/pending messages)
+  const markMessageState = useCallback(
+    (conversationId: string, protocolMsgId: string, updates: Partial<models.Message>) => {
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (oldData: InfiniteData<models.Message[]> | undefined) => {
+          if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+          const pages = oldData.pages.map((page) => {
+            if (!Array.isArray(page)) return page as models.Message[];
+            const typedPage = page as models.Message[];
+            return typedPage.map((msg) =>
+              msg.protocolMsgId === protocolMsgId ? ({ ...(msg as any), ...updates } as models.Message) : msg
+            );
+          });
+          return { ...oldData, pages: pages as models.Message[][] };
+        }
+      );
+    },
+    [queryClient]
+  );
+
+  const removeMessageFromCache = useCallback(
+    (conversationId: string, protocolMsgId: string) => {
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (oldData: InfiniteData<models.Message[]> | undefined) => {
+          if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+          const pages = oldData.pages.map((page) => {
+            if (!Array.isArray(page)) return page as models.Message[];
+            const typedPage = page as models.Message[];
+            return typedPage.filter((msg) => msg.protocolMsgId !== protocolMsgId);
+          });
+          return { ...oldData, pages: pages as models.Message[][] };
+        }
+      );
+    },
+    [queryClient]
+  );
+
+  const handleRetrySend = useCallback(
+    async (message: models.Message) => {
+      const convId = message.protocolConvId;
+      const text = message.body || "";
+      const quotedId = message.quotedMessageId || undefined;
+      if (!convId || !text.trim()) {
+        return;
+      }
+
+      // Mark as pending again
+      markMessageState(convId, message.protocolMsgId, { isPending: true, sendFailed: false } as any);
+
+      try {
+        const sent = quotedId
+          ? await SendReply(convId, text, quotedId)
+          : await SendMessage(convId, text);
+
+        // Replace with real message
+        queryClient.setQueryData<InfiniteData<models.Message[]>>(
+          ["messages", convId],
+          (oldData: InfiniteData<models.Message[]> | undefined) => {
+            if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+            const pages = oldData.pages.map((page) => {
+              if (!Array.isArray(page)) return page as models.Message[];
+              const typedPage = page as models.Message[];
+              return typedPage.map((msg) =>
+                msg.protocolMsgId === message.protocolMsgId
+                  ? ({ ...(sent as any), isPending: false, sendFailed: false } as models.Message)
+                  : msg
+              );
+            });
+            return { ...oldData, pages: pages as models.Message[][] };
+          }
+        );
+      } catch (err) {
+        console.error("Retry send failed", err);
+        markMessageState(convId, message.protocolMsgId, { isPending: false, sendFailed: true } as any);
+      }
+    },
+    [markMessageState, queryClient]
+  );
+
+  const handleDeleteLocalMessage = useCallback(
+    (message: models.Message) => {
+      const convId = message.protocolConvId;
+      const msgId = message.protocolMsgId;
+      if (!convId || !msgId) return;
+
+      removeMessageFromCache(convId, msgId);
+    },
+    [removeMessageFromCache]
+  );
 
   const handleDeleteClick = useCallback((message: models.Message) => {
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
@@ -1384,18 +1812,36 @@ export function MessageList({
           onToggleDetails={handleToggleDetails}
         />
         <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area flex flex-col-reverse" ref={scrollContainerRef}>
-          {isLoading && messages.length === 0 ? (
+          {(isLoading || (isFetching && messages.length === 0)) ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-4">
-                <img
-                  src="https://api.iconify.design/marketeq:conversation.svg"
-                  className="h-24 w-24 mb-4 opacity-50 animate-pulse"
+                <div className="relative">
+                  <svg
+                    className="w-16 h-16 text-primary"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    viewBox="0 0 24 24"
                   style={{
-                    filter: "grayscale(1) brightness(1.2)",
+                      animation: "shimmer 2s ease-in-out infinite",
+                      filter: "drop-shadow(0 0 8px currentColor)"
+                    }}
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </div>
+                <p 
+                  className="text-muted-foreground text-sm"
+                  style={{
+                    animation: "shimmer 2s ease-in-out infinite"
                   }}
-                  alt="Loading"
-                />
-                <p className="text-muted-foreground text-sm">{t("loading_messages") || "Loading messages..."}</p>
+                >
+                  {t("fetching_messages") || "Récupération des messages"}
+                </p>
               </div>
             </div>
           ) : (
@@ -1407,16 +1853,15 @@ export function MessageList({
                     const lastThreadMsg = getLastThreadMessage(message.protocolMsgId);
                     const threadCount = getThreadCount(message.protocolMsgId);
                     const hasThread = threadCount > 0;
-                    const displayName = getSenderDisplayNameUtil(
+                    const displayName = getSenderDisplayName(
                       message.senderName,
                       message.senderId,
                       message.isFromMe,
-                      t,
-                      { participantNames, allMessages: mainMessages }
+                      t
                     );
                     const isUnread = conversationReadState[messageId] === false;
                     const showUnreadDivider =
-                      messageId === firstUnreadMessageId && isUnread;
+                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput;
                     const timestamp = timeToDate(message.timestamp);
                     const timeString = `${timestamp
                       .getHours()
@@ -1430,10 +1875,8 @@ export function MessageList({
                       isDeleted && revealedDeletedMessages.has(messageId);
                     const showDeletedPlaceholder =
                       isDeleted && !isDeletedRevealed;
-                    const localStatus = (message as any).localStatus as
-                      | "sending"
-                      | "error"
-                      | undefined;
+                    const isPending = (message as any).isPending;
+                    const sendFailed = (message as any).sendFailed;
                     const baseBubbleColorClass = message.isFromMe
                       ? "bg-blue-600 text-white"
                       : "bg-muted text-foreground";
@@ -1450,12 +1893,12 @@ export function MessageList({
                           ? deletedRevealedClass
                           : deletedPlaceholderClass
                         : baseBubbleColorClass,
+                      isPending && "opacity-70",
+                      sendFailed && "border border-destructive bg-destructive/10 opacity-80",
                       isUnread &&
                       "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
                       isDeleted &&
                       "border-dashed border-destructive/60 cursor-pointer group"
-                    ,
-                      localStatus === "sending" && "opacity-75"
                     );
                     const deletedInteractionHandlers = isDeleted
                       ? {
@@ -1493,12 +1936,12 @@ export function MessageList({
                           )}
                           {showUnreadDivider && (
                             <div
-                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary my-2"
                               role="separator"
-                              aria-label={t("new_messages_separator")}
+                              aria-label={t("new") || "New"}
                             >
                               <span className="h-px flex-1 bg-border" />
-                              {t("new_messages_separator")}
+                              <span className="px-2">{t("new") || "New"}</span>
                               <span className="h-px flex-1 bg-border" />
                             </div>
                           )}
@@ -1589,17 +2032,120 @@ export function MessageList({
                                   }
                                   {...deletedInteractionHandlers}
                                 >
+                                  {isPending && (
+                                    <div className="text-xs opacity-80 mb-1">
+                                      {t("sending") || "Envoi en cours…"}
+                                    </div>
+                                  )}
+                                  {sendFailed && (
+                                    <div className="text-xs text-destructive mb-1 flex items-center gap-2">
+                                      <span>{t("send_failed") || "Envoi échoué"}</span>
+                                      <button
+                                        className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                        onClick={() => handleRetrySend(message)}
+                                      >
+                                        {t("resend") || "Renvoyer"}
+                                      </button>
+                                      <button
+                                        className="px-2 py-1 text-xs rounded border border-destructive text-destructive hover:bg-destructive/10"
+                                        onClick={() => handleDeleteLocalMessage(message)}
+                                      >
+                                        {t("delete") || "Supprimer"}
+                                      </button>
+                                    </div>
+                                  )}
                                   {editingMessageId === messageId ? (
                                     <div className="flex flex-col gap-2">
                                       <Input
+                                        ref={editingInputRef}
                                         value={editingText}
                                         onChange={(e) => setEditingText(e.target.value)}
                                         onKeyDown={(e) => {
+                                          console.log("[MessageList] Key pressed in edit input", {
+                                            key: e.key,
+                                            shiftKey: e.shiftKey,
+                                            ctrlKey: e.ctrlKey,
+                                            metaKey: e.metaKey,
+                                            altKey: e.altKey,
+                                            selectionStart: e.currentTarget.selectionStart,
+                                            valueLength: e.currentTarget.value.length,
+                                            editingTextLength: editingText.length,
+                                            editingTextTrimmed: editingText.trim().length,
+                                            hasHandleNavigateToEdit: !!handleNavigateToEdit
+                                          });
+
+                                          // Handle navigation to previous/next message
+                                          if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                                            // Only navigate if cursor is at the start of the input or input is empty
+                                            const input = e.currentTarget;
+                                            const canNavigate = input.selectionStart === 0 || editingText.trim() === "";
+                                            console.log("[MessageList] ArrowUp in edit input", {
+                                              selectionStart: input.selectionStart,
+                                              valueLength: input.value.length,
+                                              editingTextTrimmed: editingText.trim().length,
+                                              canNavigate
+                                            });
+                                            
+                                            if (canNavigate) {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              console.log("[MessageList] Calling handleNavigateToEdit('up') from edit input");
+                                              if (handleNavigateToEdit) {
+                                                handleNavigateToEdit("up");
+                                              } else {
+                                                console.error("[MessageList] handleNavigateToEdit is not defined!");
+                                              }
+                                            }
+                                            return;
+                                          }
+
+                                          if (e.key === "ArrowDown" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                                            // Only navigate if cursor is at the end of the input
+                                            const input = e.currentTarget;
+                                            const canNavigate = input.selectionStart === input.value.length || editingText.trim() === "";
+                                            console.log("[MessageList] ArrowDown in edit input", {
+                                              selectionStart: input.selectionStart,
+                                              valueLength: input.value.length,
+                                              editingTextTrimmed: editingText.trim().length,
+                                              canNavigate
+                                            });
+                                            
+                                            if (canNavigate) {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              console.log("[MessageList] Calling handleNavigateToEdit('down') from edit input");
+                                              if (handleNavigateToEdit) {
+                                                handleNavigateToEdit("down", () => {
+                                                  // Return focus to chat input
+                                                  const chatInput = document.querySelector('textarea[placeholder*="message"], textarea[placeholder*="Message"]') as HTMLTextAreaElement;
+                                                  if (chatInput) {
+                                                    setTimeout(() => {
+                                                      chatInput.focus();
+                                                    }, 0);
+                                                  }
+                                                });
+                                              } else {
+                                                console.error("[MessageList] handleNavigateToEdit is not defined!");
+                                              }
+                                            }
+                                            return;
+                                          }
+
                                           if (e.key === "Enter" && !e.shiftKey) {
                                             e.preventDefault();
                                             handleSaveEdit();
                                           } else if (e.key === "Escape") {
                                             handleCancelEdit();
+                                          }
+                                        }}
+                                        onKeyDownCapture={(e) => {
+                                          // Try capture phase to catch events earlier
+                                          if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                                            console.log("[MessageList] Key captured in edit input (capture phase)", {
+                                              key: e.key,
+                                              target: e.target,
+                                              currentTarget: e.currentTarget
+                                            });
                                           }
                                         }}
                                         onBlur={(e) => {
@@ -1649,6 +2195,8 @@ export function MessageList({
                                               isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                               emojiSize={14}
                                               isFromMe={message.isFromMe}
+                                              participantNames={participantNames}
+                                              allMessages={mainMessages}
                                             />
                                           </div>
                                         </div>
@@ -1660,6 +2208,8 @@ export function MessageList({
                                           isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                           className="whitespace-pre-wrap"
                                           isFromMe={message.isFromMe}
+                                          participantNames={participantNames}
+                                          allMessages={mainMessages}
                                         />
                                       )}
                                     </>
@@ -1722,13 +2272,9 @@ export function MessageList({
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
-                                        .map((r) => {
-                                          const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
-                                          return isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
-                                        })}
+                                        .map((r) => r.emoji)}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
-                                      isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                     />
                                   </div>
                                 )}
@@ -1744,42 +2290,14 @@ export function MessageList({
                               {message.reactions && message.reactions.length > 0 && (
                                 <MessageReactions
                                   reactions={message.reactions}
+                                  isGroup={isGroupConversation}
                                   participantNames={participantNames}
                                   currentUserId={currentUserId}
+                                  providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                  allMessages={mainMessages}
                                   onReactionClick={(emoji) => handleReaction(message, emoji)}
                                   className={message.isFromMe ? "self-end" : "self-start"}
-                                  providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
-                                  allMessages={mainMessages}
                                 />
-                              )}
-                              {message.isFromMe && localStatus === "sending" && (
-                                <div className="flex items-center gap-2 text-xs text-muted-foreground self-end">
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  {t("sending") || "Envoi..."}
-                                </div>
-                              )}
-                              {message.isFromMe && localStatus === "error" && (
-                                <div className="flex items-center gap-3 text-xs text-destructive self-end">
-                                  <div className="flex items-center gap-1">
-                                    <AlertTriangle className="h-4 w-4" />
-                                    {t("send_failed") || "Échec de l'envoi"}
-                                  </div>
-                                  <button
-                                    className="inline-flex items-center gap-1 text-primary hover:underline"
-                                    onClick={() => handleRetrySend(message)}
-                                  >
-                                    <RotateCcw className="h-4 w-4" />
-                                    {t("retry") || "Réessayer"}
-                                  </button>
-                                  <button
-                                    className="inline-flex items-center gap-1 text-muted-foreground hover:text-destructive"
-                                    onClick={() => handleDeleteLocalMessage(message)}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                    {t("delete") || "Supprimer"}
-                                  </button>
-                                </div>
                               )}
                               <div className={message.isFromMe ? "self-end" : "self-start"}>
                                 <MessageStatus
@@ -1823,12 +2341,11 @@ export function MessageList({
                                 onClick={() =>
                                   handleAvatarClick(
                                     lastThreadMsg.senderAvatarUrl,
-                                    getSenderDisplayNameUtil(
+                                    getSenderDisplayName(
                                       lastThreadMsg.senderName,
                                       lastThreadMsg.senderId,
                                       lastThreadMsg.isFromMe,
-                                      t,
-                                      { participantNames, allMessages: mainMessages }
+                                      t
                                     )
                                   )
                                 }
@@ -1837,12 +2354,11 @@ export function MessageList({
                                 <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
                                   <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
                                   <AvatarFallback className="text-xs">
-                                    {getSenderDisplayNameUtil(
+                                    {getSenderDisplayName(
                                       lastThreadMsg.senderName,
                                       lastThreadMsg.senderId,
                                       lastThreadMsg.isFromMe,
-                                      t,
-                                      { participantNames, allMessages: mainMessages }
+                                      t
                                     )
                                       .substring(0, 2)
                                       .toUpperCase()}
@@ -1908,12 +2424,11 @@ export function MessageList({
                       prevMessage.isFromMe !== message.isFromMe ||
                       timeDiffMinutes >= 5 ||
                       shouldShowSenderForDeleted;
-                    const displayName = getSenderDisplayNameUtil(
+                    const displayName = getSenderDisplayName(
                       message.senderName,
                       message.senderId,
                       message.isFromMe,
-                      t,
-                      { participantNames, allMessages: mainMessages }
+                      t
                     );
                     const senderColor = getColorFromString(message.senderId);
                     const timeString = `${timestamp
@@ -1925,7 +2440,7 @@ export function MessageList({
                         .padStart(2, "0")}`;
                     const isUnread = conversationReadState[messageId] === false;
                     const showUnreadDivider =
-                      messageId === firstUnreadMessageId && isUnread;
+                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput;
 
                     const messageDate = timeToDate(message.timestamp);
                     const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
@@ -1950,12 +2465,12 @@ export function MessageList({
                           )}
                           {showUnreadDivider && (
                             <div
-                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+                              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary my-2"
                               role="separator"
-                              aria-label={t("new_messages_separator")}
+                              aria-label={t("new") || "New"}
                             >
                               <span className="h-px flex-1 bg-border" />
-                              {t("new_messages_separator")}
+                              <span className="px-2">{t("new") || "New"}</span>
                               <span className="h-px flex-1 bg-border" />
                             </div>
                           )}
@@ -2086,13 +2601,9 @@ export function MessageList({
                                       onReact={(emoji) => handleReaction(message, emoji)}
                                       currentReactions={(message.reactions || [])
                                         .filter((r) => r.userId === currentUserId)
-                                        .map((r) => {
-                                          const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
-                                          return isSlack ? cleanSlackEmoji(r.emoji) : r.emoji;
-                                        })}
+                                        .map((r) => r.emoji)}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
-                                      isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                     />
                                   </div>
                                 )}
@@ -2180,6 +2691,8 @@ export function MessageList({
                                                   isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                   emojiSize={14}
                                                   isFromMe={message.isFromMe}
+                                                  participantNames={participantNames}
+                                                  allMessages={mainMessages}
                                                 />
                                               </div>
                                             </div>
@@ -2195,6 +2708,8 @@ export function MessageList({
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
+                                                participantNames={participantNames}
+                                                allMessages={mainMessages}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -2211,6 +2726,8 @@ export function MessageList({
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
+                                                participantNames={participantNames}
+                                                allMessages={mainMessages}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -2229,24 +2746,6 @@ export function MessageList({
                                                 layout={messageLayout as "bubble" | "irc"}
                                               />
                                             )}
-                                          {!showSender && (
-                                            <>
-                                              <MessageAttachments
-                                                attachments={message.attachments || ""}
-                                                isFromMe={message.isFromMe}
-                                                layout="bubble"
-                                                conversationID={conversationId}
-                                                messageID={String(message.id)}
-                                              />
-                                              <MessageAttachments
-                                                attachments={message.attachments || ""}
-                                                isFromMe={message.isFromMe}
-                                                layout="irc"
-                                                conversationID={conversationId}
-                                                messageID={String(message.id)}
-                                              />
-                                            </>
-                                          )}
                                           {(!message.body || message.body.trim() === "") &&
                                             (!message.attachments ||
                                               message.attachments.trim() === "") && (
@@ -2274,12 +2773,12 @@ export function MessageList({
                             {message.reactions && message.reactions.length > 0 && (
                               <MessageReactions
                                 reactions={message.reactions}
+                                isGroup={isGroupConversation}
                                 participantNames={participantNames}
                                 currentUserId={currentUserId}
-                                onReactionClick={(emoji) => handleReaction(message, emoji)}
                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                 allMessages={mainMessages}
+                                onReactionClick={(emoji) => handleReaction(message, emoji)}
                               />
                             )}
                             {isUnread && (
@@ -2298,12 +2797,11 @@ export function MessageList({
                               onClick={() =>
                                 handleAvatarClick(
                                   lastThreadMsg.senderAvatarUrl,
-                                  getSenderDisplayNameUtil(
+                                  getSenderDisplayName(
                                     lastThreadMsg.senderName,
                                     lastThreadMsg.senderId,
                                     lastThreadMsg.isFromMe,
-                                    t,
-                                    { participantNames, allMessages: mainMessages }
+                                    t
                                   )
                                 )
                               }
@@ -2312,12 +2810,11 @@ export function MessageList({
                               <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
                                 <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
                                 <AvatarFallback className="text-xs">
-                                  {getSenderDisplayNameUtil(
+                                  {getSenderDisplayName(
                                     lastThreadMsg.senderName,
                                     lastThreadMsg.senderId,
                                     lastThreadMsg.isFromMe,
-                                    t,
-                                    { participantNames, allMessages: mainMessages }
+                                    t
                                   )
                                     .substring(0, 2)
                                     .toUpperCase()}
@@ -2377,6 +2874,7 @@ export function MessageList({
             }}
             replyingToMessage={replyingToMessage}
             onCancelReply={() => setReplyingToMessage(null)}
+            onNavigateToEdit={handleNavigateToEdit}
           />
         </div>
         <FileUploadModal

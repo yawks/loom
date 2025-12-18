@@ -4,11 +4,11 @@ go 1.24.9
 
 require (
 	github.com/glebarez/sqlite v1.11.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/slack-go/slack v0.17.3
 	github.com/wailsapp/wails/v2 v2.11.0
 	go.mau.fi/whatsmeow v0.0.0-20251120135021-071293c6b9f0
-	golang.org/x/image v0.33.0
 	google.golang.org/protobuf v1.36.10
 	gorm.io/gorm v1.31.1
 )
@@ -24,7 +24,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect

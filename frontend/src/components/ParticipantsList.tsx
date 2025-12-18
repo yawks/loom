@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SlackEmoji } from "./SlackEmoji";
 import { X } from "lucide-react";
-import { getSenderDisplayName } from "@/lib/userDisplayNames";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { usePresenceStore } from "@/lib/presenceStore";
@@ -45,7 +44,48 @@ async function fetchParticipantsData(conversationId: string): Promise<{
   }
 }
 
+// Get display name for a message sender
+function getSenderDisplayName(
+  senderName: string | undefined,
+  senderId: string,
+  isFromMe: boolean,
+  t: (key: string) => string
+): string {
+  if (isFromMe) return t("you") || "You";
+  if (senderName && senderName.trim().length > 0) {
+    return senderName;
+  }
+  // Robust handling: extract local part from various WhatsApp ID formats
+  // Supports: "33603018166@s.whatsapp.net", "186560595132538:6@lid", "187119343554767:7@lid"
+  let phoneNumber: string | null = null;
+  
+  // Match "digits" optionally followed by ":digits@server"
+  const match = senderId.match(/^(\d+)(?::\d+)?@/);
+  if (match) {
+    phoneNumber = match[1];
+  }
+  
+  if (phoneNumber) {
+    // If this looks like a French number (starts with 33 and 11 digits) format nicely
+    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
+      const countryCode = phoneNumber.substring(0, 2); // "33"
+      const rest = phoneNumber.substring(2); // 9 digits
+      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
+      return formatted;
+    }
+    // For other numeric local parts, return with a leading + and no odd grouping
+    return `+${phoneNumber}`;
+  }
 
+  // Fallback for other ID formats: try to return a readable label
+  return senderId
+    .replace(/^user-/, "")
+    .replace(/^whatsapp-/, "")
+    .replace(/^slack-/, "")
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
 
 export function ParticipantsList({
   conversationId,
@@ -229,17 +269,23 @@ export function ParticipantsList({
           }
         }
 
-        // Find the linked account for this participant to get status emoji
+        // Find the linked account for this participant to get status emoji and avatar
         const linkedAccount = selectedConversation.linkedAccounts?.find(
           acc => acc.userId === participant.senderId
         );
         const statusEmoji = linkedAccount ? getStatusEmoji(linkedAccount) : null;
         const providerInstanceId = linkedAccount ? getProviderInstanceId(linkedAccount) : null;
+        
+        // Use LinkedAccount.AvatarURL if available, otherwise fall back to participant.senderAvatarUrl
+        const avatarUrl = linkedAccount?.avatarUrl || participant.senderAvatarUrl;
 
         return (
           <ParticipantItem
             key={participant.senderId}
-            participant={participant}
+            participant={{
+              ...participant,
+              senderAvatarUrl: avatarUrl,
+            }}
             displayName={displayName}
             isOnline={presenceMatch}
             alias={aliases[participant.senderId]}

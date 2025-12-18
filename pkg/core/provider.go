@@ -28,10 +28,6 @@ type Provider interface {
 	// Returns an error if the configuration is invalid.
 	SetConfig(config ProviderConfig) error
 
-	// GetQRCode returns the latest QR code string for authentication (if applicable).
-	// Returns an empty string and nil error if QR code is not needed, not available, or already authenticated.
-	GetQRCode() (string, error)
-
 	// IsAuthenticated returns true if the provider is already authenticated/logged in.
 	// For providers that don't require authentication, this should always return true.
 	// This is used to determine if the provider should be automatically connected on startup.
@@ -62,7 +58,7 @@ type Provider interface {
 	// limit specifies the maximum number of messages to retrieve (0 = no limit).
 	// beforeTimestamp, if not nil, limits results to messages before this timestamp (for pagination).
 	// Returns messages ordered by timestamp (oldest first).
-	GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error)
+	GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error)
 
 	// SendMessage sends a text message to a given conversation.
 	// If file is not nil, the file will be attached to the message.

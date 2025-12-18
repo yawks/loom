@@ -25,6 +25,8 @@ const (
 	EventTypeRetryReceipt EventType = "retry_receipt"
 	// EventTypeSyncStatus represents a synchronization status update event.
 	EventTypeSyncStatus EventType = "sync_status"
+	// EventTypeConversationReadStatus represents a conversation read status update (last read timestamp).
+	EventTypeConversationReadStatus EventType = "conversation_read_status"
 )
 
 // ProviderEvent is the base interface for all provider events.
@@ -196,4 +198,15 @@ type SyncStatusEvent struct {
 // Type returns the event type for SyncStatusEvent.
 func (e SyncStatusEvent) Type() EventType {
 	return EventTypeSyncStatus
+}
+
+// ConversationReadStatusEvent represents a conversation read status update (last read timestamp).
+type ConversationReadStatusEvent struct {
+	ConversationID string // Protocol conversation ID
+	LastReadTS     string // Last read timestamp (Slack format: "1502126650.000003")
+}
+
+// Type returns the event type for ConversationReadStatusEvent.
+func (e ConversationReadStatusEvent) Type() EventType {
+	return EventTypeConversationReadStatus
 }

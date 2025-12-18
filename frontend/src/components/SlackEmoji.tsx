@@ -1,7 +1,8 @@
+import { getCachedEmojiUrl, setCachedEmojiUrl } from "../lib/emojiUrlCache";
 import { useEffect, useState } from "react";
 
 import { GetSlackEmojiURL } from "../../wailsjs/go/main/App";
-import { cleanSlackEmoji } from "../lib/userDisplayNames";
+import { cleanSlackEmoji } from "@/lib/userDisplayNames";
 import { unicodeEmojiMap } from "../lib/emojiMap";
 
 interface SlackEmojiProps {
@@ -28,23 +29,22 @@ export function SlackEmoji({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  // Clean emoji to remove skin-tone modifiers before processing
-  const cleanedEmoji = cleanSlackEmoji(emoji);
-
   // Check if it's a Unicode emoji (doesn't start with : or is a standard Unicode emoji)
   // Standard Unicode emojis in Slack are wrapped in colons but don't have custom images
-  const isUnicodeEmoji = !cleanedEmoji.startsWith(":") || cleanedEmoji.length <= 2;
+  const isUnicodeEmoji = !emoji.startsWith(":") || emoji.length <= 2;
 
   useEffect(() => {
+    // First, clean the emoji to remove skin-tone modifiers
+    const cleanedEmoji = cleanSlackEmoji(emoji);
+    
     if (isUnicodeEmoji) {
       // Unicode emoji - no need to fetch URL
       setLoading(false);
       return;
     }
 
-    // Extract emoji name (remove colons)
-    const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
-    
+    // Extract emoji name (remove colons) from cleaned emoji
+    const emojiName = cleanedEmoji.replace(/^:|:$/g, "");    
     // Skip skin-tone modifiers (skin-tone-2 through skin-tone-6)
     if (/^skin-tone-[2-6]$/.test(emojiName)) {
       setLoading(false);
@@ -67,34 +67,54 @@ export function SlackEmoji({
     // Not in Unicode map, so it might be a custom Slack emoji
     if (!providerInstanceId) {
       // No provider instance ID - can't fetch custom emoji
+      console.warn(`[SlackEmoji] ⚠️ No providerInstanceId provided for emoji: ${emoji}`);
       setLoading(false);
       setError(true);
       return;
     }
 
-    // Fetch emoji URL from backend
+    // Check cache first
+    const cachedUrl = getCachedEmojiUrl(providerInstanceId, emojiName);
+    if (cachedUrl !== undefined) {
+      // Found in cache (could be null if emoji doesn't exist)
+      if (cachedUrl) {
+        setEmojiUrl(cachedUrl);
+      } else {
+        setError(true);
+      }
+      setLoading(false);
+      return;
+    }
+
+    // Not in cache, fetch emoji URL from backend
     GetSlackEmojiURL(providerInstanceId, emojiName)
       .then((url: string) => {
+        // Cache the result (even if empty/null)
+        setCachedEmojiUrl(providerInstanceId, emojiName, url || null);
+
         if (url && url.trim() !== "") {
           setEmojiUrl(url);
         } else {
           // Empty URL means emoji not found in custom emoji cache
+          console.log(`[SlackEmoji] ❌ Empty URL for ${emojiName}, emoji not found in backend`);
           setError(true);
         }
         setLoading(false);
       })
       .catch((err: unknown) => {
-        console.error(`[SlackEmoji] Failed to get emoji URL for ${emojiName}:`, err);
+        console.error(`[SlackEmoji] ❌ Failed to get emoji URL for ${emojiName}:`, err);
+        // Cache null to avoid repeated failed requests
+        setCachedEmojiUrl(providerInstanceId, emojiName, null);
         setError(true);
         setLoading(false);
       });
-  }, [cleanedEmoji, providerInstanceId, isUnicodeEmoji]);
+  }, [emoji, providerInstanceId, isUnicodeEmoji]);
 
   // Unicode emoji - display directly
   if (isUnicodeEmoji) {
     return (
       <span className={className} style={{ fontSize: `${size}px` }}>
-        {cleanedEmoji}
+        {emoji}
       </span>
     );
   }
@@ -102,6 +122,8 @@ export function SlackEmoji({
   // Custom emoji - display image if available
   if (loading) {
     // While loading, check if it's a Unicode emoji we know about
+    // Clean emoji first to remove skin-tone modifiers
+    const cleanedEmoji = cleanSlackEmoji(emoji);
     const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
     const unicodeEmoji = unicodeEmojiMap[emojiName];
     
@@ -123,7 +145,7 @@ export function SlackEmoji({
           height: `${size}px`,
           fontSize: `${size * 0.7}px`,
         }}
-        title={cleanedEmoji}
+        title={emoji}
       >
         {emojiName}
       </span>
@@ -133,6 +155,8 @@ export function SlackEmoji({
   if (error || !emojiUrl) {
     // If no URL found, it might be a Unicode emoji wrapped in colons
     // Try to convert Slack emoji names to Unicode using the comprehensive mapping
+    // Clean emoji first to remove skin-tone modifiers
+    const cleanedEmoji = cleanSlackEmoji(emoji);
     const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
     
     // Try to find Unicode emoji in map (from emojilib)
@@ -155,7 +179,7 @@ export function SlackEmoji({
         style={{
           fontSize: `${size * 0.7}px`,
         }}
-        title={cleanedEmoji}
+        title={emoji}
       >
         {displayText}
       </span>
@@ -166,7 +190,7 @@ export function SlackEmoji({
   return (
     <img
       src={emojiUrl}
-      alt={cleanedEmoji}
+      alt={emoji}
       className={`${className} inline-block align-baseline`}
       style={{
         width: `${size}px`,
@@ -176,7 +200,7 @@ export function SlackEmoji({
       onError={() => {
         setError(true);
       }}
-      title={cleanedEmoji}
+      title={emoji}
     />
   );
 }

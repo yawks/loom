@@ -24,6 +24,10 @@ interface AppState {
   setMetaContacts: (contacts: models.MetaContact[]) => void;
   selectedProviderFilter: string | null;
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
+  selectedUserId: string | null;
+  setSelectedUserId: (userId: string | null) => void;
+  isTypingInInput: boolean;
+  setIsTypingInInput: (isTyping: boolean) => void;
   // Navigation history
   conversationHistory: models.MetaContact[];
   historyIndex: number;
@@ -100,6 +104,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedProviderFilter: providerInstanceId });
     saveToStorage("selectedProviderFilter", providerInstanceId);
   },
+  selectedUserId: null,
+  setSelectedUserId: (userId) => set({ selectedUserId: userId }),
+  isTypingInInput: false,
+  setIsTypingInInput: (isTyping: boolean) => set({ isTypingInInput: isTyping }),
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
   metaContacts: [],

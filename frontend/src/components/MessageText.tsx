@@ -1,9 +1,13 @@
+import { cn, escapeLeadingDashes, fixCodeBlocks, transformSlackUrls } from "../lib/utils";
+
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { CodeBlock } from "./CodeBlock";
 import ReactMarkdown from "react-markdown";
 import { SlackMessageText } from "./SlackMessageText";
+import { memo } from "react";
+import type { models } from "../../wailsjs/go/models";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { transformSlackUrls } from "../lib/utils";
 
 interface MessageTextProps {
   text: string;
@@ -13,6 +17,8 @@ interface MessageTextProps {
   isSlack?: boolean; // If true, use Slack emoji parsing
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user (for link color contrast)
+  participantNames?: Map<string, string>; // Map of user IDs to display names
+  allMessages?: models.Message[]; // All messages in the conversation (for user name lookup)
 }
 
 /**
@@ -20,7 +26,7 @@ interface MessageTextProps {
  * For Slack messages, it also handles emoji parsing.
  * URLs are clickable and open in the browser.
  */
-export function MessageText({
+export const MessageText = memo(function MessageText({
   text,
   providerInstanceId,
   className = "",
@@ -28,6 +34,8 @@ export function MessageText({
   isSlack = false,
   preview = false,
   isFromMe = false,
+  participantNames,
+  allMessages,
 }: MessageTextProps) {
   if (!text || text.trim() === "") {
     return null;
@@ -35,10 +43,16 @@ export function MessageText({
 
   // Transform Slack URLs to Markdown format
   let processedText = transformSlackUrls(text);
+  
+  // Fix malformed code blocks (e.g., ```/** -> ```javascript)
+  processedText = fixCodeBlocks(processedText);
 
   // In preview mode, replace newlines with spaces to keep content on one line
   if (preview) {
     processedText = processedText.replace(/\n+/g, " ");
+  } else {
+    // Escape dashes at the start of lines to prevent them from being interpreted as Markdown lists
+    processedText = escapeLeadingDashes(processedText);
   }
 
   // For Slack messages, use SlackMessageText which handles emojis
@@ -52,13 +66,15 @@ export function MessageText({
         emojiSize={emojiSize}
         preview={preview}
         isFromMe={isFromMe}
+        participantNames={participantNames}
+        allMessages={allMessages}
       />
     );
   }
 
   // For non-Slack messages, render markdown directly
   return (
-    <div className={className}>
+    <div className={cn(className, "max-w-full overflow-hidden")}>
       <ReactMarkdown
         remarkPlugins={preview ? [remarkGfm] : [remarkGfm, remarkBreaks]}
         components={{
@@ -97,22 +113,18 @@ export function MessageText({
           em: ({ ...props }) => (
             <em className="italic" {...props} />
           ),
-          // Style for code
-          code: ({ className, ...props }) => {
+          // Style for code with syntax highlighting
+          code: ({ className, children, ...props }) => {
             const isInline = !className?.includes("language-");
-            if (isInline) {
-              return (
-                <code
-                  className="bg-muted px-1 py-0.5 rounded text-sm font-mono"
-                  {...props}
-                />
-              );
-            }
             return (
-              <code
-                className="block bg-muted p-2 rounded text-sm font-mono overflow-x-auto"
+              <CodeBlock
+                className={className}
+                inline={isInline}
+                isFromMe={isFromMe}
                 {...props}
-              />
+              >
+                {String(children).replace(/\n$/, "")}
+              </CodeBlock>
             );
           },
           // Preserve line breaks (but not in preview mode)
@@ -132,5 +144,4 @@ export function MessageText({
       </ReactMarkdown>
     </div>
   );
-}
-
+});

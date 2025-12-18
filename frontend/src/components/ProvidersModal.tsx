@@ -391,6 +391,12 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
               onRefresh={async () => {
                 await refreshProviders();
               }}
+              onClose={() => {
+                console.log("ProvidersModal: closing modal from ProviderConfigForm");
+                onOpenChange(false);
+                setView("list");
+                setSelectedProvider(null);
+              }}
             />
           </div>
         )}

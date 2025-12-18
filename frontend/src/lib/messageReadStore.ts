@@ -20,72 +20,23 @@ declare global {
 // This will work even if bindings haven't been regenerated
 const markMessageAsReadOnServer = (conversationID: string, messageID: string): Promise<void> => {
   return new Promise((resolve, reject) => {
-    console.log(`markMessageAsReadOnServer: Attempting to send read receipt for message ${messageID} in conversation ${conversationID}`);
     if (typeof window === "undefined") {
       reject(new Error("Window is undefined"));
       return;
     }
-    if (!window.go) {
-      console.error("markMessageAsReadOnServer: window.go is not available");
-      reject(new Error("Wails runtime not available (window.go is undefined)"));
+    if (!window.go?.main?.App) {
+      reject(new Error("Wails runtime not available"));
       return;
     }
-    if (!window.go.main) {
-      console.error("markMessageAsReadOnServer: window.go.main is not available");
-      reject(new Error("Wails runtime not available (window.go.main is undefined)"));
-      return;
-    }
-    if (!window.go.main.App) {
-      console.error("markMessageAsReadOnServer: window.go.main.App is not available");
-      reject(new Error("Wails runtime not available (window.go.main.App is undefined)"));
-      return;
-    }
-    // Try to call the method even if it's not in TypeScript bindings
-    // The runtime JavaScript should have access to all exported Go methods
+    
     const markMessageAsReadFn = window.go.main.App.MarkMessageAsRead;
     if (!markMessageAsReadFn || typeof markMessageAsReadFn !== 'function') {
-      console.error("markMessageAsReadOnServer: MarkMessageAsRead method is not available in Wails runtime");
-      console.log("markMessageAsReadOnServer: Available methods:", Object.keys(window.go.main.App || {}));
-      console.log("markMessageAsReadOnServer: Trying to access MarkMessageAsRead directly from runtime...");
-      // Try accessing it directly from the Go runtime
-      const directAccess = window.go?.main?.App?.MarkMessageAsRead;
-      if (!directAccess || typeof directAccess !== 'function') {
-        reject(new Error("MarkMessageAsRead not available in Wails runtime. Please restart the application to regenerate bindings."));
-        return;
-      }
-      // Use direct access
-      try {
-        console.log(`markMessageAsReadOnServer: Calling MarkMessageAsRead via direct access (${conversationID}, ${messageID})`);
-        directAccess(conversationID, messageID)
-          .then(() => {
-            console.log(`markMessageAsReadOnServer: Successfully called MarkMessageAsRead`);
-            resolve();
-          })
-          .catch((error: Error) => {
-            console.error(`markMessageAsReadOnServer: Error calling MarkMessageAsRead:`, error);
-            reject(error);
-          });
-      } catch (error) {
-        console.error(`markMessageAsReadOnServer: Exception calling MarkMessageAsRead:`, error);
-        reject(error);
-      }
+      reject(new Error("MarkMessageAsRead not available"));
       return;
     }
-    try {
-      console.log(`markMessageAsReadOnServer: Calling MarkMessageAsRead(${conversationID}, ${messageID})`);
-      markMessageAsReadFn(conversationID, messageID)
-        .then(() => {
-          console.log(`markMessageAsReadOnServer: Successfully called MarkMessageAsRead`);
-          resolve();
-        })
-        .catch((error: Error) => {
-          console.error(`markMessageAsReadOnServer: Error calling MarkMessageAsRead:`, error);
-          reject(error);
-        });
-    } catch (error) {
-      console.error(`markMessageAsReadOnServer: Exception calling MarkMessageAsRead:`, error);
-      reject(error);
-    }
+    markMessageAsReadFn(conversationID, messageID)
+      .then(resolve)
+      .catch(reject);
   });
 };
 
@@ -97,6 +48,7 @@ type ReadStateByConversation = Record<ConversationId, ConversationReadState>;
 interface MessageReadStore {
   readByConversation: ReadStateByConversation;
   syncConversation: (conversationId: ConversationId, messages: models.Message[]) => void;
+  setLastReadTimestamp: (conversationId: ConversationId, lastReadTS: string) => void;
   markAsRead: (conversationId: ConversationId, messageId: MessageId) => void;
   markAsReadByProtocolId: (conversationId: ConversationId, protocolMsgId: string) => void;
   registerIncomingMessage: (message: models.Message) => void;
@@ -107,6 +59,56 @@ interface MessageReadStore {
 const STORAGE_KEY = "loom-message-read-state";
 
 const canUseStorage = typeof window !== "undefined";
+
+// Debug function to inspect the stored state - can be called from browser console
+// Usage: window.debugMessageReadStore()
+if (typeof window !== "undefined") {
+  (window as any).debugMessageReadStore = () => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        console.log("No stored message read state found");
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      console.log("=== Message Read Store Debug ===");
+      console.log(`Total conversations: ${Object.keys(parsed).length}`);
+      
+      Object.entries(parsed).forEach(([convId, state]: [string, any]) => {
+        const allKeys = Object.keys(state);
+        const messageKeys = allKeys.filter(k => !k.startsWith("_"));
+        const unreadCount = Object.entries(state).filter(
+          ([key, isRead]) => !key.startsWith("_") && !isRead
+        ).length;
+        const lastReadTS = state._lastReadTS;
+        
+        console.log(`\nConversation: ${convId}`);
+        console.log(`  Total messages: ${messageKeys.length}`);
+        console.log(`  Unread: ${unreadCount}`);
+        console.log(`  LastReadTS: ${lastReadTS || 'none'}`);
+        
+        if (unreadCount > 0) {
+          const unreadIds = Object.entries(state)
+            .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+            .map(([key]) => key)
+            .slice(0, 5);
+          console.log(`  Unread IDs:`, unreadIds);
+        }
+      });
+      
+      console.log("\n=== Raw State ===");
+      console.log(parsed);
+    } catch (error) {
+      console.error("Failed to debug message read store:", error);
+    }
+  };
+  
+  // Function to clear the stored state
+  (window as any).clearMessageReadStore = () => {
+    window.localStorage.removeItem(STORAGE_KEY);
+    console.log("Message read store cleared. Reload the page to reset.");
+  };
+}
 
 const loadPersistedState = (): ReadStateByConversation => {
   if (!canUseStorage) {
@@ -152,6 +154,22 @@ const getMessageIdentifier = (message: models.Message): MessageId | null => {
 export const useMessageReadStore = create<MessageReadStore>((set) => {
   const initialState = loadPersistedState();
   console.log(`messageReadStore: Loaded persisted state, ${Object.keys(initialState).length} conversations`);
+  
+  // Debug: Log any conversations with unread messages from persisted state
+  Object.entries(initialState).forEach(([convId, state]) => {
+    const unreadCount = Object.entries(state).filter(
+      ([key, isRead]) => !key.startsWith("_") && !isRead
+    ).length;
+    if (unreadCount > 0) {
+      console.warn(`⚠️ messageReadStore: Loaded conversation ${convId} with ${unreadCount} unread messages from localStorage`);
+      const unreadIds = Object.entries(state)
+        .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+        .map(([key]) => key)
+        .slice(0, 5);
+      console.log(`   Unread IDs:`, unreadIds);
+    }
+  });
+  
   return {
     readByConversation: initialState,
     syncConversation: (conversationId, messages) => {
@@ -160,10 +178,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       }
       set((state) => {
         const existingState = state.readByConversation[conversationId];
-        const hasExisting =
-          existingState && Object.keys(existingState).length > 0;
+        // hasExisting should only count actual messages, not special keys like _lastReadTS
+        const existingMessageCount = existingState 
+          ? Object.keys(existingState).filter(key => !key.startsWith("_")).length
+          : 0;
+        const hasExisting = existingMessageCount > 0;
         
-        console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting}, existingState size: ${existingState ? Object.keys(existingState).length : 0}, messages to sync: ${messages.length}`);
+        const lastReadTS = existingState
+          ? ((existingState as any)["_lastReadTS"] as string | undefined)
+          : undefined;
+        
+        console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting} (${existingMessageCount} messages), lastReadTS: ${lastReadTS || 'none'}, messages to sync: ${messages.length}`);
       
       // Create a set of message IDs that actually exist in the conversation
       const existingMessageIds = new Set<string>();
@@ -205,18 +230,32 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           const isCallMessage = message.callType && message.callType.trim() !== "";
           if (isCallMessage) {
             nextState[messageId] = true; // Call messages are always marked as read
-          } else if (hasExisting) {
-            nextState[messageId] = false; // New messages in existing conversation are unread
           } else {
-            // First time sync: mark recent messages (last 7 days) as unread
-            // to preserve unread status after app restart
-            const messageDate = timeToDate(message.timestamp);
-            const now = new Date();
-            const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-            // Messages from the last 7 days are marked as unread (false), older messages as read (true)
-            // messageDate < sevenDaysAgo means message is older than 7 days → mark as read (true)
-            // messageDate >= sevenDaysAgo means message is recent → mark as unread (false)
-            nextState[messageId] = messageDate < sevenDaysAgo;
+            // Always check lastReadTS from Slack to determine read state
+            // This ensures we use Slack's own read markers rather than guessing
+            if (lastReadTS) {
+              // Parse Slack timestamp and compare with message timestamp
+              const lastReadTimestamp = parseFloat(lastReadTS);
+              if (!isNaN(lastReadTimestamp)) {
+                const lastReadDate = new Date(lastReadTimestamp * 1000);
+                const messageDate = timeToDate(message.timestamp);
+                // Mark as read if message timestamp <= lastReadTimestamp
+                const isRead = messageDate <= lastReadDate;
+                nextState[messageId] = isRead;
+                if (!isRead) {
+                  console.log(`messageReadStore: Message ${messageId} marked as UNREAD (msg: ${messageDate.toISOString()}, lastRead: ${lastReadDate.toISOString()})`);
+                }
+              } else {
+                // Invalid lastReadTS, fall back to marking as read
+                console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}, marking all as read`);
+                nextState[messageId] = true;
+              }
+            } else {
+              // No lastReadTS: mark all messages as read by default on initial sync
+              // This prevents showing old messages as unread when we don't have Slack's read marker yet
+              nextState[messageId] = true;
+              console.log(`messageReadStore: No lastReadTS for ${conversationId}, marking message ${messageId} as read by default`);
+            }
           }
           hasChanged = true;
         }
@@ -237,13 +276,24 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       };
       persistState(updatedMap);
       
-      const unreadCount = Object.values(nextState).filter(r => !r).length;
+      // Count only actual messages (exclude special keys like _lastReadTS)
+      const unreadCount = Object.entries(nextState).filter(
+        ([key, isRead]) => !key.startsWith("_") && !isRead
+      ).length;
       const unreadMessageIds = Object.entries(nextState)
-        .filter(([, isRead]) => !isRead)
+        .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
         .map(([msgId]) => msgId);
-      console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, messages in conversation: ${messages.length}, messages in store: ${Object.keys(nextState).length}, removed: ${removedCount}, unread count: ${unreadCount}`);
+      
+      const totalMessages = Object.keys(nextState).filter(k => !k.startsWith("_")).length;
+      console.log(`messageReadStore: syncConversation COMPLETE - ${conversationId}: ${totalMessages} messages, ${unreadCount} unread (lastReadTS: ${lastReadTS || 'none'})`);
       if (unreadCount > 0) {
-        console.log(`messageReadStore: Unread message IDs after sync:`, unreadMessageIds.slice(0, 10));
+        console.warn(`⚠️ messageReadStore: ${conversationId} has ${unreadCount} UNREAD messages:`, unreadMessageIds.slice(0, 5));
+        // Log the actual state for debugging
+        const unreadDetails = Object.entries(nextState)
+          .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+          .slice(0, 5)
+          .map(([msgId, isRead]) => ({ msgId, isRead }));
+        console.table(unreadDetails);
       }
       
       return { readByConversation: updatedMap };
@@ -282,25 +332,18 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
   },
   markAsReadByProtocolId: (conversationId, protocolMsgId) => {
     if (!conversationId || !protocolMsgId) {
-      console.warn("messageReadStore: markAsReadByProtocolId - missing conversationId or protocolMsgId");
       return;
     }
-    console.log(`messageReadStore: markAsReadByProtocolId - conversationId: ${conversationId}, protocolMsgId: ${protocolMsgId}`);
     set((state) => {
       const conversationState = state.readByConversation[conversationId];
       if (!conversationState) {
-        console.log(`messageReadStore: No conversation state found for ${conversationId}, available conversations:`, Object.keys(state.readByConversation));
         return state;
       }
-      console.log(`messageReadStore: Conversation state found, checking for message ${protocolMsgId}`);
-      console.log(`messageReadStore: Available message IDs in conversation:`, Object.keys(conversationState).slice(0, 10));
+      // If message is already marked as read, don't do anything (including server call)
       if (conversationState[protocolMsgId] === true) {
-        console.log(`messageReadStore: Message ${protocolMsgId} is already marked as read`);
         return state;
       }
       if (conversationState[protocolMsgId] === undefined) {
-        console.log(`messageReadStore: WARNING - Message ${protocolMsgId} not found in conversation state`);
-        console.log(`messageReadStore: This might mean the message ID in the receipt doesn't match the stored protocolMsgId`);
         // Still mark it as read in case it's a new message we haven't seen yet
       }
       const updatedConversation = {
@@ -312,17 +355,108 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         [conversationId]: updatedConversation,
       };
       persistState(updatedMap);
-      const unreadCount = Object.values(updatedConversation).filter(r => !r).length;
-      console.log(`messageReadStore: Marked message ${protocolMsgId} as read, unread count: ${unreadCount}`);
+
+      // Send read receipt to server (only when actually marking as read for the first time)
+      markMessageAsReadOnServer(conversationId, protocolMsgId).catch(() => {
+        // Silently ignore errors for individual message receipts
+        // Errors are already logged by the server call itself if needed
+      });
       
-      // Send read receipt to server
-      markMessageAsReadOnServer(conversationId, protocolMsgId)
-        .then(() => {
-          console.log(`messageReadStore: Successfully sent read receipt for message ${protocolMsgId}`);
-        })
-        .catch((error) => {
-          console.error(`messageReadStore: Failed to send read receipt for message ${protocolMsgId}:`, error);
-        });
+      return { readByConversation: updatedMap };
+    });
+  },
+  setLastReadTimestamp: (conversationId, lastReadTS) => {
+    if (!conversationId || !lastReadTS) {
+      return;
+    }
+    
+    // Parse Slack timestamp (format: "1502126650.000003")
+    const lastReadTimestamp = parseFloat(lastReadTS);
+    if (isNaN(lastReadTimestamp)) {
+      console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}`);
+      return;
+    }
+    
+    set((state) => {
+      const conversationState = state.readByConversation[conversationId];
+      if (!conversationState) {
+        // No messages in this conversation yet, create empty state with lastReadTS
+        const newState: ConversationReadState = {};
+        (newState as any)["_lastReadTS"] = lastReadTS;
+        const updatedMap = {
+          ...state.readByConversation,
+          [conversationId]: newState,
+        };
+        persistState(updatedMap);
+        console.log(`messageReadStore: Created conversation state with lastReadTS for ${conversationId}: ${lastReadTS}`);
+        return { readByConversation: updatedMap };
+      }
+      
+      const updatedConversation = { ...conversationState };
+      let hasChanged = false;
+      
+      // Store the lastReadTimestamp
+      (updatedConversation as any)["_lastReadTS"] = lastReadTS;
+      hasChanged = true;
+      
+      // IMPORTANT: Re-evaluate all messages' read state based on the new lastReadTS
+      // This ensures that when we receive the lastReadTS from Slack, we update the state
+      const lastReadDate = new Date(lastReadTimestamp * 1000);
+      
+      Object.keys(updatedConversation).forEach((messageId) => {
+        // Skip special keys like _lastReadTS
+        if (messageId.startsWith("_")) {
+          return;
+        }
+        
+        // Parse message timestamp from the messageId
+        // messageId format can be either "protocolMsgId" (e.g., "1766067993.591559")
+        // or "message-{id}" or "ts-{timestamp}"
+        let messageTimestamp: number | null = null;
+        
+        if (messageId.startsWith("message-") || messageId.startsWith("ts-")) {
+          // Extract timestamp from ID
+          const parts = messageId.split("-");
+          if (parts.length === 2) {
+            messageTimestamp = parseFloat(parts[1]);
+          }
+        } else {
+          // Assume it's a Slack protocol message ID (timestamp format)
+          messageTimestamp = parseFloat(messageId);
+        }
+        
+        if (messageTimestamp && !isNaN(messageTimestamp)) {
+          // If messageId is in seconds (> 10 digits), convert to milliseconds
+          const msgDate = messageTimestamp > 10000000000
+            ? new Date(messageTimestamp)
+            : new Date(messageTimestamp * 1000);
+          
+          // Mark as read if message timestamp <= lastReadTimestamp
+          const wasRead = updatedConversation[messageId];
+          const shouldBeRead = msgDate <= lastReadDate;
+          
+          if (wasRead !== shouldBeRead) {
+            updatedConversation[messageId] = shouldBeRead;
+            hasChanged = true;
+          }
+        }
+      });
+      
+      if (!hasChanged) {
+        return state;
+      }
+      
+      const updatedMap = {
+        ...state.readByConversation,
+        [conversationId]: updatedConversation,
+      };
+      persistState(updatedMap);
+      
+      const unreadCount = Object.keys(updatedConversation).filter(
+        (key) => !key.startsWith("_") && !updatedConversation[key]
+      ).length;
+      
+      console.log(`messageReadStore: Updated lastReadTS for ${conversationId}: ${lastReadTS} (${lastReadDate.toISOString()}), ${unreadCount} unread messages`);
       
       return { readByConversation: updatedMap };
     });

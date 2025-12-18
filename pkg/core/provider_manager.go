@@ -86,14 +86,12 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
-	fmt.Printf("ProviderManager.GetConfiguredProviders: providers count: %d, infos count: %d\n", len(pm.providers), len(pm.infos))
-
 	providers := make([]ProviderInfo, 0)
 	for instanceID, provider := range pm.providers {
 		// Extract providerID from instanceID (e.g., "whatsapp-1" -> "whatsapp")
 		parts := strings.Split(instanceID, "-")
 		if len(parts) < 2 {
-			fmt.Printf("ProviderManager.GetConfiguredProviders: WARNING - invalid instanceID format: %s\n", instanceID)
+			// Only log warnings, not every call
 			continue
 		}
 		providerID := strings.Join(parts[:len(parts)-1], "-")
@@ -101,7 +99,6 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		info, exists := pm.infos[providerID]
 		if !exists {
 			// If info doesn't exist, create a basic one
-			fmt.Printf("ProviderManager.GetConfiguredProviders: info not found for %s, creating basic one\n", providerID)
 			info = ProviderInfo{
 				ID:   providerID,
 				Name: providerID,
@@ -122,7 +119,6 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		info.Config = provider.GetConfig()
 		info.IsActive = (instanceID == pm.activeInstanceID)
 		providers = append(providers, info)
-		fmt.Printf("ProviderManager.GetConfiguredProviders: added configured provider %s (instance: %s, name: %s, active: %v)\n", providerID, instanceID, info.InstanceName, info.IsActive)
 	}
 
 	// Sort providers by name (alphabetically)
@@ -130,7 +126,6 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		return providers[i].Name < providers[j].Name
 	})
 
-	fmt.Printf("ProviderManager.GetConfiguredProviders: returning %d providers (sorted alphabetically)\n", len(providers))
 	return providers
 }
 
@@ -252,6 +247,13 @@ func (pm *ProviderManager) SetActiveProvider(instanceID string) error {
 	return nil
 }
 
+// GetActiveInstanceID returns the instance ID of the currently active provider.
+func (pm *ProviderManager) GetActiveInstanceID() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.activeInstanceID
+}
+
 // GetActiveProvider returns the currently active provider instance.
 func (pm *ProviderManager) GetActiveProvider() (Provider, error) {
 	pm.mu.RLock()
@@ -349,6 +351,38 @@ func getMapKeys(m map[string]Provider) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// SaveProviderConfig saves a provider configuration to the database.
+func (pm *ProviderManager) SaveProviderConfig(config models.ProviderConfiguration) error {
+	// Wrapper to call the internal save method
+	// Extract basic fields
+	var configMap ProviderConfig
+	if err := json.Unmarshal([]byte(config.ConfigJSON), &configMap); err != nil {
+		return err
+	}
+
+	return pm.saveProviderConfig(config.ProviderID, config.InstanceID, config.InstanceName, configMap, config.IsActive)
+}
+
+// UpdateProviderConfig updates an existing provider configuration
+func (pm *ProviderManager) UpdateProviderConfig(config models.ProviderConfiguration) error {
+	return pm.SaveProviderConfig(config)
+}
+
+// GetProviderSchema returns the configuration schema for a provider type
+func (pm *ProviderManager) GetProviderSchema(providerID string) (map[string]interface{}, error) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	info, ok := pm.infos[providerID]
+	if !ok {
+		return nil, fmt.Errorf("provider type not found: %s", providerID)
+	}
+
+	// Return a copy to avoid modification
+	// (Deep copy would be better but simple return is okay for read-only if we trust caller)
+	return info.ConfigSchema, nil
 }
 
 // saveProviderConfig saves a provider configuration to the database.

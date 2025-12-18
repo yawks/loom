@@ -1,13 +1,16 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
-import type { core } from "../../wailsjs/go/models";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ConnectProvider,
   CreateProvider,
+  CreateProviderWithOptions,
   GetProviderQRCode,
+  SyncProvider,
 } from "../../wailsjs/go/main/App";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import type { core } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
 const QRCodeCanvas = lazy(() =>
@@ -28,6 +31,7 @@ interface ProviderConfigFormProps {
   initialValues?: Record<string, any>;
   onBack: () => void;
   onRefresh: () => Promise<void> | void;
+  onClose?: () => void; // Callback to close the modal
 }
 
 export function ProviderConfigForm({
@@ -36,6 +40,7 @@ export function ProviderConfigForm({
   initialValues,
   onBack,
   onRefresh,
+  onClose,
 }: ProviderConfigFormProps) {
   const { t } = useTranslation();
   const schema = useMemo(() => {
@@ -67,8 +72,9 @@ export function ProviderConfigForm({
   });
 
   const [currentInstanceID, setCurrentInstanceID] = useState<string>(() => {
-    // Use instanceId from provider if available, otherwise use provider.id as fallback
-    return provider.instanceId || provider.id;
+    // Use instanceId from provider if available, otherwise empty string
+    // Empty string will cause backend to generate a new instanceID with proper format (e.g., "slack-1")
+    return provider.instanceId || "";
   });
 
   const [isSaving, setIsSaving] = useState(false);
@@ -96,6 +102,10 @@ export function ProviderConfigForm({
       console.log(`ProviderConfigForm: Updating currentInstanceID from ${currentInstanceID} to ${provider.instanceId}`);
       setCurrentInstanceID(provider.instanceId);
     }
+    // Also update if currentInstanceID is set but provider.instanceId is not (after save)
+    if (currentInstanceID && !provider.instanceId && currentInstanceID.includes('-')) {
+      console.log(`ProviderConfigForm: Keeping currentInstanceID ${currentInstanceID} (provider.instanceId not yet updated)`);
+    }
   }, [provider.instanceId, currentInstanceID]);
 
   const handleChange = (key: string, value: string) => {
@@ -106,9 +116,21 @@ export function ProviderConfigForm({
     setIsSaving(true);
     setSaveMessage(null);
     try {
-      // In edit mode, use existing instanceID if available
-      const existingInstanceID = mode === "edit" && provider.instanceId ? provider.instanceId : "";
-      const instanceID = await CreateProvider(provider.id, values, instanceName, existingInstanceID);
+      // Filter out empty values - only save fields that have been filled
+      const filteredValues: Record<string, string> = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (value && value.trim() !== "") {
+          filteredValues[key] = value;
+        }
+      }
+      
+      // Use existing instanceID if available (from provider only)
+      // Don't use currentInstanceID as fallback - let backend generate proper format
+      const existingInstanceID = provider.instanceId || "";
+      
+      // For Slack, we need to save without connecting to avoid blocking
+      // Use CreateProviderWithOptions with skipConnect=true
+      const instanceID = await CreateProviderWithOptions(provider.id, filteredValues, instanceName, existingInstanceID, true);
       setCurrentInstanceID(instanceID); // Store the instanceID for QR code fetching
       await onRefresh();
       setSaveMessage(t("configuration_saved"));
@@ -118,7 +140,7 @@ export function ProviderConfigForm({
     } finally {
       setIsSaving(false);
     }
-  }, [provider.id, provider.instanceId, values, instanceName, mode, onRefresh, t]);
+  }, [provider.id, provider.instanceId, currentInstanceID, values, instanceName, mode, onRefresh, t]);
 
   const fetchQRCode = useCallback(async () => {
     try {
@@ -128,7 +150,8 @@ export function ProviderConfigForm({
       console.log(`ProviderConfigForm.fetchQRCode: Fetching QR code for instanceID: ${instanceID} (provider.instanceId: ${provider.instanceId}, currentInstanceID: ${currentInstanceID})`);
       
       // Don't try to fetch QR code if we don't have a valid instanceID
-      if (!instanceID || instanceID === provider.id) {
+      // Valid instanceID should be in format "provider-number" (e.g., "whatsapp-1")
+      if (!instanceID || !instanceID.includes('-')) {
         console.warn(`ProviderConfigForm.fetchQRCode: Skipping - Invalid instanceID ${instanceID}. Provider instanceId: ${provider.instanceId}`);
         return;
       }
@@ -263,6 +286,7 @@ export function ProviderConfigForm({
         </Card>
       )}
 
+      {provider.id === "whatsapp" && (
       <Card>
         <CardHeader>
           <CardTitle>{t("connection")}</CardTitle>
@@ -308,6 +332,73 @@ export function ProviderConfigForm({
           )}
         </CardContent>
       </Card>
+      )}
+
+      {provider.id === "slack" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("connection")}</CardTitle>
+            <CardDescription>
+              {t("connection_description")}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Button 
+              onClick={async () => {
+                // Disable button immediately to prevent double-clicks
+                setIsSaving(true);
+                
+                try {
+                  // Filter out empty values - only save fields that have been filled
+                  const filteredValues: Record<string, string> = {};
+                  for (const [key, value] of Object.entries(values)) {
+                    if (value && value.trim() !== "") {
+                      filteredValues[key] = value;
+                    }
+                  }
+                  
+                  // Use existing instanceID if available (from provider or from currentInstanceID if we just saved)
+                  // This prevents creating duplicate instances when clicking "Connect" after "Save"
+                  const existingInstanceID = provider.instanceId || currentInstanceID || "";
+                  const instanceID = await CreateProvider(provider.id, filteredValues, instanceName, existingInstanceID);
+                  
+                  // Update currentInstanceID so handleSave can use it if called later
+                  setCurrentInstanceID(instanceID);
+                  
+                  // Connect the provider
+                  await ConnectProvider(instanceID);
+                  
+                  // Refresh to update the UI
+                  await onRefresh();
+                  
+                  // Close the modal IMMEDIATELY after connecting
+                  // This prevents double-clicks and shows the sync footer
+                  if (onClose) {
+                    onClose();
+                  }
+                  
+                  // Start initial sync AFTER closing the modal
+                  // This runs in the background and the footer will show the progress
+                  // Note: The sync-status event listener in ChatLayout will set isSyncing=true
+                  // when it receives fetching_contacts, preventing onboarding from showing
+                  SyncProvider(instanceID).catch((error) => {
+                    console.error("Failed to sync provider:", error);
+                  });
+                } catch (error) {
+                  console.error("Failed to connect and sync:", error);
+                  setSaveMessage(t("configuration_save_error"));
+                  setIsSaving(false); // Re-enable button on error
+                  // Don't close modal on error so user can see the error message
+                }
+              }}
+              disabled={isSaving}
+              className="w-full"
+            >
+              {isSaving ? t("connecting") : t("connect")}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

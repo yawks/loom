@@ -1,8 +1,8 @@
-import { ArrowDownAZ, Calendar, Clock, Phone, Plus, Smile } from "lucide-react";
+import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetMessagesForConversation, GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetAllActiveCalls, GetAllMessageCounts, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
-import { useQueries, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
@@ -19,7 +19,7 @@ import { useSortedContacts } from "@/hooks/useSortedContacts";
 import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
 
-type SortOption = "alphabetical" | "last_message";
+type SortOption = "alphabetical" | "last_message" | "unread";
 
 
 // Wrapper function to use Wails with React Query's suspense mode
@@ -34,6 +34,22 @@ export function ContactList() {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
   const [sortBy, setSortBy] = useState<SortOption>("last_message");
+  const [hasInitializedSort, setHasInitializedSort] = useState(false);
+
+  // Check if this is the first provider configuration (no messages yet)
+  // If so, default to alphabetical sorting
+  const { data: configuredProviders = [] } = useQuery({
+    queryKey: ["configuredProviders"],
+    queryFn: async () => {
+      try {
+        return await GetConfiguredProviders();
+      } catch (error) {
+        console.error("Failed to fetch configured providers:", error);
+        return [];
+      }
+    },
+  });
+
   // Use object directly - Zustand handles object reactivity better than Map
   // Use a selector that returns a serialized version to ensure reactivity
   const presenceMap = usePresenceStore((state) => {
@@ -51,9 +67,6 @@ export function ContactList() {
   // Track sync status to gray out/hide empty conversations
   const [syncStatus, setSyncStatus] = useState<"syncing" | "completed" | null>(null);
   const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
-  
-  // Track conversations with new reactions (pastille)
-  const [conversationsWithNewReactions, setConversationsWithNewReactions] = useState<Set<string>>(new Set());
 
   // Listen for sync status events
   useEffect(() => {
@@ -64,8 +77,6 @@ export function ContactList() {
 
         if (status === "completed") {
           setSyncStatus("completed");
-          // Invalidate all last messages to update sidebar previews after sync
-          queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
         } else if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
           setSyncStatus("syncing");
         }
@@ -79,7 +90,7 @@ export function ContactList() {
         unsubscribe();
       }
     };
-  }, [queryClient]);
+  }, []);
 
   // Listen for contact refresh events
   useEffect(() => {
@@ -87,8 +98,10 @@ export function ContactList() {
       // Invalidate and refetch contacts when sync completes or new message arrives
       queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
       queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-      // Invalidate last message queries to update sorting
+      // Invalidate last message queries to update sorting and previews
       queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
+      queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+      queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
       // Invalidate active calls queries to update call badges
       queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
     });
@@ -141,52 +154,6 @@ export function ContactList() {
       }
     };
   }, [queryClient]);
-
-  // Listen for reaction events to show badge on conversations
-  useEffect(() => {
-    const unsubscribe = EventsOn("reaction", (reactionJSON: string) => {
-      try {
-        const reaction: {
-          ConversationID: string;
-          MessageID: string;
-          UserID: string;
-          Emoji: string;
-          Added: boolean;
-          Timestamp: number;
-        } = JSON.parse(reactionJSON);
-        
-        // Only show badge for reactions added (not removed)
-        // The badge will be cleared when the conversation is opened
-        if (reaction.Added && reaction.ConversationID) {
-          setConversationsWithNewReactions((prev) => {
-            const next = new Set(prev);
-            next.add(reaction.ConversationID);
-            return next;
-          });
-        }
-      } catch (error) {
-        console.error("Failed to parse reaction event in ContactList:", error);
-      }
-    });
-
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, []);
-
-  // Clear reaction badge when conversation is selected
-  useEffect(() => {
-    if (selectedContact?.linkedAccounts?.[0]?.userId) {
-      const conversationId = selectedContact.linkedAccounts[0].userId;
-      setConversationsWithNewReactions((prev) => {
-        const next = new Set(prev);
-        next.delete(conversationId);
-        return next;
-      });
-    }
-  }, [selectedContact]);
 
   // Update metaContacts in store
   useEffect(() => {
@@ -254,93 +221,90 @@ export function ContactList() {
     return counts;
   }, [readStateByConversation, sortedContacts]);
 
-  // Detect active incoming calls (not terminated) for each conversation
-  const activeCallsQueries = useQueries({
-    queries: sortedContacts.map((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
-      return {
-        queryKey: ["activeCalls", conversationId],
+  // Detect active incoming calls (not terminated) for all conversations in one query
+  // This is much more efficient than making individual queries for each conversation
+  const { data: allActiveCalls = {} } = useQuery<Record<string, boolean>, Error>({
+    queryKey: ["allActiveCalls"],
         queryFn: async () => {
-          if (!conversationId) return false;
           try {
-            const messages = await GetMessagesForConversation(conversationId);
-
-            // Check if there are any active incoming call messages (not terminated)
-            // Only show badge for "incoming_call" or "incoming_group_call" types
-            const hasActiveCall = (messages || []).some((msg) => {
-              if (!msg.callType || msg.callType.trim() === "") {
-                return false;
-              }
-              // Only show badge for incoming calls that haven't been terminated yet
-              const callType = msg.callType.trim();
-              return callType === "incoming_call" || callType === "incoming_group_call";
-            });
-
-            return hasActiveCall;
+        const activeCalls = await GetAllActiveCalls();
+        return activeCalls || {};
           } catch (error) {
-            console.error(`Error checking active calls for ${conversationId}:`, error);
-            return false;
+        console.error("Error fetching all active calls:", error);
+        return {};
           }
         },
-        enabled: !!conversationId,
         staleTime: 5000, // Cache for 5 seconds (more frequent updates for active calls)
-      };
-    }),
   });
 
   const hasActiveCallByConversation = useMemo(() => {
-    const calls: Record<string, boolean> = {};
-    sortedContacts.forEach((contact, index) => {
-      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
-      if (conversationId && activeCallsQueries[index]?.data) {
-        calls[conversationId] = activeCallsQueries[index].data;
-      }
-    });
-    return calls;
-  }, [sortedContacts, activeCallsQueries]);
+    return allActiveCalls;
+  }, [allActiveCalls]);
 
-  // Get message counts for each conversation to determine if empty
-  const messageCountQueries = useQueries({
-    queries: sortedContacts.map((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
-      return {
-        queryKey: ["messageCount", conversationId],
+  // Get message counts for all conversations in a single query
+  // This is much more efficient than making individual queries for each conversation
+  const { data: allMessageCounts = {} } = useQuery<Record<string, number>, Error>({
+    queryKey: ["allMessageCounts"],
         queryFn: async () => {
-          if (!conversationId) return 0;
           try {
-            const messages = await GetMessagesForConversation(conversationId);
-            return messages?.length ?? 0;
+        const counts = await GetAllMessageCounts();
+        return counts || {};
           } catch (error) {
-            console.error(`Error getting message count for ${conversationId}:`, error);
-            return 0;
+        console.error("Error fetching all message counts:", error);
+        return {};
           }
         },
-        enabled: !!conversationId,
         staleTime: 30000, // Cache for 30 seconds
-      };
-    }),
   });
 
   const messageCountByConversation = useMemo(() => {
     const counts: Record<string, number> = {};
-    sortedContacts.forEach((contact, index) => {
+    sortedContacts.forEach((contact) => {
       const conversationId = contact.linkedAccounts[0]?.userId ?? "";
       if (conversationId) {
-        counts[conversationId] = messageCountQueries[index]?.data ?? 0;
+        counts[conversationId] = allMessageCounts[conversationId] ?? 0;
       }
     });
     return counts;
-  }, [sortedContacts, messageCountQueries]);
+  }, [sortedContacts, allMessageCounts]);
 
-  // Don't filter contacts based on message count - just show all
-  // We only gray them out during sync, but keep them visible
-  const filteredContacts = sortedContacts;
+  // Initialize sort order based on whether there are messages
+  // If no messages and providers are configured, default to alphabetical
+  useEffect(() => {
+    if (hasInitializedSort || contacts.length === 0) {
+      return;
+    }
+
+    // Check if any contact has messages
+    const hasMessages = Object.values(allMessageCounts).some((count) => count > 0);
+
+    // If no messages and providers are configured, default to alphabetical
+    if (!hasMessages && configuredProviders.length > 0 && sortBy === "last_message") {
+      setSortBy("alphabetical");
+    }
+
+    setHasInitializedSort(true);
+  }, [contacts.length, allMessageCounts, configuredProviders.length, hasInitializedSort, sortBy]);
+
+  // Filter contacts based on sort option
+  // For "unread", only show conversations with unread messages
+  const filteredContacts = useMemo(() => {
+    if (sortBy === "unread") {
+      return sortedContacts.filter((contact) => {
+        const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+        const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
+        return unreadCount > 0;
+      });
+    }
+    // For other sort options, show all
+    return sortedContacts;
+  }, [sortedContacts, sortBy, unreadCountsByConversation]);
 
   if (contacts.length === 0) {
     return (
       <div className="flex flex-col h-full">
         <div className="p-2 border-b">
-          <h2 className="text-lg font-semibold">{t("contacts")}</h2>
+          <h2 className="text-lg font-semibold">{t("conversations")}</h2>
         </div>
         <div className="flex-1"></div>
       </div>
@@ -350,25 +314,69 @@ export function ContactList() {
   return (
     <div className="flex flex-col h-full">
       <div className="p-2 border-b space-y-2">
-        <h2 className="text-base font-semibold">{t("contacts")}</h2>
-        <div className="flex gap-1">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold">{t("conversations")}</h2>
           <Button
-            variant={sortBy === "alphabetical" ? "default" : "ghost"}
-            size="sm"
-            className="flex-1 text-xs"
-            onClick={() => setSortBy("alphabetical")}
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded shrink-0 hover:bg-muted/50"
+            onClick={() => setIsNewConversationModalOpen(true)}
+            title={t("new_conversation")}
           >
-            <ArrowDownAZ className="h-3 w-3 mr-1" />
-            A-Z
+            <MessageSquarePlus className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex gap-1 sidebar-buttons-container">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`flex-1 text-xs group relative ${
+              sortBy === "alphabetical"
+                ? "bg-muted/50 hover:bg-muted/70"
+                : "hover:bg-muted/30"
+            }`}
+            onClick={() => setSortBy("alphabetical")}
+            title={t("alphabetical") || "Alphabetical"}
+          >
+            <ArrowDownAZ className="h-3 w-3 sidebar-button-icon mr-1" />
+            <span className="sidebar-button-label">A-Z</span>
+            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
+              {t("alphabetical") || "Alphabetical"}
+            </span>
           </Button>
           <Button
-            variant={sortBy === "last_message" ? "default" : "ghost"}
+            variant="ghost"
             size="sm"
-            className="flex-1 text-xs"
+            className={`flex-1 text-xs group relative ${
+              sortBy === "last_message"
+                ? "bg-muted/50 hover:bg-muted/70"
+                : "hover:bg-muted/30"
+            }`}
             onClick={() => setSortBy("last_message")}
+            title={t("recent") || "Recent"}
           >
-            <Clock className="h-3 w-3 mr-1" />
-            Recent
+            <Clock className="h-3 w-3 sidebar-button-icon mr-1" />
+            <span className="sidebar-button-label">{t("recent") || "Recent"}</span>
+            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
+              {t("recent") || "Recent"}
+            </span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={`flex-1 text-xs group relative ${
+              sortBy === "unread"
+                ? "bg-muted/50 hover:bg-muted/70"
+                : "hover:bg-muted/30"
+            }`}
+            onClick={() => setSortBy("unread")}
+            title={t("unread") || "Unread"}
+          >
+            <Inbox className="h-3 w-3 sidebar-button-icon mr-1" />
+            <span className="sidebar-button-label">{t("unread") || "Unread"}</span>
+            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
+              {t("unread") || "Unread"}
+            </span>
           </Button>
         </div>
       </div>
@@ -573,15 +581,6 @@ export function ContactList() {
                         <Phone className="h-3 w-3 text-white" />
                       </div>
                     )}
-                    {conversationsWithNewReactions.has(conversationId) && (
-                      <div
-                        className="inline-flex items-center justify-center rounded-full bg-purple-600 dark:bg-purple-500 p-1.5"
-                        title={t("new_reaction_badge")}
-                        aria-label={t("new_reaction_badge")}
-                      >
-                        <Smile className="h-3 w-3 text-white" />
-                      </div>
-                    )}
                     {unreadCount > 0 && (
                       <span
                         className="inline-flex min-w-[1.75rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-2 py-0.5 text-[11px] font-semibold text-white"
@@ -607,6 +606,7 @@ export function ContactList() {
                             emojiSize={12}
                             className="inline"
                             preview={true}
+                            allMessages={lastMessage ? [lastMessage] : undefined}
                           />
                         </div>
                       );
@@ -620,17 +620,6 @@ export function ContactList() {
         </div>
       </div>
 
-      {/* Floating Action Button for New Conversation */}
-      <div className="absolute bottom-6 right-6 z-10">
-        <Button
-          size="icon"
-          className="h-12 w-12 rounded-full shadow-lg hover:shadow-xl transition-shadow"
-          onClick={() => setIsNewConversationModalOpen(true)}
-          title={t("new_conversation")}
-        >
-          <Plus className="h-6 w-6" />
-        </Button>
-      </div>
 
       <NewConversationModal
         open={isNewConversationModalOpen}

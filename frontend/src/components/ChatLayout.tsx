@@ -47,18 +47,22 @@ export function ChatLayout() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showProvidersModal, setShowProvidersModal] = useState(false);
 
+  // State for tracking sync status
+  const [isSyncing, setIsSyncing] = useState(false);
+
   // Function to check providers and update onboarding state
   const checkProviders = useCallback(async () => {
     try {
       const providers = await GetConfiguredProviders();
       const hasConfiguredProviders = providers && providers.length > 0;
-      setShowOnboarding(!hasConfiguredProviders);
+      // Don't show onboarding if syncing (provider is being configured)
+      setShowOnboarding(!hasConfiguredProviders && !isSyncing);
     } catch (error) {
       console.error("Failed to check providers:", error);
       // Assume providers exist on error to avoid blocking the UI
       setShowOnboarding(false);
     }
-  }, []);
+  }, [isSyncing]);
 
   // Check if providers are configured on mount
   useEffect(() => {
@@ -69,25 +73,70 @@ export function ChatLayout() {
   }, []);
 
   // Listen for contacts-refresh events (triggered when providers are added/removed)
+  // Use debounce to avoid excessive calls during MPIM processing
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = EventsOn("contacts-refresh", () => {
-      // Recheck providers when contacts are refreshed (usually means provider was added/removed)
+      // Debounce: wait 2 seconds before checking providers
+      // This reduces calls during MPIM processing which emits many refresh events
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      timeoutId = setTimeout(() => {
       checkProviders();
+      }, 2000);
     });
 
     return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       if (unsubscribe) {
         unsubscribe();
       }
     };
   }, [checkProviders]);
 
+  // Listen to sync status to track if syncing is in progress
+  useEffect(() => {
+    const unsubscribe = EventsOn("sync-status", (statusJSON: string) => {
+      try {
+        const status = JSON.parse(statusJSON);
+        const isActiveSync = status.Status === "fetching_contacts" || 
+                            status.Status === "fetching_history" || 
+                            status.Status === "fetching_avatars";
+        setIsSyncing(isActiveSync);
+        // Recheck providers when sync completes (after a delay to allow contacts to refresh)
+        if (status.Status === "completed" || status.Status === "error") {
+          // Wait longer to allow contacts-refresh event to be processed
+          setTimeout(async () => {
+            setIsSyncing(false); // Sync is done
+            await checkProviders();
+          }, 2000);
+        }
+      } catch (error) {
+        console.error("Failed to parse sync status:", error);
+      }
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [checkProviders]);
+
+  // Note: Removed duplicate contacts-refresh listener - now handled by debounced version above
+
   // Refresh provider check when ProvidersModal closes
   const handleProvidersModalClose = async (open: boolean) => {
     setShowProvidersModal(open);
     if (!open) {
-      // Recheck providers when modal closes
+      // When modal closes after connecting, assume sync is starting
+      // This prevents showing onboarding while sync is starting
+      setIsSyncing(true);
+      // Wait a bit then check providers (in case provider was just created)
+      setTimeout(async () => {
       await checkProviders();
+      }, 1000);
     }
   };
 

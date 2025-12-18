@@ -6,6 +6,10 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
+export function ConfigureProvider(arg1) {
+  return window['go']['main']['App']['ConfigureProvider'](arg1);
+}
+
 export function ConnectProvider(arg1) {
   return window['go']['main']['App']['ConnectProvider'](arg1);
 }
@@ -18,16 +22,36 @@ export function CreateProvider(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateProvider'](arg1, arg2, arg3, arg4);
 }
 
+export function CreateProviderWithOptions(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateProviderWithOptions'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function DeleteMessage(arg1, arg2) {
   return window['go']['main']['App']['DeleteMessage'](arg1, arg2);
+}
+
+export function DisconnectProvider(arg1) {
+  return window['go']['main']['App']['DisconnectProvider'](arg1);
 }
 
 export function EditMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['EditMessage'](arg1, arg2, arg3);
 }
 
-export function ForceSyncCompletion() {
-  return window['go']['main']['App']['ForceSyncCompletion']();
+export function GetAllActiveCalls() {
+  return window['go']['main']['App']['GetAllActiveCalls']();
+}
+
+export function GetAllLastMessageTimestamps() {
+  return window['go']['main']['App']['GetAllLastMessageTimestamps']();
+}
+
+export function GetAllLastMessages() {
+  return window['go']['main']['App']['GetAllLastMessages']();
+}
+
+export function GetAllMessageCounts() {
+  return window['go']['main']['App']['GetAllMessageCounts']();
 }
 
 export function GetAttachmentData(arg1) {
@@ -42,8 +66,8 @@ export function GetAvatar(arg1) {
   return window['go']['main']['App']['GetAvatar'](arg1);
 }
 
-export function GetClipboardFile() {
-  return window['go']['main']['App']['GetClipboardFile']();
+export function GetConfig() {
+  return window['go']['main']['App']['GetConfig']();
 }
 
 export function GetConfiguredProviders() {
@@ -52,6 +76,10 @@ export function GetConfiguredProviders() {
 
 export function GetContactAliases() {
   return window['go']['main']['App']['GetContactAliases']();
+}
+
+export function GetConversationsWithMessages() {
+  return window['go']['main']['App']['GetConversationsWithMessages']();
 }
 
 export function GetGroupParticipants(arg1) {
@@ -78,12 +106,24 @@ export function GetProviderQRCode(arg1) {
   return window['go']['main']['App']['GetProviderQRCode'](arg1);
 }
 
+export function GetProviderSchema(arg1) {
+  return window['go']['main']['App']['GetProviderSchema'](arg1);
+}
+
 export function GetSlackEmojiURL(arg1, arg2) {
   return window['go']['main']['App']['GetSlackEmojiURL'](arg1, arg2);
 }
 
+export function GetThreadMessages(arg1, arg2) {
+  return window['go']['main']['App']['GetThreadMessages'](arg1, arg2);
+}
+
 export function GetThreads(arg1) {
   return window['go']['main']['App']['GetThreads'](arg1);
+}
+
+export function MarkConversationAsRead(arg1) {
+  return window['go']['main']['App']['MarkConversationAsRead'](arg1);
 }
 
 export function MarkMessageAsPlayed(arg1, arg2) {
@@ -102,16 +142,12 @@ export function RemoveReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['RemoveReaction'](arg1, arg2, arg3);
 }
 
-export function ResolveLID(arg1) {
-  return window['go']['main']['App']['ResolveLID'](arg1);
+export function SaveConfig(arg1) {
+  return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
 export function SendFile(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SendFile'](arg1, arg2, arg3, arg4);
-}
-
-export function SendFileFromPath(arg1, arg2) {
-  return window['go']['main']['App']['SendFileFromPath'](arg1, arg2);
 }
 
 export function SendMessage(arg1, arg2) {
@@ -120,6 +156,10 @@ export function SendMessage(arg1, arg2) {
 
 export function SendReply(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendReply'](arg1, arg2, arg3);
+}
+
+export function SetActiveProvider(arg1) {
+  return window['go']['main']['App']['SetActiveProvider'](arg1);
 }
 
 export function SetContactAlias(arg1, arg2) {

@@ -5,34 +5,46 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/logging"
-	"Loom/pkg/models"
+	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/socketmode"
 )
 
 // SlackProvider implements the core.Provider interface for Slack.
 type SlackProvider struct {
-	config            core.ProviderConfig
-	client            *slack.Client
-	mu                sync.RWMutex
-	logger            *logging.ProviderLogger
-	userCache         map[string]*slack.User // Cache for user info to avoid repeated API calls
-	userCacheMu       sync.RWMutex
-	emojiCache        map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
-	emojiCacheMu      sync.RWMutex
-	eventChan         chan core.ProviderEvent // Channel for emitting events
-	stopChan          chan struct{}           // Channel to signal polling goroutine to stop
-	statusCache       map[string]userStatus   // Cache of last known status for each user
-	statusCacheMu     sync.RWMutex            // Mutex for status cache
-	lastPollTimestamp time.Time               // Last timestamp when we polled for new messages
-	lastPollMu        sync.RWMutex            // Mutex for lastPollTimestamp
-	currentUserID     string                  // Cached current user ID
-	currentUserIDMu   sync.RWMutex            // Mutex for currentUserID
+	config             core.ProviderConfig
+	client             *slack.Client
+	socketClient       *socketmode.Client
+	rtmClient          *slack.RTM
+	mu                 sync.RWMutex
+	logger             *logging.ProviderLogger
+	userCache          map[string]*slack.User // Cache for user info to avoid repeated API calls
+	userCacheMu        sync.RWMutex
+	emojiCache         map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
+	emojiCacheMu       sync.RWMutex
+	eventChan          chan core.ProviderEvent // Channel for emitting events
+	stopChan           chan struct{}           // Channel to signal polling goroutine to stop
+	statusCache        map[string]userStatus   // Cache of last known status for each user
+	statusCacheMu      sync.RWMutex            // Mutex for status cache
+	mpimProcessingChan chan struct{}           // Channel to track MPIM processing completion
+	mpimCount          int                     // Number of MPIMs being processed
+	mpimCountMu        sync.RWMutex            // Mutex for MPIM count
+	eventStreamCtx     context.Context         // Context for event stream
+	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
+	eventStreamStarted bool                    // Whether event stream has been started
 }
 
 // userStatus represents the cached status information for a user
@@ -65,11 +77,12 @@ var _ core.Provider = (*SlackProvider)(nil)
 // NewSlackProvider creates a new instance of the SlackProvider.
 func NewSlackProvider() *SlackProvider {
 	return &SlackProvider{
-		userCache:   make(map[string]*slack.User),
-		emojiCache:  make(map[string]string),
-		eventChan:   make(chan core.ProviderEvent, 100), // Buffered channel to avoid blocking
-		stopChan:    make(chan struct{}),
-		statusCache: make(map[string]userStatus),
+		userCache:          make(map[string]*slack.User),
+		emojiCache:         make(map[string]string),
+		eventChan:          make(chan core.ProviderEvent, 100), // Buffered channel to avoid blocking
+		stopChan:           make(chan struct{}),
+		statusCache:        make(map[string]userStatus),
+		mpimProcessingChan: make(chan struct{}, 1), // Buffered channel for MPIM processing completion
 	}
 }
 
@@ -154,7 +167,10 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 
 	if token != "" {
 		fmt.Printf("SlackProvider.SetConfig: creating Slack client\n")
-		opts := []slack.Option{}
+		opts := []slack.Option{
+			slack.OptionDebug(false),
+			slack.OptionLog(p.logger),
+		}
 
 		if dCookie != "" {
 			fmt.Printf("SlackProvider.SetConfig: setting up cookie transport with d cookie\n")
@@ -186,11 +202,6 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 	return nil
 }
 
-// GetQRCode returns the latest QR code string for authentication.
-func (p *SlackProvider) GetQRCode() (string, error) {
-	return "", nil
-}
-
 // IsAuthenticated returns true if the provider is already authenticated.
 func (p *SlackProvider) IsAuthenticated() bool {
 	p.mu.RLock()
@@ -198,10 +209,135 @@ func (p *SlackProvider) IsAuthenticated() bool {
 	return p.client != nil
 }
 
+// incrementalSyncExistingConversations syncs new messages for conversations that already have message history
+func (p *SlackProvider) incrementalSyncExistingConversations() {
+	if db.DB == nil {
+		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
+		return
+	}
+
+	p.log("SlackProvider.incrementalSyncExistingConversations: Starting incremental sync\n")
+
+	// Get all unique protocol_conv_id values that have messages
+	var results []struct {
+		ProtocolConvID string
+		LastTimestamp  string // SQLite returns timestamp as string
+		MessageCount   int64
+	}
+
+	err := db.DB.Raw(`
+		SELECT 
+			protocol_conv_id as protocol_conv_id,
+			MAX(timestamp) as last_timestamp,
+			COUNT(*) as message_count
+		FROM messages
+		WHERE protocol_conv_id IS NOT NULL AND protocol_conv_id != ''
+		GROUP BY protocol_conv_id
+		ORDER BY last_timestamp DESC
+	`).Scan(&results).Error
+
+	if err != nil {
+		p.log("SlackProvider.incrementalSyncExistingConversations: Failed to query conversations: %v\n", err)
+		return
+	}
+
+	// Convert string timestamps to time.Time
+	type ConversationInfo struct {
+		ProtocolConvID string
+		LastTimestamp  time.Time
+		MessageCount   int64
+	}
+	conversations := make([]ConversationInfo, 0, len(results))
+	for _, r := range results {
+		lastTS, err := time.Parse(time.RFC3339Nano, r.LastTimestamp)
+		if err != nil {
+			// Try alternative formats
+			lastTS, err = time.Parse(time.RFC3339, r.LastTimestamp)
+			if err != nil {
+				p.log("SlackProvider.incrementalSyncExistingConversations: Failed to parse timestamp %s for %s: %v\n", r.LastTimestamp, r.ProtocolConvID, err)
+				continue
+			}
+		}
+		conversations = append(conversations, ConversationInfo{
+			ProtocolConvID: r.ProtocolConvID,
+			LastTimestamp:  lastTS,
+			MessageCount:   r.MessageCount,
+		})
+	}
+
+	p.log("SlackProvider.incrementalSyncExistingConversations: Found %d conversations with messages\n", len(conversations))
+
+	if len(conversations) == 0 {
+		return
+	}
+
+	// Emit sync status
+	p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Checking %d conversations for new messages...", len(conversations)), 0)
+
+	successCount := 0
+	totalNewMessages := 0
+
+	// Sync each conversation
+	for i, conv := range conversations {
+		progress := int((float64(i+1) / float64(len(conversations))) * 100)
+		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
+
+		// Fetch new messages since last timestamp
+		// Add 1 second to avoid fetching the last message again
+		sinceTimestamp := conv.LastTimestamp.Add(1 * time.Second)
+
+		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s)\n",
+			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
+
+		// Use a large limit to get all new messages
+		newMessages, err := p.GetConversationHistory(conv.ProtocolConvID, 1000, nil, &sinceTimestamp)
+		if err != nil {
+			p.log("SlackProvider.incrementalSyncExistingConversations: Failed to sync %s: %v\n", conv.ProtocolConvID, err)
+			continue
+		}
+
+		if len(newMessages) > 0 {
+			p.log("SlackProvider.incrementalSyncExistingConversations: Found %d new messages for %s\n", len(newMessages), conv.ProtocolConvID)
+			successCount++
+			totalNewMessages += len(newMessages)
+
+			// Emit new message events for each message so the UI updates
+			for _, msg := range newMessages {
+				select {
+				case p.eventChan <- core.MessageEvent{
+					Message: msg,
+				}:
+				default:
+					p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping event\n")
+				}
+			}
+		}
+
+		// Small delay to avoid overwhelming the API
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	p.log("SlackProvider.incrementalSyncExistingConversations: Completed - synced %d conversations, found %d new messages\n",
+		successCount, totalNewMessages)
+
+	// Emit completion status
+	if totalNewMessages > 0 {
+		p.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Found %d new messages in %d conversations", totalNewMessages, successCount), 100)
+	} else {
+		p.emitSyncStatus(core.SyncStatusCompleted, "All conversations are up to date", 100)
+	}
+
+	// Keep status visible for 2 seconds
+	time.Sleep(2 * time.Second)
+
+	// Clear status
+	p.emitSyncStatus(core.SyncStatusCompleted, "", -1)
+}
+
 // Connect establishes the connection with the remote service.
 func (p *SlackProvider) Connect() error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if p.client == nil {
 		p.log("SlackProvider.Connect: ERROR - client not initialized\n")
@@ -216,23 +352,93 @@ func (p *SlackProvider) Connect() error {
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
 
-	// Load emojis after successful connection
-	p.loadEmojis()
+	// Determine connection mode based on token type
+	token, _ := p.config.GetString("token")
 
-	// Initialize status cache with current statuses
-	p.initializeStatusCache()
+	if strings.HasPrefix(token, "xoxc") {
+		// User Token -> Use RTM (Legacy)
+		p.log("SlackProvider.Connect: Detected User Token (xoxc), initializing RTM client\n")
 
-	// Start polling goroutine for status updates
-	go p.pollStatusUpdates()
+		// For RTM with xoxc tokens, we likely need to pass the d cookie in the websocket handshake too
+		// slack-go/slack NewRTM allows passing options, including a custom dialer.
 
-	// Initialize last poll timestamp to now
-	p.lastPollMu.Lock()
-	p.lastPollTimestamp = time.Now()
-	p.lastPollMu.Unlock()
+		rtmOptions := []slack.RTMOption{
+			// slack.RTMOptionUseStart(true), // rtm.start is blocked (not_allowed_token_type), let's stick to default rtm.connect
+		}
 
-	// Start polling goroutine for messages and reactions
-	go p.pollMessagesAndReactions()
+		dCookie, _ := p.config.GetString("d_cookie")
+		if dCookie != "" {
+			p.log("SlackProvider.Connect: injecting d cookie into RTM dialer\n")
 
+			jar, _ := cookiejar.New(nil)
+			urlObj, _ := url.Parse("https://slack.com") // Cookie needs to be set for the domain
+			cookies := []*http.Cookie{
+				{Name: "d", Value: dCookie},
+			}
+			// Handle "d=xoxd..." format if present
+			if strings.HasPrefix(dCookie, "d=") {
+				cookies[0].Value = dCookie[2:]
+			}
+			jar.SetCookies(urlObj, cookies)
+
+			// Also set for .slack.com
+			urlObj2, _ := url.Parse("https://wss-primary.slack.com")
+			jar.SetCookies(urlObj2, cookies)
+
+			// Copy DefaultDialer to avoid modifying global state
+			dialer := *websocket.DefaultDialer
+			dialer.Jar = jar
+
+			rtmOptions = append(rtmOptions, slack.RTMOptionDialer(&dialer))
+			p.log("SlackProvider.Connect: Set cookie jar on RTM dialer\n")
+		}
+
+		p.rtmClient = p.client.NewRTM(rtmOptions...)
+		go p.startRTM()
+	} else {
+		// Bot Token -> Use Socket Mode (Modern)
+		p.log("SlackProvider.Connect: Detected Bot Token (xoxb), initializing Socket Mode client\n")
+		p.socketClient = socketmode.New(
+			p.client,
+			socketmode.OptionDebug(false), // Set to true if detailed logs are needed
+			socketmode.OptionLog(p.logger),
+		)
+		go p.startSocketMode()
+	}
+
+	// Perform initialization tasks in background to avoid blocking Connect return
+	// This ensures the UI doesn't hang waiting for emojis/history
+	go func() {
+		p.log("SlackProvider.Connect: background initialization started\n")
+
+		// Load emojis
+		p.log("SlackProvider.Connect: calling loadEmojis\n")
+		p.loadEmojis()
+		p.log("SlackProvider.Connect: loadEmojis returned\n")
+
+		// Initialize status cache
+		p.log("SlackProvider.Connect: calling initializeStatusCache\n")
+		p.initializeStatusCache()
+		p.log("SlackProvider.Connect: initializeStatusCache returned\n")
+
+		// Start status polling
+		go p.pollStatusUpdates()
+
+		// History Sync
+		time.Sleep(2 * time.Second) // Wait for connection to stabilize
+		since := time.Now().Add(-30 * 24 * time.Hour)
+		p.log("SlackProvider.Connect: Triggering initial history sync\n")
+		p.SyncHistory(since)
+
+		// Incremental sync for existing conversations
+		time.Sleep(1 * time.Second)
+		p.log("SlackProvider.Connect: Triggering incremental sync for existing conversations\n")
+		p.incrementalSyncExistingConversations()
+
+		p.log("SlackProvider.Connect: background initialization completed\n")
+	}()
+
+	p.log("SlackProvider.Connect: END (returning nil)\n")
 	return nil
 }
 
@@ -324,6 +530,172 @@ func (p *SlackProvider) loadEmojis() {
 
 	p.log("SlackProvider.loadEmojis: loaded %d emojis (%d direct, %d aliases resolved, %d unresolved)\n",
 		len(p.emojiCache), len(emojis)-unresolvedCount, len(p.emojiCache)-len(emojis)+unresolvedCount, unresolvedCount)
+}
+
+// GetFileData downloads a Slack file and returns it as base64 data URL
+// Files are cached locally in Application Support/Loom/slack/<instance_name>/
+func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
+	p.mu.RLock()
+	client := p.client
+	config := p.config
+	p.mu.RUnlock()
+
+	if client == nil {
+		return "", fmt.Errorf("slack client not initialized")
+	}
+
+	// Get instance ID and name from config
+	instanceID, _ := config.GetString("_instance_id")
+	instanceName, _ := config.GetString("_instance_name")
+	if instanceName == "" {
+		instanceName = instanceID // Fallback to instanceID if name not available
+	}
+	if instanceName == "" {
+		instanceName = "default" // Final fallback
+	}
+
+	// Create cache directory path: Application Support/Loom/slack/<instance_name>/
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config directory: %w", err)
+	}
+	cacheDir := filepath.Join(configDir, "Loom", "slack", instanceName)
+	if err := os.MkdirAll(cacheDir, 0750); err != nil {
+		return "", fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	// Generate cache file path from URL (use hash of URL to avoid path issues)
+	urlHash := fmt.Sprintf("%x", []byte(fileURL))
+	// Try to determine file extension from URL or Content-Type
+	ext := filepath.Ext(filepath.Base(fileURL))
+	if ext == "" {
+		// Default extension based on common patterns
+		if strings.Contains(fileURL, "image") {
+			ext = ".jpg"
+		} else if strings.Contains(fileURL, "video") {
+			ext = ".mp4"
+		} else if strings.Contains(fileURL, "audio") {
+			ext = ".mp3"
+		} else {
+			ext = ".bin"
+		}
+	}
+	cachePath := filepath.Join(cacheDir, urlHash+ext)
+
+	// Check if file is already cached
+	if _, err := os.Stat(cachePath); err == nil {
+		// File exists in cache, read and return it
+		data, err := os.ReadFile(cachePath)
+		if err != nil {
+			// Cache file exists but can't be read, fall through to download
+		} else {
+			// Determine MIME type from file extension
+			mimeType := "application/octet-stream"
+			switch ext {
+			case ".jpg", ".jpeg":
+				mimeType = "image/jpeg"
+			case ".png":
+				mimeType = "image/png"
+			case ".gif":
+				mimeType = "image/gif"
+			case ".webp":
+				mimeType = "image/webp"
+			case ".mp4":
+				mimeType = "video/mp4"
+			case ".mp3":
+				mimeType = "audio/mpeg"
+			case ".pdf":
+				mimeType = "application/pdf"
+			case ".ogg":
+				mimeType = "audio/ogg"
+			}
+			base64Data := base64.StdEncoding.EncodeToString(data)
+			return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
+		}
+	}
+
+	// File not in cache, download it
+	// Get token from config for authentication
+	token, _ := config.GetString("token")
+	if token == "" {
+		return "", fmt.Errorf("slack token not found")
+	}
+
+	// Create HTTP request with authentication
+	req, err := http.NewRequest("GET", fileURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add authorization header
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Create HTTP client (use the same transport as Slack client if available)
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// If we have a d cookie, add it to the request
+	dCookie, _ := config.GetString("d_cookie")
+	if dCookie != "" {
+		cookieValue := dCookie
+		if strings.HasPrefix(cookieValue, "d=") {
+			cookieValue = cookieValue[2:]
+		}
+		req.Header.Set("Cookie", fmt.Sprintf("d=%s", cookieValue))
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download file: status %d", resp.StatusCode)
+	}
+
+	// Read file content
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Save to cache
+	if err := os.WriteFile(cachePath, data, 0644); err != nil {
+		// Log but don't fail - cache write failure shouldn't break the feature
+		p.log("SlackProvider.GetFileData: Failed to cache file: %v\n", err)
+	}
+
+	// Determine MIME type from Content-Type header or file extension
+	mimeType := resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		// Fallback to extension-based detection
+		switch ext {
+		case ".jpg", ".jpeg":
+			mimeType = "image/jpeg"
+		case ".png":
+			mimeType = "image/png"
+		case ".gif":
+			mimeType = "image/gif"
+		case ".webp":
+			mimeType = "image/webp"
+		case ".mp4":
+			mimeType = "video/mp4"
+		case ".mp3":
+			mimeType = "audio/mpeg"
+		case ".pdf":
+			mimeType = "application/pdf"
+		case ".ogg":
+			mimeType = "audio/ogg"
+		default:
+			mimeType = "application/octet-stream"
+		}
+	}
+
+	// Encode to base64
+	base64Data := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
 }
 
 // GetEmojiURL returns the URL for a Slack emoji, or empty string if not found
@@ -516,306 +888,43 @@ func (p *SlackProvider) checkStatusChanges() {
 	}
 }
 
-// pollMessagesAndReactions periodically checks for new messages and reactions
-func (p *SlackProvider) pollMessagesAndReactions() {
-	// Temporarily disabled to avoid DB deadlocks
-	// TODO: Re-enable with proper DB connection pooling and transaction management
-	// ticker := time.NewTicker(30 * time.Second) // Poll every 30 seconds to reduce DB load
-	// defer ticker.Stop()
-
-	// for {
-	// 	select {
-	// 	case <-ticker.C:
-	// 		p.checkNewMessagesAndReactions()
-	// 	case <-p.stopChan:
-	// 		p.log("SlackProvider.pollMessagesAndReactions: stopping polling goroutine\n")
-	// 		return
-	// 	}
-	// }
-
-	// Wait for stop signal only
-	<-p.stopChan
-	p.log("SlackProvider.pollMessagesAndReactions: stopping polling goroutine\n")
-}
-
-// checkNewMessagesAndReactions checks for new messages and reactions since last poll
-func (p *SlackProvider) checkNewMessagesAndReactions() {
-	p.mu.RLock()
-	client := p.client
-	p.mu.RUnlock()
-
-	if client == nil {
-		return
-	}
-
-	// Get last poll timestamp
-	p.lastPollMu.RLock()
-	lastPoll := p.lastPollTimestamp
-	p.lastPollMu.Unlock()
-
-	// Get only recently active conversations from DB (messages in last 24 hours)
-	// This avoids checking all conversations and reduces DB load significantly
-	var activeConversationIDs []string
-	if db.DB != nil {
-		recentCutoff := time.Now().Add(-24 * time.Hour)
-		var recentMessages []models.Message
-		if err := db.DB.Where("timestamp >= ?", recentCutoff).
-			Select("DISTINCT protocol_conv_id").
-			Find(&recentMessages).Error; err == nil {
-			for _, msg := range recentMessages {
-				if msg.ProtocolConvID != "" {
-					activeConversationIDs = append(activeConversationIDs, msg.ProtocolConvID)
-				}
-			}
-		}
-	}
-
-	// If no active conversations found, skip this poll cycle
-	if len(activeConversationIDs) == 0 {
-		return
-	}
-
-	// Limit to first 10 active conversations to avoid overwhelming the DB
-	maxConversations := 10
-	if len(activeConversationIDs) > maxConversations {
-		activeConversationIDs = activeConversationIDs[:maxConversations]
-	}
-
-	// Check each active conversation for new messages (with rate limiting to avoid DB deadlocks)
-	for i, conversationID := range activeConversationIDs {
-		// Add delay between conversations to reduce DB contention
-		if i > 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// Get recent messages (last 10 messages to reduce load)
-		// We'll filter to only those after lastPoll
-		messages, err := p.getRecentMessages(conversationID, 10, nil)
-		if err != nil {
-			p.log("SlackProvider.checkNewMessagesAndReactions: WARNING - failed to get messages for %s: %v\n", conversationID, err)
-			continue
-		}
-
-		// Filter to only messages after last poll
-		for _, msg := range messages {
-			if msg.Timestamp.After(lastPoll) {
-				// Check if message already exists in DB (to avoid duplicates)
-				// Use a simple query without Preload to reduce DB load
-				var existingMsg models.Message
-				if db.DB != nil {
-					if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msg.ProtocolMsgID, conversationID).
-						Select("id").First(&existingMsg).Error; err == nil {
-						// Message already exists, just check for new reactions
-						p.checkNewReactions(&msg, conversationID)
-						continue
-					}
-				}
-
-				// New message found, emit event
-				select {
-				case p.eventChan <- core.MessageEvent{Message: msg}:
-					p.log("SlackProvider.checkNewMessagesAndReactions: emitted new message event: %s in %s\n", msg.ProtocolMsgID, conversationID)
-				default:
-					p.log("SlackProvider.checkNewMessagesAndReactions: WARNING - event channel full, dropping message event\n")
-				}
-
-				// Check for new reactions on this message
-				p.checkNewReactions(&msg, conversationID)
-			}
-		}
-	}
-
-	// Update last poll timestamp
-	p.lastPollMu.Lock()
-	p.lastPollTimestamp = time.Now()
-	p.lastPollMu.Unlock()
-}
-
-// getRecentMessages gets recent messages for a conversation (from API, not DB)
-// If oldest is not nil, only messages after this timestamp will be fetched
-func (p *SlackProvider) getRecentMessages(conversationID string, limit int, oldest *time.Time) ([]models.Message, error) {
-	p.mu.RLock()
-	client := p.client
-	p.mu.RUnlock()
-
-	if client == nil {
-		return nil, fmt.Errorf("slack client not initialized")
-	}
-
-	// Handle different ID types for Slack conversations
-	actualChannelID := conversationID
-
-	// If conversationID is a user ID (starts with "U"), we need to open the DM conversation
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
-		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to open DM conversation with user %s: %w", conversationID, err)
-		}
-		if channel == nil || channel.ID == "" {
-			return nil, fmt.Errorf("failed to get DM channel ID for user %s", conversationID)
-		}
-		actualChannelID = channel.ID
-	} else if len(conversationID) > 0 && conversationID[0] == 'D' {
-		// For DM channel IDs, ensure the conversation is open
-		_, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			ChannelID: conversationID,
-		})
-		if err != nil {
-			// Log but don't fail - the conversation might already be open
-			p.log("SlackProvider.getRecentMessages: Warning - failed to open DM conversation %s: %v (may already be open)\n", conversationID, err)
-		}
-	}
-
-	// Get recent messages from Slack API
-	params := &slack.GetConversationHistoryParameters{
-		ChannelID: actualChannelID,
-		Limit:     limit,
-	}
-
-	// If oldest timestamp is provided, only fetch messages after this timestamp
-	if oldest != nil {
-		// Convert to Slack timestamp format (Unix timestamp as string with microseconds)
-		oldestStr := fmt.Sprintf("%d.%06d", oldest.Unix(), oldest.Nanosecond()/1000)
-		params.Oldest = oldestStr
-		p.log("SlackProvider.getRecentMessages: Fetching messages for %s since %s (oldest: %s)\n",
-			conversationID, oldest.Format("2006-01-02 15:04:05"), oldestStr)
-	}
-
-	history, err := client.GetConversationHistory(params)
-	if err != nil {
-		return nil, err
-	}
-
-	var messages []models.Message
-	for _, msg := range history.Messages {
-		messages = append(messages, p.convertSlackMessage(msg, actualChannelID))
-	}
-
-	// Reverse to oldest first
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
-	return messages, nil
-}
-
-// checkNewReactions checks for new reactions on a message
-func (p *SlackProvider) checkNewReactions(msg *models.Message, conversationID string) {
-	// Get existing reactions from database for this message
-	// Use a direct query instead of Preload to reduce DB load
-	var existingReactions []models.Reaction
-	if db.DB != nil {
-		var dbMsg models.Message
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msg.ProtocolMsgID, conversationID).
-			Select("id").First(&dbMsg).Error; err == nil {
-			// Load reactions separately to avoid Preload overhead
-			db.DB.Where("message_id = ?", dbMsg.ID).Find(&existingReactions)
-		}
-	}
-
-	// Create a map of existing reactions for quick lookup (using cleaned emojis for Slack)
-	existingMap := make(map[string]map[string]bool) // emoji -> userId -> true
-	for _, r := range existingReactions {
-		cleanedEmoji := CleanSlackEmoji(r.Emoji)
-		if existingMap[cleanedEmoji] == nil {
-			existingMap[cleanedEmoji] = make(map[string]bool)
-		}
-		existingMap[cleanedEmoji][r.UserID] = true
-	}
-
-	// Check for new reactions (compare with cleaned emojis)
-	currentReactions := msg.Reactions
-	if len(currentReactions) == 0 {
-		// No current reactions, check if any were removed
-		for _, existingReaction := range existingReactions {
-			cleanedExistingEmoji := CleanSlackEmoji(existingReaction.Emoji)
-			select {
-			case p.eventChan <- core.ReactionEvent{
-				ConversationID: conversationID,
-				MessageID:      msg.ProtocolMsgID,
-				UserID:         existingReaction.UserID,
-				Emoji:          cleanedExistingEmoji,
-				Added:          false,
-				Timestamp:      time.Now().Unix(),
-			}:
-				p.log("SlackProvider.checkNewReactions: emitted removed reaction event: %s on %s by %s\n", cleanedExistingEmoji, msg.ProtocolMsgID, existingReaction.UserID)
-			default:
-				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction removal event\n")
-			}
-		}
-		return
-	}
-
-	for _, reaction := range currentReactions {
-		cleanedEmoji := CleanSlackEmoji(reaction.Emoji)
-		if existingMap[cleanedEmoji] == nil || !existingMap[cleanedEmoji][reaction.UserID] {
-			// New reaction found, emit event
-			select {
-			case p.eventChan <- core.ReactionEvent{
-				ConversationID: conversationID,
-				MessageID:      msg.ProtocolMsgID,
-				UserID:         reaction.UserID,
-				Emoji:          cleanedEmoji, // Use cleaned emoji
-				Added:          true,
-				Timestamp:      reaction.CreatedAt.Unix(),
-			}:
-				p.log("SlackProvider.checkNewReactions: emitted new reaction event: %s on %s by %s\n", cleanedEmoji, msg.ProtocolMsgID, reaction.UserID)
-			default:
-				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction event\n")
-			}
-		}
-	}
-
-	// Check for removed reactions (reactions that exist in DB but not in current message)
-	for _, existingReaction := range existingReactions {
-		cleanedExistingEmoji := CleanSlackEmoji(existingReaction.Emoji)
-		found := false
-		for _, currentReaction := range currentReactions {
-			cleanedCurrentEmoji := CleanSlackEmoji(currentReaction.Emoji)
-			if cleanedCurrentEmoji == cleanedExistingEmoji && currentReaction.UserID == existingReaction.UserID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			// Reaction was removed, emit event
-			select {
-			case p.eventChan <- core.ReactionEvent{
-				ConversationID: conversationID,
-				MessageID:      msg.ProtocolMsgID,
-				UserID:         existingReaction.UserID,
-				Emoji:          cleanedExistingEmoji, // Use cleaned emoji
-				Added:          false,
-				Timestamp:      time.Now().Unix(),
-			}:
-				p.log("SlackProvider.checkNewReactions: emitted removed reaction event: %s on %s by %s\n", cleanedExistingEmoji, msg.ProtocolMsgID, existingReaction.UserID)
-			default:
-				p.log("SlackProvider.checkNewReactions: WARNING - event channel full, dropping reaction removal event\n")
-			}
-		}
-	}
-}
-
-// Disconnect closes the connection and stops all background operations.
+// Disconnect disconnects from the Slack API.
 func (p *SlackProvider) Disconnect() error {
-	// Signal polling goroutine to stop
+	p.log("Slack: Disconnecting...\n")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Close stopChan to signal goroutines to stop
 	select {
-	case p.stopChan <- struct{}{}:
+	case <-p.stopChan:
+		// Already closed
 	default:
+		close(p.stopChan)
 	}
-	close(p.stopChan)
+
+	// Disconnect Socket Mode if active
+	if p.socketClient != nil {
+		// socketmode.Client doesn't have a direct Close/Stop method exposed easily
+		// but closing the context (if we used RunContext) or relying on stopChan logic helper
+		// mostly we just stop reading events.
+		p.socketClient = nil
+	}
+
+	// Disconnect RTM if active
+	if p.rtmClient != nil {
+		p.rtmClient.Disconnect()
+		p.rtmClient = nil
+	}
+
+	p.client = nil
+
+	// Re-create stopChan for next connection
+	p.stopChan = make(chan struct{})
 
 	// Clear status cache
 	p.statusCacheMu.Lock()
 	p.statusCache = make(map[string]userStatus)
 	p.statusCacheMu.Unlock()
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.log("Slack: Disconnecting...\n")
 
 	// Close logger
 	if p.logger != nil {

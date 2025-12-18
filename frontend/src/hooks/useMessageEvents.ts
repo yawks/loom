@@ -1,6 +1,5 @@
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import type { InfiniteData } from "@tanstack/react-query";
-import { cleanSlackEmoji } from "@/lib/userDisplayNames";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useEffect } from "react";
@@ -40,6 +39,9 @@ export function useMessageEvents() {
   );
   const markAsReadByProtocolId = useMessageReadStore(
     (state) => state.markAsReadByProtocolId
+  );
+  const setLastReadTimestamp = useMessageReadStore(
+    (state) => state.setLastReadTimestamp
   );
   const setTyping = useTypingStore((state) => state.setTyping);
   const setNotTyping = useTypingStore((state) => state.setNotTyping);
@@ -82,32 +84,91 @@ export function useMessageEvents() {
         registerIncomingMessage(message);
         console.log("useMessageEvents: Registered incoming message in read store");
         
+        // Always ensure the conversation appears in recent list
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
         queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-        // Invalidate last message for this conversation to update sidebar preview
-        queryClient.invalidateQueries({ queryKey: ["lastMessage", message.protocolConvId] });
-        console.log("useMessageEvents: Invalidated and refetched metaContacts and lastMessage");
+        console.log("useMessageEvents: Invalidated and refetched metaContacts");
         
-        // Update the cache for the conversation that received the message
-        if (selectedContact) {
-          const conversationId = selectedContact.linkedAccounts[0]?.userId;
-          console.log("useMessageEvents: Selected contact conversation ID:", conversationId, "Message conversation ID:", message.protocolConvId);
-          
-          // Check if this message belongs to the currently selected conversation
-          if (message.protocolConvId === conversationId && conversationId) {
-            console.log("useMessageEvents: Message belongs to selected conversation, invalidating messages");
-            // Invalidate and refetch messages for this conversation
-            queryClient.invalidateQueries({
-              queryKey: ["messages", conversationId],
-            });
-            // Force a refetch to ensure the new message appears immediately
+        // Optimistically inject the message into the messages cache so it shows up instantly,
+        // even if the conversation was not yet synced/loaded.
+        const conversationId = message.protocolConvId;
+        if (conversationId) {
+          queryClient.setQueryData<InfiniteData<models.Message[]>>(
+            ["messages", conversationId],
+            (oldData) => {
+              // Initialize structure if absent
+              const safeData: InfiniteData<models.Message[]> = oldData && Array.isArray(oldData.pages)
+                ? {
+                    pages: oldData.pages.map((p) => (Array.isArray(p) ? [...p] : [])),
+                    pageParams: Array.isArray(oldData.pageParams) ? [...oldData.pageParams] : [],
+                  }
+                : { pages: [], pageParams: [] };
+
+              // Ensure at least one page exists
+              if (safeData.pages.length === 0) {
+                safeData.pages.push([]);
+              }
+
+              // Deduplicate by protocolMsgId
+              const seen = new Set<string>();
+              const addMessage = (msgs: models.Message[]) => {
+                const result: models.Message[] = [];
+                for (const m of msgs) {
+                  const id = m.protocolMsgId || "";
+                  if (id && seen.has(id)) continue;
+                  if (id) seen.add(id);
+                  result.push(m);
+                }
+                return result;
+              };
+
+              // Insert new message at the end (messages are displayed in chronological order)
+              const firstPage = safeData.pages[0] || [];
+              const mergedFirstPage = addMessage([...firstPage, message]);
+
+              safeData.pages[0] = mergedFirstPage;
+              return safeData;
+            }
+          );
+
+          // Force-fetch history so we don't miss older messages when a brand-new
+          // conversation appears via RTM (the cache above only injects the new message).
+          queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+          queryClient.refetchQueries({
+            queryKey: ["messages", conversationId],
+            type: "active",
+          });
+
+          // Schedule a second refetch shortly after to catch background sync completion.
+          setTimeout(() => {
             queryClient.refetchQueries({
               queryKey: ["messages", conversationId],
+              type: "active",
             });
-            console.log("useMessageEvents: Invalidated and refetched messages for selected conversation");
+          }, 1500);
+        }
+        
+        // Always invalidate the conversation cache to ensure it's up to date
+        // This is important for messages received during background sync (e.g., incremental sync on startup)
+        if (conversationId) {
+          console.log("useMessageEvents: Invalidating messages cache for conversation:", conversationId);
+          queryClient.invalidateQueries({
+            queryKey: ["messages", conversationId],
+          });
+          
+          // If the conversation is currently selected, also refetch immediately
+          if (selectedContact) {
+            const selectedConversationId = selectedContact.linkedAccounts[0]?.userId;
+            console.log("useMessageEvents: Selected contact conversation ID:", selectedConversationId, "Message conversation ID:", message.protocolConvId);
+
+            if (message.protocolConvId === selectedConversationId && selectedConversationId) {
+              console.log("useMessageEvents: Message belongs to selected conversation, refetching now");
+              queryClient.refetchQueries({
+                queryKey: ["messages", selectedConversationId],
+              });
+              console.log("useMessageEvents: Refetched messages for selected conversation");
+            }
           }
-        } else {
-          console.log("useMessageEvents: No selected contact, skipping message list update");
         }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse message event:", error);
@@ -286,19 +347,11 @@ export function useMessageEvents() {
       
       try {
         const reaction: ReactionEvent = JSON.parse(reactionJSON);
-        
-        // Clean emoji if it contains skin-tone modifier (Slack)
-        // This ensures reactions are stored consistently in the cache
-        const cleanedEmoji = reaction.Emoji.includes(":skin-tone-") 
-          ? cleanSlackEmoji(reaction.Emoji) 
-          : reaction.Emoji;
-        
         console.log("useMessageEvents: Parsed reaction event:", {
           conversationId: reaction.ConversationID,
           messageId: reaction.MessageID,
           userId: reaction.UserID,
           emoji: reaction.Emoji,
-          cleanedEmoji: cleanedEmoji,
           added: reaction.Added,
         });
         
@@ -321,20 +374,18 @@ export function useMessageEvents() {
                   const currentReactions = msg.reactions || [];
                   
                   if (reaction.Added) {
-                    // Check if reaction already exists (comparing cleaned emojis)
-                    // Clean existing reactions for comparison (in case some have skin-tone modifiers)
-                    const exists = currentReactions.some((r) => {
-                      const rCleaned = r.emoji.includes(":skin-tone-") ? cleanSlackEmoji(r.emoji) : r.emoji;
-                      return r.userId === reaction.UserID && rCleaned === cleanedEmoji;
-                    });
+                    // Add reaction if it doesn't exist
+                    const exists = currentReactions.some(
+                      (r) => r.userId === reaction.UserID && r.emoji === reaction.Emoji
+                    );
                     if (!exists) {
-                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID, "emoji:", cleanedEmoji);
+                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID);
                       const reactionTimestamp = new Date(reaction.Timestamp * 1000);
                       const newReaction = models.Reaction.createFrom({
                         id: 0,
                         messageId: msg.id,
                         userId: reaction.UserID,
-                        emoji: cleanedEmoji, // Store cleaned emoji
+                        emoji: reaction.Emoji,
                         createdAt: reactionTimestamp.toISOString(),
                         updatedAt: reactionTimestamp.toISOString(),
                       });
@@ -346,12 +397,11 @@ export function useMessageEvents() {
                       console.log("useMessageEvents: Reaction already exists for message", reaction.MessageID);
                     }
                   } else {
-                    // Remove reaction (comparing cleaned emojis)
+                    // Remove reaction
                     console.log("useMessageEvents: Removing reaction from message", reaction.MessageID);
-                    const filteredReactions = currentReactions.filter((r) => {
-                      const rCleaned = r.emoji.includes(":skin-tone-") ? cleanSlackEmoji(r.emoji) : r.emoji;
-                      return !(r.userId === reaction.UserID && rCleaned === cleanedEmoji);
-                    });
+                    const filteredReactions = currentReactions.filter(
+                      (r) => !(r.userId === reaction.UserID && r.emoji === reaction.Emoji)
+                    );
                     return models.Message.createFrom({
                       ...msg,
                       reactions: filteredReactions,
@@ -489,5 +539,43 @@ export function useMessageEvents() {
       }
     };
   }, [setTyping, setNotTyping]);
+
+  // Listen for conversation read status events (last_read timestamp from Slack)
+  useEffect(() => {
+    console.log("useMessageEvents: Setting up event listener for 'conversation-read-status'");
+    
+    if (typeof window !== "undefined" && !window.runtime) {
+      console.error("useMessageEvents: window.runtime is NOT available for conversation-read-status events!");
+      return;
+    }
+    
+    let isMounted = true;
+    const unsubscribeReadStatus = EventsOn("conversation-read-status", (readStatusJSON: string) => {
+      if (!isMounted) {
+        console.warn("useMessageEvents: Component unmounted, ignoring conversation-read-status event");
+        return;
+      }
+      
+      try {
+        const readStatus: { ConversationID: string; LastReadTS: string } = JSON.parse(readStatusJSON);
+        console.log("useMessageEvents: Received conversation-read-status event:", readStatus);
+        
+        if (readStatus.ConversationID && readStatus.LastReadTS) {
+          setLastReadTimestamp(readStatus.ConversationID, readStatus.LastReadTS);
+          console.log(`useMessageEvents: Set lastReadTS for conversation ${readStatus.ConversationID}: ${readStatus.LastReadTS}`);
+        }
+      } catch (error) {
+        console.error("useMessageEvents: Failed to parse conversation-read-status event:", error);
+      }
+    });
+    
+    return () => {
+      console.log("useMessageEvents: Cleaning up conversation-read-status event listener");
+      isMounted = false;
+      if (unsubscribeReadStatus) {
+        unsubscribeReadStatus();
+      }
+    };
+  }, [setLastReadTimestamp]);
 }
 

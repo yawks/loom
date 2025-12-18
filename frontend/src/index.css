@@ -182,3 +182,42 @@ html.dark .scroll-area::-webkit-scrollbar-thumb {
 html.dark .scroll-area::-webkit-scrollbar-thumb:hover {
   background-color: rgba(180, 180, 200, 0.8) !important;
 }
+
+@keyframes shimmer {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.95);
+  }
+}
+
+/* Container queries for sidebar button labels */
+.sidebar-buttons-container {
+  container-type: inline-size;
+  container-name: sidebar-buttons;
+}
+
+.sidebar-button-label {
+  display: inline;
+}
+
+.sidebar-button-tooltip {
+  display: none;
+}
+
+@container sidebar-buttons (max-width: 280px) {
+  .sidebar-button-label {
+    display: none !important;
+  }
+  
+  .sidebar-button-tooltip {
+    display: block !important;
+  }
+  
+  .sidebar-button-icon {
+    margin-right: 0 !important;
+  }
+}
