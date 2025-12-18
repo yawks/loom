@@ -1,4 +1,5 @@
-import { useEffect, useCallback } from "react";
+import { useCallback, useEffect } from "react";
+
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useSortedContacts } from "./useSortedContacts";
@@ -149,20 +150,22 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts if user is typing in an input, textarea, or contenteditable
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable
-      ) {
-        return;
-      }
-
       const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
       const optionKey = e.altKey; // Alt on both Mac and PC
       const commandKey = isMac ? e.metaKey : e.ctrlKey;
       const shiftKey = e.shiftKey;
+
+      // For arrow keys without modifiers, check if we're in a textarea to avoid conflicts
+      // with message history navigation
+      const target = e.target as HTMLElement;
+      if (
+        (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        !optionKey && !commandKey && !shiftKey &&
+        (target.tagName === "TEXTAREA" || target.tagName === "INPUT")
+      ) {
+        // Let the textarea handle arrow keys for message history navigation
+        return;
+      }
 
       // Option/Alt + Shift + ArrowUp: Navigate to conversation above with unread messages
       if (optionKey && shiftKey && e.key === "ArrowUp") {

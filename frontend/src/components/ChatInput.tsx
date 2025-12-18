@@ -1,22 +1,24 @@
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import EmojiPicker, { Theme } from "emoji-picker-react";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import type { InfiniteData } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-import { models } from "../../wailsjs/go/models";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { getSenderDisplayName as getSenderDisplayNameUtil } from "@/lib/userDisplayNames";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
   replyingToMessage?: models.Message | null;
   onCancelReply?: () => void;
+  onNavigateToEdit?: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
+  threadId?: string; // If set, messages will be sent as thread replies
 }
 
 const normalizeClipboardPath = (rawValue: string | null): string | null => {
@@ -69,7 +71,7 @@ const extractPathsFromText = (text: string | null): string[] => {
     );
 };
 
-export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply }: ChatInputProps) {
+export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId }: ChatInputProps) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
@@ -78,121 +80,202 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedContact = useAppStore((state) => state.selectedContact);
   const theme = useAppStore((state) => state.theme);
+  const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const queryClient = useQueryClient();
-
-  // Auto-focus the textarea whenever the selected conversation changes
+  
+  // Focus textarea when a conversation is selected
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.focus();
+    if (selectedContact) {
+      // Small delay to ensure the component is fully rendered
+      const timeoutId = setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timeoutId);
     }
-  }, [selectedContact?.id]);
+  }, [selectedContact]);
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string }) => {
-      if (quotedMessageId) {
-        return await SendReply(conversationId, text, quotedMessageId);
+      // If we're in a thread (threadId prop set), use that as the quotedMessageId
+      const actualQuotedMessageId = threadId || quotedMessageId;
+      
+      if (actualQuotedMessageId) {
+        return await SendReply(conversationId, text, actualQuotedMessageId);
       }
       return await SendMessage(conversationId, text);
     },
-    // Optimistic update so the message appears instantly
+    // Optimistic update: insert temp message immediately
     onMutate: async ({ conversationId, text, quotedMessageId }) => {
-      const tempId = `temp-${Date.now()}`;
-      await queryClient.cancelQueries({ queryKey: ["messages", conversationId] });
-
-      const previousData = queryClient.getQueryData<InfiniteData<models.Message[]>>(
-        ["messages", conversationId]
-      );
-
-      const existingMessages =
-        (previousData?.pages?.flat?.() as models.Message[] | undefined) ?? [];
-      const currentUserId =
-        existingMessages.find((m: models.Message) => m.isFromMe && m.senderId)?.senderId || "";
-
+      const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
-      const optimisticMessage = models.Message.createFrom({
+      
+      // Check if this is a thread message
+      const actualThreadId = threadId || quotedMessageId;
+      if (actualThreadId) {
+        // Don't do optimistic update for thread messages - they will be added via RTM event
+        console.log(`[ChatInput] Sending to thread ${actualThreadId}, skipping optimistic update`);
+        return { tempId, conversationId, isThreadMessage: true };
+      }
+      
+      // Get current user info from existing messages to properly display avatar and name
+      let currentUserInfo: { senderId?: string; senderName?: string; senderAvatarUrl?: string } = {};
+      const existingData = queryClient.getQueryData<InfiniteData<models.Message[]>>(["messages", conversationId]);
+      if (existingData?.pages) {
+        for (const page of existingData.pages) {
+          for (const msg of page) {
+            if (msg.isFromMe && msg.senderId) {
+              currentUserInfo = {
+                senderId: msg.senderId,
+                senderName: msg.senderName,
+                senderAvatarUrl: msg.senderAvatarUrl,
+              };
+              break;
+            }
+          }
+          if (currentUserInfo.senderId) break;
+        }
+      }
+      
+      const optimisticMessage: any = {
         protocolMsgId: tempId,
         protocolConvId: conversationId,
         body: text,
-        senderId: currentUserId,
         timestamp: now.toISOString(),
         isFromMe: true,
-        quotedMessageId,
-        // Frontend-only status fields
-        localStatus: "sending",
-        tempId,
-      } as any);
+        isPending: true,
+        sendFailed: false,
+        quotedMessageId: quotedMessageId,
+        // Include user info for proper avatar and name display
+        senderId: currentUserInfo.senderId,
+        senderName: currentUserInfo.senderName,
+        senderAvatarUrl: currentUserInfo.senderAvatarUrl,
+      };
 
+      // Update messages cache (append to last page to keep chronological order)
       queryClient.setQueryData<InfiniteData<models.Message[]>>(
         ["messages", conversationId],
-        (old) => {
-          if (!old || !Array.isArray(old.pages)) {
-            return { pages: [[optimisticMessage]], pageParams: [] } as InfiniteData<models.Message[]>;
+        (oldData) => {
+          const safeData: InfiniteData<models.Message[]> = oldData && Array.isArray(oldData.pages)
+            ? {
+                pages: oldData.pages.map((p) => (Array.isArray(p) ? [...p] : [])),
+                pageParams: Array.isArray(oldData.pageParams) ? [...oldData.pageParams] : [],
+              }
+            : { pages: [], pageParams: [] };
+
+          if (safeData.pages.length === 0) {
+            safeData.pages.push([]);
           }
-          const newPages = [...old.pages];
-          if (newPages.length === 0) {
-            newPages.push([optimisticMessage]);
-          } else if (Array.isArray(newPages[0])) {
-            newPages[0] = [optimisticMessage, ...newPages[0]];
-          } else {
-            newPages[0] = [optimisticMessage];
+
+          // Append to the last page and deduplicate by protocolMsgId
+          const lastIndex = safeData.pages.length - 1;
+          const lastPage = [...(safeData.pages[lastIndex] || [])];
+          const seen = new Set(lastPage.map((m) => m.protocolMsgId).filter(Boolean));
+          if (!seen.has(tempId)) {
+            lastPage.push(optimisticMessage as models.Message);
           }
-          return { ...old, pages: newPages };
+          safeData.pages[lastIndex] = lastPage;
+          return safeData;
         }
       );
 
-      return { previousData, tempId, conversationId };
-    },
-    onError: (_error, _vars, context) => {
-      if (!context) return;
-      const { conversationId, tempId } = context;
-      // Mark the optimistic message as failed
-      queryClient.setQueryData<InfiniteData<models.Message[]>>(
-        ["messages", conversationId],
+      // Update last message caches for preview (allLastMessages / allLastMessageTimestamps)
+      queryClient.setQueryData<Record<string, models.Message | null>>(
+        ["allLastMessages"],
         (old) => {
-          if (!old || !old.pages) return old;
-          const updatedPages = old.pages.map((page) =>
-            Array.isArray(page)
-              ? page.map((msg) =>
-                  (msg as any).tempId === tempId
-                    ? ({ ...msg, localStatus: "error" } as any)
-                    : msg
-                )
-              : page
-          );
-          return { ...old, pages: updatedPages };
+          const updated = { ...(old || {}) };
+          updated[conversationId] = optimisticMessage as models.Message;
+          return updated;
         }
       );
-    },
-    onSuccess: (result, _vars, context) => {
-      if (!context) return;
-      const { conversationId, tempId } = context;
-      // Replace the optimistic message with the real one
-      queryClient.setQueryData<InfiniteData<models.Message[]>>(
-        ["messages", conversationId],
+      queryClient.setQueryData<Record<string, string | null>>(
+        ["allLastMessageTimestamps"],
         (old) => {
-          if (!old || !old.pages) return old;
-          const updatedPages = old.pages.map((page) => {
-            if (!Array.isArray(page)) return page;
-            return page
-              .map((msg) =>
-                (msg as any).tempId === tempId || msg.protocolMsgId === tempId ? result : msg
-              )
-              // Ensure newest first
-              .sort(
-                (a, b) =>
-                  new Date(b.timestamp as any).getTime() - new Date(a.timestamp as any).getTime()
-              );
-          });
-          return { ...old, pages: updatedPages };
+          const updated = { ...(old || {}) };
+          updated[conversationId] = now.toISOString();
+          return updated;
         }
       );
+
+      return { tempId, conversationId, isThreadMessage: false };
     },
-    onSettled: (_data, _error, _vars, context) => {
-      if (context?.conversationId) {
-        queryClient.invalidateQueries({ queryKey: ["messages", context.conversationId] });
-        // Invalidate last message to update sidebar preview
-        queryClient.invalidateQueries({ queryKey: ["lastMessage", context.conversationId] });
+    onSuccess: (message, variables, context) => {
+      const conversationId = variables.conversationId;
+      const tempId = context?.tempId;
+      const isThreadMessage = context?.isThreadMessage;
+
+      // If we sent to a thread, invalidate and refetch the thread cache
+      if (isThreadMessage) {
+        const { quotedMessageId } = variables;
+        const actualThreadId = threadId || quotedMessageId;
+        console.log(`[ChatInput] Sent message to thread ${actualThreadId}, invalidating thread cache`);
+        queryClient.invalidateQueries({ queryKey: ["threads", conversationId, actualThreadId] });
+        queryClient.refetchQueries({ queryKey: ["threads", conversationId, actualThreadId] });
+        
+        // Also invalidate main messages to update thread count badge
+        queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+        return; // Don't do optimistic update for thread messages
       }
+
+      // Replace temp message with real one (only for main messages)
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (oldData) => {
+          if (!oldData || !Array.isArray(oldData.pages)) {
+            return oldData;
+          }
+          const pages = oldData.pages.map((page) => {
+            if (!Array.isArray(page)) return page;
+            return page.map((msg) => {
+              if (msg.protocolMsgId === tempId) {
+                return { ...(message as any), isPending: false, sendFailed: false };
+              }
+              return msg;
+            });
+          });
+          return { ...oldData, pages };
+        }
+      );
+
+      // Update last message caches
+      queryClient.setQueryData<Record<string, models.Message | null>>(
+        ["allLastMessages"],
+        (old) => {
+          const updated = { ...(old || {}) };
+          updated[conversationId] = { ...(message as any), isPending: false, sendFailed: false };
+          return updated;
+        }
+      );
+      queryClient.setQueryData<Record<string, string | null>>(
+        ["allLastMessageTimestamps"],
+        (old) => {
+          const updated = { ...(old || {}) };
+          updated[conversationId] = message.timestamp as unknown as string;
+          return updated;
+        }
+      );
+    },
+    onError: (_error, variables, context) => {
+      const conversationId = variables.conversationId;
+      const tempId = context?.tempId;
+      // Mark temp message as failed
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(
+        ["messages", conversationId],
+        (oldData) => {
+          if (!oldData || !Array.isArray(oldData.pages)) {
+            return oldData;
+          }
+          const pages = oldData.pages.map((page) => {
+            if (!Array.isArray(page)) return page;
+            return page.map((msg) => {
+              if (msg.protocolMsgId === tempId) {
+                return { ...(msg as any), isPending: false, sendFailed: true };
+              }
+              return msg;
+            });
+          });
+          return { ...oldData, pages };
+        }
+      );
     },
   });
 
@@ -208,8 +291,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }, []);
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setMessage(e.target.value);
+    const newValue = e.target.value;
+    setMessage(newValue);
     adjustTextareaHeight();
+    
+    // Hide unread divider when user starts typing
+    if (newValue.trim().length > 0) {
+      setIsTypingInInput(true);
+    } else {
+      setIsTypingInInput(false);
+    }
   };
 
   const handleSendMessage = async () => {
@@ -217,6 +308,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const text = message.trim();
       const quotedMessageId = replyingToMessage?.protocolMsgId;
       setMessage("");
+      setIsTypingInInput(false); // Reset typing state after sending
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
@@ -238,6 +330,70 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Handle navigation to edit previous/next message
+    if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Only navigate if cursor is at the start of the textarea or textarea is empty
+      const textarea = textareaRef.current;
+      const canNavigate = textarea && (textarea.selectionStart === 0 || message.trim() === "");
+      console.log("[ChatInput] ArrowUp pressed", {
+        hasTextarea: !!textarea,
+        selectionStart: textarea?.selectionStart,
+        messageLength: message.length,
+        messageTrimmed: message.trim().length,
+        canNavigate,
+        hasOnNavigateToEdit: !!onNavigateToEdit
+      });
+      
+      if (canNavigate) {
+        e.preventDefault();
+        if (onNavigateToEdit) {
+          console.log("[ChatInput] Calling onNavigateToEdit('up')");
+          onNavigateToEdit("up", () => {
+            // Return focus to textarea
+            console.log("[ChatInput] Returning focus to textarea");
+            setTimeout(() => {
+              textareaRef.current?.focus();
+            }, 0);
+          });
+        } else {
+          console.warn("[ChatInput] onNavigateToEdit is not defined");
+        }
+        return;
+      }
+    }
+
+    if (e.key === "ArrowDown" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Only navigate if cursor is at the end of the textarea
+      const textarea = textareaRef.current;
+      const canNavigate = textarea && (textarea.selectionStart === textarea.value.length || message.trim() === "");
+      console.log("[ChatInput] ArrowDown pressed", {
+        hasTextarea: !!textarea,
+        selectionStart: textarea?.selectionStart,
+        valueLength: textarea?.value.length,
+        messageLength: message.length,
+        messageTrimmed: message.trim().length,
+        canNavigate,
+        hasOnNavigateToEdit: !!onNavigateToEdit
+      });
+      
+      if (canNavigate) {
+        e.preventDefault();
+        if (onNavigateToEdit) {
+          console.log("[ChatInput] Calling onNavigateToEdit('down')");
+          onNavigateToEdit("down", () => {
+            // Return focus to textarea
+            console.log("[ChatInput] Returning focus to textarea");
+            setTimeout(() => {
+              textareaRef.current?.focus();
+            }, 0);
+          });
+        } else {
+          console.warn("[ChatInput] onNavigateToEdit is not defined");
+        }
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -390,7 +546,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   // Get sender display name for reply preview
   const getSenderDisplayName = (message: models.Message): string => {
-    return getSenderDisplayNameUtil(message.senderName, message.senderId, message.isFromMe, t);
+    if (message.isFromMe) return t("you") || "You";
+    if (message.senderName && message.senderName.trim().length > 0) {
+      return message.senderName;
+    }
+    return message.senderId;
   };
 
   return (
@@ -505,11 +665,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={t("type_a_message")}
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
             className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             rows={1}
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck="false"
           />
         </div>
 

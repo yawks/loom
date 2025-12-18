@@ -1,11 +1,13 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
-import React, { type ReactElement, useMemo } from "react";
+import React, { type ReactElement, useMemo, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import { SlackEmoji } from "./SlackEmoji";
+import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { transformSlackUrls } from "../lib/utils";
-import { cleanSlackEmoji } from "../lib/userDisplayNames";
+import { transformSlackUrls, escapeLeadingDashes, fixCodeBlocks } from "../lib/utils";
+import { cleanSlackEmoji, getUserDisplayName } from "@/lib/userDisplayNames";
+import type { models } from "../../wailsjs/go/models";
 
 interface SlackMessageTextProps {
   text: string; // Message text that may contain Slack emojis/avatars (e.g., ":calendar:", ":avatar_name:")
@@ -14,6 +16,8 @@ interface SlackMessageTextProps {
   emojiSize?: number; // Size for emojis/avatars in pixels (default: 16)
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user (for link color contrast)
+  participantNames?: Map<string, string>; // Map of user IDs to display names
+  allMessages?: models.Message[]; // All messages in the conversation (for user name lookup)
 }
 
 /**
@@ -21,28 +25,65 @@ interface SlackMessageTextProps {
  * Replaces patterns like :emoji_name: or :avatar_name: with SlackEmoji components.
  * Also renders Markdown formatting (bold, italic, links, etc.)
  */
-export function SlackMessageText({
+export const SlackMessageText = memo(function SlackMessageText({
   text,
   providerInstanceId,
   className = "",
   emojiSize = 16,
   preview = false,
   isFromMe = false,
+  participantNames,
+  allMessages,
 }: SlackMessageTextProps) {
+  
   const parsedContent = useMemo(() => {
     if (!text) return null;
 
     // First, transform Slack URLs to Markdown format
     let processedText = transformSlackUrls(text);
+    
+    // Fix malformed code blocks (e.g., ```/** -> ```javascript)
+    processedText = fixCodeBlocks(processedText);
+    
+    // Transform mentions to clickable links with display names
+    // Pattern matches <@U1234567890> or @U1234567890
+    // Slack user IDs start with U followed by alphanumeric characters
+    const mentionPattern = /<@(U[A-Z0-9]+)>|@(U[A-Z0-9]+)/g;
+    processedText = processedText.replace(mentionPattern, (match, userIdInBrackets, userIdPlain) => {
+      const userId = userIdInBrackets || userIdPlain;
+      if (!userId) return match;
+      
+      // Get display name for the user
+      const displayName = getUserDisplayName(userId, {
+        participantNames,
+        allMessages,
+      });
+      
+      // Return mention as plain text with @ prefix (not as a link)
+      // We'll style it in the markdown renderer
+      return `@${displayName}`;
+    });
 
     // In preview mode, replace newlines with spaces to keep content on one line
     if (preview) {
       processedText = processedText.replace(/\n+/g, " ");
+    } else {
+      // Escape dashes at the start of lines to prevent them from being interpreted as Markdown lists
+      processedText = escapeLeadingDashes(processedText);
     }
 
     // Remove skin-tone modifiers from the text (they should not be displayed)
     // Handles cases like ":+1::skin-tone-2:" -> ":+1:"
     const textWithoutSkinTones = cleanSlackEmoji(processedText);
+
+    // Check if text contains code blocks (```...```)
+    // If it does, we should NOT parse emojis inside code blocks
+    const hasCodeBlocks = /```[\s\S]*?```/g.test(textWithoutSkinTones);
+    
+    // If text has code blocks, don't parse emojis at all - render everything with markdown
+    if (hasCodeBlocks) {
+      return textWithoutSkinTones;
+    }
 
     // Use the text without skin tones for processing
     const textWithPreservedNewlines = textWithoutSkinTones;
@@ -51,8 +92,11 @@ export function SlackMessageText({
     let lastIndex = 0;
 
     // Find all emoji matches first to avoid regex state issues
+    // Exclude emojis that are inside markdown links [text](url) to prevent breaking URLs
     const matches: Array<{ index: number; match: RegExpExecArray }> = [];
-    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
+    // Use negative lookbehind/lookahead to avoid emojis in markdown links
+    // (?<!!) prevents matching escaped emojis, (?![^(]*\)) prevents matching in URLs
+    const emojiPattern = /(?<!\\):([a-zA-Z0-9_+-]+):(?![^(]*\))/g;
     let tempMatch;
     while ((tempMatch = emojiPattern.exec(textWithPreservedNewlines)) !== null) {
       matches.push({ index: tempMatch.index, match: tempMatch });
@@ -67,7 +111,7 @@ export function SlackMessageText({
         const textBefore = textWithPreservedNewlines.substring(lastIndex, index);
         // Split by newlines and add <br /> between them
         const lines = textBefore.split("\n");
-        lines.forEach((line, lineIdx) => {
+        lines.forEach((line: string, lineIdx: number) => {
           if (lineIdx > 0) {
             parts.push(<br key={`br-${index}-${lineIdx}`} />);
           }
@@ -109,7 +153,7 @@ export function SlackMessageText({
     if (lastIndex < textWithPreservedNewlines.length) {
       const remainingText = textWithPreservedNewlines.substring(lastIndex);
       const lines = remainingText.split("\n");
-      lines.forEach((line, lineIdx) => {
+      lines.forEach((line: string, lineIdx: number) => {
         if (lineIdx > 0) {
           parts.push(<br key={`br-end-${lineIdx}`} />);
         }
@@ -125,7 +169,7 @@ export function SlackMessageText({
     }
 
     return parts;
-  }, [text, providerInstanceId, emojiSize, preview]);
+  }, [text, providerInstanceId, emojiSize, preview, participantNames, allMessages]);
 
   if (!parsedContent) {
     return null;
@@ -142,9 +186,10 @@ export function SlackMessageText({
             a: ({ href, children, ...props }) => {
               const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
                 e.preventDefault();
-                if (href) {
-                  BrowserOpenURL(href);
-                }
+                if (!href) return;
+                
+                // Regular links open in browser
+                BrowserOpenURL(href);
               };
               return (
                 <a
@@ -161,6 +206,48 @@ export function SlackMessageText({
                 </a>
               );
             },
+            // Style text nodes to detect and style mentions
+            text: ({ children }) => {
+              if (typeof children === "string") {
+                // Split text by mentions (@username pattern, handles spaces in names)
+                // Pattern matches @ followed by word characters and spaces, ending at word boundary or end of string
+                const mentionPattern = /(@[A-Za-z0-9\u00C0-\u017F\s]+?)(?=\s|$|[.,!?;:])/g;
+                const parts: (string | React.ReactElement)[] = [];
+                let lastIndex = 0;
+                let match;
+                
+                while ((match = mentionPattern.exec(children)) !== null) {
+                  // Add text before the mention
+                  if (match.index > lastIndex) {
+                    parts.push(children.substring(lastIndex, match.index));
+                  }
+                  
+                  // Add styled mention (non-clickable)
+                  parts.push(
+                    <span
+                      key={`mention-${match.index}`}
+                      className={
+                        isFromMe
+                          ? "text-blue-100 font-medium"
+                          : "text-blue-600 dark:text-blue-400 font-medium"
+                      }
+                    >
+                      {match[0]}
+                    </span>
+                  );
+                  
+                  lastIndex = match.index + match[0].length;
+                }
+                
+                // Add remaining text
+                if (lastIndex < children.length) {
+                  parts.push(children.substring(lastIndex));
+                }
+                
+                return parts.length > 0 ? <>{parts}</> : <>{children}</>;
+              }
+              return <>{children}</>;
+            },
             // Style for bold text
             strong: ({ ...props }) => (
               <strong className="font-bold" {...props} />
@@ -169,22 +256,18 @@ export function SlackMessageText({
             em: ({ ...props }) => (
               <em className="italic" {...props} />
             ),
-            // Style for code
-            code: ({ className, ...props }) => {
+            // Style for code with syntax highlighting
+            code: ({ className, children, ...props }) => {
               const isInline = !className?.includes("language-");
-              if (isInline) {
-                return (
-                  <code
-                    className="bg-muted px-1 py-0.5 rounded text-sm font-mono"
-                    {...props}
-                  />
-                );
-              }
               return (
-                <code
-                  className="block bg-muted p-2 rounded text-sm font-mono overflow-x-auto"
+                <CodeBlock
+                  className={className}
+                  inline={isInline}
+                  isFromMe={isFromMe}
                   {...props}
-                />
+                >
+                  {String(children).replace(/\n$/, "")}
+                </CodeBlock>
               );
             },
             // Preserve line breaks (but not in preview mode)
@@ -209,7 +292,9 @@ export function SlackMessageText({
   // If we have emojis, we need to parse emojis in text parts and render markdown
   // Create a component that parses emojis in text nodes
   const TextWithEmojis = ({ text, keyPrefix, isPreview }: { text: string; keyPrefix: string; isPreview: boolean }) => {
-    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
+    // Exclude emojis that are inside markdown links [text](url) to prevent breaking URLs
+    // (?<!!) prevents matching escaped emojis, (?![^(]*\)) prevents matching in URLs
+    const emojiPattern = /(?<!\\):([a-zA-Z0-9_+-]+):(?![^(]*\))/g;
     const parts: (string | ReactElement)[] = [];
     let lastIndex = 0;
     let match;
@@ -272,9 +357,10 @@ export function SlackMessageText({
                     }
                     const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
                       e.preventDefault();
-                      if (href) {
-                        BrowserOpenURL(href);
-                      }
+                      if (!href) return;
+                      
+                      // Regular links open in browser
+                      BrowserOpenURL(href);
                     };
                     return (
                       <a
@@ -293,27 +379,65 @@ export function SlackMessageText({
                       </a>
                     );
                   },
+                  // Style text nodes to detect and style mentions
+                  text: ({ children }) => {
+                    if (typeof children === "string") {
+                      // Split text by mentions (@username pattern, handles spaces in names)
+                      // Pattern matches @ followed by word characters and spaces, ending at word boundary or end of string
+                      const mentionPattern = /(@[A-Za-z0-9\u00C0-\u017F\s]+?)(?=\s|$|[.,!?;:])/g;
+                      const parts: (string | React.ReactElement)[] = [];
+                      let lastIndex = 0;
+                      let match;
+                      
+                      while ((match = mentionPattern.exec(children)) !== null) {
+                        // Add text before the mention
+                        if (match.index > lastIndex) {
+                          parts.push(children.substring(lastIndex, match.index));
+                        }
+                        
+                        // Add styled mention (non-clickable)
+                        parts.push(
+                          <span
+                            key={`mention-${match.index}`}
+                            className={
+                              isFromMe
+                                ? "text-blue-100 font-medium"
+                                : "text-blue-600 dark:text-blue-400 font-medium"
+                            }
+                          >
+                            {match[0]}
+                          </span>
+                        );
+                        
+                        lastIndex = match.index + match[0].length;
+                      }
+                      
+                      // Add remaining text
+                      if (lastIndex < children.length) {
+                        parts.push(children.substring(lastIndex));
+                      }
+                      
+                      return parts.length > 0 ? <>{parts}</> : <>{children}</>;
+                    }
+                    return <>{children}</>;
+                  },
                   strong: ({ ...props }) => (
                     <strong className="font-bold inline" {...props} />
                   ),
                   em: ({ ...props }) => (
                     <em className="italic inline" {...props} />
                   ),
-                  code: ({ className, ...props }) => {
+                  code: ({ className, children, ...props }) => {
                     const isInline = !className?.includes("language-");
-                    if (isInline) {
-                      return (
-                        <code
-                          className="bg-muted px-1 py-0.5 rounded text-sm font-mono inline"
-                          {...props}
-                        />
-                      );
-                    }
                     return (
-                      <code
-                        className="block bg-muted p-2 rounded text-sm font-mono overflow-x-auto"
+                      <CodeBlock
+                        className={className}
+                        inline={isInline}
+                        isFromMe={isFromMe}
                         {...props}
-                      />
+                      >
+                        {String(children).replace(/\n$/, "")}
+                      </CodeBlock>
                     );
                   },
                   p: ({ ...props }) => (
@@ -340,8 +464,8 @@ export function SlackMessageText({
   };
 
   return (
-    <div className={className}>
-      {parsedContent.map((part, index) => {
+    <div className={`${className} max-w-full overflow-hidden`}>
+      {parsedContent.map((part: string | ReactElement, index: number) => {
         if (typeof part === "string") {
           // Parse emojis in text parts and render markdown
           return <TextWithEmojis key={`text-${index}`} text={part} keyPrefix={`text-${index}`} isPreview={preview} />;
@@ -351,4 +475,4 @@ export function SlackMessageText({
       })}
     </div>
   );
-}
+});

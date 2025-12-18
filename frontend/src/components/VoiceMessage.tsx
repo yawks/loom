@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import { Play, Pause } from "lucide-react";
 import { GetAttachmentData, MarkMessageAsPlayed } from "../../wailsjs/go/main/App";
+import { Pause, Play } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 interface VoiceMessageProps {
     attachment: {
@@ -155,12 +155,39 @@ export function VoiceMessage({
                     }
                 }
 
-                // Fallback for supported formats (MP3/M4A) or opaque failures
-                console.log("[VoiceMessage] Using native playback fallback");
-                setAudioUrl(data);
-                // For fallback, we might not have a waveform unless we decode it via WebAudio
-                // which is async and might not work for all formats.
-                // We'll show a simple progress bar if waveform is empty.
+                // Fallback for supported formats (MP3/M4A) - decode with Web Audio API to generate waveform
+                console.log("[VoiceMessage] Attempting Web Audio API decoding for waveform...");
+                try {
+                    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+                    
+                    // Convert data URL to ArrayBuffer
+                    const response = await fetch(data);
+                    const arrayBuffer = await response.arrayBuffer();
+                    
+                    // Decode audio data
+                    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+                    // Generate waveform from decoded audio
+                    const samples = audioBuffer.getChannelData(0); // Use first channel
+                    const calculatedWaveform = calculateWaveform(samples);
+                    setWaveform(calculatedWaveform);
+                    console.log("[VoiceMessage] Generated waveform from Web Audio API", { 
+                        sampleRate: audioBuffer.sampleRate, 
+                        duration: audioBuffer.duration,
+                        waveformBars: calculatedWaveform.length
+                    });
+                    
+                    // Update duration if available
+                    if (audioBuffer.duration > 0 && !attachment.duration) {
+                        setDuration(audioBuffer.duration);
+                    }
+                    
+                    setAudioUrl(data);
+                } catch (webAudioErr) {
+                    console.warn("[VoiceMessage] Web Audio API decoding failed, using native playback:", webAudioErr);
+                    setAudioUrl(data);
+                    // Waveform will remain empty, showing fallback slider
+                }
             } catch (err) {
                 console.error("Failed to load voice message:", err);
             }
