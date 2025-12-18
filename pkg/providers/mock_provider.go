@@ -109,11 +109,6 @@ func (m *MockProvider) SetConfig(config core.ProviderConfig) error {
 	return nil
 }
 
-// GetQRCode returns a QR code string (mock provider doesn't need QR code).
-func (m *MockProvider) GetQRCode() (string, error) {
-	return "", nil
-}
-
 // IsAuthenticated returns true since MockProvider doesn't require authentication.
 func (m *MockProvider) IsAuthenticated() bool {
 	return true
@@ -438,7 +433,7 @@ func (m *MockProvider) GetContacts() ([]models.LinkedAccount, error) {
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.
-func (m *MockProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
+func (m *MockProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error) {
 	m.log("MockProvider: Getting conversation history for %s (limit: %d, beforeTimestamp: %v)\n", conversationID, limit, beforeTimestamp)
 
 	messages, ok := m.messages[conversationID]

@@ -1,14 +1,15 @@
-import { useState, useEffect } from "react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
+  Download,
+  File,
   FileText,
   Image as ImageIcon,
-  Video,
   Music,
-  File,
-  Download,
+  Video,
   X,
 } from "lucide-react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { useEffect, useMemo, useState } from "react";
+
 import { GetAttachmentData } from "../../wailsjs/go/main/App";
 import { VoiceMessage } from "./VoiceMessage";
 
@@ -71,55 +72,140 @@ export function MessageAttachments({
   layout = "bubble",
 }: MessageAttachmentsProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [imageDataUrls, setImageDataUrls] = useState<Map<string, string>>(new Map());
+  const [audioDataUrls, setAudioDataUrls] = useState<Map<string, string>>(new Map());
+  // Track which URLs we're currently loading to avoid duplicate requests
+  const [loadingUrls, setLoadingUrls] = useState<Set<string>>(new Set());
 
-  if (!attachments || attachments.trim() === "") {
-    return null;
-  }
+  // Parse and deduplicate attachments using useMemo to avoid re-parsing on every render
+  const parsedAttachments = useMemo(() => {
+    if (!attachments || attachments.trim() === "") {
+      return [];
+    }
 
-  let parsedAttachments: Attachment[] = [];
-  try {
-    parsedAttachments = JSON.parse(attachments);
-  } catch (e) {
-    console.error("Failed to parse attachments:", e, "Raw attachments:", attachments);
-    return null;
-  }
+    let parsed: Attachment[] = [];
+    try {
+      parsed = JSON.parse(attachments);
+    } catch (e) {
+      console.error("[MessageAttachments] Failed to parse attachments:", e, "Raw attachments:", attachments);
+      return [];
+    }
+
+    console.log(`[MessageAttachments] Parsed ${parsed.length} attachments from JSON (messageID: ${messageID})`);
+
+    if (parsed.length === 0) {
+      return [];
+    }
+    
+    // Deduplicate attachments by URL (in case backend didn't catch all duplicates)
+    const uniqueAttachments: Attachment[] = [];
+    const seenAttachmentURLs = new Set<string>();
+    let duplicatesRemoved = 0;
+    for (const attachment of parsed) {
+      if (!seenAttachmentURLs.has(attachment.url)) {
+        seenAttachmentURLs.add(attachment.url);
+        uniqueAttachments.push(attachment);
+      } else {
+        duplicatesRemoved++;
+        console.log(`[MessageAttachments] Duplicate detected: ${attachment.url.substring(0, 80)}...`);
+      }
+    }
+    if (duplicatesRemoved > 0) {
+      console.warn(`[MessageAttachments] ⚠️ Removed ${duplicatesRemoved} duplicate attachments (messageID: ${messageID})`);
+    }
+    
+    console.log(`[MessageAttachments] Returning ${uniqueAttachments.length} unique attachments (messageID: ${messageID})`);
+    return uniqueAttachments;
+  }, [attachments]);
 
   if (parsedAttachments.length === 0) {
     return null;
   }
-
-  // Load image data URLs
+  
+  // Load image and audio data URLs
   useEffect(() => {
-    const loadImages = async () => {
-      const newDataUrls = new Map<string, string>();
-      for (const attachment of parsedAttachments) {
-        if (attachment.type === "image" || attachment.type === "video") {
-          const url = attachment.thumbnail || attachment.url;
-          if (url && !imageDataUrls.has(url)) {
-            try {
-              const dataUrl = await GetAttachmentData(url);
-              newDataUrls.set(url, dataUrl);
-            } catch (error) {
-              console.error("Failed to load attachment:", error);
-            }
-          }
+    if (parsedAttachments.length === 0) {
+      return;
+    }
+    
+    const urlsToLoad: string[] = [];
+    
+    for (const attachment of parsedAttachments) {
+      if (attachment.type === "image" || attachment.type === "video") {
+        const url = attachment.thumbnail || attachment.url;
+        if (url && !imageDataUrls.has(url) && !loadingUrls.has(url)) {
+          urlsToLoad.push(url);
+        }
+      } else if (attachment.type === "audio" || attachment.type === "voice") {
+        const url = attachment.url;
+        if (url && !audioDataUrls.has(url) && !loadingUrls.has(url)) {
+          urlsToLoad.push(url);
         }
       }
-      if (newDataUrls.size > 0) {
-        setImageDataUrls((prev) => {
-          const updated = new Map(prev);
-          newDataUrls.forEach((value, key) => updated.set(key, value));
-          return updated;
-        });
-      }
-    };
-    if (parsedAttachments.length > 0) {
-      loadImages();
     }
+    
+    if (urlsToLoad.length === 0) {
+      return;
+    }
+    
+    // Mark URLs as loading
+    setLoadingUrls((prev) => {
+      const updated = new Set(prev);
+      urlsToLoad.forEach((url) => updated.add(url));
+      return updated;
+    });
+    
+    // Load all URLs (fire and forget, but track loading state)
+    urlsToLoad.forEach((url) => {
+      // Determine if it's an image/video or audio based on the attachment
+      const attachment = parsedAttachments.find(
+        (a) => (a.thumbnail || a.url) === url || a.url === url
+      );
+      
+      GetAttachmentData(url)
+        .then((dataUrl) => {
+          if (attachment?.type === "image" || attachment?.type === "video") {
+            setImageDataUrls((prev) => {
+              if (!prev.has(url)) {
+                const updated = new Map(prev);
+                updated.set(url, dataUrl);
+                return updated;
+              }
+              return prev;
+            });
+          } else if (attachment?.type === "audio" || attachment?.type === "voice") {
+            setAudioDataUrls((prev) => {
+              if (!prev.has(url)) {
+                const updated = new Map(prev);
+                updated.set(url, dataUrl);
+                return updated;
+              }
+              return prev;
+            });
+          }
+        })
+        .catch((error) => {
+          console.error(`Failed to load attachment ${url}:`, error);
+        })
+        .finally(() => {
+          // Remove from loading set
+          setLoadingUrls((prev) => {
+            const updated = new Set(prev);
+            updated.delete(url);
+            return updated;
+          });
+        });
+    });
+    
+    // Cleanup function to cancel loading if component unmounts or dependencies change
+    return () => {
+      // URLs will be cleaned up in the finally blocks
+    };
+    // Only depend on parsedAttachments
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachments]);
+  }, [parsedAttachments]);
 
   const handleDownload = async (attachment: Attachment) => {
     try {
@@ -156,14 +242,48 @@ export function MessageAttachments({
     }
   };
 
+  const handlePdfClick = async (attachment: Attachment) => {
+    if (attachment.mimeType === "application/pdf" && attachment.url) {
+      const url = attachment.url;
+      try {
+        const dataUrl = await GetAttachmentData(url);
+        if (dataUrl) {
+          setSelectedPdf(dataUrl);
+        }
+      } catch (error) {
+        console.error("Failed to load PDF:", error);
+      }
+    }
+  };
+
   return (
     <>
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
+          // Use VoiceMessage for voice messages (type "voice" or audio files that are likely voice messages)
+          // Check type "voice" first, then check if it's a small audio file
           if (attachment.type === "voice") {
             return (
               <VoiceMessage
-                key={index}
+                key={`${attachment.url}-${index}`}
+                attachment={{
+                  url: attachment.url,
+                  duration: (attachment as any).duration,
+                  fileName: attachment.fileName
+                }}
+                conversationID={conversationID}
+                messageID={messageID}
+                isFromMe={isFromMe}
+                layout={layout}
+              />
+            )
+          }
+          
+          // Also check for small audio files that are likely voice messages
+          if (attachment.type === "audio" && attachment.fileSize < 5 * 1024 * 1024) {
+            return (
+              <VoiceMessage
+                key={`${attachment.url}-${index}`}
                 attachment={{
                   url: attachment.url,
                   duration: (attachment as any).duration,
@@ -179,11 +299,14 @@ export function MessageAttachments({
 
           const Icon = getFileIcon(attachment.mimeType, attachment.type);
           const isImage = attachment.type === "image";
+          const isAudio = attachment.type === "audio";
+          const isPdf = attachment.mimeType === "application/pdf";
           const thumbnail = attachment.thumbnail || attachment.url;
+          const audioUrl = audioDataUrls.get(attachment.url);
 
           return (
             <div
-              key={index}
+              key={`${attachment.url}-${index}`}
               className="relative group flex justify-start"
               onMouseEnter={() => setHoveredIndex(index)}
               onMouseLeave={() => setHoveredIndex(null)}
@@ -209,6 +332,57 @@ export function MessageAttachments({
                     <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg">
                       <Download className="h-8 w-8 text-white" />
                     </div>
+                  )}
+                </div>
+              ) : isAudio ? (
+                <div
+                  className={`flex flex-col gap-2 p-3 rounded-lg border ${isFromMe && layout === "bubble"
+                    ? "bg-blue-600 text-white border-blue-700"
+                    : "bg-muted text-foreground border-border"
+                    } max-w-xs`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Icon className="h-8 w-8 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {attachment.fileName || `Audio.${getFileExtension(attachment.fileName)}`}
+                      </p>
+                      <p className="text-xs opacity-70">
+                        {formatFileSize(attachment.fileSize)}
+                      </p>
+                    </div>
+                  </div>
+                  {audioUrl ? (
+                    <audio
+                      controls
+                      className="w-full h-8"
+                      src={audioUrl}
+                    >
+                      Your browser does not support the audio element.
+                    </audio>
+                  ) : (
+                    <div className="text-xs opacity-70">Loading audio...</div>
+                  )}
+                </div>
+              ) : isPdf ? (
+                <div
+                  className={`flex items-center gap-3 p-3 rounded-lg border ${isFromMe && layout === "bubble"
+                    ? "bg-blue-600 text-white border-blue-700"
+                    : "bg-muted text-foreground border-border"
+                    } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
+                  onClick={() => handlePdfClick(attachment)}
+                >
+                  <Icon className="h-8 w-8 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {attachment.fileName || `File.${getFileExtension(attachment.fileName)}`}
+                    </p>
+                    <p className="text-xs opacity-70">
+                      {formatFileSize(attachment.fileSize)}
+                    </p>
+                  </div>
+                  {hoveredIndex === index && (
+                    <Download className="h-5 w-5 shrink-0" />
                   )}
                 </div>
               ) : (
@@ -240,6 +414,7 @@ export function MessageAttachments({
 
       <Dialog open={selectedImage !== null} onOpenChange={() => setSelectedImage(null)}>
         <DialogContent className="max-w-4xl max-h-[90vh] p-0">
+          <DialogTitle className="sr-only">Image Preview</DialogTitle>
           {selectedImage && (
             <div className="relative">
               <button
@@ -252,6 +427,27 @@ export function MessageAttachments({
                 src={selectedImage}
                 alt="Preview"
                 className="w-full h-auto max-h-[85vh] object-contain"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedPdf !== null} onOpenChange={() => setSelectedPdf(null)}>
+        <DialogContent className="max-w-6xl max-h-[90vh] p-0">
+          <DialogTitle className="sr-only">PDF Preview</DialogTitle>
+          {selectedPdf && (
+            <div className="relative w-full h-full">
+              <button
+                onClick={() => setSelectedPdf(null)}
+                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              <iframe
+                src={selectedPdf}
+                className="w-full h-[85vh] border-0"
+                title="PDF Preview"
               />
             </div>
           )}

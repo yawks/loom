@@ -66,27 +66,6 @@ export namespace gorm {
 
 }
 
-export namespace main {
-	
-	export class ClipboardFile {
-	    filename: string;
-	    base64: string;
-	    mimeType: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ClipboardFile(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.filename = source["filename"];
-	        this.base64 = source["base64"];
-	        this.mimeType = source["mimeType"];
-	    }
-	}
-
-}
-
 export namespace models {
 	
 	export class MessageReceipt {

@@ -1,10 +1,10 @@
-import { AlertCircle, CheckCircle2, Loader2, XCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { useTranslation } from "react-i18next";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { cn } from "@/lib/utils";
+import { Loader2, CheckCircle2, AlertCircle, XCircle } from "lucide-react";
 import { translateBackendMessage } from "@/lib/i18n-helpers";
-import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
 
 interface SyncStatus {
   status: "fetching_contacts" | "fetching_history" | "fetching_avatars" | "completed" | "error" | null;
@@ -52,13 +52,13 @@ export function SyncStatusFooter() {
         // Check if completed
         if (normalizedStatus.status === "completed") {
           hasCompletedRef.current = true;
-          // Auto-hide after 5 seconds (increased from 3 to allow user to see completion message)
+          // Auto-hide after 3 seconds
           if (timeoutId) clearTimeout(timeoutId);
           timeoutId = setTimeout(() => {
             setIsVisible(false);
             setSyncStatus(null);
             timeoutId = null;
-          }, 5000);
+          }, 3000);
         } else if (normalizedStatus.status === "error") {
           // Auto-hide error after 5 seconds
           if (timeoutId) clearTimeout(timeoutId);

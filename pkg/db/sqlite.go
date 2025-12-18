@@ -25,9 +25,22 @@ func InitDatabase() error {
 		return fmt.Errorf("could not create db directory: %w", err)
 	}
 
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	// Configure SQLite with timeout and WAL mode for better concurrency
+	// WAL mode allows multiple readers and one writer simultaneously
+	// Timeout prevents indefinite blocking when database is locked
+	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000&_journal_mode=WAL"), &gorm.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// Enable WAL mode explicitly (in case the connection string didn't work)
+	if err := db.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
+		fmt.Printf("Warning: Failed to enable WAL mode: %v\n", err)
+	}
+
+	// Set busy timeout to 5 seconds (5000ms)
+	if err := db.Exec("PRAGMA busy_timeout=5000").Error; err != nil {
+		fmt.Printf("Warning: Failed to set busy timeout: %v\n", err)
 	}
 
 	// Auto-migrate schemas
@@ -80,18 +93,18 @@ func migrateProviderConfiguration(db *gorm.DB) error {
 	// Check if instance_id column exists by trying to query it
 	var testValue string
 	err = db.Raw("SELECT instance_id FROM provider_configurations LIMIT 1").Scan(&testValue).Error
-	
+
 	// If the query fails, the column doesn't exist yet
 	if err != nil {
 		fmt.Println("Migration: Adding instance_id and instance_name columns to provider_configurations...")
-		
+
 		// Step 1: Add columns as nullable first
 		err = db.Exec("ALTER TABLE provider_configurations ADD COLUMN instance_id TEXT").Error
 		if err != nil {
 			// Column might already exist from a previous failed migration
 			fmt.Printf("Migration: Warning - Could not add instance_id column: %v\n", err)
 		}
-		
+
 		err = db.Exec("ALTER TABLE provider_configurations ADD COLUMN instance_name TEXT").Error
 		if err != nil {
 			fmt.Printf("Migration: Warning - Could not add instance_name column: %v\n", err)
@@ -109,7 +122,7 @@ func migrateProviderConfiguration(db *gorm.DB) error {
 				if config.InstanceName == "" {
 					instanceName = config.ProviderID
 				}
-				
+
 				db.Model(&config).Updates(map[string]interface{}{
 					"instance_id":   instanceID,
 					"instance_name": instanceName,
@@ -138,17 +151,39 @@ func migrateLinkedAccount(db *gorm.DB) error {
 	// Check if provider_instance_id column exists by trying to query it
 	var testValue string
 	err = db.Raw("SELECT provider_instance_id FROM linked_accounts LIMIT 1").Scan(&testValue).Error
-	
+
 	// If the query fails, the column doesn't exist yet
 	if err != nil {
 		fmt.Println("Migration: Adding provider_instance_id column to linked_accounts...")
-		
+
 		// Add column as nullable
 		err = db.Exec("ALTER TABLE linked_accounts ADD COLUMN provider_instance_id TEXT").Error
 		if err != nil {
 			fmt.Printf("Migration: Warning - Could not add provider_instance_id column: %v\n", err)
 		} else {
 			fmt.Println("Migration: provider_instance_id column added successfully")
+		}
+	}
+
+	// Check if unique constraint exists on (provider_instance_id, user_id)
+	var constraintExists int
+	err = db.Raw(`
+		SELECT COUNT(*) FROM sqlite_master 
+		WHERE type='index' 
+		AND name='idx_linked_accounts_provider_user'
+	`).Scan(&constraintExists).Error
+
+	if err == nil && constraintExists == 0 {
+		fmt.Println("Migration: Adding unique index on (provider_instance_id, user_id) to linked_accounts...")
+		// Create unique index (SQLite doesn't support adding constraints to existing tables easily)
+		err = db.Exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_accounts_provider_user 
+			ON linked_accounts(provider_instance_id, user_id)
+		`).Error
+		if err != nil {
+			fmt.Printf("Migration: Warning - Could not create unique index: %v\n", err)
+		} else {
+			fmt.Println("Migration: Unique index created successfully")
 		}
 	}
 

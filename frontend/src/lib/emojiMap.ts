@@ -291,6 +291,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "angolan": "🇦🇴",
   "angry": "😡",
   "angry_face": "😠",
+  "confounded": "😖",
   "angry_face_with_horns": "👿",
   "anguilla": "🇦🇮",
   "anguillan": "🇦🇮",
@@ -619,6 +620,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "black_flag": "🏴",
   "black_heart": "🖤",
   "black_large_square": "⬛",
+  "black_square": "◼️",
   "black_medium_small_square": "◾",
   "black_medium_square": "◼️",
   "black_nib": "✒️",
@@ -981,7 +983,9 @@ export const unicodeEmojiMap: Record<string, string> = {
   "che": "🤌",
   "check_box_with_check": "☑️",
   "check_mark": "✔️",
+  "heavy_check_mark": "✔️",
   "check_mark_button": "✅",
+  "white_check_mark": "☑️",
   "checkbox": "☑️",
   "checkered": "🏁",
   "checkin": "🏨",
@@ -1832,6 +1836,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "face_with_thermometer": "🤒",
   "face_with_tongue": "😛",
   "face_without_mouth": "😶",
+  "no_mouth": "😶",
   "faced": "😐",
   "facepalm": "🤦",
   "facepunch": "👊",
@@ -2693,6 +2698,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "heartbreak": "💔",
   "heartpulse": "💗",
   "hearts": "🥰",
+  "smiling_face_with_3_hearts": "🥰",
   "heat": "🥵",
   "heaven": "😇",
   "heavy": "❣️",
@@ -4575,6 +4581,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "red_apple": "🍎",
   "red_circle": "🔴",
   "red_devil": "😈",
+  "smiling_imp": "😈",
   "red_envelope": "🧧",
   "red_heart": "❤️",
   "red_paper_lantern": "🏮",
@@ -4662,6 +4669,23 @@ export const unicodeEmojiMap: Record<string, string> = {
   "point_right": "👉",
   "right_anger_bubble": "🗯️",
   "right_arrow": "➡️",
+  "arrow_right": "➡️",
+  "arrow_right_arrow_left": "↔️",
+  "arrow_up_down": "↕️",
+  "arrow_up_small": "🔼",
+  "arrow_down_small": "🔽",
+  "arrow_left": "⬅️",
+  "arrow_left_arrow_right": "↔️",
+  "arrow_up": "⬆️",
+  "arrow_down": "⬇️",
+  "arrow_upper_right": "↗️",
+  "arrow_upper_left": "↖️",
+  "arrow_lower_right": "↘️",
+  "arrow_lower_left": "↙️",
+  "arrow_right_hook": "↪️",
+  "arrow_left_hook": "↩️",
+  "arrow_up_down_arrow_left": "↔️",
+  "arrow_up_down_arrow_right": "↔️",
   "right_arrow_curving_down": "⤵️",
   "right_arrow_curving_left": "↩️",
   "right_arrow_curving_up": "⤴️",
@@ -5255,7 +5279,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "squid": "🦑",
   "squiggle": "➰",
   "squinting_face_with_tongue": "😝",
-  "tuck_out_tongue": "😋",
+  "stuck_out_tongue": "😋",
   "squirrel": "🐿️",
   "squirt": "🔫",
   "sr": "🇸🇷",
@@ -5287,6 +5311,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "star_festival": "🎋",
   "star_of_david": "✡️",
   "star_struck": "🤩",
+  "star-struck": "🤩",
   "star_trek": "🖖",
   "star2": "🌟",
   "starch": "🥔",
@@ -6013,11 +6038,13 @@ export const unicodeEmojiMap: Record<string, string> = {
   "white_frowning_face": "☹️",
   "white_heart": "🤍",
   "white_large_square": "⬜",
+  "white_square": "◻️",
   "white_medium_small_square": "◽",
   "white_medium_square": "◻️",
   "white_question_mark": "❔",
   "white_small_square": "▫️",
   "white_square_button": "🔳",
+  "grey_question": "❔",
   "whoa": "😮",
   "whoops": "🤭",
   "wicked": "🖤",
@@ -6260,3 +6287,54 @@ export const unicodeEmojiMap: Record<string, string> = {
   "zw": "🇿🇼",
   "zzz": "😴"
 };
+
+// Preferred Slack emoji names for common reactions
+// These are the most standard/recognized names in Slack
+const PREFERRED_SLACK_NAMES: Record<string, string> = {
+  "👍": "+1",
+  "👎": "-1",
+  "❤️": "heart",
+  "😂": "joy",
+  "😮": "open_mouth",
+  "😢": "cry",
+  "🙏": "pray",
+  "😍": "heart_eyes",
+  "😊": "blush",
+  "🎉": "tada",
+  "🔥": "fire",
+  "👀": "eyes",
+  "✅": "white_check_mark",
+  "❌": "x",
+};
+
+// Reverse mapping: Unicode emoji -> Slack emoji name (without colons)
+// Built lazily on first access for performance
+let reverseEmojiMap: Record<string, string> | null = null;
+
+function getReverseEmojiMap(): Record<string, string> {
+  if (!reverseEmojiMap) {
+    reverseEmojiMap = {};
+    
+    // First, add preferred names
+    for (const [emoji, name] of Object.entries(PREFERRED_SLACK_NAMES)) {
+      reverseEmojiMap[emoji] = name;
+    }
+    
+    // Then add all other mappings (won't override preferred ones)
+    for (const [name, emoji] of Object.entries(unicodeEmojiMap)) {
+      if (!reverseEmojiMap[emoji]) {
+        reverseEmojiMap[emoji] = name;
+      }
+    }
+  }
+  return reverseEmojiMap;
+}
+
+/**
+ * Converts a Unicode emoji to a Slack emoji name (without colons)
+ * Example: "👍" -> "+1", "❤️" -> "heart"
+ */
+export function unicodeToSlackEmojiName(unicodeEmoji: string): string | null {
+  const reverseMap = getReverseEmojiMap();
+  return reverseMap[unicodeEmoji] || null;
+}

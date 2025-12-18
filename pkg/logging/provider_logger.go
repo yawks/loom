@@ -102,6 +102,17 @@ func (pl *ProviderLogger) Logf(format string, args ...interface{}) {
 	pl.Log(format, args...)
 }
 
+// Output satisfies the socketmode.logger interface (and log.Logger compatibility)
+func (pl *ProviderLogger) Output(calldepth int, s string) error {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+
+	if pl.logger != nil {
+		return pl.logger.Output(calldepth+1, s)
+	}
+	return nil
+}
+
 // Close closes the log file
 func (pl *ProviderLogger) Close() error {
 	pl.mu.Lock()

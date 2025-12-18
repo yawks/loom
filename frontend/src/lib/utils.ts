@@ -40,3 +40,47 @@ export function transformSlackUrls(text: string): string {
     return `[${linkText}](${url})`;
   });
 }
+
+/**
+ * Escapes dashes at the start of lines to prevent them from being interpreted as Markdown lists
+ */
+export function escapeLeadingDashes(text: string): string {
+  if (!text) return text;
+  
+  // Replace dashes at the start of lines with escaped dashes
+  // This prevents Markdown from interpreting them as list items
+  return text.replace(/^-/gm, '\\-');
+}
+
+/**
+ * Fixes malformed code blocks in markdown text.
+ * Ensures ``` are always alone on their line for proper markdown parsing.
+ */
+export function fixCodeBlocks(text: string): string {
+  if (!text) return text;
+  
+  let fixed = text;
+  
+  // Step 1: Fix opening ``` followed by invalid characters (like ```/** or ```*)
+  // Replace ```X where X is not a valid language identifier with just ```
+  // Valid language identifiers are alphanumeric (javascript, python, etc.)
+  // Invalid ones start with special chars like /, *, etc.
+  fixed = fixed.replace(/```([^\w\s\r\n][^\r\n]*)/g, (_match, invalidPart) => {
+    // Return ``` alone on a line, then the invalid part becomes part of the code
+    return '```\n' + invalidPart;
+  });
+  
+  // Step 2: Ensure closing ``` are alone on their line
+  // If there's text before the closing ```, add a newline
+  fixed = fixed.replace(/([^\n])```(\s|$)/g, '$1\n```$2');
+  
+  // Step 3: Ensure opening ``` are alone on their line  
+  // If there's text after the language identifier (or after ``` if no language), ensure newline
+  // Match ``` followed by optional word (language) and then non-whitespace on the same line
+  fixed = fixed.replace(/```(\w+)?([^\s\r\n])/g, (_match, lang, nextChar) => {
+    const language = lang || '';
+    return '```' + language + '\n' + nextChar;
+  });
+  
+  return fixed;
+}

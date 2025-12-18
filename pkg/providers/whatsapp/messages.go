@@ -1274,7 +1274,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 	}
 }
 
-func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time) ([]models.Message, error) {
+func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error) {
 	if conversationID == "" {
 		return []models.Message{}, fmt.Errorf("conversation ID is required")
 	}
