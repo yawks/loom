@@ -2023,6 +2023,26 @@ export function MessageList({
                               </div>
                             )}
                             <div className="flex flex-col items-start gap-1 relative group/bubble">
+                              {!isDeleted && editingMessageId !== messageId && (
+                                <div className={cn(
+                                  "opacity-0 group-hover/bubble:opacity-100 transition-opacity mb-1",
+                                  message.isFromMe ? "self-end" : "self-start"
+                                )}>
+                                  <MessageActions
+                                    isFromMe={message.isFromMe}
+                                    hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                    onEdit={() => handleEditMessage(message)}
+                                    onDelete={() => handleDeleteClick(message)}
+                                    onReply={() => handleReplyClick(message)}
+                                    onReact={(emoji) => handleReaction(message, emoji)}
+                                    currentReactions={(message.reactions || [])
+                                      .filter((r) => r.userId === currentUserId)
+                                      .map((r) => r.emoji)}
+                                    messageId={messageId}
+                                    openActionsMessageId={openActionsMessageId}
+                                  />
+                                </div>
+                              )}
                               <div className="flex items-start gap-2 relative w-full">
                                 <div
                                   className={bubbleClass}
@@ -2261,23 +2281,6 @@ export function MessageList({
                                     )}
                                   </div>
                                 </div>
-                                {!isDeleted && editingMessageId !== messageId && (
-                                  <div className="absolute top-0 right-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-50">
-                                    <MessageActions
-                                      isFromMe={message.isFromMe}
-                                      hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
-                                      onEdit={() => handleEditMessage(message)}
-                                      onDelete={() => handleDeleteClick(message)}
-                                      onReply={() => handleReplyClick(message)}
-                                      onReact={(emoji) => handleReaction(message, emoji)}
-                                      currentReactions={(message.reactions || [])
-                                        .filter((r) => r.userId === currentUserId)
-                                        .map((r) => r.emoji)}
-                                      messageId={messageId}
-                                      openActionsMessageId={openActionsMessageId}
-                                    />
-                                  </div>
-                                )}
                               </div>
                               {message.isEdited && (
                                 <span className={cn(
@@ -2366,11 +2369,18 @@ export function MessageList({
                                 </Avatar>
                               </button>
                               <div className="flex-1 min-w-0">
-                                <p className="text-sm text-muted-foreground truncate">
-                                  {lastThreadMsg.body.length > 50
-                                    ? `${lastThreadMsg.body.substring(0, 50)}...`
-                                    : lastThreadMsg.body}
-                                </p>
+                                <div className="text-sm text-muted-foreground truncate">
+                                  <MessageText
+                                    text={lastThreadMsg.body}
+                                    providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                    isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                    emojiSize={14}
+                                    preview={true}
+                                    isFromMe={lastThreadMsg.isFromMe}
+                                    participantNames={participantNames}
+                                    allMessages={mainMessages}
+                                  />
+                                </div>
                                 <div className="flex items-center gap-2 mt-1">
                                   <p className="text-xs text-muted-foreground/70">
                                     {timeToDate(
@@ -2579,19 +2589,17 @@ export function MessageList({
                             )}
                           </div>
                           {/* Right column with 20px margin */}
-                          <div className="flex flex-col items-start ml-5 flex-1 min-w-0 relative">
+                          <div className="flex flex-col items-start ml-5 flex-1 min-w-0 relative group">
                             {showSender && (
-                              <span
-                                className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
-                                style={{ color: senderColor }}
-                              >
-                                {displayName}
-                              </span>
-                            )}
-                            <div className="w-full flex items-start gap-2">
-                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
+                              <div className="w-full flex items-center relative">
+                                <span
+                                  className="font-semibold text-sm text-left h-6 flex items-center mt-2.5"
+                                  style={{ color: senderColor }}
+                                >
+                                  {displayName}
+                                </span>
                                 {!isDeleted && editingMessageId !== messageId && (
-                                  <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                                  <div className="absolute right-0 top-2.5 opacity-0 group-hover:opacity-100 transition-opacity z-50">
                                     <MessageActions
                                       isFromMe={message.isFromMe}
                                       hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
@@ -2607,6 +2615,27 @@ export function MessageList({
                                     />
                                   </div>
                                 )}
+                              </div>
+                            )}
+                            {!showSender && !isDeleted && editingMessageId !== messageId && (
+                              <div className="absolute right-0 top-0 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                                <MessageActions
+                                  isFromMe={message.isFromMe}
+                                  hasAttachments={Boolean(message.attachments && message.attachments.trim() !== "")}
+                                  onEdit={() => handleEditMessage(message)}
+                                  onDelete={() => handleDeleteClick(message)}
+                                  onReply={() => handleReplyClick(message)}
+                                  onReact={(emoji) => handleReaction(message, emoji)}
+                                  currentReactions={(message.reactions || [])
+                                    .filter((r) => r.userId === currentUserId)
+                                    .map((r) => r.emoji)}
+                                  messageId={messageId}
+                                  openActionsMessageId={openActionsMessageId}
+                                />
+                              </div>
+                            )}
+                            <div className="w-full flex items-start gap-2">
+                              <div className="flex-1 rounded-md transition-colors hover:bg-muted/50 -ml-2 pl-2 -mr-2 pr-2 relative">
                                 {showDeletedPlaceholder ? (
                                   <div className="flex flex-col gap-1">
                                     <div
@@ -2822,11 +2851,18 @@ export function MessageList({
                               </Avatar>
                             </button>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm text-muted-foreground truncate">
-                                {lastThreadMsg.body.length > 50
-                                  ? `${lastThreadMsg.body.substring(0, 50)}...`
-                                  : lastThreadMsg.body}
-                              </p>
+                              <div className="text-sm text-muted-foreground truncate">
+                                <MessageText
+                                  text={lastThreadMsg.body}
+                                  providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
+                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+                                  emojiSize={14}
+                                  preview={true}
+                                  isFromMe={lastThreadMsg.isFromMe}
+                                  participantNames={participantNames}
+                                  allMessages={mainMessages}
+                                />
+                              </div>
                               <div className="flex items-center gap-2 mt-1">
                                 <p className="text-xs text-muted-foreground/70">
                                   {timeToDate(
