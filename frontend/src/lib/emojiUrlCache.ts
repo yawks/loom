@@ -27,3 +27,4 @@ export function clearEmojiCache(providerInstanceId?: string): void {
     emojiUrlCache.clear();
   }
 }
+

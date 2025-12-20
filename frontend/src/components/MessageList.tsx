@@ -32,6 +32,7 @@ import { models } from "../../wailsjs/go/models";
 import { unicodeToSlackEmojiName } from "@/lib/emojiMap";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { useRenderCount } from "@/hooks/useRenderCount";
 import { useTranslation } from "react-i18next";
 
 // Declare SendFileFromPath as it will be available after Wails bindings are regenerated
@@ -251,6 +252,9 @@ export function MessageList({
 }: {
   selectedConversation: models.MetaContact;
 }) {
+  // Debug: Track re-renders
+  useRenderCount("MessageList", { conversationId: selectedConversation?.id });
+  
   // Reset typing state when conversation changes
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   useEffect(() => {
@@ -341,13 +345,29 @@ export function MessageList({
   });
 
   // Flatten all pages into a single array
+  // Use a stable key based on message IDs to avoid unnecessary recalculations
+  const dataKey = useMemo(() => {
+    if (!data?.pages) return '';
+    return data.pages
+      .filter((page) => Array.isArray(page))
+      .flat()
+      .map((m: models.Message) => m.protocolMsgId)
+      .join(',');
+  }, [data]);
+
   const messages = useMemo(() => {
     // Ensure data exists and has pages property
     if (!data) return [];
     if (!data.pages || !Array.isArray(data.pages)) return [];
     // Filter out any null/undefined pages and flat
     return data.pages.filter((page) => Array.isArray(page)).flat();
-  }, [data]);
+  }, [dataKey, data]);
+
+  // Filter out thread messages and group threads by parent message
+  // Create a stable key from message IDs to detect actual changes
+  const messagesKey = useMemo(() => {
+    return messages.map(m => m.protocolMsgId).join(',');
+  }, [messages]);
 
   // Determine if this is a group conversation
   // For WhatsApp, groups have "@g.us" in the conversation ID
@@ -357,12 +377,13 @@ export function MessageList({
       return true; // WhatsApp group
     }
     // Check if there are multiple unique senders in the messages
+    // Use messagesKey to avoid recalculation when messages array reference changes but content is same
     if (messages.length > 0) {
       const uniqueSenders = new Set(messages.map((m) => m.senderId));
       return uniqueSenders.size > 2; // More than 2 (me + at least 2 others)
     }
     return false;
-  }, [conversationId, messages]);
+  }, [conversationId, messagesKey, messages.length]);
 
   // With reverse scroll, we don't need complex scroll restoration logic
   // The browser naturally maintains scroll position when new items are added at the "bottom" (visually top)
@@ -374,22 +395,24 @@ export function MessageList({
     (state) => state.cleanupObsoleteMessages
   );
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
+  
+  // Get the raw readByConversation object
   const readByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
+  
+  // Optimize: Memoize the read state for current conversation only
+  // This prevents re-renders when other conversations' read states change
   const conversationReadState = useMemo(
     () => readByConversation[conversationId] ?? {},
     [readByConversation, conversationId]
   );
 
-  // Filter out thread messages and group threads by parent message
   const { mainMessages, threadsByParent } = useMemo(() => {
     const main: models.Message[] = [];
     const threads: Record<string, models.Message[]> = {};
 
-    console.log(`[MessageList] Processing ${messages.length} total messages for conversation ${conversationId}`);
-
-    messages.forEach((msg, index) => {
+    messages.forEach((msg) => {
       // Skip empty messages (no body and no attachments)
       // BUT keep call messages even if they have no body/attachments
       const hasBody = msg.body && msg.body.trim() !== "";
@@ -397,21 +420,8 @@ export function MessageList({
       const isCallMessage = msg.callType && msg.callType.trim() !== "";
       const isEmpty = !hasBody && !hasAttachments && !isCallMessage;
 
-      if (index < 3) {
-        console.log(`[MessageList] Message ${index}:`, {
-          protocolMsgId: msg.protocolMsgId,
-          threadId: msg.threadId,
-          hasBody,
-          hasAttachments,
-          isCallMessage,
-          isEmpty,
-          bodyPreview: msg.body?.substring(0, 30)
-        });
-      }
-
       if (isEmpty) {
         // Skip empty messages completely (but not call messages)
-        console.log(`[MessageList] Skipping empty message ${msg.protocolMsgId}`);
         return;
       }
 
@@ -431,16 +441,14 @@ export function MessageList({
       }
     });
 
-    console.log(`[MessageList] After processing: ${main.length} main messages, ${Object.keys(threads).length} thread groups`);
-
-    // Sort main messages by timestamp
-    main.sort(
+    // Sort main messages by timestamp (create new array to avoid mutating)
+    const sortedMain = [...main].sort(
       (a, b) =>
         timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
     );
 
-    return { mainMessages: main, threadsByParent: threads };
-  }, [messages]);
+    return { mainMessages: sortedMain, threadsByParent: threads };
+  }, [messages, messagesKey]); // Use messagesKey to detect actual content changes
 
   // Handle initial scroll position (bottom or first unread message)
   useLayoutEffect(() => {
@@ -2215,8 +2223,6 @@ export function MessageList({
                                               isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                               emojiSize={14}
                                               isFromMe={message.isFromMe}
-                                              participantNames={participantNames}
-                                              allMessages={mainMessages}
                                             />
                                           </div>
                                         </div>
@@ -2228,8 +2234,6 @@ export function MessageList({
                                           isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                           className="whitespace-pre-wrap"
                                           isFromMe={message.isFromMe}
-                                          participantNames={participantNames}
-                                          allMessages={mainMessages}
                                         />
                                       )}
                                     </>
@@ -2377,8 +2381,6 @@ export function MessageList({
                                     emojiSize={14}
                                     preview={true}
                                     isFromMe={lastThreadMsg.isFromMe}
-                                    participantNames={participantNames}
-                                    allMessages={mainMessages}
                                   />
                                 </div>
                                 <div className="flex items-center gap-2 mt-1">
@@ -2720,8 +2722,6 @@ export function MessageList({
                                                   isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                   emojiSize={14}
                                                   isFromMe={message.isFromMe}
-                                                  participantNames={participantNames}
-                                                  allMessages={mainMessages}
                                                 />
                                               </div>
                                             </div>
@@ -2737,8 +2737,6 @@ export function MessageList({
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
-                                                participantNames={participantNames}
-                                                allMessages={mainMessages}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -2755,8 +2753,6 @@ export function MessageList({
                                                 isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
-                                                participantNames={participantNames}
-                                                allMessages={mainMessages}
                                               />
                                               {message.isEdited && (
                                                 <span className="text-muted-foreground ml-1 text-xs italic">
@@ -2822,8 +2818,9 @@ export function MessageList({
                             onClick={() => handleThreadClick(message.protocolMsgId)}
                             className="ml-[80px] flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%]"
                           >
-                            <button
-                              onClick={() =>
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 handleAvatarClick(
                                   lastThreadMsg.senderAvatarUrl,
                                   getSenderDisplayName(
@@ -2832,9 +2829,26 @@ export function MessageList({
                                     lastThreadMsg.isFromMe,
                                     t
                                   )
-                                )
-                              }
-                              className="shrink-0"
+                                );
+                              }}
+                              className="shrink-0 cursor-pointer"
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  handleAvatarClick(
+                                    lastThreadMsg.senderAvatarUrl,
+                                    getSenderDisplayName(
+                                      lastThreadMsg.senderName,
+                                      lastThreadMsg.senderId,
+                                      lastThreadMsg.isFromMe,
+                                      t
+                                    )
+                                  );
+                                }
+                              }}
                             >
                               <Avatar className="h-5 w-5 shrink-0 cursor-pointer hover:opacity-80 transition-opacity">
                                 <AvatarImage src={lastThreadMsg.senderAvatarUrl} />
@@ -2849,7 +2863,7 @@ export function MessageList({
                                     .toUpperCase()}
                                 </AvatarFallback>
                               </Avatar>
-                            </button>
+                            </div>
                             <div className="flex-1 min-w-0">
                               <div className="text-sm text-muted-foreground truncate">
                                 <MessageText
@@ -2859,8 +2873,6 @@ export function MessageList({
                                   emojiSize={14}
                                   preview={true}
                                   isFromMe={lastThreadMsg.isFromMe}
-                                  participantNames={participantNames}
-                                  allMessages={mainMessages}
                                 />
                               </div>
                               <div className="flex items-center gap-2 mt-1">

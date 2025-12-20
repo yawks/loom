@@ -5,9 +5,9 @@ import { CodeBlock } from "./CodeBlock";
 import ReactMarkdown from "react-markdown";
 import { SlackMessageText } from "./SlackMessageText";
 import { memo } from "react";
-import type { models } from "../../wailsjs/go/models";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { useRenderCount } from "@/hooks/useRenderCount";
 
 interface MessageTextProps {
   text: string;
@@ -17,8 +17,6 @@ interface MessageTextProps {
   isSlack?: boolean; // If true, use Slack emoji parsing
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user (for link color contrast)
-  participantNames?: Map<string, string>; // Map of user IDs to display names
-  allMessages?: models.Message[]; // All messages in the conversation (for user name lookup)
 }
 
 /**
@@ -34,9 +32,13 @@ export const MessageText = memo(function MessageText({
   isSlack = false,
   preview = false,
   isFromMe = false,
-  participantNames,
-  allMessages,
 }: MessageTextProps) {
+  // Debug: Track re-renders
+  useRenderCount("MessageText", { 
+    textLength: text?.length, 
+    isSlack, 
+    preview
+  });
   if (!text || text.trim() === "") {
     return null;
   }
@@ -66,8 +68,6 @@ export const MessageText = memo(function MessageText({
         emojiSize={emojiSize}
         preview={preview}
         isFromMe={isFromMe}
-        participantNames={participantNames}
-        allMessages={allMessages}
       />
     );
   }

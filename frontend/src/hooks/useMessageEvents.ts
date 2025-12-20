@@ -157,15 +157,15 @@ export function useMessageEvents() {
           });
           
           // If the conversation is currently selected, also refetch immediately
-          if (selectedContact) {
-            const selectedConversationId = selectedContact.linkedAccounts[0]?.userId;
-            console.log("useMessageEvents: Selected contact conversation ID:", selectedConversationId, "Message conversation ID:", message.protocolConvId);
-
-            if (message.protocolConvId === selectedConversationId && selectedConversationId) {
+        if (selectedContact) {
+          const selectedConversationId = selectedContact.linkedAccounts[0]?.userId;
+          console.log("useMessageEvents: Selected contact conversation ID:", selectedConversationId, "Message conversation ID:", message.protocolConvId);
+          
+          if (message.protocolConvId === selectedConversationId && selectedConversationId) {
               console.log("useMessageEvents: Message belongs to selected conversation, refetching now");
-              queryClient.refetchQueries({
-                queryKey: ["messages", selectedConversationId],
-              });
+            queryClient.refetchQueries({
+              queryKey: ["messages", selectedConversationId],
+            });
               console.log("useMessageEvents: Refetched messages for selected conversation");
             }
           }
