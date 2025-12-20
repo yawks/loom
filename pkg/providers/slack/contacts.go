@@ -617,7 +617,7 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 		account.UpdatedAt = time.Now()
 		if err := db.DB.Save(&account).Error; err != nil {
 			return fmt.Errorf("failed to update LinkedAccount name: %w", err)
-		}
+	}
 	} else {
 		// Record does not exist, create it (and corresponding MetaContact)
 

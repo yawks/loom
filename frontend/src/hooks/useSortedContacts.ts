@@ -111,10 +111,10 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
       sorted.sort((a, b) => {
         const conversationIdA = a.linkedAccounts[0]?.userId ?? "";
         const conversationIdB = b.linkedAccounts[0]?.userId ?? "";
-
+        
         const timeA = lastMessageDates[conversationIdA]?.getTime() ?? 0;
         const timeB = lastMessageDates[conversationIdB]?.getTime() ?? 0;
-
+        
         return timeB - timeA;
       });
     }

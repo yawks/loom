@@ -606,7 +606,6 @@ export function ContactList() {
                             emojiSize={12}
                             className="inline"
                             preview={true}
-                            allMessages={lastMessage ? [lastMessage] : undefined}
                           />
                         </div>
                       );

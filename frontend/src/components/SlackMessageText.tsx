@@ -1,13 +1,12 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
-import React, { type ReactElement, useMemo, memo } from "react";
+import React, { type ReactElement, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { SlackEmoji } from "./SlackEmoji";
 import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { transformSlackUrls, escapeLeadingDashes, fixCodeBlocks } from "../lib/utils";
-import { cleanSlackEmoji, getUserDisplayName } from "@/lib/userDisplayNames";
-import type { models } from "../../wailsjs/go/models";
+import { cleanSlackEmoji } from "@/lib/userDisplayNames";
 
 interface SlackMessageTextProps {
   text: string; // Message text that may contain Slack emojis/avatars (e.g., ":calendar:", ":avatar_name:")
@@ -16,8 +15,6 @@ interface SlackMessageTextProps {
   emojiSize?: number; // Size for emojis/avatars in pixels (default: 16)
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user (for link color contrast)
-  participantNames?: Map<string, string>; // Map of user IDs to display names
-  allMessages?: models.Message[]; // All messages in the conversation (for user name lookup)
 }
 
 /**
@@ -25,17 +22,14 @@ interface SlackMessageTextProps {
  * Replaces patterns like :emoji_name: or :avatar_name: with SlackEmoji components.
  * Also renders Markdown formatting (bold, italic, links, etc.)
  */
-export const SlackMessageText = memo(function SlackMessageText({
+export function SlackMessageText({
   text,
   providerInstanceId,
   className = "",
   emojiSize = 16,
   preview = false,
   isFromMe = false,
-  participantNames,
-  allMessages,
 }: SlackMessageTextProps) {
-  
   const parsedContent = useMemo(() => {
     if (!text) return null;
 
@@ -44,25 +38,6 @@ export const SlackMessageText = memo(function SlackMessageText({
     
     // Fix malformed code blocks (e.g., ```/** -> ```javascript)
     processedText = fixCodeBlocks(processedText);
-    
-    // Transform mentions to clickable links with display names
-    // Pattern matches <@U1234567890> or @U1234567890
-    // Slack user IDs start with U followed by alphanumeric characters
-    const mentionPattern = /<@(U[A-Z0-9]+)>|@(U[A-Z0-9]+)/g;
-    processedText = processedText.replace(mentionPattern, (match, userIdInBrackets, userIdPlain) => {
-      const userId = userIdInBrackets || userIdPlain;
-      if (!userId) return match;
-      
-      // Get display name for the user
-      const displayName = getUserDisplayName(userId, {
-        participantNames,
-        allMessages,
-      });
-      
-      // Return mention as plain text with @ prefix (not as a link)
-      // We'll style it in the markdown renderer
-      return `@${displayName}`;
-    });
 
     // In preview mode, replace newlines with spaces to keep content on one line
     if (preview) {
@@ -92,11 +67,8 @@ export const SlackMessageText = memo(function SlackMessageText({
     let lastIndex = 0;
 
     // Find all emoji matches first to avoid regex state issues
-    // Exclude emojis that are inside markdown links [text](url) to prevent breaking URLs
     const matches: Array<{ index: number; match: RegExpExecArray }> = [];
-    // Use negative lookbehind/lookahead to avoid emojis in markdown links
-    // (?<!!) prevents matching escaped emojis, (?![^(]*\)) prevents matching in URLs
-    const emojiPattern = /(?<!\\):([a-zA-Z0-9_+-]+):(?![^(]*\))/g;
+    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
     let tempMatch;
     while ((tempMatch = emojiPattern.exec(textWithPreservedNewlines)) !== null) {
       matches.push({ index: tempMatch.index, match: tempMatch });
@@ -169,7 +141,7 @@ export const SlackMessageText = memo(function SlackMessageText({
     }
 
     return parts;
-  }, [text, providerInstanceId, emojiSize, preview, participantNames, allMessages]);
+  }, [text, providerInstanceId, emojiSize, preview]);
 
   if (!parsedContent) {
     return null;
@@ -178,7 +150,7 @@ export const SlackMessageText = memo(function SlackMessageText({
   // If parsedContent is a string (no emojis found), render markdown directly
   if (typeof parsedContent === "string") {
     return (
-      <div className={className}>
+      <div className={`${className} max-w-full overflow-hidden`}>
         <ReactMarkdown
           remarkPlugins={preview ? [remarkGfm] : [remarkGfm, remarkBreaks]}
           components={{
@@ -186,10 +158,9 @@ export const SlackMessageText = memo(function SlackMessageText({
             a: ({ href, children, ...props }) => {
               const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
                 e.preventDefault();
-                if (!href) return;
-                
-                // Regular links open in browser
-                BrowserOpenURL(href);
+                if (href) {
+                  BrowserOpenURL(href);
+                }
               };
               return (
                 <a
@@ -205,48 +176,6 @@ export const SlackMessageText = memo(function SlackMessageText({
                   {children}
                 </a>
               );
-            },
-            // Style text nodes to detect and style mentions
-            text: ({ children }) => {
-              if (typeof children === "string") {
-                // Split text by mentions (@username pattern, handles spaces in names)
-                // Pattern matches @ followed by word characters and spaces, ending at word boundary or end of string
-                const mentionPattern = /(@[A-Za-z0-9\u00C0-\u017F\s]+?)(?=\s|$|[.,!?;:])/g;
-                const parts: (string | React.ReactElement)[] = [];
-                let lastIndex = 0;
-                let match;
-                
-                while ((match = mentionPattern.exec(children)) !== null) {
-                  // Add text before the mention
-                  if (match.index > lastIndex) {
-                    parts.push(children.substring(lastIndex, match.index));
-                  }
-                  
-                  // Add styled mention (non-clickable)
-                  parts.push(
-                    <span
-                      key={`mention-${match.index}`}
-                      className={
-                        isFromMe
-                          ? "text-blue-100 font-medium"
-                          : "text-blue-600 dark:text-blue-400 font-medium"
-                      }
-                    >
-                      {match[0]}
-                    </span>
-                  );
-                  
-                  lastIndex = match.index + match[0].length;
-                }
-                
-                // Add remaining text
-                if (lastIndex < children.length) {
-                  parts.push(children.substring(lastIndex));
-                }
-                
-                return parts.length > 0 ? <>{parts}</> : <>{children}</>;
-              }
-              return <>{children}</>;
             },
             // Style for bold text
             strong: ({ ...props }) => (
@@ -292,9 +221,7 @@ export const SlackMessageText = memo(function SlackMessageText({
   // If we have emojis, we need to parse emojis in text parts and render markdown
   // Create a component that parses emojis in text nodes
   const TextWithEmojis = ({ text, keyPrefix, isPreview }: { text: string; keyPrefix: string; isPreview: boolean }) => {
-    // Exclude emojis that are inside markdown links [text](url) to prevent breaking URLs
-    // (?<!!) prevents matching escaped emojis, (?![^(]*\)) prevents matching in URLs
-    const emojiPattern = /(?<!\\):([a-zA-Z0-9_+-]+):(?![^(]*\))/g;
+    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
     const parts: (string | ReactElement)[] = [];
     let lastIndex = 0;
     let match;
@@ -357,10 +284,9 @@ export const SlackMessageText = memo(function SlackMessageText({
                     }
                     const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
                       e.preventDefault();
-                      if (!href) return;
-                      
-                      // Regular links open in browser
-                      BrowserOpenURL(href);
+                      if (href) {
+                        BrowserOpenURL(href);
+                      }
                     };
                     return (
                       <a
@@ -378,48 +304,6 @@ export const SlackMessageText = memo(function SlackMessageText({
                         {children}
                       </a>
                     );
-                  },
-                  // Style text nodes to detect and style mentions
-                  text: ({ children }) => {
-                    if (typeof children === "string") {
-                      // Split text by mentions (@username pattern, handles spaces in names)
-                      // Pattern matches @ followed by word characters and spaces, ending at word boundary or end of string
-                      const mentionPattern = /(@[A-Za-z0-9\u00C0-\u017F\s]+?)(?=\s|$|[.,!?;:])/g;
-                      const parts: (string | React.ReactElement)[] = [];
-                      let lastIndex = 0;
-                      let match;
-                      
-                      while ((match = mentionPattern.exec(children)) !== null) {
-                        // Add text before the mention
-                        if (match.index > lastIndex) {
-                          parts.push(children.substring(lastIndex, match.index));
-                        }
-                        
-                        // Add styled mention (non-clickable)
-                        parts.push(
-                          <span
-                            key={`mention-${match.index}`}
-                            className={
-                              isFromMe
-                                ? "text-blue-100 font-medium"
-                                : "text-blue-600 dark:text-blue-400 font-medium"
-                            }
-                          >
-                            {match[0]}
-                          </span>
-                        );
-                        
-                        lastIndex = match.index + match[0].length;
-                      }
-                      
-                      // Add remaining text
-                      if (lastIndex < children.length) {
-                        parts.push(children.substring(lastIndex));
-                      }
-                      
-                      return parts.length > 0 ? <>{parts}</> : <>{children}</>;
-                    }
-                    return <>{children}</>;
                   },
                   strong: ({ ...props }) => (
                     <strong className="font-bold inline" {...props} />
@@ -475,4 +359,4 @@ export const SlackMessageText = memo(function SlackMessageText({
       })}
     </div>
   );
-});
+}

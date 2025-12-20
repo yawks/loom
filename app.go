@@ -1404,3 +1404,4 @@ func (a *App) setupSystemTray(ctx context.Context) {
 
 	a.systemTray = appMenu
 }
+

@@ -225,15 +225,19 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 		MessageCount   int64
 	}
 
+	// Get MAX timestamp for each conversation, but only for main messages (not thread replies)
+	// Thread replies have thread_id != protocol_msg_id, so we exclude them
 	err := db.DB.Raw(`
 		SELECT 
 			protocol_conv_id as protocol_conv_id,
 			MAX(timestamp) as last_timestamp,
 			COUNT(*) as message_count
 		FROM messages
-		WHERE protocol_conv_id IS NOT NULL AND protocol_conv_id != ''
+		WHERE protocol_conv_id IS NOT NULL 
+			AND protocol_conv_id != ''
+			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
 		GROUP BY protocol_conv_id
-		ORDER BY last_timestamp DESC
+		ORDER BY MAX(timestamp) DESC
 	`).Scan(&results).Error
 
 	if err != nil {
@@ -242,6 +246,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 	}
 
 	// Convert string timestamps to time.Time
+	// SQLite returns timestamps in format "2006-01-02 15:04:05.999999999+07:00" (space instead of T)
 	type ConversationInfo struct {
 		ProtocolConvID string
 		LastTimestamp  time.Time
@@ -249,13 +254,28 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 	}
 	conversations := make([]ConversationInfo, 0, len(results))
 	for _, r := range results {
-		lastTS, err := time.Parse(time.RFC3339Nano, r.LastTimestamp)
+		var lastTS time.Time
+		var err error
+
+		// Try RFC3339Nano first (standard format with T)
+		lastTS, err = time.Parse(time.RFC3339Nano, r.LastTimestamp)
 		if err != nil {
-			// Try alternative formats
-			lastTS, err = time.Parse(time.RFC3339, r.LastTimestamp)
+			// Try SQLite format (space instead of T): "2006-01-02 15:04:05.999999999+07:00"
+			// Replace space with T to convert to RFC3339Nano format
+			sqliteFormat := strings.Replace(r.LastTimestamp, " ", "T", 1)
+			lastTS, err = time.Parse(time.RFC3339Nano, sqliteFormat)
 			if err != nil {
-				p.log("SlackProvider.incrementalSyncExistingConversations: Failed to parse timestamp %s for %s: %v\n", r.LastTimestamp, r.ProtocolConvID, err)
-				continue
+				// Try RFC3339 (without nanoseconds)
+				lastTS, err = time.Parse(time.RFC3339, r.LastTimestamp)
+				if err != nil {
+					// Try SQLite format without nanoseconds
+					sqliteFormatSimple := strings.Replace(r.LastTimestamp, " ", "T", 1)
+					lastTS, err = time.Parse(time.RFC3339, sqliteFormatSimple)
+					if err != nil {
+						p.log("SlackProvider.incrementalSyncExistingConversations: Failed to parse timestamp %s for %s: %v\n", r.LastTimestamp, r.ProtocolConvID, err)
+						continue
+					}
+				}
 			}
 		}
 		conversations = append(conversations, ConversationInfo{
@@ -283,10 +303,11 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
 
 		// Fetch new messages since last timestamp
-		// Add 1 second to avoid fetching the last message again
-		sinceTimestamp := conv.LastTimestamp.Add(1 * time.Second)
+		// Use the exact last timestamp - GetConversationHistory will handle exclusion
+		// We want messages strictly after the last one we have
+		sinceTimestamp := conv.LastTimestamp
 
-		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s)\n",
+		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s, looking for messages after)\n",
 			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
 
 		// Use a large limit to get all new messages
@@ -301,6 +322,14 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			successCount++
 			totalNewMessages += len(newMessages)
 
+			// Log first and last message timestamps for debugging
+			if len(newMessages) > 0 {
+				firstMsg := newMessages[0]
+				lastMsg := newMessages[len(newMessages)-1]
+				p.log("SlackProvider.incrementalSyncExistingConversations: New messages range from %s to %s\n",
+					firstMsg.Timestamp.Format(time.RFC3339), lastMsg.Timestamp.Format(time.RFC3339))
+			}
+
 			// Emit new message events for each message so the UI updates
 			for _, msg := range newMessages {
 				select {
@@ -309,6 +338,47 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 				}:
 				default:
 					p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping event\n")
+				}
+			}
+		} else {
+			p.log("SlackProvider.incrementalSyncExistingConversations: No new messages found for %s (last timestamp: %s)\n",
+				conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
+		}
+
+		// Fetch and emit last_read timestamp from Slack API to mark messages as read
+		// This ensures messages that were read in another client are marked as read here too
+		p.mu.RLock()
+		client := p.client
+		p.mu.RUnlock()
+
+		if client != nil {
+			// Determine actual channel ID (handle DM normalization)
+			actualChannelID := conv.ProtocolConvID
+			if len(conv.ProtocolConvID) > 0 && conv.ProtocolConvID[0] == 'U' {
+				// User ID, need to get channel ID
+				channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+					Users: []string{conv.ProtocolConvID},
+				})
+				if err == nil && channel != nil && channel.ID != "" {
+					actualChannelID = channel.ID
+				}
+			}
+
+			// Get conversation info to retrieve LastRead timestamp
+			convInfo, err := client.GetConversationInfo(&slack.GetConversationInfoInput{
+				ChannelID: actualChannelID,
+			})
+			if err == nil && convInfo != nil && convInfo.LastRead != "" {
+				// Emit read status event so frontend marks messages as read
+				select {
+				case p.eventChan <- core.ConversationReadStatusEvent{
+					ConversationID: conv.ProtocolConvID,
+					LastReadTS:     convInfo.LastRead,
+				}:
+					p.log("SlackProvider.incrementalSyncExistingConversations: Emitted last_read=%s for %s\n",
+						convInfo.LastRead, conv.ProtocolConvID)
+				default:
+					p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping read status event\n")
 				}
 			}
 		}

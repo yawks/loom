@@ -387,9 +387,11 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		if beforeTimestamp != nil {
 			query = query.Where("timestamp < ?", *beforeTimestamp)
 		}
-		// If sinceTimestamp is specified, only get messages since that timestamp
+		// If sinceTimestamp is specified, only get messages strictly after that timestamp
+		// Add 1ms to avoid getting the last message we already have
 		if sinceTimestamp != nil {
-			query = query.Where("timestamp >= ?", *sinceTimestamp)
+			excludeTimestamp := sinceTimestamp.Add(1 * time.Millisecond)
+			query = query.Where("timestamp > ?", excludeTimestamp)
 		}
 
 		// Order by timestamp descending to get newest first, then reverse
@@ -462,13 +464,32 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	}
 	if sinceTimestamp != nil {
 		// Oldest: fetch messages since this timestamp
-		params.Oldest = fmt.Sprintf("%f", float64(sinceTimestamp.Unix()))
-		params.Inclusive = true // Include messages with timestamp equal to Oldest
+		// Add a small epsilon (1 millisecond) to ensure we get messages strictly after the timestamp
+		// This avoids fetching the last message we already have
+		oldestTime := sinceTimestamp.Add(1 * time.Millisecond)
+		// Slack API expects Unix timestamp in seconds with decimal precision
+		// Convert to Unix timestamp (seconds since epoch) with nanosecond precision
+		unixSeconds := float64(oldestTime.Unix()) + float64(oldestTime.Nanosecond())/1e9
+		params.Oldest = fmt.Sprintf("%.6f", unixSeconds)
+		params.Inclusive = false // Don't include messages with timestamp equal to Oldest
+		p.log("SlackProvider.GetConversationHistory: Fetching messages since %s (Oldest=%s, Inclusive=false)\n",
+			sinceTimestamp.Format(time.RFC3339Nano), params.Oldest)
 	}
 
 	history, err := p.client.GetConversationHistory(params)
 	if err != nil {
+		p.log("SlackProvider.GetConversationHistory: API call failed for %s: %v\n", conversationID, err)
 		return nil, err
+	}
+
+	if sinceTimestamp != nil {
+		p.log("SlackProvider.GetConversationHistory: API returned %d messages for %s (sinceTimestamp=%s, Oldest=%s)\n",
+			len(history.Messages), conversationID, sinceTimestamp.Format(time.RFC3339Nano), params.Oldest)
+		if len(history.Messages) > 0 {
+			// Log first message timestamp to see what we got
+			firstMsgTS := parseSlackTimestamp(history.Messages[0].Timestamp)
+			p.log("SlackProvider.GetConversationHistory: First message timestamp: %s\n", firstMsgTS.Format(time.RFC3339Nano))
+		}
 	}
 
 	var messages []models.Message
@@ -504,7 +525,13 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 
 	// Store main messages in database
 	if len(messages) > 0 {
+		if sinceTimestamp != nil {
+			p.log("SlackProvider.GetConversationHistory: Storing %d new messages for %s (sync mode)\n", len(messages), conversationID)
+		}
 		p.storeMessagesForConversation(conversationID, messages)
+	} else if sinceTimestamp != nil {
+		p.log("SlackProvider.GetConversationHistory: No messages to store for %s (sync mode, last timestamp: %s)\n",
+			conversationID, sinceTimestamp.Format(time.RFC3339Nano))
 	}
 
 	// Store thread messages separately (they won't be returned in main list)
