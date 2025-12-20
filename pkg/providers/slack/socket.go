@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/models"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack/slackevents"
@@ -100,6 +101,29 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 	p.userCacheMu.RUnlock()
 
+	// Check if this is a huddle-related message
+	callType := ""
+	textLower := strings.ToLower(ev.Text)
+	if strings.Contains(textLower, "huddle") {
+		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
+			// Determine if it's a group or individual call
+			isGroup := !strings.HasPrefix(ev.Channel, "D")
+			if isGroup {
+				callType = "incoming_group_call"
+			} else {
+				callType = "incoming_call"
+			}
+		} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
+			// Huddle ended - we'll mark it as missed
+			isGroup := !strings.HasPrefix(ev.Channel, "D")
+			if isGroup {
+				callType = "missed_group_voice"
+			} else {
+				callType = "missed_voice"
+			}
+		}
+	}
+
 	// Basic message construction
 	msg := models.Message{
 		ProtocolConvID: ev.Channel,
@@ -110,6 +134,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		Timestamp:      timestamp,
 		IsFromMe:       isFromMe,
 		Attachments:    "[]", // Handle attachments if any
+		CallType:       callType,
 	}
 
 	// Create the event
@@ -119,4 +144,13 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	// Emit the message
 	p.eventChan <- event
+
+	// If this is a call-related message, also emit a contact refresh to update the conversation list
+	if callType != "" {
+		select {
+		case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+			p.log("SlackProvider: ContactStatusEvent emitted for huddle\n")
+		default:
+		}
+	}
 }

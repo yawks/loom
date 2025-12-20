@@ -1094,7 +1094,34 @@ func (a *App) GetSlackEmojiURL(instanceID string, emojiName string) (string, err
 	return url, nil
 }
 
-func (a *App) GetAllActiveCalls() ([]interface{}, error) { return []interface{}{}, nil }
+// GetAllActiveCalls returns a map of conversation IDs to boolean indicating if there's an active call
+// An active call is one with CallType "incoming_call" or "incoming_group_call" that hasn't been terminated
+func (a *App) GetAllActiveCalls() (map[string]bool, error) {
+	if db.DB == nil {
+		return map[string]bool{}, nil
+	}
+
+	// Find all messages with active call types (incoming_call or incoming_group_call)
+	// These are calls that are currently active (ringing/ongoing)
+	var activeCallMessages []models.Message
+	err := db.DB.Where("call_type IN ?", []string{"incoming_call", "incoming_group_call"}).
+		Select("protocol_conv_id").
+		Group("protocol_conv_id").
+		Find(&activeCallMessages).Error
+
+	if err != nil {
+		return map[string]bool{}, err
+	}
+
+	result := make(map[string]bool)
+	for _, msg := range activeCallMessages {
+		if msg.ProtocolConvID != "" {
+			result[msg.ProtocolConvID] = true
+		}
+	}
+
+	return result, nil
+}
 
 // GetAllMessageCounts returns a map of conversation IDs to message counts
 // This is used to efficiently get message counts for all conversations in a single query
@@ -1404,4 +1431,3 @@ func (a *App) setupSystemTray(ctx context.Context) {
 
 	a.systemTray = appMenu
 }
-
