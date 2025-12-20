@@ -6,6 +6,7 @@ import {
 } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { useRenderCount } from "@/hooks/useRenderCount";
 
 interface CodeBlockProps {
   children: string;
@@ -25,6 +26,13 @@ export const CodeBlock = memo(function CodeBlock({
   inline = false,
   isFromMe = false,
 }: CodeBlockProps) {
+  // Debug: Track re-renders
+  useRenderCount("CodeBlock", { 
+    childrenLength: String(children)?.length,
+    inline,
+    className 
+  });
+  
   const [isDark, setIsDark] = useState(() => {
     // Initialize with current theme on mount
     return document.documentElement.classList.contains("dark");
@@ -287,4 +295,5 @@ export const CodeBlock = memo(function CodeBlock({
     </div>
   );
 });
+
 

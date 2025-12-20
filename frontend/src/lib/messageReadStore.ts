@@ -34,7 +34,7 @@ const markMessageAsReadOnServer = (conversationID: string, messageID: string): P
       reject(new Error("MarkMessageAsRead not available"));
       return;
     }
-    markMessageAsReadFn(conversationID, messageID)
+      markMessageAsReadFn(conversationID, messageID)
       .then(resolve)
       .catch(reject);
   });
@@ -360,7 +360,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       markMessageAsReadOnServer(conversationId, protocolMsgId).catch(() => {
         // Silently ignore errors for individual message receipts
         // Errors are already logged by the server call itself if needed
-      });
+        });
       
       return { readByConversation: updatedMap };
     });

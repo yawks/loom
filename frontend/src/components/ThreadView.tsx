@@ -272,24 +272,24 @@ export function ThreadView() {
                             {displayName}
                           </span>
                           <div className="text-left">
-                            <MessageText
-                              text={message.body}
-                              providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-                              emojiSize={14}
-                              isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
-                              isFromMe={message.isFromMe}
-                            />
+                          <MessageText
+                            text={message.body}
+                            providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
+                            emojiSize={14}
+                            isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                            isFromMe={message.isFromMe}
+                          />
                           </div>
                         </>
                       ) : (
                         <div className="text-left">
-                          <MessageText
-                            text={message.body}
-                            providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-                            isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
-                            emojiSize={14}
-                            isFromMe={message.isFromMe}
-                          />
+                        <MessageText
+                          text={message.body}
+                          providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
+                          isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+                          emojiSize={14}
+                          isFromMe={message.isFromMe}
+                        />
                         </div>
                       )}
                     </div>
