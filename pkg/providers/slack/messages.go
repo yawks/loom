@@ -651,6 +651,28 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 			msg.ProtocolConvID = normalizedConvID // Use normalized ID for consistency
 			msg.ConversationID = conversationID
 
+			// If this message indicates a huddle ended, try to find and update the previous incoming_call message
+			if msg.CallType == "missed_voice" || msg.CallType == "missed_group_voice" {
+				// Look for an existing incoming_call or incoming_group_call message in this conversation
+				var existingCallMsg models.Message
+				callTypeToFind := "incoming_call"
+				if msg.CallType == "missed_group_voice" {
+					callTypeToFind = "incoming_group_call"
+				}
+
+				if err := db.DB.Where("protocol_conv_id = ? AND call_type = ?", normalizedConvID, callTypeToFind).
+					Order("timestamp DESC").
+					First(&existingCallMsg).Error; err == nil {
+					// Found existing call message, update it instead of creating a new one
+					existingCallMsg.CallType = msg.CallType
+					existingCallMsg.Timestamp = msg.Timestamp // Update to end time
+					updateMessages = append(updateMessages, existingCallMsg)
+					p.log("SlackProvider.storeMessagesForConversation: Found existing call message %s, will update it to %s\n", existingCallMsg.ProtocolMsgID, msg.CallType)
+					// Skip creating a new message for the huddle end
+					continue
+				}
+			}
+
 			if existingMsg, exists := existingMap[msg.ProtocolMsgID]; exists {
 				// Message exists, update it
 				msg.ID = existingMsg.ID
@@ -662,6 +684,10 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 					// Merge attachments: combine existing and new, removing duplicates
 					mergedAttachments := p.mergeAttachments(existingMsg.Attachments, msg.Attachments)
 					msg.Attachments = mergedAttachments
+				}
+				// Preserve CallType if updating and new one is empty
+				if msg.CallType == "" && existingMsg.CallType != "" {
+					msg.CallType = existingMsg.CallType
 				}
 				updateMessages = append(updateMessages, msg)
 				p.log("SlackProvider.storeMessagesForConversation: Will update message %s (existing attachments length: %d, new: %d)\n", msg.ProtocolMsgID, len(existingMsg.Attachments), len(msg.Attachments))
@@ -1101,6 +1127,39 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		}
 	}
 
+	// Check if this is a huddle-related message
+	// Slack huddles are typically indicated by system messages with specific text patterns
+	// or by checking if the message subtype indicates a huddle
+	callType := ""
+	if msg.SubType != "" {
+		// Check for huddle-related subtypes (if any exist in Slack API)
+		// For now, we'll detect via text patterns
+	}
+
+	// Detect huddle start/end via text patterns
+	// Common patterns: "started a huddle", "joined the huddle", "left the huddle", "ended the huddle"
+	textLower := strings.ToLower(msg.Text)
+	if strings.Contains(textLower, "huddle") {
+		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
+			// Determine if it's a group or individual call
+			// For Slack, huddles in channels are group calls, in DMs are individual
+			isGroup := !strings.HasPrefix(normalizedConversationID, "D")
+			if isGroup {
+				callType = "incoming_group_call"
+			} else {
+				callType = "incoming_call"
+			}
+		} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
+			// Huddle ended - we'll mark it as missed
+			isGroup := !strings.HasPrefix(normalizedConversationID, "D")
+			if isGroup {
+				callType = "missed_group_voice"
+			} else {
+				callType = "missed_voice"
+			}
+		}
+	}
+
 	return models.Message{
 		ProtocolMsgID:   msg.Timestamp,
 		ProtocolConvID:  normalizedConversationID, // Use normalized ID
@@ -1113,6 +1172,7 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		ThreadID:        threadID,
 		Reactions:       reactions,
 		Attachments:     attachmentsJSON,
+		CallType:        callType,
 	}
 }
 
