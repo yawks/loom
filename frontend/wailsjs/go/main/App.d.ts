@@ -22,7 +22,7 @@ export function DisconnectProvider(arg1:string):Promise<void>;
 
 export function EditMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function ForceSyncCompletion():Promise<void>;
+export function ForceSyncCompletion(arg1:string):Promise<void>;
 
 export function GetAllActiveCalls():Promise<Record<string, boolean>>;
 
@@ -60,9 +60,7 @@ export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 
-export function GetSlackCustomEmojiList(arg1:string):Promise<Record<string, string>>;
-
-export function GetSlackEmojiURL(arg1:string,arg2:string):Promise<string>;
+export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 

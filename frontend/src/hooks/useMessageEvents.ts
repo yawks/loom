@@ -8,27 +8,30 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTypingStore } from "@/lib/typingStore";
 
 interface ReceiptEvent {
-  ConversationID: string;
-  MessageID: string;
-  ReceiptType: "delivery" | "read";
-  UserID: string;
-  Timestamp: number;
+  instanceId: string;
+  conversationId: string;
+  messageId: string;
+  receiptType: "delivery" | "read";
+  userId: string;
+  timestamp: number;
 }
 
 interface ReactionEvent {
-  ConversationID: string;
-  MessageID: string;
-  UserID: string;
-  Emoji: string;
-  Added: boolean;
-  Timestamp: number;
+  instanceId: string;
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  emoji: string;
+  added: boolean;
+  timestamp: number;
 }
 
 interface TypingEvent {
-  ConversationID: string;
-  UserID: string;
-  UserName: string;
-  IsTyping: boolean;
+  instanceId: string;
+  conversationId: string;
+  userId: string;
+  userName: string;
+  isTyping: boolean;
 }
 
 export function useMessageEvents() {
@@ -60,12 +63,12 @@ export function useMessageEvents() {
     }
     
     let isMounted = true;
-    const unsubscribe = EventsOn("new-message", (messageJSON: string) => {
+    const unsubscribe = EventsOn("new-message", (eventJSON: string) => {
       if (!isMounted) {
         console.warn("useMessageEvents: Component unmounted, ignoring event");
         return;
       }
-      console.log("useMessageEvents: Received new-message event:", messageJSON?.substring?.(0, 200) || messageJSON);
+      console.log("useMessageEvents: Received new-message event:", eventJSON?.substring?.(0, 200) || eventJSON);
       
       // Verify the listener was registered
       if (typeof window !== "undefined" && window.runtime?.listeners) {
@@ -73,12 +76,14 @@ export function useMessageEvents() {
       }
       
       try {
-        const message: models.Message = JSON.parse(messageJSON);
+        const event: { instanceId: string; message: models.Message } = JSON.parse(eventJSON);
+        const message = event.message;
         console.log("useMessageEvents: Parsed message:", {
           id: message.protocolMsgId,
           conversationId: message.protocolConvId,
           body: message.body?.substring(0, 50),
           isFromMe: message.isFromMe,
+          instanceId: event.instanceId,
         });
 
         registerIncomingMessage(message);
@@ -239,19 +244,19 @@ export function useMessageEvents() {
       try {
         const receipt: ReceiptEvent = JSON.parse(receiptJSON);
         console.log("useMessageEvents: Received receipt event:", {
-          conversationId: receipt.ConversationID,
-          messageId: receipt.MessageID,
-          receiptType: receipt.ReceiptType,
-          userId: receipt.UserID,
+          conversationId: receipt.conversationId,
+          messageId: receipt.messageId,
+          receiptType: receipt.receiptType,
+          userId: receipt.userId,
         });
 
         // Handle both read and delivery receipts
-        console.log("useMessageEvents: Processing receipt for message", receipt.MessageID);
-        console.log("useMessageEvents: Conversation ID:", receipt.ConversationID);
-        console.log("useMessageEvents: Receipt type:", receipt.ReceiptType);
+        console.log("useMessageEvents: Processing receipt for message", receipt.messageId);
+        console.log("useMessageEvents: Conversation ID:", receipt.conversationId);
+        console.log("useMessageEvents: Receipt type:", receipt.receiptType);
         
-        if (receipt.ReceiptType === "read") {
-          markAsReadByProtocolId(receipt.ConversationID, receipt.MessageID);
+        if (receipt.receiptType === "read") {
+          markAsReadByProtocolId(receipt.conversationId, receipt.messageId);
         }
 
         // Update messages cache directly without refetching to avoid scroll
@@ -259,7 +264,7 @@ export function useMessageEvents() {
           const conversationId =
             selectedContact.linkedAccounts[0]?.conversationId ??
             selectedContact.linkedAccounts[0]?.userId;
-          if (receipt.ConversationID === conversationId && conversationId) {
+          if (receipt.conversationId === conversationId && conversationId) {
             // Update the message in the cache directly
             // Note: useInfiniteQuery uses InfiniteData structure { pages: [...], pageParams: [...] }
             queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -278,20 +283,20 @@ export function useMessageEvents() {
                   
                   return page.map((msg) => {
                     // Find message by protocolMsgId
-                    if (msg.protocolMsgId === receipt.MessageID) {
+                    if (msg.protocolMsgId === receipt.messageId) {
                       // Check if receipt already exists
                       const existingReceipt = msg.receipts?.find(
-                        (r) => r.userId === receipt.UserID && r.receiptType === receipt.ReceiptType
+                        (r) => r.userId === receipt.userId && r.receiptType === receipt.receiptType
                       );
                       
                       if (!existingReceipt) {
                         // Add new receipt - create a new MessageReceipt instance
-                        const receiptTimestamp = new Date(receipt.Timestamp * 1000);
+                        const receiptTimestamp = new Date(receipt.timestamp * 1000);
                         const newReceipt = models.MessageReceipt.createFrom({
                           id: 0, // Will be set by backend
                           messageId: msg.id,
-                          userId: receipt.UserID,
-                          receiptType: receipt.ReceiptType,
+                          userId: receipt.userId,
+                          receiptType: receipt.receiptType,
                           timestamp: receiptTimestamp.toISOString(),
                           createdAt: new Date().toISOString(),
                           updatedAt: new Date().toISOString(),
@@ -303,11 +308,11 @@ export function useMessageEvents() {
                         });
                       } else {
                         // Update existing receipt timestamp if newer
-                        const receiptTimestamp = new Date(receipt.Timestamp * 1000);
+                        const receiptTimestamp = new Date(receipt.timestamp * 1000);
                         const existingTimestamp = new Date(String(existingReceipt.timestamp));
                         if (receiptTimestamp > existingTimestamp) {
                           const updatedReceipts = msg.receipts?.map((r) =>
-                            r.userId === receipt.UserID && r.receiptType === receipt.ReceiptType
+                            r.userId === receipt.userId && r.receiptType === receipt.receiptType
                               ? models.MessageReceipt.createFrom({
                                   ...r,
                                   timestamp: receiptTimestamp.toISOString(),
@@ -373,17 +378,17 @@ export function useMessageEvents() {
       try {
         const reaction: ReactionEvent = JSON.parse(reactionJSON);
         console.log("useMessageEvents: Parsed reaction event:", {
-          conversationId: reaction.ConversationID,
-          messageId: reaction.MessageID,
-          userId: reaction.UserID,
-          emoji: reaction.Emoji,
-          added: reaction.Added,
+          conversationId: reaction.conversationId,
+          messageId: reaction.messageId,
+          userId: reaction.userId,
+          emoji: reaction.emoji,
+          added: reaction.added,
         });
         
         // Strip leading/trailing colons for emoji comparison.
         // The DB stores emojis without colons ("+1") but optimistic updates use ":+1:".
         const normalizeEmoji = (e: string) => e.replace(/^:/, "").replace(/:$/, "");
-        const normalizedReactionEmoji = normalizeEmoji(reaction.Emoji);
+        const normalizedReactionEmoji = normalizeEmoji(reaction.emoji);
 
         // Update messages cache directly for all conversations, not just selected one
         // This ensures reactions are updated even if the conversation is not currently selected
@@ -400,23 +405,23 @@ export function useMessageEvents() {
 
               return page.map((msg) => {
                 // Match by message ID only — ConversationID can differ for DMs (U... vs D...)
-                if (msg.protocolMsgId === reaction.MessageID) {
+                if (msg.protocolMsgId === reaction.messageId) {
                   found = true;
                   const currentReactions = msg.reactions || [];
 
-                  if (reaction.Added) {
+                  if (reaction.added) {
                     // Add reaction if it doesn't exist (normalize emoji format for comparison)
                     const exists = currentReactions.some(
-                      (r) => r.userId === reaction.UserID && normalizeEmoji(r.emoji) === normalizedReactionEmoji
+                      (r) => r.userId === reaction.userId && normalizeEmoji(r.emoji) === normalizedReactionEmoji
                     );
                     if (!exists) {
-                      console.log("useMessageEvents: Adding reaction to message", reaction.MessageID);
-                      const reactionTimestamp = new Date(reaction.Timestamp * 1000);
+                      console.log("useMessageEvents: Adding reaction to message", reaction.messageId);
+                      const reactionTimestamp = new Date(reaction.timestamp * 1000);
                       const newReaction = models.Reaction.createFrom({
                         id: 0,
                         messageId: msg.id,
-                        userId: reaction.UserID,
-                        emoji: reaction.Emoji,
+                        userId: reaction.userId,
+                        emoji: reaction.emoji,
                         createdAt: reactionTimestamp.toISOString(),
                         updatedAt: reactionTimestamp.toISOString(),
                       });
@@ -425,13 +430,13 @@ export function useMessageEvents() {
                         reactions: [...currentReactions, newReaction],
                       });
                     } else {
-                      console.log("useMessageEvents: Reaction already exists for message", reaction.MessageID);
+                      console.log("useMessageEvents: Reaction already exists for message", reaction.messageId);
                     }
                   } else {
                     // Remove reaction (normalize emoji format for comparison)
-                    console.log("useMessageEvents: Removing reaction from message", reaction.MessageID);
+                    console.log("useMessageEvents: Removing reaction from message", reaction.messageId);
                     const filteredReactions = currentReactions.filter(
-                      (r) => !(r.userId === reaction.UserID && normalizeEmoji(r.emoji) === normalizedReactionEmoji)
+                      (r) => !(r.userId === reaction.userId && normalizeEmoji(r.emoji) === normalizedReactionEmoji)
                     );
                     return models.Message.createFrom({
                       ...msg,
@@ -444,7 +449,7 @@ export function useMessageEvents() {
             });
 
             if (!found) {
-              console.log("useMessageEvents: Message not found in cache for reaction:", reaction.MessageID, "in conversation:", reaction.ConversationID);
+              console.log("useMessageEvents: Message not found in cache for reaction:", reaction.messageId, "in conversation:", reaction.conversationId);
             }
 
             return {
@@ -490,35 +495,35 @@ export function useMessageEvents() {
       try {
         const typing: TypingEvent = JSON.parse(typingJSON);
         console.log("useMessageEvents: Received typing event:", {
-          conversationId: typing.ConversationID,
-          userId: typing.UserID,
-          isTyping: typing.IsTyping,
+          conversationId: typing.conversationId,
+          userId: typing.userId,
+          isTyping: typing.isTyping,
         });
 
         // Resolve LID to actual conversation ID
         // LID format: "176188215558395@lid", standard format: "33123456789@s.whatsapp.net"
-        let resolvedConversationId = typing.ConversationID;
+        let resolvedConversationId = typing.conversationId;
         
         // If the conversation ID is a LID, ask the backend to resolve it
-        if (typing.ConversationID.includes("@lid")) {
-          console.log("useMessageEvents: ConversationID is a LID, asking backend to resolve...");
+        if (typing.conversationId.includes("@lid")) {
+          console.log("useMessageEvents: ConversationId is a LID, asking backend to resolve...");
           
           try {
             // Call the backend API to resolve the LID
             // Use dynamic access since ResolveLID may not be in TypeScript bindings
             const resolveLIDFn = window.go?.main?.App?.ResolveLID as ((lid: string) => Promise<string>) | undefined;
             if (resolveLIDFn && typeof resolveLIDFn === "function") {
-              const resolved = await resolveLIDFn(typing.ConversationID);
-              if (resolved && resolved !== typing.ConversationID) {
+              const resolved = await resolveLIDFn(typing.conversationId);
+              if (resolved && resolved !== typing.conversationId) {
                 resolvedConversationId = resolved;
-                console.log("useMessageEvents: Backend resolved LID", typing.ConversationID, "to", resolvedConversationId);
+                console.log("useMessageEvents: Backend resolved LID", typing.conversationId, "to", resolvedConversationId);
               } else {
-                console.warn("useMessageEvents: Backend could not resolve LID", typing.ConversationID);
+                console.warn("useMessageEvents: Backend could not resolve LID", typing.conversationId);
                 
-                // Fallback: if UserID is a phone number, use it
-                if (typing.UserID.includes("@s.whatsapp.net")) {
-                  resolvedConversationId = typing.UserID;
-                  console.log("useMessageEvents: Using UserID as conversation ID (fallback):", resolvedConversationId);
+                // Fallback: if userId is a phone number, use it
+                if (typing.userId.includes("@s.whatsapp.net")) {
+                  resolvedConversationId = typing.userId;
+                  console.log("useMessageEvents: Using userId as conversation ID (fallback):", resolvedConversationId);
                 } else {
                   console.warn("useMessageEvents: Could not resolve LID to any known conversation. This typing indicator will be ignored.");
                   return; // Don't process this event
@@ -531,10 +536,10 @@ export function useMessageEvents() {
           } catch (error) {
             console.error("useMessageEvents: Error calling ResolveLID:", error);
             
-            // Fallback: if UserID is a phone number, use it
-            if (typing.UserID.includes("@s.whatsapp.net")) {
-              resolvedConversationId = typing.UserID;
-              console.log("useMessageEvents: Using UserID as conversation ID (error fallback):", resolvedConversationId);
+            // Fallback: if userId is a phone number, use it
+            if (typing.userId.includes("@s.whatsapp.net")) {
+              resolvedConversationId = typing.userId;
+              console.log("useMessageEvents: Using userId as conversation ID (error fallback):", resolvedConversationId);
             } else {
               console.warn("useMessageEvents: Could not resolve LID and error occurred. This typing indicator will be ignored.");
               return; // Don't process this event
@@ -543,13 +548,13 @@ export function useMessageEvents() {
         }
         
         console.log("useMessageEvents: Final conversation ID:", resolvedConversationId);
-        console.log("useMessageEvents: User name:", typing.UserName);
+        console.log("useMessageEvents: User name:", typing.userName);
 
-        if (typing.IsTyping) {
-          setTyping(resolvedConversationId, typing.UserID, typing.UserName);
-          console.log("useMessageEvents: Set typing for conversation", resolvedConversationId, "with userName", typing.UserName);
+        if (typing.isTyping) {
+          setTyping(resolvedConversationId, typing.userId, typing.userName);
+          console.log("useMessageEvents: Set typing for conversation", resolvedConversationId, "with userName", typing.userName);
         } else {
-          setNotTyping(resolvedConversationId, typing.UserID);
+          setNotTyping(resolvedConversationId, typing.userId);
           console.log("useMessageEvents: Set not typing for conversation", resolvedConversationId);
         }
       } catch (error) {
@@ -631,12 +636,12 @@ export function useMessageEvents() {
       }
       
       try {
-        const readStatus: { ConversationID: string; LastReadTS: string } = JSON.parse(readStatusJSON);
+        const readStatus: { instanceId: string; conversationId: string; lastReadTs: string } = JSON.parse(readStatusJSON);
         console.log("useMessageEvents: Received conversation-read-status event:", readStatus);
         
-        if (readStatus.ConversationID && readStatus.LastReadTS) {
-          setLastReadTimestamp(readStatus.ConversationID, readStatus.LastReadTS);
-          console.log(`useMessageEvents: Set lastReadTS for conversation ${readStatus.ConversationID}: ${readStatus.LastReadTS}`);
+        if (readStatus.conversationId && readStatus.lastReadTs) {
+          setLastReadTimestamp(readStatus.conversationId, readStatus.lastReadTs);
+          console.log(`useMessageEvents: Set lastReadTs for conversation ${readStatus.conversationId}: ${readStatus.lastReadTs}`);
         }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse conversation-read-status event:", error);

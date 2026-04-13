@@ -5,7 +5,7 @@ import { Smile } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import EmojiPicker, { type EmojiClickData, Theme } from "emoji-picker-react";
-import { GetSlackCustomEmojiList } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis } from "../../wailsjs/go/main/App";
 
 // Matches the internal CustomEmoji type expected by emoji-picker-react
 interface CustomEmoji {
@@ -37,13 +37,13 @@ export function ReactionPicker({
     if (!open || provider !== "slack" || !instanceId) return;
     if (customEmojis.length > 0) return;
 
-    GetSlackCustomEmojiList(instanceId)
-      .then((emojiMap) => {
+    GetCustomEmojis(instanceId)
+      .then((emojiMap: Record<string, string>) => {
         if (!emojiMap) return;
         const emojis: CustomEmoji[] = Object.entries(emojiMap).map(([name, url]) => ({
           id: name,
           names: [name.replaceAll("_", " ")],
-          imgUrl: url,
+          imgUrl: url as string,
         }));
         setCustomEmojis(emojis);
       })

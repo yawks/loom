@@ -338,7 +338,7 @@ func (a *App) startup(ctx context.Context) {
 			// First time: sync last 365 days
 			syncSince = time.Now().Add(-365 * 24 * time.Hour)
 		}
-		if !syncSince.IsZero() {
+		if !syncSince.IsZero() && provider != nil {
 			a.pendingSyncs = append(a.pendingSyncs, pendingSyncInfo{
 				provider:   provider,
 				instanceID: instanceID,
