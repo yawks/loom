@@ -38,8 +38,8 @@ export function EditMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['EditMessage'](arg1, arg2, arg3);
 }
 
-export function ForceSyncCompletion() {
-  return window['go']['main']['App']['ForceSyncCompletion']();
+export function ForceSyncCompletion(arg1) {
+  return window['go']['main']['App']['ForceSyncCompletion'](arg1);
 }
 
 export function GetAllActiveCalls() {
@@ -114,12 +114,8 @@ export function GetProviderSchema(arg1) {
   return window['go']['main']['App']['GetProviderSchema'](arg1);
 }
 
-export function GetSlackCustomEmojiList(arg1) {
-  return window['go']['main']['App']['GetSlackCustomEmojiList'](arg1);
-}
-
-export function GetSlackEmojiURL(arg1, arg2) {
-  return window['go']['main']['App']['GetSlackEmojiURL'](arg1, arg2);
+export function GetCustomEmojis(arg1) {
+  return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
 
 export function GetThreadMessages(arg1, arg2) {
@@ -168,6 +164,10 @@ export function SendReply(arg1, arg2, arg3) {
 
 export function SetActiveProvider(arg1) {
   return window['go']['main']['App']['SetActiveProvider'](arg1);
+}
+
+export function GetCapabilities(arg1) {
+  return window['go']['main']['App']['GetCapabilities'](arg1);
 }
 
 export function SetContactAlias(arg1, arg2) {
