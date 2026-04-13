@@ -4,10 +4,10 @@ package main
 import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
+	"sync"
 	"Loom/pkg/models"
 	"Loom/pkg/providers"
 	"Loom/pkg/providers/slack"
-	"Loom/pkg/providers/whatsapp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -35,17 +35,19 @@ type pendingSyncInfo struct {
 // App struct
 type App struct {
 	ctx             context.Context
-	provider        core.Provider // Use the interface
+	provider        core.Provider // Active provider (for UI actions)
 	providerManager *core.ProviderManager
-	eventChan       <-chan core.ProviderEvent
-	eventCancel     context.CancelFunc
+	eventCancels    map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
 	systemTray      *menu.Menu
 	pendingSyncs    []pendingSyncInfo // syncs deferred until domReady
+	mu              sync.RWMutex
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		eventCancels: make(map[string]context.CancelFunc),
+	}
 }
 
 // cleanupSelfReceipts removes receipts where the user is the sender of the message
@@ -206,6 +208,12 @@ func createMissingConversations() {
 }
 
 // startup is called when the app starts.
+func (a *App) getActiveProvider() core.Provider {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.provider
+}
+
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
@@ -300,6 +308,8 @@ func (a *App) startup(ctx context.Context) {
 				log.Printf("Warning: Failed to connect provider %s: %v", providerConfig.ProviderID, err)
 				continue
 			}
+			// Start event listener for all connected providers
+			a.startEventListenerForProvider(ctx, instanceID, provider)
 		} else {
 			if providerConfig.IsActive {
 				if db.DB != nil {
@@ -311,35 +321,31 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		if providerConfig.IsActive {
+			a.mu.Lock()
 			a.provider = provider
+			a.mu.Unlock()
 			a.providerManager.SetActiveProvider(instanceID)
+		}
 
-			// Collect pending syncs to be started in domReady(), once the frontend is ready
-			// to receive sync-status events. Starting them here (in startup) would emit events
-			// before the Wails IPC is connected and React's EventsOn listeners are registered.
-			var syncSince time.Time
-			if providerConfig.LastSyncAt != nil {
-				if time.Since(*providerConfig.LastSyncAt) > time.Minute {
-					syncSince = *providerConfig.LastSyncAt
-				}
-				// If < 1 minute ago, no sync needed
-			} else {
-				// First time: sync last 365 days
-				syncSince = time.Now().Add(-365 * 24 * time.Hour)
+		// Collect pending syncs for all connected providers
+		var syncSince time.Time
+		if providerConfig.LastSyncAt != nil {
+			if time.Since(*providerConfig.LastSyncAt) > time.Minute {
+				syncSince = *providerConfig.LastSyncAt
 			}
-			if !syncSince.IsZero() {
-				a.pendingSyncs = append(a.pendingSyncs, pendingSyncInfo{
-					provider:   provider,
-					instanceID: instanceID,
-					since:      syncSince,
-				})
-			}
+			// If < 1 minute ago, no sync needed
+		} else {
+			// First time: sync last 365 days
+			syncSince = time.Now().Add(-365 * 24 * time.Hour)
+		}
+		if !syncSince.IsZero() {
+			a.pendingSyncs = append(a.pendingSyncs, pendingSyncInfo{
+				provider:   provider,
+				instanceID: instanceID,
+				since:      syncSince,
+			})
 		}
 	}
-
-	// Fallback to Mock if none active
-
-	a.startEventListener(ctx)
 	a.setupSystemTray(ctx)
 }
 
@@ -369,53 +375,58 @@ func (a *App) shutdown(ctx context.Context) {}
 
 // ForceSyncCompletion emits a "completed" sync-status event to dismiss the sync footer.
 // Called by the frontend when the user clicks the Stop button.
-func (a *App) ForceSyncCompletion() {
+func (a *App) ForceSyncCompletion(instanceID string) {
 	if a.ctx == nil {
 		return
 	}
 	syncStatus := core.SyncStatusEvent{
-		Status:   core.SyncStatusCompleted,
-		Message:  "Sync stopped by user",
-		Progress: 100,
+		InstanceID: instanceID,
+		Status:     core.SyncStatusCompleted,
+		Message:    "Sync stopped by user",
+		Progress:   100,
 	}
 	syncStatusJSON, _ := json.Marshal(syncStatus)
 	runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
 }
 
-func (a *App) startEventListener(ctx context.Context) {
-	if a.eventCancel != nil {
-		a.eventCancel()
+func (a *App) startEventListenerForProvider(ctx context.Context, instanceID string, provider core.Provider) {
+	a.mu.Lock()
+	if cancel, exists := a.eventCancels[instanceID]; exists {
+		cancel()
 	}
+	subCtx, cancel := context.WithCancel(ctx)
+	a.eventCancels[instanceID] = cancel
+	a.mu.Unlock()
 
-	if a.provider == nil {
-		return
-	}
-
-	_, cancel := context.WithCancel(ctx)
-	a.eventCancel = cancel
-
-	eventChan, err := a.provider.StreamEvents()
+	eventChan, err := provider.StreamEvents()
 	if err != nil {
-		log.Printf("Failed to get event stream: %v", err)
+		log.Printf("[%s] Failed to get event stream: %v", instanceID, err)
 		cancel()
 		return
 	}
 
-	a.eventChan = eventChan
-
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			delete(a.eventCancels, instanceID)
+			a.mu.Unlock()
+		}()
+
 		for {
 			select {
+			case <-subCtx.Done():
+				return
 			case event, ok := <-eventChan:
 				if !ok {
 					return
 				}
+				// Add instanceID to event if needed or handle it here
 				switch e := event.(type) {
 				case core.MessageEvent:
 					if e.Message.SenderAvatarURL != "" {
 						e.Message.SenderAvatarURL = a.GetAvatar(e.Message.SenderAvatarURL)
 					}
-					msgJSON, _ := json.Marshal(e.Message)
+					msgJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
 					}
@@ -481,6 +492,11 @@ func (a *App) startEventListener(ctx context.Context) {
 					syncStatusJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+					}
+				case core.ConversationReadStatusEvent:
+					readStatusJSON, _ := json.Marshal(e)
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "conversation-read-status", string(readStatusJSON))
 					}
 				}
 			}
@@ -578,10 +594,12 @@ func (a *App) ConfigureProvider(config string) error {
 		return err
 	}
 	provider.Connect()
+	a.mu.Lock()
 	a.provider = provider
+	a.mu.Unlock()
 	a.providerManager.SetActiveProvider(instanceID)
 	// DB updates omitted for brevity but should be here
-	a.startEventListener(a.ctx)
+	a.startEventListenerForProvider(a.ctx, instanceID, provider)
 
 	// Trigger initial sync for newly configured provider. Since Connect() no longer
 	// starts sync automatically, we start it here after the event listener is ready.
@@ -634,7 +652,9 @@ func (a *App) SetActiveProvider(instanceID string) error {
 	if err != nil {
 		return err
 	}
+	a.mu.Lock()
 	a.provider = provider
+	a.mu.Unlock()
 	a.providerManager.SetActiveProvider(instanceID)
 
 	// DB Update
@@ -643,7 +663,7 @@ func (a *App) SetActiveProvider(instanceID string) error {
 		db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", true)
 	}
 
-	a.startEventListener(a.ctx)
+	// Provider's event listener should already be running if connected
 	return nil
 }
 
@@ -715,8 +735,8 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 
 	// Get instance ID from active provider
 	instanceID := ""
-	if a.provider != nil {
-		if config := a.provider.GetConfig(); config != nil {
+	if a.getActiveProvider() != nil {
+		if config := a.getActiveProvider().GetConfig(); config != nil {
 			if id, ok := config["_instance_id"].(string); ok {
 				instanceID = id
 			}
@@ -811,9 +831,9 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 
 	// If no messages found in DB, try to fetch from provider
 	// This handles the case where we just synced the conversation list but haven't synced messages yet
-	if len(messages) == 0 && a.provider != nil {
+	if len(messages) == 0 && a.getActiveProvider() != nil {
 		// We use a limit of 50 to match the DB query
-		fetchedMessages, err := a.provider.GetConversationHistory(conversationID, 50, nil, nil)
+		fetchedMessages, err := a.getActiveProvider().GetConversationHistory(conversationID, 50, nil, nil)
 		if err == nil && len(fetchedMessages) > 0 {
 			return fetchedMessages, nil
 		}
@@ -886,9 +906,9 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 		fmt.Printf("[GetMessagesForConversationBefore] No DB connection, checking provider\n")
 	}
 
-	if a.provider != nil {
+	if a.getActiveProvider() != nil {
 		before := beforeTimestamp
-		providerMessages, providerErr := a.provider.GetConversationHistory(conversationID, limit, &before, nil)
+		providerMessages, providerErr := a.getActiveProvider().GetConversationHistory(conversationID, limit, &before, nil)
 		if providerErr != nil {
 			fmt.Printf("[GetMessagesForConversationBefore] Provider fetch failed: %v\n", providerErr)
 			if err == nil {
@@ -907,26 +927,26 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 	return messages, err
 }
 func (a *App) SendMessage(conversationID string, content string) (*models.Message, error) {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
 	}
 
 	// Call provider to send message
-	return a.provider.SendMessage(conversationID, content, nil, nil)
+	return a.getActiveProvider().SendMessage(conversationID, content, nil, nil)
 }
 
 // SendReply sends a reply to a message
 func (a *App) SendReply(conversationID string, content string, quotedMessageID string) (*models.Message, error) {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
 	}
 
 	// Call provider to send reply
-	return a.provider.SendMessage(conversationID, content, nil, &quotedMessageID)
+	return a.getActiveProvider().SendMessage(conversationID, content, nil, &quotedMessageID)
 }
 
 func (a *App) SendFile(conversationID string, base64Data string, filename string, mimeType string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
 
@@ -958,7 +978,7 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 		MimeType: mimeType,
 	}
 
-	_, err = a.provider.SendFile(conversationID, attachment, nil)
+	_, err = a.getActiveProvider().SendFile(conversationID, attachment, nil)
 	return err
 }
 
@@ -987,9 +1007,11 @@ func (a *App) ConnectProvider(instanceID string) error {
 		return err
 	}
 
+	a.mu.Lock()
 	a.provider = provider
+	a.mu.Unlock()
 	a.providerManager.SetActiveProvider(instanceID)
-	a.startEventListener(a.ctx)
+	a.startEventListenerForProvider(a.ctx, instanceID, provider)
 
 	if db.DB != nil {
 		db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", true)
@@ -1008,53 +1030,53 @@ func (a *App) RemoveProvider(instanceID string) error {
 // Additional missing methods found in logs
 
 func (a *App) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
 	}
-	return a.provider.CreateGroup(groupName, participantIDs)
+	return a.getActiveProvider().CreateGroup(groupName, participantIDs)
 }
 
 func (a *App) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
 	}
-	return a.provider.GetGroupParticipants(conversationID)
+	return a.getActiveProvider().GetGroupParticipants(conversationID)
 }
 
 func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
 	}
-	return a.provider.GetThreads(parentMessageID)
+	return a.getActiveProvider().GetThreads(parentMessageID)
 }
 
 func (a *App) AddReaction(conversationID, messageID, emoji string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.AddReaction(conversationID, messageID, emoji)
+	return a.getActiveProvider().AddReaction(conversationID, messageID, emoji)
 }
 
 func (a *App) RemoveReaction(conversationID, messageID, emoji string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.RemoveReaction(conversationID, messageID, emoji)
+	return a.getActiveProvider().RemoveReaction(conversationID, messageID, emoji)
 }
 
 func (a *App) EditMessage(conversationID, messageID, newText string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	_, err := a.provider.EditMessage(conversationID, messageID, newText)
+	_, err := a.getActiveProvider().EditMessage(conversationID, messageID, newText)
 	return err
 }
 
 func (a *App) DeleteMessage(conversationID, messageID string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	if err := a.provider.DeleteMessage(conversationID, messageID); err != nil {
+	if err := a.getActiveProvider().DeleteMessage(conversationID, messageID); err != nil {
 		return err
 	}
 	// Remove from local DB
@@ -1074,49 +1096,37 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 }
 
 func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.MarkMessageAsRead(conversationID, messageID)
+	return a.getActiveProvider().MarkMessageAsRead(conversationID, messageID)
 }
 
 func (a *App) MarkConversationAsRead(conversationID string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.MarkConversationAsRead(conversationID)
+	return a.getActiveProvider().MarkConversationAsRead(conversationID)
 }
 
 func (a *App) MarkMessageAsPlayed(conversationID, messageID string) error {
-	if a.provider == nil {
+	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.MarkMessageAsPlayed(conversationID, messageID)
+	return a.getActiveProvider().MarkMessageAsPlayed(conversationID, messageID)
 }
 
 func (a *App) GetProviderQRCode(instanceID string) (string, error) {
-	// Previously this was likely implemented by checking the provider
 	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
 		return "", err
 	}
 
-	// Check if this provider has GetQRCode method
-	// Using interface assertion if available, or specific type inspection
-	// For now, if it's WhatsApp provider, we might need a specific interface or method
-	// But let's check core.Provider interface... it DOES NOT have GetQRCode (we checked earlier).
-	// So it must be implemented on the specific provider struct and we assert it?
-	// Or maybe the frontend calls this but it's not in core interface.
-
-	// Let's return empty/null for now or implement if we find where it is.
-	// Actually, the user's previous code *had* it.
-	// Check if this provider has GetQRCode method
-	if waProvider, ok := provider.(*whatsapp.WhatsAppProvider); ok {
-		qr, _ := waProvider.GetQRCode()
-		return qr, nil
+	if !provider.GetCapabilities().SupportsQRCodeAuth {
+		return "", fmt.Errorf("provider does not support QR code auth")
 	}
 
-	return "", fmt.Errorf("provider does not support QR code")
+	return provider.GetAuthQRCode()
 }
 
 // SyncProvider triggers a synchronization for a specific provider.
@@ -1127,10 +1137,10 @@ func (a *App) SyncProvider(providerID string) error {
 
 	if providerID == "" {
 		// Sync active provider
-		if a.provider == nil {
+		if a.getActiveProvider() == nil {
 			return fmt.Errorf("no active provider to sync")
 		}
-		provider = a.provider
+		provider = a.getActiveProvider()
 	} else {
 		// Sync specific provider
 		provider, err = a.providerManager.GetProvider(providerID)
@@ -1200,7 +1210,7 @@ func (a *App) GetContactAliases() (map[string]string, error) {
 	return aliasMap, nil
 }
 
-func (a *App) GetSlackCustomEmojiList(instanceID string) (map[string]string, error) {
+func (a *App) GetCustomEmojis(instanceID string) (map[string]string, error) {
 	if a.providerManager == nil {
 		return nil, nil
 	}
@@ -1210,34 +1220,20 @@ func (a *App) GetSlackCustomEmojiList(instanceID string) (map[string]string, err
 		return nil, nil
 	}
 
-	slackProvider, ok := provider.(*slack.SlackProvider)
-	if !ok {
-		return nil, nil
-	}
-
-	return slackProvider.GetCustomEmojiList(), nil
+	return provider.GetCustomEmojis()
 }
 
-func (a *App) GetSlackEmojiURL(instanceID string, emojiName string) (string, error) {
+func (a *App) GetCapabilities(instanceID string) (core.Capabilities, error) {
 	if a.providerManager == nil {
-		return "", nil
+		return core.Capabilities{}, fmt.Errorf("provider manager not initialized")
 	}
 
 	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
-		return "", nil
+		return core.Capabilities{}, err
 	}
 
-	// Check if this is a Slack provider
-	slackProvider, ok := provider.(*slack.SlackProvider)
-	if !ok {
-		// Not a Slack provider, return empty
-		return "", nil
-	}
-
-	// Use the provider's GetEmojiURL method
-	url := slackProvider.GetEmojiURL(emojiName)
-	return url, nil
+	return provider.GetCapabilities(), nil
 }
 
 // GetAllActiveCalls returns a map of conversation IDs to boolean indicating if there's an active call
@@ -1442,11 +1438,11 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 
 	// 3. For missing IDs, try to fetch from provider API using GetContactName
 	// This uses the centralized function in each provider (lookupDisplayName for WhatsApp, resolveSlackUserName for Slack)
-	if len(missingIDs) > 0 && a.provider != nil {
+	if len(missingIDs) > 0 && a.getActiveProvider() != nil {
 		for _, userID := range missingIDs {
 			if _, exists := result[userID]; !exists {
 				// Use the provider's GetContactName method which uses the centralized lookup function
-				name, err := a.provider.GetContactName(userID)
+				name, err := a.getActiveProvider().GetContactName(userID)
 				if err == nil && name != "" && name != userID {
 					result[userID] = name
 				}

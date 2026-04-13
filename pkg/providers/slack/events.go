@@ -205,7 +205,7 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 
 		// Emit event
 		select {
-		case p.eventChan <- core.MessageEvent{Message: msg}:
+		case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceID(), Message: msg}:
 		default:
 			p.log("SlackProvider.pollGlobalUpdates: Event channel full, dropping message %s\n", msg.ProtocolMsgID)
 		}
@@ -216,7 +216,7 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 		p.log("SlackProvider.pollGlobalUpdates: Triggering contact refresh due to new conversations\n")
 		// Emit refresh event
 		select {
-		case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "message_received"}:
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "message_received"}:
 		default:
 		}
 	}
@@ -295,7 +295,7 @@ func (p *SlackProvider) pollNewReactions() {
 					if dbReactions[emoji] == nil || !dbReactions[emoji][userID] {
 						// New reaction - emit event
 						select {
-						case p.eventChan <- core.ReactionEvent{
+						case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
 							ConversationID: conversationID,
 							MessageID:      dbMsg.ProtocolMsgID,
 							UserID:         userID,
@@ -316,7 +316,7 @@ func (p *SlackProvider) pollNewReactions() {
 					if apiReactions[emoji] == nil || !apiReactions[emoji][userID] {
 						// Reaction removed - emit event
 						select {
-						case p.eventChan <- core.ReactionEvent{
+						case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
 							ConversationID: conversationID,
 							MessageID:      dbMsg.ProtocolMsgID,
 							UserID:         userID,
@@ -447,7 +447,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// Emit contact refresh event immediately to save contacts to database
 	// This ensures contacts are available right after sync
 	select {
-	case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
+	case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "sync_complete"}:
 		p.log("SlackProvider.SyncHistory: Emitted contacts-refresh event\n")
 	default:
 		p.log("SlackProvider.SyncHistory: Failed to emit contacts-refresh event (channel full)\n")
@@ -471,7 +471,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 
 		if lastRead, ok := extra["last_read"].(string); ok && lastRead != "" {
 			select {
-			case p.eventChan <- core.ConversationReadStatusEvent{
+			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceID(),
 				ConversationID: conversationID,
 				LastReadTS:     lastRead,
 			}:
@@ -529,7 +529,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 func (p *SlackProvider) emitSyncStatus(status core.SyncStatusType, message string, progress int) {
 	p.log("SlackProvider: Emitting sync status: status=%s, message=%s, progress=%d\n", status, message, progress)
 	select {
-	case p.eventChan <- core.SyncStatusEvent{
+	case p.eventChan <- core.SyncStatusEvent{InstanceID: p.getInstanceID(),
 		Status:   status,
 		Message:  message,
 		Progress: progress,

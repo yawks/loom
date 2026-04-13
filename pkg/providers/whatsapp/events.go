@@ -109,7 +109,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 				// Emit reaction event
 				select {
-				case w.eventChan <- core.ReactionEvent{
+				case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceID(),
 					ConversationID: targetConvID,
 					MessageID:      targetMsgID,
 					UserID:         senderID,
@@ -225,7 +225,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 				// Emit event
 				select {
-				case w.eventChan <- core.MessageEvent{Message: *existingMsg}:
+				case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *existingMsg}:
 					fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", msgID)
 				default:
 					fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", msgID)
@@ -254,13 +254,13 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.saveLastSyncTimestamp(msg.Timestamp)
 
 			select {
-			case w.eventChan <- core.MessageEvent{Message: *msg}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *msg}:
 				fmt.Printf("WhatsApp: MessageEvent emitted successfully for message %s\n", msg.ProtocolMsgID)
 			default:
 				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for message %s\n", msg.ProtocolMsgID)
 			}
 			select {
-			case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "message_received"}:
+			case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "message_received"}:
 				fmt.Printf("WhatsApp: ContactStatusEvent emitted successfully\n")
 			default:
 				fmt.Printf("WhatsApp: WARNING - Failed to emit ContactStatusEvent (channel full)\n")
@@ -431,7 +431,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// If user is typing, they are online - emit a presence event
 			// This ensures we show online status even if we haven't subscribed to their presence
 			select {
-			case w.eventChan <- core.PresenceEvent{
+			case w.eventChan <- core.PresenceEvent{InstanceID: w.getInstanceID(),
 				UserID:   userID,
 				IsOnline: true,
 				LastSeen: 0,
@@ -444,7 +444,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// Also emit for the conversation ID if it's different (for LID resolution)
 			if conversationID != userID {
 				select {
-				case w.eventChan <- core.PresenceEvent{
+				case w.eventChan <- core.PresenceEvent{InstanceID: w.getInstanceID(),
 					UserID:   conversationID,
 					IsOnline: true,
 					LastSeen: 0,
@@ -455,7 +455,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 
 			select {
-			case w.eventChan <- core.TypingEvent{
+			case w.eventChan <- core.TypingEvent{InstanceID: w.getInstanceID(),
 				ConversationID: conversationID,
 				UserID:         userID,
 				UserName:       userName,
@@ -469,7 +469,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// User stopped typing
 			fmt.Printf("WhatsApp: User %s (%s) stopped typing in conversation %s\n", userName, userID, conversationID)
 			select {
-			case w.eventChan <- core.TypingEvent{
+			case w.eventChan <- core.TypingEvent{InstanceID: w.getInstanceID(),
 				ConversationID: conversationID,
 				UserID:         userID,
 				UserName:       userName,
@@ -496,7 +496,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Emit PresenceEvent to frontend for the original userID (might be LID)
 		select {
-		case w.eventChan <- core.PresenceEvent{
+		case w.eventChan <- core.PresenceEvent{InstanceID: w.getInstanceID(),
 			UserID:   userID,
 			IsOnline: isOnline,
 			LastSeen: lastSeen,
@@ -517,7 +517,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				fmt.Printf("WhatsApp: Resolved LID %s to JID %s for presence\n", userID, resolvedJID)
 				// Emit presence event for the resolved JID as well
 				select {
-				case w.eventChan <- core.PresenceEvent{
+				case w.eventChan <- core.PresenceEvent{InstanceID: w.getInstanceID(),
 					UserID:   resolvedJID,
 					IsOnline: isOnline,
 					LastSeen: lastSeen,
@@ -599,7 +599,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Emit a ReceiptEvent for each message ID
 		for _, msgID := range v.MessageIDs {
 			select {
-			case w.eventChan <- core.ReceiptEvent{
+			case w.eventChan <- core.ReceiptEvent{InstanceID: w.getInstanceID(),
 				ConversationID: v.Chat.String(),
 				MessageID:      msgID,
 				ReceiptType:    receiptType,
@@ -657,7 +657,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Provider was cancelled/disconnected
 				fmt.Printf("WhatsApp: Skipping contact refresh event - context cancelled\n")
 				return
-			case eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
+			case eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "sync_complete"}:
 				// Event sent successfully
 			default:
 				// Channel full, skip
@@ -688,7 +688,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Provider was cancelled/disconnected
 				fmt.Printf("WhatsApp: Skipping contact refresh event - context cancelled\n")
 				return
-			case eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
+			case eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "sync_complete"}:
 				// Event sent successfully
 			default:
 				// Channel full, skip
@@ -717,7 +717,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 			// Emit a contact refresh event
 			select {
-			case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
+			case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "sync_complete"}:
 			default:
 			}
 		}()
@@ -813,7 +813,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Emit as a message event so it appears in the conversation
 		select {
-		case w.eventChan <- core.MessageEvent{Message: *callMessage}:
+		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *callMessage}:
 			fmt.Printf("WhatsApp: [CALL MSG] CallOffer message event emitted successfully for call %s in conversation %s\n", callID, convID)
 		default:
 			fmt.Printf("WhatsApp: [CALL MSG] WARNING - Failed to emit CallOffer message event (channel full) for call %s\n", callID)
@@ -821,7 +821,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Also emit a contact refresh to update the conversation list
 		select {
-		case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "call_received"}:
 			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call\n")
 		default:
 		}
@@ -940,7 +940,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 			// Emit updated message event
 			select {
-			case w.eventChan <- core.MessageEvent{Message: *existingCallMessage}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *existingCallMessage}:
 				fmt.Printf("WhatsApp: CallTerminate updated message event emitted successfully for call %s in conversation %s\n", callID, convID)
 			default:
 				fmt.Printf("WhatsApp: WARNING - Failed to emit CallTerminate update message event (channel full) for call %s\n", callID)
@@ -986,7 +986,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 			// Emit as a message event
 			select {
-			case w.eventChan <- core.MessageEvent{Message: *callMessage}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *callMessage}:
 				fmt.Printf("WhatsApp: [CALL MSG] CallTerminate new message event emitted successfully for call %s in conversation %s\n", callID, convID)
 			default:
 				fmt.Printf("WhatsApp: [CALL MSG] WARNING - Failed to emit CallTerminate message event (channel full) for call %s\n", callID)
@@ -995,7 +995,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Emit contact refresh
 		select {
-		case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "call_received"}:
 			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call terminate\n")
 		default:
 		}
