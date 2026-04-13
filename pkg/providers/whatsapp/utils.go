@@ -77,6 +77,19 @@ func isPhoneNumber(str string) bool {
 	return digitCount >= 8 && float64(digitCount)/float64(len(cleaned)) > 0.7
 }
 
+// isNumericOnly checks if a string contains only digits (used to detect LIDs)
+func isNumericOnly(str string) bool {
+	if str == "" {
+		return false
+	}
+	for _, c := range str {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // markUnused is a helper to silence static analysis warnings for stub implementations.
 func markUnused(values ...interface{}) {
 	for _, v := range values {

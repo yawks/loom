@@ -877,14 +877,40 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 // DeleteMessage deletes a message.
 func (p *SlackProvider) DeleteMessage(conversationID string, messageID string) error {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	if p.client == nil {
+	if client == nil {
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	_, _, err := p.client.DeleteMessage(conversationID, messageID)
-	return err
+	// Resolve user ID → actual DM channel ID (same pattern as SendMessage)
+	actualChannelID := conversationID
+	if len(conversationID) > 0 && conversationID[0] == 'U' {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{conversationID},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to open DM conversation: %w", err)
+		}
+		if channel != nil && channel.ID != "" {
+			actualChannelID = channel.ID
+		}
+	}
+
+	p.log("SlackProvider.DeleteMessage: deleting message %s in channel %s (original: %s)\n", messageID, actualChannelID, conversationID)
+	fmt.Printf("SlackProvider.DeleteMessage: calling chat.delete for ts=%s channel=%s\n", messageID, actualChannelID)
+
+	_, _, err := client.DeleteMessage(actualChannelID, messageID)
+	if err != nil {
+		p.log("SlackProvider.DeleteMessage: ERROR - %v\n", err)
+		fmt.Printf("SlackProvider.DeleteMessage: ERROR - %v\n", err)
+		return err
+	}
+
+	p.log("SlackProvider.DeleteMessage: message %s deleted successfully\n", messageID)
+	fmt.Printf("SlackProvider.DeleteMessage: message %s deleted successfully\n", messageID)
+	return nil
 }
 
 func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID string) models.Message {
@@ -1397,11 +1423,58 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		return fmt.Errorf("slack client not initialized")
 	}
 
+	// For DM conversations stored as user IDs (U...), open the DM channel to get the real channel ID
+	actualChannelID := conversationID
+	if len(conversationID) > 0 && conversationID[0] == 'U' {
+		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{conversationID},
+		})
+		if err == nil && channel != nil && channel.ID != "" {
+			actualChannelID = channel.ID
+		}
+	}
+
 	item := slack.ItemRef{
-		Channel:   conversationID,
+		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
-	return p.client.AddReaction(emoji, item)
+	if err := p.client.AddReaction(emoji, item); err != nil {
+		return err
+	}
+
+	// Persist the reaction to DB so it survives query refetches.
+	// (The polling loop may trigger a refetch before the RTM event arrives.)
+	if db.DB != nil && p.selfUserID != "" {
+		var msg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error; err == nil {
+			reaction := models.Reaction{
+				MessageID: msg.ID,
+				UserID:    p.selfUserID,
+				Emoji:     emoji, // stored without colons, matching Slack API format
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, p.selfUserID, emoji).
+				FirstOrCreate(&reaction)
+		}
+	}
+
+	// Emit an immediate reaction event so the frontend updates without waiting for polling.
+	if p.selfUserID != "" {
+		select {
+		case p.eventChan <- core.ReactionEvent{
+			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
+			MessageID:      messageID,
+			UserID:         p.selfUserID,
+			Emoji:          emoji,
+			Added:          true,
+			Timestamp:      time.Now().Unix(),
+		}:
+		default:
+		}
+	}
+
+	return nil
 }
 
 // RemoveReaction removes a reaction (emoji) from a message.
@@ -1413,9 +1486,74 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		return fmt.Errorf("slack client not initialized")
 	}
 
+	// For DM conversations stored as user IDs (U...), open the DM channel to get the real channel ID
+	actualChannelID := conversationID
+	if len(conversationID) > 0 && conversationID[0] == 'U' {
+		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{conversationID},
+		})
+		if err == nil && channel != nil && channel.ID != "" {
+			actualChannelID = channel.ID
+		}
+	}
+
 	item := slack.ItemRef{
-		Channel:   conversationID,
+		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
-	return p.client.RemoveReaction(emoji, item)
+	if err := p.client.RemoveReaction(emoji, item); err != nil {
+		return err
+	}
+
+	// Remove the reaction from DB so refetches reflect the correct state.
+	if db.DB != nil && p.selfUserID != "" {
+		var msg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error; err == nil {
+			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, p.selfUserID, emoji).
+				Delete(&models.Reaction{})
+		}
+	}
+
+	// Emit an immediate reaction event so the frontend updates without waiting for polling.
+	if p.selfUserID != "" {
+		select {
+		case p.eventChan <- core.ReactionEvent{
+			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
+			MessageID:      messageID,
+			UserID:         p.selfUserID,
+			Emoji:          emoji,
+			Added:          false,
+			Timestamp:      time.Now().Unix(),
+		}:
+		default:
+		}
+	}
+
+	return nil
+}
+
+// GetCustomEmojiList returns a copy of the custom emoji cache (name -> URL).
+// Unresolved aliases (URLs starting with "alias:") are excluded.
+// If the cache is empty (e.g., loadEmojis hasn't finished yet), it triggers a synchronous load.
+func (p *SlackProvider) GetCustomEmojiList() map[string]string {
+	// Lazy-load: if cache is empty, trigger a synchronous load now
+	p.emojiCacheMu.RLock()
+	empty := len(p.emojiCache) == 0
+	p.emojiCacheMu.RUnlock()
+	if empty {
+		p.loadEmojis()
+	}
+
+	p.emojiCacheMu.RLock()
+	defer p.emojiCacheMu.RUnlock()
+
+	result := make(map[string]string, len(p.emojiCache))
+	for name, url := range p.emojiCache {
+		// Skip unresolved aliases
+		if strings.HasPrefix(url, "alias:") {
+			continue
+		}
+		result[name] = url
+	}
+	return result
 }

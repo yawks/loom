@@ -485,8 +485,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       // New messages are unread if conversation already exists, otherwise assume read (existing history)
       // Call messages are always marked as read (they don't count as unread messages)
       // They have their own badge indicator
+      // Messages sent by the current user are always marked as read
       const isCallMessage = message.callType && message.callType.trim() !== "";
-      const isRead = isCallMessage ? true : (hasExisting ? false : true);
+      const isRead = isCallMessage || message.isFromMe ? true : (hasExisting ? false : true);
       console.log(`messageReadStore: registerIncomingMessage - conversationId: ${conversationId}, messageId: ${messageId}, isFromMe: ${message.isFromMe}, isCallMessage: ${isCallMessage}, hasExisting: ${hasExisting}, will be marked as read: ${isRead}`);
       
       const updatedConversation: ConversationReadState = {

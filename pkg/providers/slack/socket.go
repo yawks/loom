@@ -2,6 +2,7 @@ package slack
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"strconv"
 	"strings"
@@ -83,23 +84,27 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	// Determine if from me
-	// We need self ID. For now assume false or check against cache if possible.
-	// In the future we should store self userID in struct.
-	isFromMe := false // TODO: Check specific user ID
-
-	// Resolve sender name
-	senderName := ev.User
-	p.userCacheMu.RLock()
-	if user, ok := p.userCache[ev.User]; ok {
-		senderName = user.RealName
-		if senderName == "" {
-			senderName = user.Name
+	// Use RTM client auth info if available or check against stored self ID
+	isFromMe := false
+	// Quick check using RTM info if available
+	p.mu.RLock()
+	rtmClient := p.rtmClient
+	p.mu.RUnlock()
+	if rtmClient != nil {
+		info := rtmClient.GetInfo()
+		if info != nil && info.User.ID == ev.User {
+			isFromMe = true
 		}
-	} else {
-		// Try to fetch if not in cache (optional, might be slow in event loop)
-		// For now we skip API call to avoid blocking, relying on eventual consistency or cached contacts
 	}
-	p.userCacheMu.RUnlock()
+
+	// Resolve sender name (fallback to user ID)
+	senderName := p.resolveSlackUserName(ev.User)
+
+	// Ensure the conversation/contact exists in DB so it shows up in Recent/All lists
+	displayName := p.resolveSlackConversationName(ev.Channel, senderName)
+	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
+		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
+	}
 
 	// Check if this is a huddle-related message
 	callType := ""
@@ -137,9 +142,39 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		CallType:       callType,
 	}
 
+	// Check if this conversation already has messages in DB (to decide if we need an initial sync)
+	var existingCount int64
+	if db.DB != nil {
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ?", ev.Channel).
+			Count(&existingCount).Error; err != nil {
+			p.log("SlackProvider: failed counting existing messages for %s: %v\n", ev.Channel, err)
+		}
+	}
+
+	// Persist immediately so unread counts & sorting work
+	if db.DB != nil {
+		p.storeMessagesForConversation(ev.Channel, []models.Message{msg})
+	}
+
 	// Create the event
 	event := core.MessageEvent{
 		Message: msg,
+	}
+
+	// If this is the first time we see this conversation, trigger a history sync in background
+	if existingCount == 0 {
+		go p.syncConversationHistory(ev.Channel)
+
+		// Emit a lightweight refresh signal so the UI reloads contact lists
+		select {
+		case p.eventChan <- core.ContactStatusEvent{
+			UserID: "refresh",
+			Status: "message_received",
+		}:
+		default:
+			p.log("SlackProvider: WARNING - Failed to emit contact refresh after first message in %s\n", ev.Channel)
+		}
 	}
 
 	// Emit the message

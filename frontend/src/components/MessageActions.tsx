@@ -22,6 +22,8 @@ interface MessageActionsProps {
   className?: string;
   messageId?: string;
   openActionsMessageId?: string | null;
+  provider?: string;
+  instanceId?: string;
 }
 
 export function MessageActions({
@@ -35,6 +37,8 @@ export function MessageActions({
   className,
   messageId,
   openActionsMessageId,
+  provider,
+  instanceId,
 }: MessageActionsProps) {
   const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
@@ -80,6 +84,8 @@ export function MessageActions({
         <ReactionPicker
           onReactionSelect={onReact}
           currentReactions={currentReactions}
+          provider={provider}
+          instanceId={instanceId}
         />
       )}
       {isFromMe && (

@@ -1,22 +1,23 @@
 package whatsapp
 
 import (
-	"fmt"
-	"io"
-	"os"
-	"strings"
-	"sync"
-	"time"
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
-	"net/http"
-	"path/filepath"
 )
 
 func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
@@ -231,13 +232,14 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 	w.emitSyncStatus(core.SyncStatusFetchingAvatars, fmt.Sprintf("Loading profile pictures (%d contacts)...", total), 0)
 
 	// Limit concurrent requests to avoid rate limiting
-	const maxConcurrent = 5
+	// Reduced from 5 to 3 to avoid overwhelming WhatsApp servers
+	const maxConcurrent = 3
 	sem := make(chan struct{}, maxConcurrent)
 	var loaded int
 	var progressMu sync.Mutex
 	done := make(chan struct{}, 1) // Channel to signal when all are done
 
-	for _, acc := range accountsToLoad {
+	for i, acc := range accountsToLoad {
 		jid, _ := types.ParseJID(acc.UserID) // We already validated above
 
 		// Check if avatar is already being loaded to avoid duplicates
@@ -254,6 +256,10 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 
 		// Use semaphore to limit concurrent requests
 		sem <- struct{}{}
+		// Add a small delay between batches to avoid rate limiting
+		if i > 0 && i%maxConcurrent == 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
 		go func(account models.LinkedAccount, j types.JID) {
 			defer func() {
 				<-sem

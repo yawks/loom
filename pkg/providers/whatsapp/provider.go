@@ -441,6 +441,8 @@ func (w *WhatsAppProvider) Connect() error {
 						w.qrMu.Lock()
 						w.latestQRCode = ""
 						w.qrMu.Unlock()
+						// Emit fetching_contacts status immediately after QR scan to close the modal
+						w.emitSyncStatus(core.SyncStatusFetchingContacts, "QR code scanned, connecting...", -1)
 						// Don't return here, wait for the connection to complete
 						// The Connected event will be received via eventHandler
 					} else if evt.Event == "timeout" {
@@ -534,4 +536,50 @@ func (w *WhatsAppProvider) Disconnect() error {
 
 func (w *WhatsAppProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 	return w.eventChan, nil
+}
+
+func (w *WhatsAppProvider) Cleanup() error {
+	w.log("WhatsApp: Cleaning up provider data...\n")
+
+	// 1. Disconnect first to stop everything
+	_ = w.Disconnect()
+
+	// 2. Close database connection if open
+	w.mu.Lock()
+	if w.container != nil {
+		if err := w.container.Close(); err != nil {
+			w.log("WhatsApp: Warning - failed to close database container: %v\n", err)
+		}
+		w.container = nil
+	}
+
+	// 3. Determine data directory
+	instanceID := ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+	w.mu.Unlock()
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	var dataDir string
+	if instanceID != "" {
+		dataDir = filepath.Join(configDir, "Loom", instanceID)
+	} else {
+		dataDir = filepath.Join(configDir, "Loom", "whatsapp")
+	}
+
+	// 4. Remove directory
+	w.log("WhatsApp: Removing data directory: %s\n", dataDir)
+	if err := os.RemoveAll(dataDir); err != nil {
+		return fmt.Errorf("failed to remove data directory: %w", err)
+	}
+
+	w.log("WhatsApp: Cleanup completed successfully\n")
+	return nil
 }

@@ -51,11 +51,11 @@ export function Header({ hasProviders = true }: HeaderProps) {
   }, [hasProviders]);
 
   return (
-    <header className="h-16 border-b flex items-center justify-between px-4 bg-background">
+    <header className="h-16 border-b flex items-center justify-between px-4 bg-background" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
       <ProvidersModal open={isProvidersOpen} onOpenChange={setIsProvidersOpen} />
       <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
-      <div className="flex-1 flex justify-center">
+      <div className="flex-1 flex justify-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {hasProviders && (
           <Button
             variant="outline"
@@ -74,7 +74,7 @@ export function Header({ hasProviders = true }: HeaderProps) {
           </Button>
         )}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {hasProviders && (
           <Button
             variant="ghost"
