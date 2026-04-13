@@ -158,7 +158,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	}
 
 	// Create the event
-	event := core.MessageEvent{
+	event := core.MessageEvent{InstanceID: p.getInstanceID(),
 		Message: msg,
 	}
 
@@ -173,7 +173,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 
 		// Emit a lightweight refresh signal so the UI reloads contact lists
 		select {
-		case p.eventChan <- core.ContactStatusEvent{
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(),
 			UserID: "refresh",
 			Status: "message_received",
 		}:
@@ -188,7 +188,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	// If this is a call-related message, also emit a contact refresh to update the conversation list
 	if callType != "" {
 		select {
-		case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "call_received"}:
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "call_received"}:
 			p.log("SlackProvider: ContactStatusEvent emitted for huddle\n")
 		default:
 		}
@@ -204,7 +204,7 @@ func (p *SlackProvider) handleRTMTypingEvent(ev *slack.UserTypingEvent) {
 	userName := p.resolveSlackUserName(ev.User)
 
 	select {
-	case p.eventChan <- core.TypingEvent{
+	case p.eventChan <- core.TypingEvent{InstanceID: p.getInstanceID(),
 		ConversationID: ev.Channel,
 		UserID:         ev.User,
 		UserName:       userName,
@@ -428,7 +428,7 @@ func (p *SlackProvider) handleRTMReactionAddedEvent(ev *slack.ReactionAddedEvent
 
 					// Emit event to update frontend
 					select {
-					case p.eventChan <- core.ReactionEvent{
+					case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
 						ConversationID: ev.Item.Channel,
 						MessageID:      ev.Item.Timestamp,
 						UserID:         ev.User,
@@ -474,7 +474,7 @@ func (p *SlackProvider) handleRTMReactionRemovedEvent(ev *slack.ReactionRemovedE
 
 						// Emit event to update frontend
 						select {
-						case p.eventChan <- core.ReactionEvent{
+						case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
 							ConversationID: ev.Item.Channel,
 							MessageID:      ev.Item.Timestamp,
 							UserID:         ev.User,

@@ -255,4 +255,28 @@ type Provider interface {
 	// Cleanup cleans up the provider's data when it is removed.
 	// This should remove any local files, databases, or session data associated with the provider instance.
 	Cleanup() error
+
+	// GetCapabilities returns the features supported by this provider.
+	GetCapabilities() Capabilities
+
+	// GetCustomEmojis returns the list of custom emojis for this provider.
+	GetCustomEmojis() (map[string]string, error)
+
+	// GetAuthQRCode returns the QR code for authentication.
+	GetAuthQRCode() (string, error)
+}
+
+// Capabilities defines the features supported by a provider.
+type Capabilities struct {
+	SupportsThreads         bool `json:"supportsThreads"`
+	SupportsReactions       bool `json:"supportsReactions"`
+	SupportsCustomEmojis    bool `json:"supportsCustomEmojis"`
+	SupportsTypingIndicator bool `json:"supportsTypingIndicator"`
+	SupportsGroupManagement bool `json:"supportsGroupManagement"`
+	SupportsDeleteMessage   bool `json:"supportsDeleteMessage"`
+	SupportsEditMessage     bool `json:"supportsEditMessage"`
+	SupportsReadReceipts    bool `json:"supportsReadReceipts"`
+	SupportsPinConversation bool `json:"supportsPinConversation"`
+	SupportsMuteConversation bool `json:"supportsMuteConversation"`
+	SupportsQRCodeAuth      bool `json:"supportsQRCodeAuth"`
 }
