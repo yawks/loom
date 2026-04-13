@@ -7,6 +7,7 @@ import { translateBackendMessage } from "@/lib/i18n-helpers";
 import { cn } from "@/lib/utils";
 
 interface SyncStatus {
+  instanceId?: string;
   status: "fetching_contacts" | "fetching_history" | "fetching_avatars" | "completed" | "error" | null;
   message: string;
   conversationId?: string;
@@ -30,6 +31,7 @@ export function SyncStatusFooter() {
       const parsed = JSON.parse(jsonStatus);
       // Normalize casing
       return {
+        instanceId: parsed.InstanceID || parsed.instanceId,
         status: (parsed.Status || parsed.status || "").toLowerCase(),
         message: parsed.Message || parsed.message || "",
         conversationId: parsed.ConversationID || parsed.ConversationId || parsed.conversationId,
@@ -120,7 +122,7 @@ export function SyncStatusFooter() {
       // Call backend to force completion
       // Using any cast to avoid type errors if bindings aren't regenerated yet
       if ((window as any).go && (window as any).go.main && (window as any).go.main.App) {
-        await (window as any).go.main.App.ForceSyncCompletion();
+        await (window as any).go.main.App.ForceSyncCompletion(syncStatus?.instanceId || "");
       } else {
         console.error("Wails runtime not available");
         // Fallback: manually set completed state locally if backend call fails

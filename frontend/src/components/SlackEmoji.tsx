@@ -1,7 +1,7 @@
 import { getCachedEmojiUrl, setCachedEmojiUrl } from "../lib/emojiUrlCache";
 import { useEffect, useState } from "react";
 
-import { GetSlackEmojiURL } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis } from "../../wailsjs/go/main/App";
 import { cleanSlackEmoji } from "@/lib/userDisplayNames";
 import { unicodeEmojiMap } from "../lib/emojiMap";
 
@@ -87,8 +87,9 @@ export function SlackEmoji({
     }
 
     // Not in cache, fetch emoji URL from backend
-    GetSlackEmojiURL(providerInstanceId, emojiName)
-      .then((url: string) => {
+    GetCustomEmojis(providerInstanceId)
+      .then((emojiMap: Record<string, string>) => {
+        const url = emojiMap?.[emojiName];
         // Cache the result (even if empty/null)
         setCachedEmojiUrl(providerInstanceId, emojiName, url || null);
 
