@@ -25,6 +25,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// pendingSyncInfo holds the information needed to trigger a sync after the frontend is ready.
+type pendingSyncInfo struct {
+	provider   core.Provider
+	instanceID string
+	since      time.Time
+}
+
 // App struct
 type App struct {
 	ctx             context.Context
@@ -33,6 +40,7 @@ type App struct {
 	eventChan       <-chan core.ProviderEvent
 	eventCancel     context.CancelFunc
 	systemTray      *menu.Menu
+	pendingSyncs    []pendingSyncInfo // syncs deferred until domReady
 }
 
 // NewApp creates a new App application struct
@@ -65,6 +73,52 @@ func cleanupSelfReceipts() {
 		} else {
 			log.Printf("Successfully cleaned up %d self receipts", len(receiptsToDelete))
 		}
+	}
+}
+
+// cleanupDuplicateDMConversations removes Conversation records with D... ProtocolConvIDs
+// that were incorrectly created for Slack DM channels. These duplicates were created by a
+// bug where ensureConversation was called with the raw D... channel ID instead of the
+// resolved U... user ID. For each D... Conversation that shares a LinkedAccount with a
+// U... Conversation, we migrate messages to the U... Conversation and delete the duplicate.
+func cleanupDuplicateDMConversations() {
+	if db.DB == nil {
+		return
+	}
+
+	var dConversations []models.Conversation
+	if err := db.DB.Where("protocol_conv_id LIKE 'D%'").Find(&dConversations).Error; err != nil || len(dConversations) == 0 {
+		return
+	}
+
+	cleaned := 0
+	for _, dConv := range dConversations {
+		// Look for a sibling Conversation on the same LinkedAccount whose ID doesn't start with D
+		var uConv models.Conversation
+		if err := db.DB.
+			Where("linked_account_id = ? AND protocol_conv_id NOT LIKE 'D%'", dConv.LinkedAccountID).
+			First(&uConv).Error; err != nil {
+			continue // no canonical sibling found, leave it alone
+		}
+
+		// Migrate messages that still reference the bad D... protocolConvID
+		db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ?", dConv.ProtocolConvID).
+			Updates(map[string]interface{}{
+				"protocol_conv_id": uConv.ProtocolConvID,
+				"conversation_id":  uConv.ID,
+			})
+
+		// Remove the duplicate D... Conversation record
+		db.DB.Delete(&dConv)
+
+		log.Printf("[cleanupDuplicateDMConversations] Migrated messages from %s → %s and deleted duplicate conversation\n",
+			dConv.ProtocolConvID, uConv.ProtocolConvID)
+		cleaned++
+	}
+
+	if cleaned > 0 {
+		log.Printf("[cleanupDuplicateDMConversations] Cleaned up %d duplicate D... conversations\n", cleaned)
 	}
 }
 
@@ -162,6 +216,9 @@ func (a *App) startup(ctx context.Context) {
 
 	cleanupSelfReceipts()
 
+	// Remove duplicate D... Conversation records created by a previous bug
+	cleanupDuplicateDMConversations()
+
 	// Create missing conversations for existing messages
 	createMissingConversations()
 
@@ -170,17 +227,6 @@ func (a *App) startup(ctx context.Context) {
 	fmt.Printf("App.startup: ProviderManager initialized\n")
 
 	// Register providers
-	a.providerManager.RegisterProvider("mock", core.ProviderInfo{
-		ID:          "mock",
-		Name:        "Mock",
-		Description: "Mock provider for development and testing",
-		ConfigSchema: map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
-		},
-	}, func() core.Provider {
-		return providers.NewMockProvider()
-	})
 
 	a.providerManager.RegisterProvider("whatsapp", core.ProviderInfo{
 		ID:          "whatsapp",
@@ -233,7 +279,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Restore providers from database
-	var activeProvider core.Provider
 	restoredCount := 0
 	for _, config := range configs {
 		providerConfig := config
@@ -266,66 +311,76 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		if providerConfig.IsActive {
-			activeProvider = provider
 			a.provider = provider
 			a.providerManager.SetActiveProvider(instanceID)
 
-			// Background sync
+			// Collect pending syncs to be started in domReady(), once the frontend is ready
+			// to receive sync-status events. Starting them here (in startup) would emit events
+			// before the Wails IPC is connected and React's EventsOn listeners are registered.
+			var syncSince time.Time
 			if providerConfig.LastSyncAt != nil {
 				if time.Since(*providerConfig.LastSyncAt) > time.Minute {
-					go func(p core.Provider, instID string, lastSync time.Time) {
-						time.Sleep(2 * time.Second)
-						p.SyncHistory(lastSync)
-						// Update last sync time
-						if db.DB != nil {
-							db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", time.Now())
-						}
-						// Incremental sync is now handled by the provider's Connect() method
-					}(provider, instanceID, *providerConfig.LastSyncAt)
+					syncSince = *providerConfig.LastSyncAt
 				}
+				// If < 1 minute ago, no sync needed
 			} else {
-				go func(p core.Provider, instID string) {
-					time.Sleep(2 * time.Second)
-					since := time.Now().Add(-365 * 24 * time.Hour)
-					p.SyncHistory(since)
-					if db.DB != nil {
-						db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instID).Update("last_sync_at", time.Now())
-					}
-					// Incremental sync is now handled by the provider's Connect() method
-				}(provider, instanceID)
+				// First time: sync last 365 days
+				syncSince = time.Now().Add(-365 * 24 * time.Hour)
+			}
+			if !syncSince.IsZero() {
+				a.pendingSyncs = append(a.pendingSyncs, pendingSyncInfo{
+					provider:   provider,
+					instanceID: instanceID,
+					since:      syncSince,
+				})
 			}
 		}
 	}
 
 	// Fallback to Mock if none active
-	if activeProvider == nil {
-		var mockConfig models.ProviderConfiguration
-		mockExists := false
-		if db.DB != nil {
-			result := db.DB.Where("provider_id = ?", "mock").First(&mockConfig)
-			mockExists = result.Error == nil
-		}
-
-		if mockExists {
-			mockProvider := providers.NewMockProvider()
-			mockProvider.Init(nil)
-			mockProvider.Connect()
-			a.providerManager.AddProvider("mock", mockProvider)
-			a.providerManager.SetActiveProvider("mock")
-			a.provider = mockProvider
-			if db.DB != nil {
-				mockConfig.IsActive = true
-				db.DB.Save(&mockConfig)
-			}
-		}
-	}
 
 	a.startEventListener(ctx)
 	a.setupSystemTray(ctx)
 }
 
-func (a *App) domReady(ctx context.Context) {}
+// domReady is called when the frontend DOM is ready. It is the right place to start
+// operations that emit events to the frontend, since the Wails IPC and React's EventsOn
+// listeners are guaranteed to be active by this point.
+func (a *App) domReady(ctx context.Context) {
+	syncs := a.pendingSyncs
+	a.pendingSyncs = nil
+
+	for _, si := range syncs {
+		go func(syncInfo pendingSyncInfo) {
+			// Small delay to let React mount and register EventsOn("sync-status") listener.
+			time.Sleep(500 * time.Millisecond)
+			fmt.Printf("App.domReady: starting sync for %s since %s\n", syncInfo.instanceID, syncInfo.since.Format(time.RFC3339))
+			syncInfo.provider.SyncHistory(syncInfo.since)
+			if db.DB != nil {
+				db.DB.Model(&models.ProviderConfiguration{}).
+					Where("instance_id = ?", syncInfo.instanceID).
+					Update("last_sync_at", time.Now())
+			}
+		}(si)
+	}
+}
+
 func (a *App) shutdown(ctx context.Context) {}
+
+// ForceSyncCompletion emits a "completed" sync-status event to dismiss the sync footer.
+// Called by the frontend when the user clicks the Stop button.
+func (a *App) ForceSyncCompletion() {
+	if a.ctx == nil {
+		return
+	}
+	syncStatus := core.SyncStatusEvent{
+		Status:   core.SyncStatusCompleted,
+		Message:  "Sync stopped by user",
+		Progress: 100,
+	}
+	syncStatusJSON, _ := json.Marshal(syncStatus)
+	runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+}
 
 func (a *App) startEventListener(ctx context.Context) {
 	if a.eventCancel != nil {
@@ -528,6 +583,20 @@ func (a *App) ConfigureProvider(config string) error {
 	// DB updates omitted for brevity but should be here
 	a.startEventListener(a.ctx)
 
+	// Trigger initial sync for newly configured provider. Since Connect() no longer
+	// starts sync automatically, we start it here after the event listener is ready.
+	capturedID := instanceID
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		since := time.Now().Add(-30 * 24 * time.Hour)
+		provider.SyncHistory(since)
+		if db.DB != nil {
+			db.DB.Model(&models.ProviderConfiguration{}).
+				Where("instance_id = ?", capturedID).
+				Update("last_sync_at", time.Now())
+		}
+	}()
+
 	return nil
 }
 
@@ -584,6 +653,45 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 	}
 	var metaContacts []models.MetaContact
 	err := db.DB.Preload("LinkedAccounts").Find(&metaContacts).Error
+	if err != nil {
+		return metaContacts, err
+	}
+
+	// Collect all linked account IDs to batch-fetch their conversation IDs
+	var laIDs []uint
+	for _, mc := range metaContacts {
+		for _, la := range mc.LinkedAccounts {
+			laIDs = append(laIDs, la.ID)
+		}
+	}
+
+	// Single query to get the protocol conversation ID for each linked account
+	if len(laIDs) > 0 {
+		var conversations []models.Conversation
+		db.DB.Select("linked_account_id, protocol_conv_id").
+			Where("linked_account_id IN ?", laIDs).
+			Order("id ASC").
+			Find(&conversations)
+
+		// Build a map: linkedAccountID -> protocolConvID (keep first found)
+		convMap := make(map[uint]string, len(conversations))
+		for _, conv := range conversations {
+			if _, exists := convMap[conv.LinkedAccountID]; !exists {
+				convMap[conv.LinkedAccountID] = conv.ProtocolConvID
+			}
+		}
+
+		// Populate ConversationID on each LinkedAccount
+		for i := range metaContacts {
+			for j := range metaContacts[i].LinkedAccounts {
+				la := &metaContacts[i].LinkedAccounts[j]
+				if protocolConvID, ok := convMap[la.ID]; ok {
+					la.ConversationID = protocolConvID
+				}
+			}
+		}
+	}
+
 	return metaContacts, err
 }
 
@@ -946,7 +1054,23 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 	if a.provider == nil {
 		return fmt.Errorf("no active provider")
 	}
-	return a.provider.DeleteMessage(conversationID, messageID)
+	if err := a.provider.DeleteMessage(conversationID, messageID); err != nil {
+		return err
+	}
+	// Remove from local DB
+	if db.DB != nil {
+		db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, conversationID).Delete(&models.Message{})
+	}
+	// Notify frontend
+	if a.ctx != nil {
+		type deletedPayload struct {
+			ConversationID string `json:"ConversationID"`
+			MessageID      string `json:"MessageID"`
+		}
+		payload, _ := json.Marshal(deletedPayload{ConversationID: conversationID, MessageID: messageID})
+		runtime.EventsEmit(a.ctx, "message-deleted", string(payload))
+	}
+	return nil
 }
 
 func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
@@ -1015,11 +1139,15 @@ func (a *App) SyncProvider(providerID string) error {
 		}
 	}
 
-	// Trigger sync in background (or foreground if fast enough, but usually background)
-	// The interface SyncHistory takes a time.Time
-	// We'll sync last 30 days for manual sync
+	// Run sync in a background goroutine so the frontend call returns immediately.
+	// A 500ms delay ensures the SyncStatusFooter's EventsOn("sync-status") listener
+	// has time to register before the first sync event is emitted.
 	since := time.Now().Add(-30 * 24 * time.Hour)
-	return provider.SyncHistory(since)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		provider.SyncHistory(since)
+	}()
+	return nil
 }
 
 // SetContactAlias sets a custom name (alias) for a contact identified by userID.
@@ -1070,6 +1198,24 @@ func (a *App) GetContactAliases() (map[string]string, error) {
 	}
 
 	return aliasMap, nil
+}
+
+func (a *App) GetSlackCustomEmojiList(instanceID string) (map[string]string, error) {
+	if a.providerManager == nil {
+		return nil, nil
+	}
+
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, nil
+	}
+
+	slackProvider, ok := provider.(*slack.SlackProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	return slackProvider.GetCustomEmojiList(), nil
 }
 
 func (a *App) GetSlackEmojiURL(instanceID string, emojiName string) (string, error) {
@@ -1207,48 +1353,37 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		return map[string]int64{}, nil
 	}
 
-	// Get all conversations that have messages first
-	var conversations []string
-	err := db.DB.Model(&models.Message{}).
-		Distinct("protocol_conv_id").
-		Pluck("protocol_conv_id", &conversations).Error
+	result := make(map[string]int64)
+	var err error
 
-	if err != nil {
-		fmt.Printf("[GetAllLastMessageTimestamps] Error getting conversation list: %v\n", err)
-		return map[string]int64{}, err
+	// Single query: latest message timestamp per conversation
+	type convMaxTime struct {
+		ProtocolConvID string
+		MaxTime        time.Time
 	}
 
-	fmt.Printf("[GetAllLastMessageTimestamps] Found %d conversations with messages\n", len(conversations))
+	var msgTimestamps []convMaxTime
+	if err = db.DB.Model(&models.Message{}).
+		Select("protocol_conv_id, MAX(timestamp) as max_time").
+		Group("protocol_conv_id").
+		Scan(&msgTimestamps).Error; err != nil {
+		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
+		return map[string]int64{}, err
+	}
+	for _, row := range msgTimestamps {
+		result[row.ProtocolConvID] = row.MaxTime.Unix()
+	}
 
-	result := make(map[string]int64)
-
-	// For each conversation, get the latest message timestamp
-	for _, convID := range conversations {
-		var latestMessage models.Message
-		err := db.DB.Where("protocol_conv_id = ?", convID).
-			Order("timestamp desc").
-			First(&latestMessage).Error
-
-		if err != nil {
-			fmt.Printf("[GetAllLastMessageTimestamps] Error getting latest message for %s: %v\n", convID, err)
-			continue
-		}
-
-		result[convID] = latestMessage.Timestamp.Unix()
-
-		// Also check for reactions on this conversation
-		var latestReaction models.Reaction
-		err = db.DB.Model(&models.Reaction{}).
-			Joins("JOIN messages ON messages.id = reactions.message_id").
-			Where("messages.protocol_conv_id = ?", convID).
-			Order("reactions.created_at desc").
-			First(&latestReaction).Error
-
-		if err == nil {
-			reactionTimestamp := latestReaction.CreatedAt.Unix()
-			// Use the most recent event (message or reaction)
-			if reactionTimestamp > result[convID] {
-				result[convID] = reactionTimestamp
+	// Single query: latest reaction timestamp per conversation
+	var reactionTimestamps []convMaxTime
+	if err = db.DB.Model(&models.Reaction{}).
+		Joins("JOIN messages ON messages.id = reactions.message_id").
+		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
+		Group("messages.protocol_conv_id").
+		Scan(&reactionTimestamps).Error; err == nil {
+		for _, row := range reactionTimestamps {
+			if ts := row.MaxTime.Unix(); ts > result[row.ProtocolConvID] {
+				result[row.ProtocolConvID] = ts
 			}
 		}
 	}
@@ -1305,14 +1440,14 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 		}
 	}
 
-	// 3. For missing IDs, try to fetch from provider API (especially for Slack)
+	// 3. For missing IDs, try to fetch from provider API using GetContactName
+	// This uses the centralized function in each provider (lookupDisplayName for WhatsApp, resolveSlackUserName for Slack)
 	if len(missingIDs) > 0 && a.provider != nil {
-		// Check if provider is Slack
-		if slackProvider, ok := a.provider.(*slack.SlackProvider); ok {
-			// Use SlackProvider's ResolveUserNames to fetch from API
-			resolvedNames := slackProvider.ResolveUserNames(missingIDs)
-			for userID, name := range resolvedNames {
-				if _, exists := result[userID]; !exists {
+		for _, userID := range missingIDs {
+			if _, exists := result[userID]; !exists {
+				// Use the provider's GetContactName method which uses the centralized lookup function
+				name, err := a.provider.GetContactName(userID)
+				if err == nil && name != "" && name != userID {
 					result[userID] = name
 				}
 			}

@@ -339,7 +339,7 @@ export function ProviderConfigForm({
           <CardHeader>
             <CardTitle>{t("connection")}</CardTitle>
             <CardDescription>
-              {t("connection_description")}
+              {t("slack_connection_description")}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -347,6 +347,7 @@ export function ProviderConfigForm({
               onClick={async () => {
                 // Disable button immediately to prevent double-clicks
                 setIsSaving(true);
+                setSaveMessage(null);
                 
                 try {
                   // Filter out empty values - only save fields that have been filled
@@ -396,6 +397,9 @@ export function ProviderConfigForm({
             >
               {isSaving ? t("connecting") : t("connect")}
             </Button>
+            {saveMessage && (
+              <p className="text-sm text-destructive">{saveMessage}</p>
+            )}
           </CardContent>
         </Card>
       )}

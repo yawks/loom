@@ -8,6 +8,7 @@ import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { useTranslation } from "react-i18next";
 
 // Color variations for multiple instances of the same provider
 const COLOR_VARIATIONS = [
@@ -20,6 +21,7 @@ const COLOR_VARIATIONS = [
 ];
 
 export function ProviderFilterBar() {
+  const { t } = useTranslation();
   const [configuredProviders, setConfiguredProviders] = useState<core.ProviderInfo[]>([]);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const setSelectedProviderFilter = useAppStore((state) => state.setSelectedProviderFilter);
@@ -106,7 +108,7 @@ export function ProviderFilterBar() {
           selectedProviderFilter === null && "bg-primary text-primary-foreground"
         )}
         onClick={() => setSelectedProviderFilter(null)}
-        title="All"
+        title={t("all") || "All"}
       >
         <Layers className="h-5 w-5" />
       </Button>

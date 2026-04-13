@@ -916,6 +916,16 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 		}
 	}
 
+	// Get instance ID for this provider (needed for LinkedAccount creation)
+	w.mu.RLock()
+	instanceID := ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+	w.mu.RUnlock()
+
 	// Get sender avatar URL (only for messages not from me)
 	var senderAvatarURL string
 	if !isFromMe {
@@ -949,13 +959,14 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 					} else {
 						// Create a new entry in cache for this sender
 						w.conversations[senderID] = models.LinkedAccount{
-							Protocol:  "whatsapp",
-							UserID:    senderID,
-							Username:  senderName,
-							AvatarURL: senderAvatarURL,
-							Status:    "offline",
-							CreatedAt: timestamp,
-							UpdatedAt: timestamp,
+							Protocol:           "whatsapp",
+							ProviderInstanceID: instanceID,
+							UserID:             senderID,
+							Username:           senderName,
+							AvatarURL:          senderAvatarURL,
+							Status:             "offline",
+							CreatedAt:          timestamp,
+							UpdatedAt:          timestamp,
 						}
 					}
 					w.mu.Unlock()
@@ -974,13 +985,14 @@ func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.M
 						} else {
 							// Create new
 							newAccount := models.LinkedAccount{
-								Protocol:  "whatsapp",
-								UserID:    senderID,
-								Username:  senderName,
-								AvatarURL: senderAvatarURL,
-								Status:    "offline",
-								CreatedAt: timestamp,
-								UpdatedAt: timestamp,
+								Protocol:           "whatsapp",
+								ProviderInstanceID: instanceID,
+								UserID:             senderID,
+								Username:           senderName,
+								AvatarURL:          senderAvatarURL,
+								Status:             "offline",
+								CreatedAt:          timestamp,
+								UpdatedAt:          timestamp,
 							}
 							if err := db.DB.Create(&newAccount).Error; err != nil {
 								fmt.Printf("WhatsApp: Failed to create sender LinkedAccount in database: %v\n", err)
@@ -1288,9 +1300,9 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 	}
 	isGroup := chatJID.Server == types.GroupServer
 
-	// Default limit to 20 if not specified
+	// Default limit to 100 if not specified (like Slack)
 	if limit <= 0 {
-		limit = 20
+		limit = 100
 	}
 
 	// If not in cache or beforeTimestamp is specified, load from database
@@ -1338,6 +1350,45 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 			return []models.Message{}, err
 		}
 		fmt.Printf("WhatsApp: [HISTORY] Query returned %d messages for conversation %s\n", len(dbMessages), conversationID)
+
+		// If no messages in DB and this is the initial load (beforeTimestamp is nil), try to resolve conversation ID
+		// Messages might be stored with a different conversation ID (LID vs phone number)
+		if len(dbMessages) == 0 && beforeTimestamp == nil {
+			fmt.Printf("WhatsApp: [HISTORY] No messages found with conversation ID %s, trying to resolve...\n", conversationID)
+			// Try to resolve the conversation ID (LID -> phone number or vice versa)
+			resolvedConvID, err := w.resolveContactID(conversationID)
+			if err == nil && resolvedConvID != conversationID {
+				fmt.Printf("WhatsApp: [HISTORY] Resolved conversation ID %s to %s, querying again...\n", conversationID, resolvedConvID)
+				// Query again with resolved ID
+				var resolvedMessages []models.Message
+				resolvedQuery := db.DB.Where("protocol_conv_id = ?", resolvedConvID).
+					Preload("Receipts").Preload("Reactions").
+					Order("timestamp DESC").Limit(limit)
+				if err := resolvedQuery.Find(&resolvedMessages).Error; err == nil && len(resolvedMessages) > 0 {
+					fmt.Printf("WhatsApp: [HISTORY] Found %d messages with resolved conversation ID %s\n", len(resolvedMessages), resolvedConvID)
+					// Update protocol_conv_id to match the requested conversation ID
+					for i := range resolvedMessages {
+						resolvedMessages[i].ProtocolConvID = conversationID
+					}
+					// Reverse to get oldest first
+					for i, j := 0, len(resolvedMessages)-1; i < j; i, j = i+1, j-1 {
+						resolvedMessages[i], resolvedMessages[j] = resolvedMessages[j], resolvedMessages[i]
+					}
+					// Enrich messages
+					w.enrichMessagesWithSenderInfo(resolvedMessages, chatJID, isGroup)
+					// Update cache
+					w.mu.Lock()
+					if w.conversationMessages == nil {
+						w.conversationMessages = make(map[string][]models.Message)
+					}
+					w.conversationMessages[conversationID] = resolvedMessages
+					w.mu.Unlock()
+					return resolvedMessages, nil
+				}
+			}
+			fmt.Printf("WhatsApp: [HISTORY] No messages found in DB for conversation %s (resolved or not)\n", conversationID)
+		}
+
 		if len(dbMessages) > 0 {
 			// Count call messages
 			callMsgCountInResult := 0
@@ -1489,6 +1540,13 @@ func (w *WhatsAppProvider) updateLinkedAccountName(userID, name string) {
 
 	// Also update cache
 	w.mu.Lock()
+	instanceID = ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+
 	if cached, exists := w.conversations[userID]; exists {
 		if cached.Username == "" || cached.Username == userID {
 			cached.Username = name
@@ -1498,12 +1556,13 @@ func (w *WhatsAppProvider) updateLinkedAccountName(userID, name string) {
 	} else {
 		// Create entry in cache
 		w.conversations[userID] = models.LinkedAccount{
-			Protocol:  "whatsapp",
-			UserID:    userID,
-			Username:  name,
-			Status:    "offline",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			Protocol:           "whatsapp",
+			ProviderInstanceID: instanceID,
+			UserID:             userID,
+			Username:           name,
+			Status:             "offline",
+			CreatedAt:          time.Now(),
+			UpdatedAt:          time.Now(),
 		}
 	}
 	w.mu.Unlock()
@@ -1514,15 +1573,26 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 		return
 	}
 
+	// Get instance ID
+	w.mu.RLock()
+	instanceID := ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+	w.mu.RUnlock()
+
 	// Convert LID sender IDs to phone numbers for consistency with GetGroupParticipants
 	if isGroup {
 		for i := range messages {
 			msg := &messages[i]
 			// Resolve sender ID to canonical phone number
+			originalID := msg.SenderID
 			resolvedID, err := w.resolveContactIDForGroup(msg.SenderID, chatJID)
 			if err == nil && resolvedID != msg.SenderID {
 				msg.SenderID = resolvedID
-				fmt.Printf("WhatsApp: Resolved sender ID %s to %s in enriched message\n", msg.SenderID, resolvedID)
+				fmt.Printf("WhatsApp: Resolved sender ID %s to %s in enriched message for group %s\n", originalID, resolvedID, chatJID.String())
 			}
 		}
 	} else {
@@ -1539,8 +1609,10 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 	for i := range messages {
 		msg := &messages[i]
 
-		// Skip if already enriched
-		if msg.SenderName != "" && msg.SenderAvatarURL != "" {
+		// Skip if already enriched with a proper name (not a LID)
+		// LIDs are numeric-only, so if SenderName contains only digits, it's likely a LID that needs enrichment
+		hasProperName := msg.SenderName != "" && !isNumericOnly(msg.SenderName)
+		if hasProperName && msg.SenderAvatarURL != "" {
 			continue
 		}
 
@@ -1634,13 +1706,14 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 						} else {
 							// Create a new entry in cache for this sender
 							w.conversations[msg.SenderID] = models.LinkedAccount{
-								Protocol:  "whatsapp",
-								UserID:    msg.SenderID,
-								Username:  msg.SenderName,
-								AvatarURL: msg.SenderAvatarURL,
-								Status:    "offline",
-								CreatedAt: msg.Timestamp,
-								UpdatedAt: msg.Timestamp,
+								Protocol:           "whatsapp",
+								ProviderInstanceID: instanceID,
+								UserID:             msg.SenderID,
+								Username:           msg.SenderName,
+								AvatarURL:          msg.SenderAvatarURL,
+								Status:             "offline",
+								CreatedAt:          msg.Timestamp,
+								UpdatedAt:          msg.Timestamp,
 							}
 						}
 						w.mu.Unlock()
@@ -1659,13 +1732,14 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 						} else {
 							// Create entry without avatar to mark that we tried
 							w.conversations[msg.SenderID] = models.LinkedAccount{
-								Protocol:  "whatsapp",
-								UserID:    msg.SenderID,
-								Username:  msg.SenderName,
-								AvatarURL: "", // Empty means we tried and it's not available
-								Status:    "offline",
-								CreatedAt: msg.Timestamp,
-								UpdatedAt: msg.Timestamp,
+								Protocol:           "whatsapp",
+								ProviderInstanceID: instanceID,
+								UserID:             msg.SenderID,
+								Username:           msg.SenderName,
+								AvatarURL:          "", // Empty means we tried and it's not available
+								Status:             "offline",
+								CreatedAt:          msg.Timestamp,
+								UpdatedAt:          msg.Timestamp,
 							}
 						}
 						w.mu.Unlock()
@@ -1707,45 +1781,13 @@ func (w *WhatsAppProvider) loadMessagesFromDatabaseLocked() {
 		return
 	}
 
-	// Load messages grouped by conversation
-	// Preload receipts and reactions to include delivery and read receipts, and reactions
-	var messages []models.Message
-	if err := db.DB.Preload("Receipts").Preload("Reactions").Order("protocol_conv_id, timestamp ASC").Find(&messages).Error; err != nil {
-		fmt.Printf("WhatsApp: Failed to load messages from database: %v\n", err)
-		return
-	}
+	// NOTE: We don't load messages here anymore - only conversations
+	// Messages are loaded on-demand when a conversation is selected or a new message arrives
+	// This matches the Slack provider behavior and improves startup performance
+	fmt.Printf("WhatsApp: Skipping message loading on startup - messages will be loaded on-demand\n")
 
-	if len(messages) == 0 {
-		// Still try to load conversations even if no messages
-		w.loadConversationsFromDatabaseLocked()
-		return
-	}
-
-	if w.conversationMessages == nil {
-		w.conversationMessages = make(map[string][]models.Message)
-	}
-
-	// Group messages by conversation ID
-	for _, msg := range messages {
-		if msg.ProtocolConvID != "" {
-			w.conversationMessages[msg.ProtocolConvID] = append(w.conversationMessages[msg.ProtocolConvID], msg)
-		}
-	}
-
-	// Sort messages within each conversation
-	// Note: We don't enrich messages here because enrichMessagesWithSenderInfo
-	// needs to lock the mutex, which is already locked. Enrichment will happen
-	// lazily when GetConversationHistory is called.
-	for convID, convMessages := range w.conversationMessages {
-		// Sort messages
-		sort.SliceStable(convMessages, func(i, j int) bool {
-			return convMessages[i].Timestamp.Before(convMessages[j].Timestamp)
-		})
-		// Update the cache with sorted messages
-		w.conversationMessages[convID] = convMessages
-	}
-
-	fmt.Printf("WhatsApp: Loaded %d messages from database across %d conversations\n", len(messages), len(w.conversationMessages))
+	// Still load conversations from database to populate the cache
+	w.loadConversationsFromDatabaseLocked()
 
 	// Also load conversations from database
 	w.loadConversationsFromDatabaseLocked()

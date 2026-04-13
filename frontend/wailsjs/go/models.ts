@@ -342,6 +342,7 @@ export namespace models {
 	    status: string;
 	    lastSeen?: time.Time;
 	    extra?: string;
+	    conversationId?: string;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
 	
@@ -361,6 +362,7 @@ export namespace models {
 	        this.status = source["status"];
 	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
 	        this.extra = source["extra"];
+	        this.conversationId = source["conversationId"];
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }

@@ -551,7 +551,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 			// Subscribe to presence updates for DM contacts
 			// This allows us to receive online/offline status updates
-                    // DISABLED: go w.subscribeToContactPresence()
+			go w.subscribeToContactPresence()
 
 			// Build LID mappings from existing conversations
 			// This allows typing indicators to work immediately on existing chats
@@ -614,24 +614,28 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	case *events.HistorySync:
 		// History sync contains conversations and messages
 		fmt.Println("WhatsApp: History sync received - conversations are being synced")
-		
+
 		// Cache conversations from the history sync data so we can display them immediately
+		// IMPORTANT: We only cache conversations, not messages (like Slack)
+		// Messages will be loaded on-demand when user selects a conversation or when a new message arrives
 		if v != nil && v.Data != nil {
 			fmt.Printf("WhatsApp: ===== HISTORY SYNC STARTED =====\n")
 			w.cacheConversationsFromHistory(v.Data)
-			w.cacheMessagesFromHistory(v.Data)
-			// Process call log records to enrich call messages with summary information
-			fmt.Printf("WhatsApp: ===== PROCESSING CALL LOG RECORDS =====\n")
-			w.processCallLogRecords(v.Data)
-			fmt.Printf("WhatsApp: ===== CALL LOG RECORDS PROCESSING COMPLETE =====\n")
+			// NOTE: We no longer call cacheMessagesFromHistory here - messages are loaded on-demand
+			// w.cacheMessagesFromHistory(v.Data)
+			// NOTE: We also no longer call processCallLogRecords here - it queries the database for messages
+			// Call logs will be processed when messages are loaded on-demand (when clicking on a conversation)
+			// fmt.Printf("WhatsApp: ===== PROCESSING CALL LOG RECORDS =====\n")
+			// w.processCallLogRecords(v.Data)
+			// fmt.Printf("WhatsApp: ===== CALL LOG RECORDS PROCESSING COMPLETE =====\n")
 
 			// Update last sync timestamp after successful history sync
 			now := time.Now()
 			w.saveLastSyncTimestamp(now)
 		}
 
-		// Emit sync status event - history sync in progress
-		w.emitSyncStatus(core.SyncStatusFetchingHistory, "Syncing message history...", -1)
+		// Emit sync status event - fetching contacts (conversations only, not messages)
+		w.emitSyncStatus(core.SyncStatusFetchingContacts, "Fetching conversations...", -1)
 		// Trigger a contact refresh after history sync
 		// Use a goroutine to delay the refresh slightly to allow whatsmeow to process the sync
 		go func() {
@@ -691,33 +695,33 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 		}()
 	case *events.OfflineSyncCompleted:
-// Offline sync completed - all data is now synced
-// This is the FINAL sync event - emit completed status here
-fmt.Println("WhatsApp: Offline sync completed - conversations should now be available")
+		// Offline sync completed - all data is now synced
+		// This is the FINAL sync event - emit completed status here
+		fmt.Println("WhatsApp: Offline sync completed - conversations should now be available")
 
-// Wait a bit for the store to be fully populated, then fetch contacts and emit final completed
-go func() {
-time.Sleep(2 * time.Second) // Wait for store to be fully populated
+		// Wait a bit for the store to be fully populated, then fetch contacts and emit final completed
+		go func() {
+			time.Sleep(2 * time.Second) // Wait for store to be fully populated
 
-contacts, err := w.GetContacts()
-if err != nil {
-fmt.Printf("WhatsApp: Failed to fetch contacts after offline sync: %v\n", err)
-fmt.Printf("WhatsApp: Emitting error sync status event\n")
-w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
-} else {
-fmt.Printf("WhatsApp: Fetched %d conversations after offline sync\n", len(contacts))
-// This is the final completed event - sync is fully done
-fmt.Printf("WhatsApp: Emitting completed sync status event with %d conversations\n", len(contacts))
-w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
-fmt.Printf("WhatsApp: Completed sync status event emitted\n")
-}
-// Emit a contact refresh event
-select {
-case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
-default:
-}
-}()
-case *events.CallOffer:
+			contacts, err := w.GetContacts()
+			if err != nil {
+				fmt.Printf("WhatsApp: Failed to fetch contacts after offline sync: %v\n", err)
+				fmt.Printf("WhatsApp: Emitting error sync status event\n")
+				w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
+			} else {
+				fmt.Printf("WhatsApp: Fetched %d conversations after offline sync\n", len(contacts))
+				// This is the final completed event - sync is fully done
+				fmt.Printf("WhatsApp: Emitting completed sync status event with %d conversations\n", len(contacts))
+				w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
+				fmt.Printf("WhatsApp: Completed sync status event emitted\n")
+			}
+			// Emit a contact refresh event
+			select {
+			case w.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "sync_complete"}:
+			default:
+			}
+		}()
+	case *events.CallOffer:
 		// Handle incoming call offer
 		fmt.Printf("WhatsApp: Received CallOffer event - CallCreator: %s (server: %s), CallID: %s\n",
 			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
@@ -790,18 +794,9 @@ case *events.CallOffer:
 			CallIsVideo:    false, // Will be updated from call logs if available
 		}
 
-		// Try to get sender name from contact info using resolved JID
-		if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && callCreatorJID.Server != "lid" {
-			contact, err := w.client.Store.Contacts.GetContact(w.ctx, callCreatorJID)
-			if err == nil && contact.Found {
-				if contact.FullName != "" {
-					callMessage.SenderName = contact.FullName
-				} else if contact.PushName != "" {
-					callMessage.SenderName = contact.PushName
-				} else if contact.FirstName != "" {
-					callMessage.SenderName = contact.FirstName
-				}
-			}
+		// Try to get sender name using centralized function (handles LID resolution, etc.)
+		if callCreatorJID.Server != "lid" {
+			callMessage.SenderName = w.lookupDisplayName(callCreatorJID, "")
 		}
 
 		// If we still don't have a name, try using GetContactName helper
@@ -973,18 +968,9 @@ case *events.CallOffer:
 				CallOutcome:    callOutcome,
 			}
 
-			// Try to get sender name
-			if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && callCreatorJID.Server != "lid" {
-				contact, err := w.client.Store.Contacts.GetContact(w.ctx, callCreatorJID)
-				if err == nil && contact.Found {
-					if contact.FullName != "" {
-						callMessage.SenderName = contact.FullName
-					} else if contact.PushName != "" {
-						callMessage.SenderName = contact.PushName
-					} else if contact.FirstName != "" {
-						callMessage.SenderName = contact.FirstName
-					}
-				}
+			// Try to get sender name using centralized function (handles LID resolution, etc.)
+			if callCreatorJID.Server != "lid" {
+				callMessage.SenderName = w.lookupDisplayName(callCreatorJID, "")
 			}
 
 			if callMessage.SenderName == "" && senderID != "" {
@@ -1234,20 +1220,11 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					}
 				}
 
-				// Try to get sender name for individual calls
-				if !isGroupCall && w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil {
+				// Try to get sender name for individual calls using centralized function
+				if !isGroupCall {
 					senderJID, err := types.ParseJID(senderID)
 					if err == nil {
-						contact, err := w.client.Store.Contacts.GetContact(w.ctx, senderJID)
-						if err == nil && contact.Found {
-							if contact.FullName != "" {
-								callMessage.SenderName = contact.FullName
-							} else if contact.PushName != "" {
-								callMessage.SenderName = contact.PushName
-							} else if contact.FirstName != "" {
-								callMessage.SenderName = contact.FirstName
-							}
-						}
+						callMessage.SenderName = w.lookupDisplayName(senderJID, "")
 					}
 				}
 
@@ -1392,12 +1369,18 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 	}
 	fmt.Printf("WhatsApp: Processing %d conversations from history sync\n", len(conversations))
 
+	// Get instance ID for this provider
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
+	instanceID := ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
 	if w.conversations == nil {
 		w.conversations = make(map[string]models.LinkedAccount)
 	}
+	w.mu.Unlock()
 
 	added := 0
 	skippedNil := 0
@@ -1418,7 +1401,7 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 			continue
 		}
 
-				// Note: conv.GetMessages() is always empty during HistorySync
+		// Note: conv.GetMessages() is always empty during HistorySync
 		// Messages are processed separately in the HistorySync event
 		// So we should NOT filter based on message count here
 
@@ -1429,89 +1412,129 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 			continue
 		}
 
-		// Get display name - try multiple sources in order of preference
-		displayName := ""
-		
-		// 1. Try whatsmeow's Contact store first (most reliable for names)
-		if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil {
-			if contact, err := w.client.Store.Contacts.GetContact(w.ctx, jid); err == nil && contact.Found {
-				// Prefer actual names over phone numbers
-				if contact.FullName != "" && !isPhoneNumber(contact.FullName) {
-					displayName = contact.FullName
-				} else if contact.PushName != "" && !isPhoneNumber(contact.PushName) {
-					displayName = contact.PushName
-				} else if contact.FirstName != "" && !isPhoneNumber(contact.FirstName) {
-					displayName = contact.FirstName
-				} else if contact.BusinessName != "" && !isPhoneNumber(contact.BusinessName) {
-					displayName = contact.BusinessName
-				}
-			}
+		// Get display name using centralized function (handles LID resolution, phone formatting, etc.)
+		// Try conversation name fields first as fallback
+		fallbackName := ""
+		convName := conv.GetName()
+		if convName != "" && !isPhoneNumber(convName) {
+			fallbackName = convName
 		}
-		
-		// 2. If Contact store didn't have a name, use conversation name fields
-		if displayName == "" {
-			convName := conv.GetName()
-			if convName != "" && !isPhoneNumber(convName) {
-				displayName = convName
-			}
-		}
-		
-		// 3. Try DisplayName field as another fallback
-		if displayName == "" {
+		if fallbackName == "" {
 			convDisplayName := conv.GetDisplayName()
 			if convDisplayName != "" && !isPhoneNumber(convDisplayName) {
-				displayName = convDisplayName
+				fallbackName = convDisplayName
 			}
 		}
-		
-		// 4. For phone number JIDs, format the number nicely
-		if displayName == "" && jid.Server == types.DefaultUserServer {
-			displayName = formatPhoneNumber(jid.User)
-		}
-		
-		// 5. Last resort: use JID user part without formatting (for LIDs)
-		if displayName == "" {
-			displayName = jid.User
-		}
+		displayName := w.lookupDisplayName(jid, fallbackName)
 
 		lastActivity := time.Now()
 		if ts := conv.GetConversationTimestamp(); ts > 0 {
 			lastActivity = time.Unix(int64(ts), 0)
 		}
 
-		// Don't fetch profile pictures synchronously - it blocks and causes rate limiting
-		// Avatars will be loaded lazily when needed or in background
+		// Avatars will be loaded asynchronously to avoid blocking (via loadAvatarsAsync)
+		// But we can try to get from cache if available
+		avatarURL := ""
+		w.mu.RLock()
+		if cached, exists := w.conversations[jid.String()]; exists && cached.AvatarURL != "" {
+			avatarURL = cached.AvatarURL
+		}
+		w.mu.RUnlock()
+
 		linked := models.LinkedAccount{
-			Protocol:  "whatsapp",
-			UserID:    jid.String(),
-			Username:  displayName,
-			AvatarURL: "", // Will be loaded asynchronously if needed
-			Status:    "active",
-			CreatedAt: lastActivity,
-			UpdatedAt: lastActivity,
+			Protocol:           "whatsapp",
+			ProviderInstanceID: instanceID,
+			UserID:             jid.String(),
+			Username:           displayName,
+			AvatarURL:          avatarURL, // Will be loaded asynchronously if empty
+			Status:             "active",
+			CreatedAt:          lastActivity,
+			UpdatedAt:          lastActivity,
 		}
 
+		w.mu.Lock()
 		w.conversations[linked.UserID] = linked
+		w.mu.Unlock()
 		fmt.Printf("WhatsApp: Cached conversation[%d]: %s (%s)\n", i, displayName, jid.String())
-		
+
+		// For group conversations, cache participants to extract LID mappings
+		// This ensures we can resolve participant names even during initial sync
+		if jid.Server == types.GroupServer {
+			fmt.Printf("WhatsApp: Caching participants for group %s\n", jid.String())
+			go w.cacheGroupParticipants(jid)
+		}
+
 		// Save to database for persistence - use FirstOrCreate to avoid duplicates
 		if db.DB != nil {
 			var existing models.LinkedAccount
-			// Try to find existing conversation
-			result := db.DB.Where("user_id = ? AND protocol = ?", linked.UserID, "whatsapp").First(&existing)
+			// Try to find existing conversation (check by instanceID if available)
+			query := db.DB.Where("user_id = ? AND protocol = ?", linked.UserID, "whatsapp")
+			if instanceID != "" {
+				query = query.Where("provider_instance_id = ?", instanceID)
+			}
+			result := query.First(&existing)
 			if result.Error == nil {
 				// Update existing with new name if it's better (not a phone number)
 				if linked.Username != "" && !strings.HasPrefix(linked.Username, "+") {
 					existing.Username = linked.Username
 					existing.UpdatedAt = linked.UpdatedAt
-					if err := db.DB.Save(&existing).Error; err != nil {
-						fmt.Printf("WhatsApp: Error updating conversation %s: %v\n", linked.UserID, err)
+				}
+
+				// If existing contact doesn't have MetaContactID, create one
+				if existing.MetaContactID == 0 {
+					metaContact := models.MetaContact{
+						DisplayName: existing.Username,
+						AvatarURL:   existing.AvatarURL,
+						CreatedAt:   time.Now(),
+						UpdatedAt:   time.Now(),
+					}
+					if err := db.DB.Create(&metaContact).Error; err != nil {
+						fmt.Printf("WhatsApp: Error creating MetaContact for existing LinkedAccount %s: %v\n", linked.UserID, err)
+					} else {
+						existing.MetaContactID = metaContact.ID
+						fmt.Printf("WhatsApp: Created MetaContact (ID=%d) for existing LinkedAccount %s\n", metaContact.ID, linked.UserID)
 					}
 				}
+
+				// Update MetaContact.DisplayName to match LinkedAccount.Username
+				if existing.MetaContactID > 0 {
+					var metaContact models.MetaContact
+					if err := db.DB.First(&metaContact, existing.MetaContactID).Error; err == nil {
+						if metaContact.DisplayName != existing.Username && existing.Username != "" {
+							metaContact.DisplayName = existing.Username
+							metaContact.UpdatedAt = time.Now()
+							if err := db.DB.Save(&metaContact).Error; err != nil {
+								fmt.Printf("WhatsApp: Failed to update MetaContact.DisplayName for %s: %v\n", linked.UserID, err)
+							}
+						}
+					}
+				}
+
+				if err := db.DB.Save(&existing).Error; err != nil {
+					fmt.Printf("WhatsApp: Error updating conversation %s: %v\n", linked.UserID, err)
+				}
 			} else {
-				// Create new
+				// Create new MetaContact and LinkedAccount (like Slack does)
+				// 1. Create MetaContact
+				metaContact := models.MetaContact{
+					DisplayName: linked.Username,
+					AvatarURL:   linked.AvatarURL,
+					CreatedAt:   time.Now(),
+					UpdatedAt:   time.Now(),
+				}
+				if err := db.DB.Create(&metaContact).Error; err != nil {
+					fmt.Printf("WhatsApp: Error creating MetaContact for %s: %v\n", linked.Username, err)
+					continue
+				}
+
+				// 2. Create LinkedAccount linked to MetaContact
+				linked.MetaContactID = metaContact.ID
+				linked.CreatedAt = time.Now()
+				linked.UpdatedAt = time.Now()
 				if err := db.DB.Create(&linked).Error; err != nil {
-					fmt.Printf("WhatsApp: Error creating conversation %s: %v\n", linked.UserID, err)
+					fmt.Printf("WhatsApp: Error creating LinkedAccount for %s: %v\n", linked.UserID, err)
+				} else {
+					fmt.Printf("WhatsApp: Created MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", metaContact.ID, linked.Username, linked.UserID)
 				}
 			}
 		}
@@ -1530,6 +1553,24 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 	fmt.Printf("WhatsApp: Cached %d conversations from history sync (total cached: %d)\n", added, len(w.conversations))
 	if added == 0 {
 		fmt.Printf("WhatsApp: WARNING - No conversations were cached despite %d in history sync!\n", len(conversations))
+	}
+
+	// Load avatars asynchronously for the cached conversations
+	// Convert cached conversations to LinkedAccount slice for loadAvatarsAsync
+	if added > 0 {
+		cachedAccounts := make([]models.LinkedAccount, 0, len(w.conversations))
+		w.mu.RLock()
+		for _, conv := range w.conversations {
+			cachedAccounts = append(cachedAccounts, conv)
+		}
+		w.mu.RUnlock()
+
+		// Load avatars asynchronously in background (non-blocking)
+		// Always try to load avatars, even if some are already loading
+		// The loadAvatarsAsync function will skip accounts that are already loading
+		go func() {
+			w.loadAvatarsAsync(cachedAccounts)
+		}()
 	}
 }
 

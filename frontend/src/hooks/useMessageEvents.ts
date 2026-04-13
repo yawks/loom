@@ -88,11 +88,21 @@ export function useMessageEvents() {
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
         queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
         console.log("useMessageEvents: Invalidated and refetched metaContacts");
+
+        // Invalidate sort-order queries so the Recent tab reorders immediately
+        // (covers both incoming and outgoing messages)
+        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         
         // Optimistically inject the message into the messages cache so it shows up instantly,
         // even if the conversation was not yet synced/loaded.
         const conversationId = message.protocolConvId;
+        // Track whether the setQueryData updater actually added a genuinely new message.
+        // Using an object so TypeScript's control-flow narrowing doesn't prevent mutation
+        // inside the setQueryData callback from being visible outside.
+        const state = { isNewMessage: false };
         if (conversationId) {
+
           queryClient.setQueryData<InfiniteData<models.Message[]>>(
             ["messages", conversationId],
             (oldData) => {
@@ -109,65 +119,78 @@ export function useMessageEvents() {
                 safeData.pages.push([]);
               }
 
-              // Deduplicate by protocolMsgId
-              const seen = new Set<string>();
-              const addMessage = (msgs: models.Message[]) => {
-                const result: models.Message[] = [];
-                for (const m of msgs) {
-                  const id = m.protocolMsgId || "";
-                  if (id && seen.has(id)) continue;
-                  if (id) seen.add(id);
-                  result.push(m);
+              const messageId = message.protocolMsgId || "";
+
+              // Check if this exact message already exists in any page (avoid duplicates)
+              const existsInCache = messageId && safeData.pages.some(page =>
+                page.some(m => m.protocolMsgId === messageId)
+              );
+              if (existsInCache) {
+                // state.isNewMessage stays false
+                return safeData;
+              }
+
+              // For outgoing messages: replace the optimistic temp message if one exists
+              // This prevents a double message (temp + real) from appearing simultaneously
+              if (message.isFromMe) {
+                let replacedTemp = false;
+                const updatedPages = safeData.pages.map(page =>
+                  page.map(m => {
+                    if (!replacedTemp && m.isFromMe && typeof m.protocolMsgId === "string" && m.protocolMsgId.startsWith("temp-")) {
+                      replacedTemp = true;
+                      return { ...message, isPending: false, sendFailed: false } as unknown as models.Message;
+                    }
+                    return m;
+                  })
+                );
+                if (replacedTemp) {
+                  // state.isNewMessage stays false – the temp was already tracked by onSuccess
+                  safeData.pages = updatedPages;
+                  return safeData;
                 }
-                return result;
-              };
+              }
 
-              // Insert new message at the end (messages are displayed in chronological order)
+              // No temp message to replace and not already in cache: add to first page
+              state.isNewMessage = true;
               const firstPage = safeData.pages[0] || [];
-              const mergedFirstPage = addMessage([...firstPage, message]);
-
-              safeData.pages[0] = mergedFirstPage;
+              safeData.pages[0] = [...firstPage, message];
               return safeData;
             }
           );
 
-          // Force-fetch history so we don't miss older messages when a brand-new
-          // conversation appears via RTM (the cache above only injects the new message).
-          queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
-          queryClient.refetchQueries({
-            queryKey: ["messages", conversationId],
-            type: "active",
-          });
-
-          // Schedule a second refetch shortly after to catch background sync completion.
-          setTimeout(() => {
+          // Only refetch from the server when we received a genuinely new message
+          // (i.e. an incoming message appended to the cache). For outgoing messages that
+          // replaced a temp placeholder, or for duplicates that were already in cache,
+          // the local state is already correct – a refetch would just trigger unnecessary
+          // re-renders that can cause a brief visual glitch on past messages.
+          if (state.isNewMessage) {
+            queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
             queryClient.refetchQueries({
               queryKey: ["messages", conversationId],
               type: "active",
             });
-          }, 1500);
+          }
         }
-        
-        // Always invalidate the conversation cache to ensure it's up to date
-        // This is important for messages received during background sync (e.g., incremental sync on startup)
-        if (conversationId) {
-          console.log("useMessageEvents: Invalidating messages cache for conversation:", conversationId);
-          queryClient.invalidateQueries({
-            queryKey: ["messages", conversationId],
-          });
-          
-          // If the conversation is currently selected, also refetch immediately
-        if (selectedContact) {
-          const selectedConversationId = selectedContact.linkedAccounts[0]?.userId;
+
+        // Safety-net: if the selected conversation uses a different query key than
+        // message.protocolConvId (e.g. Slack DMs where linkedAccount.userId ≠ channel ID),
+        // refetch any active ["messages", ...] query so the currently open chat always
+        // reflects the new message. Only do this when the message was genuinely new.
+        if (state.isNewMessage && selectedContact) {
+          const selectedConversationId =
+            selectedContact.linkedAccounts[0]?.conversationId ??
+            selectedContact.linkedAccounts[0]?.userId;
           console.log("useMessageEvents: Selected contact conversation ID:", selectedConversationId, "Message conversation ID:", message.protocolConvId);
-          
-          if (message.protocolConvId === selectedConversationId && selectedConversationId) {
-              console.log("useMessageEvents: Message belongs to selected conversation, refetching now");
+
+          if (selectedConversationId && selectedConversationId !== conversationId) {
+            // IDs differ (e.g. Slack DM: user ID vs channel ID).  Invalidate and
+            // refetch using the key the MessageList is actually subscribed to.
+            console.log("useMessageEvents: ID mismatch – refetching selected conversation", selectedConversationId);
+            queryClient.invalidateQueries({ queryKey: ["messages", selectedConversationId] });
             queryClient.refetchQueries({
               queryKey: ["messages", selectedConversationId],
+              type: "active",
             });
-              console.log("useMessageEvents: Refetched messages for selected conversation");
-            }
           }
         }
       } catch (error) {
@@ -233,7 +256,9 @@ export function useMessageEvents() {
 
         // Update messages cache directly without refetching to avoid scroll
         if (selectedContact) {
-          const conversationId = selectedContact.linkedAccounts[0]?.userId;
+          const conversationId =
+            selectedContact.linkedAccounts[0]?.conversationId ??
+            selectedContact.linkedAccounts[0]?.userId;
           if (receipt.ConversationID === conversationId && conversationId) {
             // Update the message in the cache directly
             // Note: useInfiniteQuery uses InfiniteData structure { pages: [...], pageParams: [...] }
@@ -355,6 +380,11 @@ export function useMessageEvents() {
           added: reaction.Added,
         });
         
+        // Strip leading/trailing colons for emoji comparison.
+        // The DB stores emojis without colons ("+1") but optimistic updates use ":+1:".
+        const normalizeEmoji = (e: string) => e.replace(/^:/, "").replace(/:$/, "");
+        const normalizedReactionEmoji = normalizeEmoji(reaction.Emoji);
+
         // Update messages cache directly for all conversations, not just selected one
         // This ensures reactions are updated even if the conversation is not currently selected
         queryClient.setQueriesData<InfiniteData<models.Message[]>>(
@@ -363,20 +393,21 @@ export function useMessageEvents() {
             if (!oldData || !oldData.pages || !Array.isArray(oldData.pages)) {
               return oldData;
             }
-            
+
             let found = false;
             const updatedPages = oldData.pages.map((page) => {
               if (!Array.isArray(page)) return page;
-              
+
               return page.map((msg) => {
-                if (msg.protocolMsgId === reaction.MessageID && msg.protocolConvId === reaction.ConversationID) {
+                // Match by message ID only — ConversationID can differ for DMs (U... vs D...)
+                if (msg.protocolMsgId === reaction.MessageID) {
                   found = true;
                   const currentReactions = msg.reactions || [];
-                  
+
                   if (reaction.Added) {
-                    // Add reaction if it doesn't exist
+                    // Add reaction if it doesn't exist (normalize emoji format for comparison)
                     const exists = currentReactions.some(
-                      (r) => r.userId === reaction.UserID && r.emoji === reaction.Emoji
+                      (r) => r.userId === reaction.UserID && normalizeEmoji(r.emoji) === normalizedReactionEmoji
                     );
                     if (!exists) {
                       console.log("useMessageEvents: Adding reaction to message", reaction.MessageID);
@@ -397,10 +428,10 @@ export function useMessageEvents() {
                       console.log("useMessageEvents: Reaction already exists for message", reaction.MessageID);
                     }
                   } else {
-                    // Remove reaction
+                    // Remove reaction (normalize emoji format for comparison)
                     console.log("useMessageEvents: Removing reaction from message", reaction.MessageID);
                     const filteredReactions = currentReactions.filter(
-                      (r) => !(r.userId === reaction.UserID && r.emoji === reaction.Emoji)
+                      (r) => !(r.userId === reaction.UserID && normalizeEmoji(r.emoji) === normalizedReactionEmoji)
                     );
                     return models.Message.createFrom({
                       ...msg,
@@ -411,11 +442,11 @@ export function useMessageEvents() {
                 return msg;
               });
             });
-            
+
             if (!found) {
               console.log("useMessageEvents: Message not found in cache for reaction:", reaction.MessageID, "in conversation:", reaction.ConversationID);
             }
-            
+
             return {
               ...oldData,
               pages: updatedPages,
@@ -539,6 +570,49 @@ export function useMessageEvents() {
       }
     };
   }, [setTyping, setNotTyping]);
+
+  // Listen for message deleted events
+  useEffect(() => {
+    if (typeof window !== "undefined" && !window.runtime) {
+      return;
+    }
+
+    let isMounted = true;
+    const unsubscribeDeleted = EventsOn("message-deleted", (deletedJSON: string) => {
+      if (!isMounted) return;
+
+      try {
+        const { ConversationID, MessageID } = JSON.parse(deletedJSON);
+
+        // Remove the message from all cached query pages
+        queryClient.setQueriesData<InfiniteData<models.Message[]>>(
+          { queryKey: ["messages"] },
+          (oldData) => {
+            if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+            return {
+              ...oldData,
+              pages: oldData.pages.map((page) => {
+                if (!Array.isArray(page)) return page;
+                return page.filter(
+                  (msg) =>
+                    !(msg.protocolMsgId === MessageID && msg.protocolConvId === ConversationID)
+                );
+              }),
+            };
+          }
+        );
+      } catch (error) {
+        console.error("useMessageEvents: Failed to parse message-deleted event:", error);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      if (unsubscribeDeleted) {
+        unsubscribeDeleted();
+      }
+    };
+  }, [queryClient]);
 
   // Listen for conversation read status events (last_read timestamp from Slack)
   useEffect(() => {

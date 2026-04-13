@@ -30,6 +30,7 @@ type LinkedAccount struct {
 	LastSeen           *time.Time     `json:"lastSeen,omitempty"`                  // Last seen timestamp (nil if not available)
 	Extra              string         `gorm:"type:text" json:"extra,omitempty"`    // JSON-encoded extra data (e.g., LID mappings for WhatsApp)
 	Conversations      []Conversation `gorm:"foreignKey:LinkedAccountID" json:"-"` // Avoid JSON cycles
+	ConversationID     string         `gorm:"-" json:"conversationId,omitempty"`   // Computed: ProtocolConvID of the associated Conversation (not persisted)
 	CreatedAt          time.Time      `json:"createdAt"`
 	UpdatedAt          time.Time      `json:"updatedAt"`
 }

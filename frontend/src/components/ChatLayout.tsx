@@ -240,7 +240,7 @@ export function ChatLayout() {
             {shouldShowThreadsPanel && (
               <>
                 <ResizableHandle withHandle />
-                <ResizablePanel id="threads-panel" defaultSize={25} minSize={15}>
+                <ResizablePanel id="threads-panel" defaultSize={25} minSize={15} className="relative">
                   <ThreadView />
                 </ResizablePanel>
               </>

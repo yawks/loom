@@ -27,11 +27,11 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
   }, [aliases, metaContacts]);
 
   // Récupérer tous les timestamps des derniers messages en une seule requête
-  // C'est beaucoup plus efficace que de faire une requête par conversation
+  // Toujours activé pour que les données soient disponibles immédiatement lors du basculement vers "Récents"
   const { data: allLastMessageTimestamps = {} } = useQuery<Record<string, any>, Error>({
     queryKey: ["allLastMessageTimestamps"],
-        queryFn: async () => {
-          try {
+    queryFn: async () => {
+      try {
         const timestamps = await GetAllLastMessageTimestamps();
         return timestamps || {};
       } catch (error) {
@@ -39,30 +39,26 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
         return {};
       }
     },
-    enabled: sortBy === "last_message",
     staleTime: 30000, // Cache pendant 30 secondes
-            });
-            
+  });
+
   // Récupérer tous les derniers messages complets en une seule requête
-  // C'est beaucoup plus efficace que de faire une requête par conversation
   const { data: allLastMessages = {} } = useQuery<Record<string, models.Message | null>, Error>({
     queryKey: ["allLastMessages"],
     queryFn: async () => {
       try {
         const messages = await GetAllLastMessages();
-        // Convert map to Record format
         const result: Record<string, models.Message | null> = {};
         for (const [conversationId, message] of Object.entries(messages)) {
           result[conversationId] = message || null;
-            }
+        }
         return result;
-          } catch (error) {
+      } catch (error) {
         console.error("Error fetching all last messages:", error);
         return {};
-          }
-        },
-    enabled: sortBy === "last_message",
-        staleTime: 30000, // Cache pendant 30 secondes
+      }
+    },
+    staleTime: 30000, // Cache pendant 30 secondes
   });
 
   // Créer un map des dates du dernier message par conversation ID
@@ -72,8 +68,12 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     if (allLastMessageTimestamps) {
       for (const [conversationId, timestamp] of Object.entries(allLastMessageTimestamps)) {
         if (timestamp) {
-          dates[conversationId] = timeToDate(timestamp);
-      }
+          // Backend returns Unix timestamps (seconds), optimistic updates use ISO strings
+          dates[conversationId] =
+            typeof timestamp === "number"
+              ? new Date(timestamp * 1000)
+              : timeToDate(timestamp);
+        }
       }
     }
     return dates;
@@ -101,22 +101,24 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
         })
       );
     } else if (sortBy === "last_message") {
-      // Filtrer pour ne garder que les conversations qui ont des messages/événements
-      sorted = sorted.filter((contact) => {
-        const conversationId = contact.linkedAccounts[0]?.userId ?? "";
-        return conversationId && lastMessageDates[conversationId] !== undefined;
-      });
+      // Trier par date du dernier message/réaction - plus récent en premier
+      // Les conversations sans message vont en bas (timestamp 0)
+      const getContactTime = (contact: models.MetaContact): number => {
+        for (const acc of contact.linkedAccounts) {
+          const id = acc.conversationId ?? acc.userId;
+          if (id && lastMessageDates[id]) {
+            return lastMessageDates[id].getTime();
+          }
+        }
+        return 0;
+      };
 
-      // Trier par date du dernier événement (message ou réaction) - plus récent en premier
-      sorted.sort((a, b) => {
-        const conversationIdA = a.linkedAccounts[0]?.userId ?? "";
-        const conversationIdB = b.linkedAccounts[0]?.userId ?? "";
-        
-        const timeA = lastMessageDates[conversationIdA]?.getTime() ?? 0;
-        const timeB = lastMessageDates[conversationIdB]?.getTime() ?? 0;
-        
-        return timeB - timeA;
-      });
+      sorted.sort((a, b) => getContactTime(b) - getContactTime(a));
+
+      // Filter out contacts with no messages only when timestamp data has loaded
+      if (Object.keys(lastMessageDates).length > 0) {
+        sorted = sorted.filter((contact) => getContactTime(contact) > 0);
+      }
     }
 
     return sorted;

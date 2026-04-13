@@ -61,7 +61,9 @@ export function useSystemTrayBadge() {
     const debugInfo: { convId: string; unread: number; messages: string[] }[] = [];
 
     contacts.forEach((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId;
+      const conversationId =
+        contact.linkedAccounts[0]?.conversationId ??
+        contact.linkedAccounts[0]?.userId;
       if (!conversationId) {
         return;
       }

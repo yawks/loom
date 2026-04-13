@@ -88,7 +88,10 @@ export function ConversationDetailsView({
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
-  const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
+  const conversationId =
+    selectedConversation.linkedAccounts[0]?.conversationId ??
+    selectedConversation.linkedAccounts[0]?.userId ??
+    "";
   
   // Use a different query key to avoid conflicts with MessageList's useInfiniteQuery
   const { data: messagesData } = useSuspenseQuery<models.Message[], Error>({
@@ -162,7 +165,9 @@ export function ConversationDetailsView({
       return;
     }
 
-    const convId = selectedConversation.linkedAccounts[0]?.userId;
+    const convId =
+      selectedConversation.linkedAccounts[0]?.conversationId ??
+      selectedConversation.linkedAccounts[0]?.userId;
     if (!convId) {
       return;
     }

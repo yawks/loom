@@ -116,6 +116,29 @@ func (p *SlackProvider) GetGroupParticipants(conversationID string) ([]models.Gr
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
+	// Check if this is a User ID (1-to-1 DM stored as normalized user ID)
+	// Slack user IDs start with "U" and are stored directly after DM channel normalization
+	if len(conversationID) > 0 && conversationID[0] == 'U' {
+		var participants []models.GroupParticipant
+
+		// Get current user ID
+		authTest, err := p.client.AuthTest()
+		if err == nil && authTest != nil {
+			participants = append(participants, models.GroupParticipant{
+				UserID:  authTest.UserID,
+				IsAdmin: false,
+			})
+		}
+
+		// The conversation ID itself IS the other user's ID
+		participants = append(participants, models.GroupParticipant{
+			UserID:  conversationID,
+			IsAdmin: false,
+		})
+
+		return participants, nil
+	}
+
 	// Check if this is a DM (DM channel IDs start with "D")
 	if len(conversationID) > 0 && conversationID[0] == 'D' {
 		// For DMs, use conversations.info to get the channel info

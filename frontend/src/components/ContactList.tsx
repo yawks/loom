@@ -195,7 +195,9 @@ export function ContactList() {
   const unreadCountsByConversation = useMemo(() => {
     const counts: Record<string, number> = {};
     sortedContacts.forEach((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId;
+      const conversationId =
+        contact.linkedAccounts[0]?.conversationId ??
+        contact.linkedAccounts[0]?.userId;
       if (!conversationId) {
         return;
       }
@@ -221,6 +223,11 @@ export function ContactList() {
     return counts;
   }, [readStateByConversation, sortedContacts]);
 
+  const totalUnreadCount = useMemo(
+    () => Object.values(unreadCountsByConversation).reduce((sum, n) => sum + n, 0),
+    [unreadCountsByConversation]
+  );
+
   // Detect active incoming calls (not terminated) for all conversations in one query
   // This is much more efficient than making individual queries for each conversation
   const { data: allActiveCalls = {} } = useQuery<Record<string, boolean>, Error>({
@@ -243,7 +250,7 @@ export function ContactList() {
 
   // Get message counts for all conversations in a single query
   // This is much more efficient than making individual queries for each conversation
-  const { data: allMessageCounts = {} } = useQuery<Record<string, number>, Error>({
+  const { data: allMessageCounts = {}, isPending: allMessageCountsIsPending } = useQuery<Record<string, number>, Error>({
     queryKey: ["allMessageCounts"],
         queryFn: async () => {
           try {
@@ -260,7 +267,10 @@ export function ContactList() {
   const messageCountByConversation = useMemo(() => {
     const counts: Record<string, number> = {};
     sortedContacts.forEach((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+      const conversationId =
+        contact.linkedAccounts[0]?.conversationId ??
+        contact.linkedAccounts[0]?.userId ??
+        "";
       if (conversationId) {
         counts[conversationId] = allMessageCounts[conversationId] ?? 0;
       }
@@ -270,8 +280,11 @@ export function ContactList() {
 
   // Initialize sort order based on whether there are messages
   // If no messages and providers are configured, default to alphabetical
+  // IMPORTANT: wait for allMessageCounts to finish loading before deciding —
+  // an empty {} during loading would incorrectly switch the tab to alphabetical,
+  // disabling the allLastMessageTimestamps query and emptying the "recent" tab.
   useEffect(() => {
-    if (hasInitializedSort || contacts.length === 0) {
+    if (hasInitializedSort || contacts.length === 0 || allMessageCountsIsPending) {
       return;
     }
 
@@ -284,14 +297,17 @@ export function ContactList() {
     }
 
     setHasInitializedSort(true);
-  }, [contacts.length, allMessageCounts, configuredProviders.length, hasInitializedSort, sortBy]);
+  }, [contacts.length, allMessageCounts, allMessageCountsIsPending, configuredProviders.length, hasInitializedSort, sortBy]);
 
   // Filter contacts based on sort option
   // For "unread", only show conversations with unread messages
   const filteredContacts = useMemo(() => {
     if (sortBy === "unread") {
       return sortedContacts.filter((contact) => {
-        const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+        const conversationId =
+          contact.linkedAccounts[0]?.conversationId ??
+          contact.linkedAccounts[0]?.userId ??
+          "";
         const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
         return unreadCount > 0;
       });
@@ -374,6 +390,11 @@ export function ContactList() {
           >
             <Inbox className="h-3 w-3 sidebar-button-icon mr-1" />
             <span className="sidebar-button-label">{t("unread") || "Unread"}</span>
+            {totalUnreadCount > 0 && (
+              <span className="ml-1 inline-flex min-w-[1.25rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white leading-none">
+                {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
+              </span>
+            )}
             <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
               {t("unread") || "Unread"}
             </span>
@@ -383,7 +404,10 @@ export function ContactList() {
       <div className="flex-1 overflow-y-auto scroll-area">
         <div className="space-y-1 p-2">
           {filteredContacts.map((contact) => {
-            const conversationId = contact.linkedAccounts[0]?.userId ?? "";
+            const conversationId =
+              contact.linkedAccounts[0]?.conversationId ??
+              contact.linkedAccounts[0]?.userId ??
+              "";
             const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
             const displayUnreadCount =
               unreadCount > 99 ? "99+" : unreadCount.toString();
