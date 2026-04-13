@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"fmt"
 	"sort"
@@ -93,66 +94,70 @@ func (w *WhatsAppProvider) lookupSenderName(jid types.JID) string {
 	return w.lookupDisplayName(jid, "")
 }
 
+// LookupDisplayName is a public method to lookup display name for a JID
+// This is used by app.go to resolve participant names (including LIDs)
+func (w *WhatsAppProvider) LookupDisplayName(jid types.JID, fallback string) string {
+	return w.lookupDisplayName(jid, fallback)
+}
+
+// LookupDisplayNameFromString parses a userID string and returns the display name
+// This is used by app.go to resolve participant names (including LIDs)
+func (w *WhatsAppProvider) LookupDisplayNameFromString(userID string) string {
+	jid, err := types.ParseJID(userID)
+	if err != nil || jid.IsEmpty() {
+		return ""
+	}
+	return w.lookupDisplayName(jid, "")
+}
+
+// lookupContactInfo returns both display name and avatar URL for a contact
+// This is a centralized function that handles LID resolution, phone formatting, and avatar retrieval
+func (w *WhatsAppProvider) lookupContactInfo(jid types.JID, fallbackName string) (displayName string, avatarURL string) {
+	// Get display name using centralized function
+	displayName = w.lookupDisplayName(jid, fallbackName)
+
+	// Get avatar URL using centralized function (may return empty if not available or failed previously)
+	// Note: This may be slow for many contacts, so avatars are typically loaded asynchronously
+	// But we can try to get from cache first
+	w.mu.RLock()
+	if cached, exists := w.conversations[jid.String()]; exists && cached.AvatarURL != "" {
+		avatarURL = cached.AvatarURL
+		w.mu.RUnlock()
+		return displayName, avatarURL
+	}
+	w.mu.RUnlock()
+
+	// If not in cache, try to get avatar (but this is slow, so usually done asynchronously)
+	// For now, return empty - avatars will be loaded via loadAvatarsAsync
+	return displayName, ""
+}
+
+// GetContactName retrieves the display name for a contact ID.
+// This implements the Provider interface method.
+// Uses the centralized lookupDisplayName function which handles LID resolution, phone formatting, etc.
 func (w *WhatsAppProvider) GetContactName(contactID string) (string, error) {
-	fmt.Printf("WhatsApp: GetContactName called with ID: '%s'\n", contactID)
+	if contactID == "" {
+		return "", fmt.Errorf("contact ID is empty")
+	}
+
 	// Parse the contact ID as a JID
 	jid, err := types.ParseJID(contactID)
 	if err != nil {
-		fmt.Printf("WhatsApp: GetContactName(%s) - failed to parse JID: %v\n", contactID, err)
 		return "", fmt.Errorf("invalid contact ID: %w", err)
 	}
 
 	if jid.IsEmpty() {
-		fmt.Printf("WhatsApp: GetContactName(%s) - empty JID\n", contactID)
 		return "", fmt.Errorf("empty JID")
 	}
 
-	// Try to get contact from store first
-	if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && !jid.IsEmpty() {
-		if contact, err := w.client.Store.Contacts.GetContact(w.ctx, jid); err == nil && contact.Found {
-			// Only return actual names, not phone numbers
-			if contact.FullName != "" && !isPhoneNumber(contact.FullName) {
-				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (FullName)\n", contactID, contact.FullName)
-				return contact.FullName, nil
-			}
-			if contact.FirstName != "" && !isPhoneNumber(contact.FirstName) {
-				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (FirstName)\n", contactID, contact.FirstName)
-				return contact.FirstName, nil
-			}
-			if contact.PushName != "" && !isPhoneNumber(contact.PushName) {
-				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (PushName)\n", contactID, contact.PushName)
-				return contact.PushName, nil
-			}
-			if contact.BusinessName != "" && !isPhoneNumber(contact.BusinessName) {
-				fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (BusinessName)\n", contactID, contact.BusinessName)
-				return contact.BusinessName, nil
-			}
-			fmt.Printf("WhatsApp: GetContactName(%s) - contact found but all names are phone numbers (FullName='%s', FirstName='%s', PushName='%s', BusinessName='%s')\n",
-				contactID, contact.FullName, contact.FirstName, contact.PushName, contact.BusinessName)
-		} else {
-			found := false
-			if err == nil {
-				found = contact.Found
-			}
-			fmt.Printf("WhatsApp: GetContactName(%s) - contact not found in store (found=%v, err=%v)\n", contactID, found, err)
-		}
-	} else {
-		fmt.Printf("WhatsApp: GetContactName(%s) - store not available (client=%v, store=%v)\n", contactID, w.client != nil, w.client != nil && w.client.Store != nil)
+	// Use the centralized lookupDisplayName function
+	// This handles LID resolution, phone formatting, group names, etc.
+	name := w.lookupDisplayName(jid, "")
+	if name != "" && name != contactID {
+		return name, nil
 	}
 
-	// Check known groups for group names
-	if jid.Server == types.GroupServer {
-		w.mu.RLock()
-		if name, ok := w.knownGroups[jid.String()]; ok && name != "" && !isPhoneNumber(name) {
-			w.mu.RUnlock()
-			fmt.Printf("WhatsApp: GetContactName(%s) = '%s' (GroupName)\n", contactID, name)
-			return name, nil
-		}
-		w.mu.RUnlock()
-	}
-
-	// No actual contact name found - return error instead of a formatted phone number
-	fmt.Printf("WhatsApp: GetContactName(%s) - no actual name found, returning error\n", contactID)
+	// If lookupDisplayName returned empty or the same as contactID, return error
 	return "", fmt.Errorf("no contact name found for %s", contactID)
 }
 
@@ -300,19 +305,93 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	fmt.Printf("WhatsApp: GetContacts returning %d conversations (%d cached + %d fallback)\n", len(linkedAccounts), cachedCount, len(fallbackAccounts))
 
-	// Load avatars asynchronously in background (non-blocking)
-	// Only load if we have accounts that need avatars
-	// Use a separate goroutine to avoid blocking
-	go func() {
-		// Check if any avatars are already being loaded
-		w.avatarLoadingMu.Lock()
-		hasLoading := len(w.avatarLoading) > 0
-		w.avatarLoadingMu.Unlock()
+	// Save contacts to database with MetaContactID (like Slack does)
+	// This ensures contacts are visible in GetMetaContacts()
+	if db.DB != nil && instanceID != "" {
+		fmt.Printf("WhatsApp: Saving %d contacts to database\n", len(linkedAccounts))
+		for _, contact := range linkedAccounts {
+			// Ensure ProviderInstanceID is set
+			contact.ProviderInstanceID = instanceID
 
-		// Only start loading if not already loading
-		if !hasLoading {
-			w.loadAvatarsAsync(linkedAccounts)
+			var existing models.LinkedAccount
+			// Check if LinkedAccount already exists
+			err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contact.UserID).First(&existing).Error
+
+			if err == nil {
+				// Update existing
+				contact.ID = existing.ID                       // Keep the DB ID
+				contact.MetaContactID = existing.MetaContactID // Keep association
+				contact.CreatedAt = existing.CreatedAt
+				contact.UpdatedAt = time.Now()
+
+				// If existing contact doesn't have MetaContactID, create one
+				if contact.MetaContactID == 0 {
+					metaContact := models.MetaContact{
+						DisplayName: contact.Username,
+						AvatarURL:   contact.AvatarURL,
+						CreatedAt:   time.Now(),
+						UpdatedAt:   time.Now(),
+					}
+					if err := db.DB.Create(&metaContact).Error; err != nil {
+						fmt.Printf("WhatsApp: Failed to create MetaContact for existing LinkedAccount %s: %v\n", contact.UserID, err)
+					} else {
+						contact.MetaContactID = metaContact.ID
+						fmt.Printf("WhatsApp: Created MetaContact (ID=%d) for existing LinkedAccount %s\n", metaContact.ID, contact.UserID)
+					}
+				}
+
+				// Update MetaContact.DisplayName to match LinkedAccount.Username
+				if contact.MetaContactID > 0 {
+					var metaContact models.MetaContact
+					if err := db.DB.First(&metaContact, contact.MetaContactID).Error; err == nil {
+						if metaContact.DisplayName != contact.Username && contact.Username != "" {
+							metaContact.DisplayName = contact.Username
+							metaContact.UpdatedAt = time.Now()
+							if err := db.DB.Save(&metaContact).Error; err != nil {
+								fmt.Printf("WhatsApp: Failed to update MetaContact.DisplayName for %s: %v\n", contact.UserID, err)
+							}
+						}
+					}
+				}
+
+				if err := db.DB.Save(&contact).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to update LinkedAccount for %s: %v\n", contact.UserID, err)
+				}
+			} else {
+				// Record does not exist, create new MetaContact and LinkedAccount
+				// 1. Create MetaContact
+				metaContact := models.MetaContact{
+					DisplayName: contact.Username,
+					AvatarURL:   contact.AvatarURL,
+					CreatedAt:   time.Now(),
+					UpdatedAt:   time.Now(),
+				}
+				if err := db.DB.Create(&metaContact).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to create MetaContact for %s: %v\n", contact.Username, err)
+					continue
+				}
+
+				// 2. Create LinkedAccount linked to MetaContact
+				contact.MetaContactID = metaContact.ID
+				contact.CreatedAt = time.Now()
+				contact.UpdatedAt = time.Now()
+				if err := db.DB.Create(&contact).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to create LinkedAccount for %s: %v\n", contact.UserID, err)
+				} else {
+					fmt.Printf("WhatsApp: Created MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", metaContact.ID, contact.Username, contact.UserID)
+				}
+			}
 		}
+		fmt.Printf("WhatsApp: Contacts saved successfully to database\n")
+	} else {
+		fmt.Printf("WhatsApp: WARNING - Skipping contact save (DB=%v, InstanceID=%s)\n", db.DB != nil, instanceID)
+	}
+
+	// Load avatars asynchronously in background (non-blocking)
+	// Always try to load avatars, even if some are already loading
+	// The loadAvatarsAsync function will skip accounts that are already loading
+	go func() {
+		w.loadAvatarsAsync(linkedAccounts)
 	}()
 
 	return linkedAccounts, nil
@@ -357,6 +436,16 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 		fmt.Printf("WhatsApp: GetAllContacts returned %d contacts\n", len(contacts))
 	}
 
+	// Get instance ID for this provider (once, before the loop)
+	w.mu.RLock()
+	instanceID := ""
+	if w.config != nil {
+		if id, ok := w.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+	w.mu.RUnlock()
+
 	linkedAccounts := make([]models.LinkedAccount, 0, len(contacts))
 	now := time.Now()
 
@@ -367,25 +456,28 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			continue
 		}
 
-		displayName := contact.FullName
-		if displayName == "" {
-			displayName = contact.FirstName
+		// Use centralized function to get display name (handles LID resolution, phone formatting, etc.)
+		// Use contact names as fallback
+		fallbackName := contact.FullName
+		if fallbackName == "" {
+			fallbackName = contact.FirstName
 		}
-		if displayName == "" {
-			displayName = contact.PushName
+		if fallbackName == "" {
+			fallbackName = contact.PushName
 		}
-		displayName = w.lookupDisplayName(jid, displayName)
+		displayName := w.lookupDisplayName(jid, fallbackName)
 
 		// Don't fetch profile pictures synchronously - it blocks and causes rate limiting
 		// Avatars will be loaded lazily when needed or in background
 		linkedAccounts = append(linkedAccounts, models.LinkedAccount{
-			Protocol:  "whatsapp",
-			UserID:    jid.String(),
-			Username:  displayName,
-			AvatarURL: "", // Will be loaded asynchronously if needed
-			Status:    "offline",
-			CreatedAt: now,
-			UpdatedAt: now,
+			Protocol:           "whatsapp",
+			ProviderInstanceID: instanceID,
+			UserID:             jid.String(),
+			Username:           displayName,
+			AvatarURL:          "", // Will be loaded asynchronously if needed
+			Status:             "offline",
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		})
 	}
 
@@ -406,13 +498,14 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 		}
 		// Groups don't have profile pictures, so avatarURL is empty
 		linkedAccounts = append(linkedAccounts, models.LinkedAccount{
-			Protocol:  "whatsapp",
-			UserID:    groupJID,
-			Username:  displayName,
-			AvatarURL: "",
-			Status:    "offline",
-			CreatedAt: now,
-			UpdatedAt: now,
+			Protocol:           "whatsapp",
+			ProviderInstanceID: instanceID,
+			UserID:             groupJID,
+			Username:           displayName,
+			AvatarURL:          "",
+			Status:             "offline",
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		})
 	}
 
@@ -530,4 +623,88 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 	})
 
 	return linkedAccounts, nil
+}
+
+// subscribeToContactPresence subscribes to presence updates for all DM contacts
+// This allows us to receive online/offline status updates for all contacts
+// Note: WhatsApp requires explicit subscription to receive presence events
+func (w *WhatsAppProvider) subscribeToContactPresence() {
+	if w.client == nil || w.client.Store == nil || w.client.Store.ID == nil {
+		fmt.Printf("WhatsApp: Cannot subscribe to presence - client not connected\n")
+		return
+	}
+
+	// Wait a bit for the connection to stabilize
+	time.Sleep(2 * time.Second)
+
+	fmt.Printf("WhatsApp: Starting presence subscription for DM contacts...\n")
+
+	// Get all contacts from the store
+	if w.client.Store.Contacts == nil {
+		fmt.Printf("WhatsApp: Contacts store not available, cannot subscribe to presence\n")
+		return
+	}
+
+	contacts, err := w.client.Store.Contacts.GetAllContacts(w.ctx)
+	if err != nil {
+		fmt.Printf("WhatsApp: Failed to get contacts for presence subscription: %v\n", err)
+		return
+	}
+
+	// Also get conversations from our cache (they might not be in GetAllContacts)
+	w.mu.RLock()
+	cachedConversations := make([]string, 0, len(w.conversations))
+	for userID := range w.conversations {
+		cachedConversations = append(cachedConversations, userID)
+	}
+	w.mu.RUnlock()
+
+	// Combine contacts from store and cached conversations
+	seen := make(map[string]bool)
+	dmContacts := make([]types.JID, 0)
+
+	// Add contacts from store (only DM, not groups)
+	for jid := range contacts {
+		if jid.Server == types.DefaultUserServer {
+			jidStr := jid.String()
+			if !seen[jidStr] {
+				dmContacts = append(dmContacts, jid)
+				seen[jidStr] = true
+			}
+		}
+	}
+
+	// Add cached conversations (only DM, not groups)
+	for _, userID := range cachedConversations {
+		if !seen[userID] {
+			jid, err := types.ParseJID(userID)
+			if err == nil && jid.Server == types.DefaultUserServer {
+				dmContacts = append(dmContacts, jid)
+				seen[userID] = true
+			}
+		}
+	}
+
+	fmt.Printf("WhatsApp: Found %d DM contacts to subscribe to presence\n", len(dmContacts))
+
+	// Subscribe to presence for each contact with a small delay to avoid rate limiting
+	successCount := 0
+	for i, jid := range dmContacts {
+		// Add delay between subscriptions to avoid overwhelming WhatsApp API
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		err := w.client.SubscribePresence(w.ctx, jid)
+		if err != nil {
+			fmt.Printf("WhatsApp: Failed to subscribe to presence for %s: %v\n", jid.String(), err)
+		} else {
+			successCount++
+			if (i+1)%10 == 0 {
+				fmt.Printf("WhatsApp: Subscribed to presence for %d/%d contacts...\n", i+1, len(dmContacts))
+			}
+		}
+	}
+
+	fmt.Printf("WhatsApp: Successfully subscribed to presence for %d/%d DM contacts\n", successCount, len(dmContacts))
 }

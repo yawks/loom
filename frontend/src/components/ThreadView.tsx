@@ -81,7 +81,10 @@ export function ThreadView() {
   const selectedContact = useAppStore((state) => state.selectedContact);
 
   // Get conversation ID from selected contact
-  const conversationId = selectedContact?.linkedAccounts[0]?.userId || "";
+  const conversationId =
+    selectedContact?.linkedAccounts[0]?.conversationId ??
+    selectedContact?.linkedAccounts[0]?.userId ??
+    "";
 
   // State for reply input
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
@@ -144,7 +147,7 @@ export function ThreadView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="absolute inset-0 flex flex-col">
       <div className="p-4 border-b flex justify-between items-center shrink-0">
         <h3 className="text-md font-semibold">Thread</h3>
         <Button

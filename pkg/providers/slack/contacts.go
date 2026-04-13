@@ -162,6 +162,28 @@ func (p *SlackProvider) ResolveUserNames(userIDs []string) map[string]string {
 	return result
 }
 
+// GetContactName retrieves the display name for a contact ID.
+// This implements the Provider interface method.
+func (p *SlackProvider) GetContactName(contactID string) (string, error) {
+	if contactID == "" {
+		return "", fmt.Errorf("contact ID is empty")
+	}
+
+	// Use ResolveUserNames which handles caching and API calls
+	names := p.ResolveUserNames([]string{contactID})
+	if name, ok := names[contactID]; ok && name != "" && name != contactID {
+		return name, nil
+	}
+
+	// Fallback: try resolveSlackUserName which has more fallback logic
+	name := p.resolveSlackUserName(contactID)
+	if name != "" && name != contactID {
+		return name, nil
+	}
+
+	return "", fmt.Errorf("no contact name found for %s", contactID)
+}
+
 // GetContacts returns the list of contacts for this protocol.
 // This includes both individual users and group conversations (channels).
 func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
@@ -388,8 +410,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		p.mpimCountMu.Lock()
 		p.mpimCount = len(mpimChannels)
 		p.mpimCountMu.Unlock()
-		// Temporarily disabled to reduce log noise
-		// go p.updateMPIMNamesAsync(mpimChannels, users)
+		go p.updateMPIMNamesAsync(mpimChannels, users)
 	}
 	p.log("SlackProvider.GetContacts: Retrieved %d channels (%d filtered out)\n",
 		len(allChannels)-filteredCount, filteredCount)
@@ -418,8 +439,14 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		return
 	}
 
+	// Get current user ID to exclude self from participant names
+	currentUserID := ""
+	if authTest, err := p.client.AuthTest(); err == nil && authTest != nil {
+		currentUserID = authTest.UserID
+	}
+
 	// Slug Cache: optimize by parsing MPIM names
-	// Map "slug" (username part in MPIM name) -> "Real Name"
+	// Map "slug" (username handle) -> "Real Name", and userID -> "Real Name"
 	slugCache := make(map[string]string)
 
 	// Populate slug cache from initial users list
@@ -428,8 +455,6 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		if name == "" {
 			name = u.Name
 		}
-		// Slack usernames in MPIM names are typically the 'name' field (handle) or similar
-		// We map the user's name (and potentially ID just in case) to their display name
 		if u.Name != "" {
 			slugCache[u.Name] = name
 		}
@@ -448,17 +473,14 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		}
 
 		// Optimization: Try to resolve names from MPIM title (slugs) first
-		// Typical format: "mpdm-user1--user2--user3-1"
-		// We try to extract slugs and resolve them against slugCache
+		// Typical format: "mpdm-user1--user2--user3-1" (includes all participants incl. self)
 		var participantNames []string
 		resolvedFromSlugs := false
 
 		if strings.HasPrefix(channel.Name, "mpdm-") {
-			// Remove prefix and potential suffix (e.g., "-1")
 			content := strings.TrimPrefix(channel.Name, "mpdm-")
-			// Remove trailing number if present (e.g. "-1")
+			// Remove trailing number suffix (e.g. "-1")
 			if lastDash := strings.LastIndex(content, "-"); lastDash != -1 {
-				// Check if what follows is a number
 				if _, err := strconv.Atoi(content[lastDash+1:]); err == nil {
 					content = content[:lastDash]
 				}
@@ -471,38 +493,39 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 
 				for _, slug := range slugs {
 					if name, ok := slugCache[slug]; ok {
+						// Skip if this slug resolves to the current user
+						if currentUserID != "" && slugCache[currentUserID] == name {
+							continue
+						}
 						slugNames = append(slugNames, name)
 					} else {
-						// Special case: sometimes slug is just "user" which might ambiguous or not in cache
 						allResolved = false
 						break
 					}
 				}
 
-				if allResolved && len(slugNames) == len(channel.Members)-1 { // -1 for self (usually implied or explicit?)
-					// Actually Slack MPIM names usually contain ALL participants including self, OR exclude self?
-					// Let's assume if we resolved all slugs, we have a good candidate list.
-					// However, robust verification: fallback if count mismatches significantly?
-					// For now, if we resolved names, let's use them.
+				if allResolved && len(slugNames) > 0 {
 					participantNames = slugNames
 					resolvedFromSlugs = true
-					p.log("SlackProvider.updateMPIMNamesAsync: [OPTIMIZATION] Resolved %s via slugs: %v\n", channel.Name, slugNames)
 				}
 			}
 		}
 
 		if !resolvedFromSlugs {
-			// Fallback to standard Member ID resolution (and update cache)
-			participantNames = make([]string, 0, len(channel.Members))
-			missingUserIDs := make([]string, 0, len(channel.Members))
+			// GetConversations does not return Members; fetch them explicitly
+			memberIDs, _, err := p.client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
+				ChannelID: channel.ID,
+			})
+			if err != nil {
+				p.log("SlackProvider.updateMPIMNamesAsync: Failed to get members for %s: %v\n", channel.ID, err)
+				memberIDs = nil
+			}
 
-			// First pass: check cache (using ID)
-			for _, memberID := range channel.Members {
-				if memberID == "USLACKBOT" {
-					continue // Skip Slackbot
+			missingUserIDs := make([]string, 0)
+			for _, memberID := range memberIDs {
+				if memberID == "USLACKBOT" || memberID == currentUserID {
+					continue
 				}
-
-				// Try to find user in cache (slugCache stores ID->Name too)
 				if name, ok := slugCache[memberID]; ok {
 					participantNames = append(participantNames, name)
 				} else {
@@ -510,27 +533,23 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 				}
 			}
 
-			// Second pass: fetch missing users from API
-			if len(missingUserIDs) > 0 {
-				for _, userID := range missingUserIDs {
-					user, err := p.client.GetUserInfo(userID)
-					if err != nil {
-						p.log("SlackProvider.updateMPIMNamesAsync: Failed to get info for user %s: %v\n", userID, err)
-						continue
-					}
-					name := user.RealName
-					if name == "" {
-						name = user.Name
-					}
-					// Update cache
-					slugCache[userID] = name
-					if user.Name != "" {
-						slugCache[user.Name] = name
-					}
-
-					participantNames = append(participantNames, name)
-					time.Sleep(200 * time.Millisecond) // Small delay between user info requests
+			// Fetch names for any members not in cache
+			for _, userID := range missingUserIDs {
+				user, err := p.client.GetUserInfo(userID)
+				if err != nil {
+					p.log("SlackProvider.updateMPIMNamesAsync: Failed to get info for user %s: %v\n", userID, err)
+					continue
 				}
+				name := user.RealName
+				if name == "" {
+					name = user.Name
+				}
+				slugCache[userID] = name
+				if user.Name != "" {
+					slugCache[user.Name] = name
+				}
+				participantNames = append(participantNames, name)
+				time.Sleep(200 * time.Millisecond)
 			}
 		}
 
@@ -617,7 +636,7 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 		account.UpdatedAt = time.Now()
 		if err := db.DB.Save(&account).Error; err != nil {
 			return fmt.Errorf("failed to update LinkedAccount name: %w", err)
-	}
+		}
 	} else {
 		// Record does not exist, create it (and corresponding MetaContact)
 
@@ -661,6 +680,14 @@ func (p *SlackProvider) normalizeDMConversationID(conversationID string) string 
 		return conversationID
 	}
 
+	// Check cache first to avoid repeated API calls
+	p.dmChannelCacheMu.RLock()
+	if cached, ok := p.dmChannelCache[conversationID]; ok {
+		p.dmChannelCacheMu.RUnlock()
+		return cached
+	}
+	p.dmChannelCacheMu.RUnlock()
+
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
@@ -674,10 +701,18 @@ func (p *SlackProvider) normalizeDMConversationID(conversationID string) string 
 		ChannelID: conversationID,
 	})
 	if err == nil && convInfo != nil && convInfo.IsIM && convInfo.User != "" {
-		// This is a DM, return the UserID instead of channel ID
+		// This is a DM, cache and return the UserID instead of channel ID
 		p.log("SlackProvider.normalizeDMConversationID: Resolved DM channel %s to user %s\n", conversationID, convInfo.User)
+		p.dmChannelCacheMu.Lock()
+		p.dmChannelCache[conversationID] = convInfo.User
+		p.dmChannelCacheMu.Unlock()
 		return convInfo.User
 	}
+
+	// Cache the identity mapping so we don't retry failed lookups repeatedly
+	p.dmChannelCacheMu.Lock()
+	p.dmChannelCache[conversationID] = conversationID
+	p.dmChannelCacheMu.Unlock()
 
 	// If we can't resolve, return original (might be a MPIM or already a User ID)
 	return conversationID

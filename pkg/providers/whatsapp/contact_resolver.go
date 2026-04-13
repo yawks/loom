@@ -227,6 +227,26 @@ func (w *WhatsAppProvider) storeContactMapping(lid, phoneNumber string) error {
 				}
 			}
 		}
+		// If still no account found, try by LID as UserID
+		if account.ID == 0 {
+			if err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", lid).First(&account).Error; err == nil {
+				// Found account by LID! Update to use phone number as canonical ID
+				fmt.Printf("WhatsApp: Found account by LID %s, updating to canonical ID %s\n", lid, phoneNumber)
+
+				// We need to update the UserID in the database directly
+				// because saving the struct with a new UserID might create a new record
+				// or fail if ID is primary key (it's not here, ID is int PK).
+				// But we want to keep the same DB record.
+
+				// Update user_id to phone number
+				account.UserID = phoneNumber
+				if err := db.DB.Save(&account).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to update canonical ID for %s: %v\n", lid, err)
+				}
+				canonicalID = phoneNumber
+			}
+		}
+
 		// If still no account found, that's okay - it will be created when needed
 		if account.ID == 0 {
 			return nil

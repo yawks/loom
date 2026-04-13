@@ -142,6 +142,10 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			continue
 		}
 
+		// Normalize DM channel IDs ("D...") to User IDs ("U...") for consistency
+		// This ensures messages match the conversationId stored in contacts
+		conversationID = p.normalizeDMConversationID(conversationID)
+
 		// Check if we know this conversation (users or channels)
 		// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh
 		if db.DB != nil {
@@ -506,16 +510,18 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// Add a small delay to ensure footer is visible
 	time.Sleep(500 * time.Millisecond)
 
-	// Emit completed status - no history sync needed
-	fmt.Printf("SlackProvider.SyncHistory: Emitting completed status (%d conversations)\n", len(contacts))
 	if len(contacts) == 0 {
 		p.emitSyncStatus(core.SyncStatusCompleted, "Sync completed - no conversations", 100)
+		p.log("SlackProvider.SyncHistory: Sync completed (no conversations)\n")
 		return nil
 	}
-	p.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
 
-	p.log("SlackProvider.SyncHistory: Sync completed\n")
-	fmt.Printf("SlackProvider.SyncHistory: Sync completed\n")
+	// Run incremental sync to catch any messages missed in conversations already in the DB.
+	// incrementalSyncExistingConversations emits its own final "completed" status.
+	p.log("SlackProvider.SyncHistory: Starting incremental sync for existing conversations\n")
+	p.incrementalSyncExistingConversations()
+
+	p.log("SlackProvider.SyncHistory: Sync fully completed\n")
 	return nil
 }
 

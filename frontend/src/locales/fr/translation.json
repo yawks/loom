@@ -97,6 +97,7 @@
   "no_configuration_description": "Ce fournisseur ne nécessite pas de paramètres supplémentaires.",
   "connection": "Connexion",
   "connection_description": "Connectez-vous pour démarrer la synchronisation et afficher le code QR si nécessaire.",
+  "slack_connection_description": "Connectez-vous pour autoriser l'accès et démarrer la synchronisation.",
   "connect": "Se connecter",
   "connecting": "Connexion...",
   "show_qr_code": "Afficher le QR code",
@@ -141,6 +142,7 @@
   "delete_message": "Supprimer",
   "delete_message_title": "Supprimer le message",
   "delete_message_description": "Êtes-vous sûr de vouloir supprimer ce message ? Cette action est irréversible.",
+  "delete_failed": "Impossible de supprimer le message",
   "status_sent": "Envoyé",
   "status_delivered": "Livré",
   "status_read": "Lu",
@@ -203,5 +205,6 @@
   "no_contacts_found": "Aucun contact trouvé",
   "create_group": "Créer le groupe",
   "open_chat": "Ouvrir la discussion",
-  "creating": "Création..."
+  "creating": "Création...",
+  "all": "Tous"
 }

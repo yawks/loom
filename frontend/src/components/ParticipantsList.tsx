@@ -1,17 +1,17 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetGroupParticipants, GetParticipantNames, SetContactAlias } from "../../wailsjs/go/main/App";
-import { getProviderInstanceId, getStatusEmoji } from "@/lib/statusEmoji";
-import { useEffect, useMemo } from "react";
+import { getStatusEmoji } from "@/lib/statusEmoji";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
+import { Calendar, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { SlackEmoji } from "./SlackEmoji";
-import { X } from "lucide-react";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
+import { useAppStore } from "@/lib/store";
 import { usePresenceStore } from "@/lib/presenceStore";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 interface ParticipantsListProps {
@@ -28,8 +28,14 @@ async function fetchParticipantsData(conversationId: string): Promise<{
   groupParticipants: models.GroupParticipant[];
   participantNames: Record<string, string>;
 }> {
-  const groupParticipants = await GetGroupParticipants(conversationId);
-  
+  let groupParticipants;
+  try {
+    groupParticipants = await GetGroupParticipants(conversationId);
+  } catch (err) {
+    console.error("Failed to get group participants:", err);
+    return { groupParticipants: [], participantNames: {} };
+  }
+
   if (!groupParticipants || groupParticipants.length === 0) {
     return { groupParticipants: [], participantNames: {} };
   }
@@ -97,6 +103,7 @@ export function ParticipantsList({
 }: ParticipantsListProps) {
   const { t } = useTranslation();
   const presenceMap = usePresenceStore((state) => state.presenceMap);
+  const metaContacts = useAppStore((state) => state.metaContacts);
   const queryClient = useQueryClient();
 
   // Use Suspense query to load participants data
@@ -251,11 +258,9 @@ export function ParticipantsList({
           participant.isFromMe
         );
         
-        // Check if participant is online using presence store
-        const isOnline = presenceMap[participant.senderId] === true;
-        
-        // Also check by phone number matching (for LID format)
-        let presenceMatch = isOnline;
+        // WhatsApp presence check via presenceMap
+        const isOnlinePresence = presenceMap[participant.senderId] === true;
+        let presenceMatch = isOnlinePresence;
         if (!presenceMatch && participant.senderId.includes("@")) {
           const jidPhone = participant.senderId.split("@")[0];
           for (const [lid, online] of Object.entries(presenceMap)) {
@@ -269,15 +274,31 @@ export function ParticipantsList({
           }
         }
 
-        // Find the linked account for this participant to get status emoji and avatar
-        const linkedAccount = selectedConversation.linkedAccounts?.find(
-          acc => acc.userId === participant.senderId
-        );
-        const statusEmoji = linkedAccount ? getStatusEmoji(linkedAccount) : null;
-        const providerInstanceId = linkedAccount ? getProviderInstanceId(linkedAccount) : null;
-        
-        // Use LinkedAccount.AvatarURL if available, otherwise fall back to participant.senderAvatarUrl
-        const avatarUrl = linkedAccount?.avatarUrl || participant.senderAvatarUrl;
+        // Find the participant's own linked account for Slack status/emoji/avatar.
+        // First try direct match in selectedConversation (works for DMs).
+        // Fall back to metaContacts store (works for channel participants).
+        const participantLinkedAccount = (() => {
+          const direct = selectedConversation.linkedAccounts?.find(
+            acc => acc.userId === participant.senderId
+          );
+          if (direct) return direct;
+          for (const contact of metaContacts) {
+            const acc = contact.linkedAccounts?.find(a => a.userId === participant.senderId);
+            if (acc) return acc;
+          }
+          return null;
+        })();
+
+        const linkedAccountStatus = participantLinkedAccount?.status || null;
+        const statusEmoji = participantLinkedAccount ? getStatusEmoji(participantLinkedAccount) : null;
+        // Use participant's providerInstanceId, or fall back to the conversation's (for channel participants)
+        const providerInstanceId = participantLinkedAccount?.providerInstanceId
+          || selectedConversation.linkedAccounts?.[0]?.providerInstanceId
+          || undefined;
+        const avatarUrl = participantLinkedAccount?.avatarUrl || participant.senderAvatarUrl;
+
+        // Effective status: linked account status (Slack) takes precedence over presenceMap (WhatsApp)
+        const effectiveStatus = linkedAccountStatus || (presenceMatch ? "online" : "offline");
 
         return (
           <ParticipantItem
@@ -287,10 +308,10 @@ export function ParticipantsList({
               senderAvatarUrl: avatarUrl,
             }}
             displayName={displayName}
-            isOnline={presenceMatch}
+            status={effectiveStatus}
             alias={aliases[participant.senderId]}
             statusEmoji={statusEmoji}
-            providerInstanceId={providerInstanceId || undefined}
+            providerInstanceId={providerInstanceId}
             onAvatarClick={onAvatarClick}
             onAliasChange={async (newAlias: string) => {
               await SetContactAlias(participant.senderId, newAlias);
@@ -314,7 +335,7 @@ interface ParticipantItemProps {
     joinedAt?: Date;
   };
   displayName: string;
-  isOnline: boolean;
+  status: string;
   alias?: string;
   statusEmoji?: string | null;
   providerInstanceId?: string;
@@ -325,7 +346,7 @@ interface ParticipantItemProps {
 function ParticipantItem({
   participant,
   displayName,
-  isOnline,
+  status,
   alias,
   statusEmoji,
   providerInstanceId,
@@ -352,6 +373,74 @@ function ParticipantItem({
     } else if (e.key === "Escape") {
       handleCancel();
     }
+  };
+
+  // Render the status badge on the avatar
+  const renderStatusBadge = () => {
+    if (!status || status === "offline") return null;
+    if (status === "meeting") {
+      return (
+        <div
+          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
+          title={t("meeting") || "In a meeting"}
+        >
+          <Calendar className="h-2 w-2 text-white" />
+        </div>
+      );
+    }
+    const colorMap: Record<string, string> = {
+      online: "bg-green-500",
+      away: "bg-yellow-500",
+      busy: "bg-red-500",
+      holiday: "bg-purple-500",
+    };
+    const bgColor = colorMap[status] ?? "bg-green-500";
+    const titleMap: Record<string, string> = {
+      online: t("active"),
+      away: t("away") || "Away",
+      busy: t("busy") || "Busy",
+      holiday: t("holiday") || "Holiday",
+    };
+    return (
+      <div
+        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-background`}
+        title={titleMap[status] ?? status}
+      />
+    );
+  };
+
+  // Render the status text row
+  const renderStatusText = () => {
+    if (!status || status === "offline") {
+      return (
+        <>
+          <span className="h-2 w-2 rounded-full bg-gray-500" />
+          <p className="text-xs text-muted-foreground">{t("inactive")}</p>
+        </>
+      );
+    }
+    const colorMap: Record<string, string> = {
+      online: "bg-green-500",
+      meeting: "bg-blue-500",
+      away: "bg-yellow-500",
+      busy: "bg-red-500",
+      holiday: "bg-purple-500",
+    };
+    const labelMap: Record<string, string> = {
+      online: t("active"),
+      meeting: t("meeting") || "In a meeting",
+      away: t("away") || "Away",
+      busy: t("busy") || "Busy",
+      holiday: t("holiday") || "Holiday",
+    };
+    const dotColor = colorMap[status] ?? "bg-green-500";
+    const label = labelMap[status] ?? status;
+    return (
+      <>
+        <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+        <p className="text-xs text-muted-foreground">{label}</p>
+      </>
+    );
   };
 
   if (participant.isFromMe) {
@@ -418,12 +507,7 @@ function ParticipantItem({
             />
           </div>
         )}
-        {isOnline && (
-          <div
-            className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background"
-            title={t("active")}
-          />
-        )}
+        {renderStatusBadge()}
       </div>
       <div className="flex-1 min-w-0">
         {isEditing ? (
@@ -465,17 +549,7 @@ function ParticipantItem({
           </div>
         )}
         <div className="flex items-center gap-2 mt-1">
-          {isOnline ? (
-            <>
-              <span className="h-2 w-2 rounded-full bg-green-500" />
-              <p className="text-xs text-muted-foreground">{t("active")}</p>
-            </>
-          ) : (
-            <>
-              <span className="h-2 w-2 rounded-full bg-gray-500" />
-              <p className="text-xs text-muted-foreground">{t("inactive")}</p>
-            </>
-          )}
+          {renderStatusText()}
         </div>
       </div>
     </div>

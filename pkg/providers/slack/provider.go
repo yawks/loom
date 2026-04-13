@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/logging"
+	"Loom/pkg/models"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -45,6 +46,9 @@ type SlackProvider struct {
 	eventStreamCtx     context.Context         // Context for event stream
 	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
 	eventStreamStarted bool                    // Whether event stream has been started
+	dmChannelCache     map[string]string        // Cache: DM channel ID (D...) -> User ID (U...)
+	dmChannelCacheMu   sync.RWMutex             // Mutex for DM channel cache
+	selfUserID         string                   // Cached authenticated user ID (from AuthTest)
 }
 
 // userStatus represents the cached status information for a user
@@ -83,6 +87,7 @@ func NewSlackProvider() *SlackProvider {
 		stopChan:           make(chan struct{}),
 		statusCache:        make(map[string]userStatus),
 		mpimProcessingChan: make(chan struct{}, 1), // Buffered channel for MPIM processing completion
+		dmChannelCache:     make(map[string]string),
 	}
 }
 
@@ -227,6 +232,9 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 
 	// Get MAX timestamp for each conversation, but only for main messages (not thread replies)
 	// Thread replies have thread_id != protocol_msg_id, so we exclude them
+	// IMPORTANT: Filter by protocol to only sync Slack conversations (not WhatsApp or other providers)
+	// Slack conversation IDs start with C (channels), D (DMs), G (groups), U (users), etc. and don't contain "@"
+	// WhatsApp IDs contain "@s.whatsapp.net" or "@g.us" or "@lid"
 	err := db.DB.Raw(`
 		SELECT 
 			protocol_conv_id as protocol_conv_id,
@@ -236,6 +244,8 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 		WHERE protocol_conv_id IS NOT NULL 
 			AND protocol_conv_id != ''
 			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
+			AND protocol_conv_id NOT LIKE '%@%'
+			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%')
 		GROUP BY protocol_conv_id
 		ORDER BY MAX(timestamp) DESC
 	`).Scan(&results).Error
@@ -288,6 +298,8 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 	p.log("SlackProvider.incrementalSyncExistingConversations: Found %d conversations with messages\n", len(conversations))
 
 	if len(conversations) == 0 {
+		// No conversations with messages yet (e.g. fresh setup). Emit completed so the footer closes.
+		p.emitSyncStatus(core.SyncStatusCompleted, "All conversations are up to date", 100)
 		return
 	}
 
@@ -296,11 +308,40 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 
 	successCount := 0
 	totalNewMessages := 0
+	newConversationsCreated := 0
 
 	// Sync each conversation
 	for i, conv := range conversations {
 		progress := int((float64(i+1) / float64(len(conversations))) * 100)
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
+
+		// Fix orphaned messages saved by pollGlobalUpdates (ConversationID=0).
+		// Only call ensureConversation when such messages exist to avoid side-effects on
+		// well-configured conversations. Normalize DM channel IDs (D→U) first so we
+		// reuse the existing Conversation record instead of creating a duplicate.
+		if db.DB != nil {
+			var orphanCount int64
+			db.DB.Model(&models.Message{}).
+				Where("protocol_conv_id = ? AND conversation_id = 0", conv.ProtocolConvID).
+				Count(&orphanCount)
+			if orphanCount > 0 {
+				normalizedConvID := p.normalizeDMConversationID(conv.ProtocolConvID)
+				convDBID, ensureErr := p.ensureConversation(normalizedConvID)
+				if ensureErr != nil {
+					p.log("SlackProvider.incrementalSyncExistingConversations: Failed to ensure conversation for %s (normalized: %s): %v\n",
+						conv.ProtocolConvID, normalizedConvID, ensureErr)
+				} else if convDBID > 0 {
+					result := db.DB.Model(&models.Message{}).
+						Where("protocol_conv_id = ? AND conversation_id = 0", conv.ProtocolConvID).
+						Update("conversation_id", convDBID)
+					if result.RowsAffected > 0 {
+						p.log("SlackProvider.incrementalSyncExistingConversations: Fixed %d orphaned messages for %s → conv %d\n",
+							result.RowsAffected, conv.ProtocolConvID, convDBID)
+						newConversationsCreated++
+					}
+				}
+			}
+		}
 
 		// Fetch new messages since last timestamp
 		// Use the exact last timestamp - GetConversationHistory will handle exclusion
@@ -387,8 +428,19 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	p.log("SlackProvider.incrementalSyncExistingConversations: Completed - synced %d conversations, found %d new messages\n",
-		successCount, totalNewMessages)
+	p.log("SlackProvider.incrementalSyncExistingConversations: Completed - synced %d conversations, found %d new messages, fixed %d newly discovered conversations\n",
+		successCount, totalNewMessages, newConversationsCreated)
+
+	// If orphaned messages were fixed (new conversations discovered), trigger a contact list refresh
+	// so the UI shows those channels in Recent/Unread tabs
+	if newConversationsCreated > 0 {
+		select {
+		case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "new_conversations_discovered"}:
+			p.log("SlackProvider.incrementalSyncExistingConversations: Triggered contact refresh for %d new conversations\n", newConversationsCreated)
+		default:
+			p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping contact refresh\n")
+		}
+	}
 
 	// Emit completion status
 	if totalNewMessages > 0 {
@@ -421,6 +473,7 @@ func (p *SlackProvider) Connect() error {
 		return err
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
+	p.selfUserID = authInfo.UserID
 
 	// Determine connection mode based on token type
 	token, _ := p.config.GetString("token")
@@ -494,17 +547,10 @@ func (p *SlackProvider) Connect() error {
 		// Start status polling
 		go p.pollStatusUpdates()
 
-		// History Sync
-		time.Sleep(2 * time.Second) // Wait for connection to stabilize
-		since := time.Now().Add(-30 * 24 * time.Hour)
-		p.log("SlackProvider.Connect: Triggering initial history sync\n")
-		p.SyncHistory(since)
-
-		// Incremental sync for existing conversations
-		time.Sleep(1 * time.Second)
-		p.log("SlackProvider.Connect: Triggering incremental sync for existing conversations\n")
-		p.incrementalSyncExistingConversations()
-
+		// Note: SyncHistory and incrementalSyncExistingConversations are NOT called here.
+		// On startup, app.go triggers SyncHistory from domReady() once the frontend is ready
+		// to receive sync-status events. For new provider setup (ConfigureProvider), the caller
+		// is responsible for triggering sync after Connect().
 		p.log("SlackProvider.Connect: background initialization completed\n")
 	}()
 
@@ -1003,5 +1049,40 @@ func (p *SlackProvider) Disconnect() error {
 	}
 
 	p.log("Slack: Disconnected\n")
+	return nil
+}
+
+func (p *SlackProvider) Cleanup() error {
+	p.log("SlackProvider.Cleanup: Cleaning up provider data...\n")
+
+	// 1. Disconnect
+	_ = p.Disconnect()
+
+	// 2. Remove cache directory
+	p.mu.RLock()
+	config := p.config
+	p.mu.RUnlock()
+
+	instanceID, _ := config.GetString("_instance_id")
+	instanceName, _ := config.GetString("_instance_name")
+	if instanceName == "" {
+		instanceName = instanceID
+	}
+	if instanceName == "" {
+		instanceName = "default"
+	}
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	// Slack uses instanceName for cache dir
+	cacheDir := filepath.Join(configDir, "Loom", "slack", instanceName)
+	p.log("SlackProvider.Cleanup: Removing cache directory: %s\n", cacheDir)
+	if err := os.RemoveAll(cacheDir); err != nil {
+		p.log("SlackProvider.Cleanup: WARNING - failed to remove cache directory: %v\n", err)
+	}
+
 	return nil
 }

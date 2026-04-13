@@ -1,31 +1,71 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Smile } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import EmojiPicker, { type EmojiClickData, Theme } from "emoji-picker-react";
+import { GetSlackCustomEmojiList } from "../../wailsjs/go/main/App";
 
-// Common emoji reactions (WhatsApp supports these)
-const COMMON_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+// Matches the internal CustomEmoji type expected by emoji-picker-react
+interface CustomEmoji {
+  id: string;
+  names: string[];
+  imgUrl: string;
+}
 
 interface ReactionPickerProps {
   onReactionSelect: (emoji: string) => void;
-  currentReactions?: string[]; // Emojis that the current user has already reacted with
+  currentReactions?: string[];
   className?: string;
+  provider?: string;
+  instanceId?: string;
 }
 
 export function ReactionPicker({
   onReactionSelect,
-  currentReactions = [],
   className,
-}: ReactionPickerProps) {
+  provider,
+  instanceId,
+}: Readonly<ReactionPickerProps>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
 
-  const handleReactionClick = (emoji: string) => {
-    onReactionSelect(emoji);
+  // Fetch Slack custom emojis when the picker opens (once per session)
+  useEffect(() => {
+    if (!open || provider !== "slack" || !instanceId) return;
+    if (customEmojis.length > 0) return;
+
+    GetSlackCustomEmojiList(instanceId)
+      .then((emojiMap) => {
+        if (!emojiMap) return;
+        const emojis: CustomEmoji[] = Object.entries(emojiMap).map(([name, url]) => ({
+          id: name,
+          names: [name.replaceAll("_", " ")],
+          imgUrl: url,
+        }));
+        setCustomEmojis(emojis);
+      })
+      .catch(() => {
+        // Silently ignore — the picker still shows standard emojis
+      });
+  }, [open, provider, instanceId, customEmojis.length]);
+
+  const handleEmojiClick = (emojiData: EmojiClickData) => {
+    if (emojiData.isCustom) {
+      // Custom Slack emoji — pass as :name: so handleReaction can strip the colons
+      onReactionSelect(`:${emojiData.unified}:`);
+    } else {
+      // Standard unicode emoji
+      onReactionSelect(emojiData.emoji);
+    }
     setOpen(false);
   };
+
+  const isDark =
+    typeof document !== "undefined" &&
+    document.documentElement.classList.contains("dark");
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -41,31 +81,20 @@ export function ReactionPicker({
           <span className="sr-only">{t("react")}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-auto p-2" align="start" onClick={(e) => e.stopPropagation()}>
-        <div className="flex gap-1">
-          {COMMON_REACTIONS.map((emoji) => {
-            const isActive = currentReactions.includes(emoji);
-            return (
-              <button
-                key={emoji}
-                onClick={() => handleReactionClick(emoji)}
-                className={cn(
-                  "text-lg px-2 py-1 rounded hover:bg-muted transition-colors",
-                  isActive && "bg-primary/20"
-                )}
-                title={emoji}
-              >
-                {emoji}
-              </button>
-            );
-          })}
-        </div>
+      <PopoverContent
+        className="w-auto p-0 border-0 shadow-lg"
+        align="start"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <EmojiPicker
+          onEmojiClick={handleEmojiClick}
+          customEmojis={customEmojis}
+          height={400}
+          searchPlaceholder={t("search_emoji") ?? "Search emojis…"}
+          theme={isDark ? Theme.DARK : Theme.LIGHT}
+          lazyLoadEmojis
+        />
       </PopoverContent>
     </Popover>
   );
 }
-
-
-
-
-

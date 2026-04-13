@@ -38,6 +38,10 @@ export function EditMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['EditMessage'](arg1, arg2, arg3);
 }
 
+export function ForceSyncCompletion() {
+  return window['go']['main']['App']['ForceSyncCompletion']();
+}
+
 export function GetAllActiveCalls() {
   return window['go']['main']['App']['GetAllActiveCalls']();
 }
@@ -108,6 +112,10 @@ export function GetProviderQRCode(arg1) {
 
 export function GetProviderSchema(arg1) {
   return window['go']['main']['App']['GetProviderSchema'](arg1);
+}
+
+export function GetSlackCustomEmojiList(arg1) {
+  return window['go']['main']['App']['GetSlackCustomEmojiList'](arg1);
 }
 
 export function GetSlackEmojiURL(arg1, arg2) {

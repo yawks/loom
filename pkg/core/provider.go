@@ -246,4 +246,13 @@ type Provider interface {
 	// file is an optional file attachment.
 	// Returns the created message or an error.
 	SendStatusMessage(text string, file *Attachment) (*models.Message, error)
+
+	// GetContactName retrieves the display name for a contact ID.
+	// This is used to resolve contact names from LIDs, phone numbers, or other identifiers.
+	// Returns the display name or an error if the contact cannot be found.
+	GetContactName(contactID string) (string, error)
+
+	// Cleanup cleans up the provider's data when it is removed.
+	// This should remove any local files, databases, or session data associated with the provider instance.
+	Cleanup() error
 }

@@ -262,7 +262,13 @@ export function MessageList({
   }, [selectedConversation?.id, setIsTypingInInput]);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const conversationId = selectedConversation.linkedAccounts[0]?.userId ?? "";
+  // Prefer the actual protocolConvId exposed by the backend (conversationId field).
+  // This avoids a mismatch for Slack DMs where linkedAccount.userId is a Slack user ID
+  // (e.g. "U123") but messages are stored under the DM channel ID (e.g. "D456").
+  const conversationId =
+    selectedConversation.linkedAccounts[0]?.conversationId ??
+    selectedConversation.linkedAccounts[0]?.userId ??
+    "";
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -281,6 +287,9 @@ export function MessageList({
     atBottom: true,
   });
   const hasScrolledToUnreadRef = useRef<string | null>(null);
+  // Controls whether the "new messages" separator is visible.
+  // Auto-dismissed after ~10 s when the window is unfocused.
+  const [separatorDismissed, setSeparatorDismissed] = useState(false);
 
   const {
     data,
@@ -360,7 +369,15 @@ export function MessageList({
     if (!data) return [];
     if (!data.pages || !Array.isArray(data.pages)) return [];
     // Filter out any null/undefined pages and flat
-    return data.pages.filter((page) => Array.isArray(page)).flat();
+    const flat = data.pages.filter((page) => Array.isArray(page)).flat();
+    // Deduplicate by protocolMsgId as safety net against double messages
+    const seen = new Set<string>();
+    return flat.filter(msg => {
+      const id = msg.protocolMsgId;
+      if (id && seen.has(id)) return false;
+      if (id) seen.add(id);
+      return true;
+    });
   }, [dataKey, data]);
 
   // Filter out thread messages and group threads by parent message
@@ -979,6 +996,26 @@ export function MessageList({
     focusStateRef.current = hasWindowFocus;
   }, [hasWindowFocus]);
 
+  // Reset separator state whenever we switch to a different conversation
+  useEffect(() => {
+    setSeparatorDismissed(false);
+  }, [conversationId]);
+
+  // Auto-dismiss the "new messages" separator after 10 s when window is unfocused.
+  // When the window regains focus the IntersectionObserver takes over and marks
+  // messages as read, so we reset the dismissed flag to let it work naturally.
+  useEffect(() => {
+    if (hasWindowFocus) {
+      setSeparatorDismissed(false);
+      return;
+    }
+    if (!firstUnreadMessageId || separatorDismissed) {
+      return;
+    }
+    const timer = setTimeout(() => setSeparatorDismissed(true), 10000);
+    return () => clearTimeout(timer);
+  }, [firstUnreadMessageId, hasWindowFocus, separatorDismissed]);
+
   const registerMessageNode = useCallback(
     (messageId: string) => (node: HTMLDivElement | null) => {
       const elementsMap = messageElementsRef.current;
@@ -1528,22 +1565,24 @@ export function MessageList({
     }
 
     console.log("Deleting message:", messageToDelete);
+    const { conversationID, messageID } = messageToDelete;
     try {
-      await DeleteMessage(messageToDelete.conversationID, messageToDelete.messageID);
+      await DeleteMessage(conversationID, messageID);
       console.log("Message deleted successfully");
       setDeleteConfirmOpen(false);
       setMessageToDelete(null);
       // Invalidate and refetch messages
       queryClient.invalidateQueries({
-        queryKey: ["messages", messageToDelete.conversationID],
+        queryKey: ["messages", conversationID],
       });
       queryClient.refetchQueries({
-        queryKey: ["messages", messageToDelete.conversationID],
+        queryKey: ["messages", conversationID],
       });
     } catch (error) {
       console.error("Failed to delete message:", error);
+      showToast(t("delete_failed"), "error");
     }
-  }, [messageToDelete, queryClient]);
+  }, [messageToDelete, queryClient, showToast, t]);
 
   // Handle drag and drop for file upload
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -1586,7 +1625,6 @@ export function MessageList({
       return;
     }
 
-    const conversationId = selectedConversation.linkedAccounts[0]?.userId;
     if (!conversationId) {
       return;
     }
@@ -1820,7 +1858,7 @@ export function MessageList({
           onToggleDetails={handleToggleDetails}
         />
         <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area flex flex-col-reverse" ref={scrollContainerRef}>
-          {(isLoading || (isFetching && messages.length === 0)) ? (
+          {(isLoading || (isFetching && (!data?.pages || data.pages.length === 0 || messages.length === 0))) ? (
             <div className="flex items-center justify-center h-full">
               <div className="flex flex-col items-center gap-4">
                 <div className="relative">
@@ -1869,7 +1907,7 @@ export function MessageList({
                     );
                     const isUnread = conversationReadState[messageId] === false;
                     const showUnreadDivider =
-                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput;
+                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput && !separatorDismissed;
                     const timestamp = timeToDate(message.timestamp);
                     const timeString = `${timestamp
                       .getHours()
@@ -2048,6 +2086,8 @@ export function MessageList({
                                       .map((r) => r.emoji)}
                                     messageId={messageId}
                                     openActionsMessageId={openActionsMessageId}
+                                    provider={selectedConversation.linkedAccounts[0]?.protocol}
+                                    instanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                   />
                                 </div>
                               )}
@@ -2060,11 +2100,6 @@ export function MessageList({
                                   }
                                   {...deletedInteractionHandlers}
                                 >
-                                  {isPending && (
-                                    <div className="text-xs opacity-80 mb-1">
-                                      {t("sending") || "Envoi en cours…"}
-                                    </div>
-                                  )}
                                   {sendFailed && (
                                     <div className="text-xs text-destructive mb-1 flex items-center gap-2">
                                       <span>{t("send_failed") || "Envoi échoué"}</span>
@@ -2425,6 +2460,8 @@ export function MessageList({
                       ? (timestamp.getTime() - prevTimestamp.getTime()) / (1000 * 60)
                       : Infinity;
                     const isDeleted = Boolean(message.isDeleted);
+                    const isPending = (message as any).isPending;
+                    const sendFailed = (message as any).sendFailed;
                     // For deleted messages, also check if next message is from same sender
                     // If so, we should show sender info to maintain context
                     const shouldShowSenderForDeleted = isDeleted && nextMessage &&
@@ -2452,7 +2489,7 @@ export function MessageList({
                         .padStart(2, "0")}`;
                     const isUnread = conversationReadState[messageId] === false;
                     const showUnreadDivider =
-                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput;
+                      messageId === firstUnreadMessageId && isUnread && !isTypingInInput && !separatorDismissed;
 
                     const messageDate = timeToDate(message.timestamp);
                     const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
@@ -2548,7 +2585,9 @@ export function MessageList({
                         <div
                           className={cn(
                             "flex items-start py-1 scroll-mt-28 group relative",
-                            isUnread && "border border-primary/30 bg-primary/5 px-2"
+                            isUnread && "border border-primary/30 bg-primary/5 px-2",
+                            isPending && "opacity-70",
+                            sendFailed && "border-l-2 border-destructive pl-1"
                           )}
                           ref={registerMessageNode(messageId)}
                           data-message-id={messageId}
@@ -2702,6 +2741,23 @@ export function MessageList({
                                         </div>
                                       ) : (
                                         <>
+                                          {sendFailed && (
+                                            <div className="text-xs text-destructive mb-1 flex items-center gap-2">
+                                              <span>{t("send_failed") || "Envoi échoué"}</span>
+                                              <button
+                                                className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
+                                                onClick={() => handleRetrySend(message)}
+                                              >
+                                                {t("resend") || "Renvoyer"}
+                                              </button>
+                                              <button
+                                                className="px-2 py-1 text-xs rounded border border-destructive text-destructive hover:bg-destructive/10"
+                                                onClick={() => handleDeleteLocalMessage(message)}
+                                              >
+                                                {t("delete") || "Supprimer"}
+                                              </button>
+                                            </div>
+                                          )}
                                           {message.quotedMessageId && message.quotedBody && (
                                             <div
                                               className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"

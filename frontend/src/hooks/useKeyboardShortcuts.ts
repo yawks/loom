@@ -23,7 +23,9 @@ export function useKeyboardShortcuts() {
 
     // Find conversations with unread messages
     const unreadConversations = sortedContacts.filter((contact) => {
-      const conversationId = contact.linkedAccounts[0]?.userId;
+      const conversationId =
+        contact.linkedAccounts[0]?.conversationId ??
+        contact.linkedAccounts[0]?.userId;
       if (!conversationId) return false;
       const conversationState = readStateByConversation[conversationId];
       if (!conversationState) return false;
@@ -59,7 +61,9 @@ export function useKeyboardShortcuts() {
       // Look for unread conversations above current
       for (let i = currentIndex - 1; i >= 0; i--) {
         const contact = sortedContacts[i];
-        const conversationId = contact.linkedAccounts[0]?.userId;
+        const conversationId =
+          contact.linkedAccounts[0]?.conversationId ??
+          contact.linkedAccounts[0]?.userId;
         if (conversationId) {
           const conversationState = readStateByConversation[conversationId];
           if (conversationState) {
@@ -82,7 +86,9 @@ export function useKeyboardShortcuts() {
       // Look for unread conversations below current
       for (let i = currentIndex + 1; i < sortedContacts.length; i++) {
         const contact = sortedContacts[i];
-        const conversationId = contact.linkedAccounts[0]?.userId;
+        const conversationId =
+          contact.linkedAccounts[0]?.conversationId ??
+          contact.linkedAccounts[0]?.userId;
         if (conversationId) {
           const conversationState = readStateByConversation[conversationId];
           if (conversationState) {

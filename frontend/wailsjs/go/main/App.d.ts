@@ -22,6 +22,8 @@ export function DisconnectProvider(arg1:string):Promise<void>;
 
 export function EditMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function ForceSyncCompletion():Promise<void>;
+
 export function GetAllActiveCalls():Promise<Record<string, boolean>>;
 
 export function GetAllLastMessageTimestamps():Promise<Record<string, number>>;
@@ -57,6 +59,8 @@ export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, s
 export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
+
+export function GetSlackCustomEmojiList(arg1:string):Promise<Record<string, string>>;
 
 export function GetSlackEmojiURL(arg1:string,arg2:string):Promise<string>;
 

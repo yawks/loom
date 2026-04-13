@@ -283,9 +283,12 @@ func (pm *ProviderManager) RemoveProvider(instanceID string) error {
 	}
 	fmt.Printf("ProviderManager.RemoveProvider: Found provider instance %s\n", instanceID)
 
-	// Disconnect if active
+	// Cleanup and Disconnect (Cleanup calls Disconnect internally)
+	if err := provider.Cleanup(); err != nil {
+		fmt.Printf("ProviderManager.RemoveProvider: WARNING - failed to cleanup provider %s: %v\n", instanceID, err)
+	}
+
 	if instanceID == pm.activeInstanceID {
-		provider.Disconnect()
 		pm.activeInstanceID = ""
 	}
 
@@ -300,6 +303,16 @@ func (pm *ProviderManager) RemoveProvider(instanceID string) error {
 		// Find all LinkedAccounts for this provider instance (use Unscoped to include soft-deleted)
 		var linkedAccounts []models.LinkedAccount
 		if err := db.DB.Unscoped().Where("provider_instance_id = ?", instanceID).Find(&linkedAccounts).Error; err == nil {
+			// Collect UserIDs and protocol for LIDMapping and ContactAlias cleanup
+			userIDsToClean := make([]string, 0, len(linkedAccounts))
+			protocolToClean := ""
+			for _, a := range linkedAccounts {
+				userIDsToClean = append(userIDsToClean, a.UserID)
+				if protocolToClean == "" {
+					protocolToClean = a.Protocol
+				}
+			}
+
 			for _, account := range linkedAccounts {
 				// Find all conversations for this linked account
 				var conversations []models.Conversation
@@ -336,6 +349,14 @@ func (pm *ProviderManager) RemoveProvider(instanceID string) error {
 						db.DB.Unscoped().Where("id = ?", metaContactID).Delete(&models.MetaContact{})
 					}
 				}
+			}
+
+			// Delete LIDMapping and ContactAlias for all users belonging to this provider
+			if len(userIDsToClean) > 0 {
+				if protocolToClean != "" {
+					db.DB.Unscoped().Where("protocol = ? AND jid IN ?", protocolToClean, userIDsToClean).Delete(&models.LIDMapping{})
+				}
+				db.DB.Unscoped().Where("user_id IN ?", userIDsToClean).Delete(&models.ContactAlias{})
 			}
 		}
 	}
