@@ -91,9 +91,10 @@ func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message st
 
 	select {
 	case w.eventChan <- core.SyncStatusEvent{
-		Status:   status,
-		Message:  message,
-		Progress: progress,
+		InstanceID: w.getInstanceID(),
+		Status:     status,
+		Message:    message,
+		Progress:   progress,
 	}:
 		// Event sent successfully
 		w.log("WhatsApp: Sync status event sent successfully: %s\n", message)
@@ -582,4 +583,35 @@ func (w *WhatsAppProvider) Cleanup() error {
 
 	w.log("WhatsApp: Cleanup completed successfully\n")
 	return nil
+}
+
+func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
+	return core.Capabilities{
+		SupportsThreads:          false,
+		SupportsReactions:        true,
+		SupportsCustomEmojis:     false,
+		SupportsTypingIndicator:  true,
+		SupportsGroupManagement:  true,
+		SupportsDeleteMessage:    true,
+		SupportsEditMessage:      true,
+		SupportsReadReceipts:     true,
+		SupportsPinConversation:  true,
+		SupportsMuteConversation: true,
+		SupportsQRCodeAuth:       true,
+	}
+}
+
+func (w *WhatsAppProvider) GetCustomEmojis() (map[string]string, error) {
+	return nil, nil // WhatsApp doesn't support custom emojis
+}
+
+func (w *WhatsAppProvider) GetAuthQRCode() (string, error) {
+	return w.GetQRCode()
+}
+
+func (w *WhatsAppProvider) getInstanceID() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	id, _ := w.config["_instance_id"].(string)
+	return id
 }

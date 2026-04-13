@@ -587,7 +587,7 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		// Or emit sync status update if we're near the end
 		if remaining == 0 || processedCount%5 == 0 {
 			select {
-			case p.eventChan <- core.ContactStatusEvent{UserID: "refresh", Status: "mpim_updated"}:
+			case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "mpim_updated"}:
 				// Event sent successfully
 			default:
 				// Channel full, skip

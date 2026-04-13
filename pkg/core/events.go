@@ -36,7 +36,8 @@ type ProviderEvent interface {
 
 // MessageEvent represents a new message event (text or file).
 type MessageEvent struct {
-	Message models.Message
+	InstanceID string `json:"instanceId"`
+	Message    models.Message
 }
 
 // Type returns the event type for MessageEvent.
@@ -46,12 +47,13 @@ func (e MessageEvent) Type() EventType {
 
 // ReactionEvent represents a reaction to a message.
 type ReactionEvent struct {
-	ConversationID string // Protocol conversation ID
-	MessageID      string // Protocol message ID
-	UserID         string // User who reacted
-	Emoji          string // Emoji reaction (e.g., "👍", "❤️")
-	Added          bool   // true if reaction added, false if removed
-	Timestamp      int64  // Unix timestamp
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	MessageID      string `json:"messageId"`      // Protocol message ID
+	UserID         string `json:"userId"`         // User who reacted
+	Emoji          string `json:"emoji"`          // Emoji reaction (e.g., "👍", "❤️")
+	Added          bool   `json:"added"`          // true if reaction added, false if removed
+	Timestamp      int64  `json:"timestamp"`      // Unix timestamp
 }
 
 // Type returns the event type for ReactionEvent.
@@ -61,10 +63,11 @@ func (e ReactionEvent) Type() EventType {
 
 // TypingEvent represents a typing indicator event.
 type TypingEvent struct {
-	ConversationID string // Protocol conversation ID
-	UserID         string // User who is typing
-	UserName       string // Display name of the user who is typing
-	IsTyping       bool   // true if typing, false if stopped
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	UserID         string `json:"userId"`         // User who is typing
+	UserName       string `json:"userName"`       // Display name of the user who is typing
+	IsTyping       bool   `json:"isTyping"`       // true if typing, false if stopped
 }
 
 // Type returns the event type for TypingEvent.
@@ -74,11 +77,12 @@ func (e TypingEvent) Type() EventType {
 
 // ContactStatusEvent represents a change in contact status (online/offline, last seen, etc.).
 type ContactStatusEvent struct {
-	UserID      string // Protocol user ID
-	Status      string // "online", "offline", "away", "busy", etc.
-	LastSeen    *int64 // Unix timestamp of last seen (nil if not available)
-	StatusEmoji string // Emoji associated with the status (e.g., ":calendar:", "📅")
-	StatusText  string // Status text (e.g., "en réunion", "in a meeting")
+	InstanceID  string `json:"instanceId"`
+	UserID      string `json:"userId"`      // Protocol user ID
+	Status      string `json:"status"`      // "online", "offline", "away", "busy", etc.
+	LastSeen    *int64 `json:"lastSeen"`    // Unix timestamp of last seen (nil if not available)
+	StatusEmoji string `json:"statusEmoji"` // Emoji associated with the status (e.g., ":calendar:", "📅")
+	StatusText  string `json:"statusText"`  // Status text (e.g., "en réunion", "in a meeting")
 }
 
 // Type returns the event type for ContactStatusEvent.
@@ -88,9 +92,10 @@ func (e ContactStatusEvent) Type() EventType {
 
 // PresenceEvent represents a real-time presence update (online/offline).
 type PresenceEvent struct {
-	UserID   string // Protocol user ID
-	IsOnline bool   // true if online, false if offline
-	LastSeen int64  // Unix timestamp of last seen (0 if not available or user is online)
+	InstanceID string `json:"instanceId"`
+	UserID     string `json:"userId"`   // Protocol user ID
+	IsOnline   bool   `json:"isOnline"` // true if online, false if offline
+	LastSeen   int64  `json:"lastSeen"` // Unix timestamp of last seen (0 if not available or user is online)
 }
 
 // Type returns the event type for PresenceEvent.
@@ -120,11 +125,12 @@ const (
 
 // GroupChangeEvent represents a change in a group (created, updated, participants, etc.).
 type GroupChangeEvent struct {
-	ConversationID string          // Protocol conversation ID
-	ChangeType     GroupChangeType // Type of change
-	GroupName      string          // Updated group name (if applicable)
-	ParticipantID  string          // User ID of the participant (if applicable)
-	Timestamp      int64           // Unix timestamp
+	InstanceID     string          `json:"instanceId"`
+	ConversationID string          `json:"conversationId"` // Protocol conversation ID
+	ChangeType     GroupChangeType `json:"changeType"`     // Type of change
+	GroupName      string          `json:"groupName"`      // Updated group name (if applicable)
+	ParticipantID  string          `json:"participantId"`  // User ID of the participant (if applicable)
+	Timestamp      int64           `json:"timestamp"`      // Unix timestamp
 }
 
 // Type returns the event type for GroupChangeEvent.
@@ -146,11 +152,12 @@ const (
 
 // ReceiptEvent represents a delivery or read receipt for a message.
 type ReceiptEvent struct {
-	ConversationID string      // Protocol conversation ID
-	MessageID      string      // Protocol message ID
-	ReceiptType    ReceiptType // Type of receipt (delivery or read)
-	UserID         string      // User ID who sent the receipt
-	Timestamp      int64       // Unix timestamp
+	InstanceID     string      `json:"instanceId"`
+	ConversationID string      `json:"conversationId"` // Protocol conversation ID
+	MessageID      string      `json:"messageId"`      // Protocol message ID
+	ReceiptType    ReceiptType `json:"receiptType"`    // Type of receipt (delivery or read)
+	UserID         string      `json:"userId"`         // User ID who sent the receipt
+	Timestamp      int64       `json:"timestamp"`      // Unix timestamp
 }
 
 // Type returns the event type for ReceiptEvent.
@@ -160,10 +167,11 @@ func (e ReceiptEvent) Type() EventType {
 
 // RetryReceiptEvent represents a retry receipt when message decryption fails.
 type RetryReceiptEvent struct {
-	ConversationID string // Protocol conversation ID
-	MessageID      string // Protocol message ID that failed to decrypt
-	UserID         string // User ID who sent the retry receipt
-	Timestamp      int64  // Unix timestamp
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	MessageID      string `json:"messageId"`      // Protocol message ID that failed to decrypt
+	UserID         string `json:"userId"`         // User ID who sent the retry receipt
+	Timestamp      int64  `json:"timestamp"`      // Unix timestamp
 }
 
 // Type returns the event type for RetryReceiptEvent.
@@ -189,10 +197,11 @@ const (
 
 // SyncStatusEvent represents a synchronization status update.
 type SyncStatusEvent struct {
-	Status         SyncStatusType // Type of sync status
-	Message        string         // Human-readable message describing the current step
-	ConversationID string         // Conversation ID (if fetching history for a specific conversation)
-	Progress       int            // Progress percentage (0-100, -1 if unknown)
+	InstanceID     string         `json:"instanceId"`
+	Status         SyncStatusType `json:"status"`         // Type of sync status
+	Message        string         `json:"message"`        // Human-readable message describing the current step
+	ConversationID string         `json:"conversationId"` // Conversation ID (if fetching history for a specific conversation)
+	Progress       int            `json:"progress"`       // Progress percentage (0-100, -1 if unknown)
 }
 
 // Type returns the event type for SyncStatusEvent.
@@ -202,8 +211,9 @@ func (e SyncStatusEvent) Type() EventType {
 
 // ConversationReadStatusEvent represents a conversation read status update (last read timestamp).
 type ConversationReadStatusEvent struct {
-	ConversationID string // Protocol conversation ID
-	LastReadTS     string // Last read timestamp (Slack format: "1502126650.000003")
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	LastReadTS     string `json:"lastReadTs"`     // Last read timestamp (Slack format: "1502126650.000003")
 }
 
 // Type returns the event type for ConversationReadStatusEvent.
