@@ -61,9 +61,9 @@ if (typeof window !== "undefined") {
   EventsOn("presence", (eventData: string) => {
     console.log("Presence event received:", eventData);
     try {
-      const event = JSON.parse(eventData) as { UserID: string; IsOnline: boolean; LastSeen: number };
+      const event = JSON.parse(eventData) as { userId: string; isOnline: boolean; lastSeen: number };
       console.log("Parsed presence event:", event);
-      usePresenceStore.getState().setPresence(event.UserID, event.IsOnline, event.LastSeen);
+      usePresenceStore.getState().setPresence(event.userId, event.isOnline, event.lastSeen);
     } catch (error) {
       console.error("Failed to parse presence event:", error, eventData);
     }

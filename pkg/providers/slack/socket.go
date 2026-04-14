@@ -158,7 +158,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	// Create the event
-	event := core.MessageEvent{InstanceID: p.getInstanceID(),
+	event := core.MessageEvent{InstanceID: p.getInstanceId(),
 		Message: msg,
 	}
 
@@ -168,7 +168,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 		// Emit a lightweight refresh signal so the UI reloads contact lists
 		select {
-		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(),
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(),
 			UserID: "refresh",
 			Status: "message_received",
 		}:
@@ -183,7 +183,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// If this is a call-related message, also emit a contact refresh to update the conversation list
 	if callType != "" {
 		select {
-		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "call_received"}:
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(), UserID: "refresh", Status: "call_received"}:
 			p.log("SlackProvider: ContactStatusEvent emitted for huddle\n")
 		default:
 		}

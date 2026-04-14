@@ -118,10 +118,10 @@ export function ContactList() {
     const unsubscribe = EventsOn("contact-status", (statusJSON: string) => {
       try {
         JSON.parse(statusJSON) as {
-          UserID: string;
-          Status: string;
-          StatusEmoji?: string;
-          StatusText?: string;
+          userId: string;
+          status: string;
+          statusEmoji?: string;
+          statusText?: string;
         };
         
         // Invalidate contacts query to refetch with updated status

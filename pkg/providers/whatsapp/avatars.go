@@ -323,7 +323,7 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 
 				// Emit a contact refresh event to update the UI
 				select {
-				case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: account.UserID, Status: "avatar_updated"}:
+				case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: account.UserID, Status: "avatar_updated"}:
 					fmt.Printf("WhatsApp: Emitted avatar_updated event for %s\n", account.UserID)
 				default:
 					fmt.Printf("WhatsApp: Failed to emit avatar_updated event (channel full)\n")
