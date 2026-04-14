@@ -98,6 +98,18 @@ export function useMessageEvents() {
         // (covers both incoming and outgoing messages)
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+
+        // Update last message in cache directly for immediate UI update
+        if (conversationId) {
+          queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
+            ...(old || {}),
+            [conversationId]: message,
+          }));
+          queryClient.setQueryData<Record<string, any>>(["allLastMessageTimestamps"], (old) => ({
+            ...(old || {}),
+            [conversationId]: Math.floor(new Date(message.timestamp).getTime() / 1000),
+          }));
+        }
         
         // Optimistically inject the message into the messages cache so it shows up instantly,
         // even if the conversation was not yet synced/loaded.
