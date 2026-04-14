@@ -189,6 +189,23 @@ export function useMessageEvents() {
           }
         }
 
+        // Invalidate sort-order queries so the Recent tab reorders immediately
+        // (covers both incoming and outgoing messages)
+        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+
+        // Update last message in cache directly for immediate UI update
+        if (conversationId) {
+          queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
+            ...(old || {}),
+            [conversationId]: message,
+          }));
+          queryClient.setQueryData<Record<string, any>>(["allLastMessageTimestamps"], (old) => ({
+            ...(old || {}),
+            [conversationId]: Math.floor(timeToDate(message.timestamp).getTime() / 1000),
+          }));
+        }
+
         // Safety-net: if the selected conversation uses a different query key than
         // message.protocolConvId (e.g. Slack DMs where linkedAccount.userId ≠ channel ID),
         // refetch any active ["messages", ...] query so the currently open chat always
