@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTypingStore } from "@/lib/typingStore";
+import { timeToDate } from "@/lib/utils";
 
 interface ReceiptEvent {
   instanceId: string;
@@ -94,6 +95,10 @@ export function useMessageEvents() {
         queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
         console.log("useMessageEvents: Invalidated and refetched metaContacts");
 
+        // Optimistically inject the message into the messages cache so it shows up instantly,
+        // even if the conversation was not yet synced/loaded.
+        const conversationId = message.protocolConvId;
+
         // Invalidate sort-order queries so the Recent tab reorders immediately
         // (covers both incoming and outgoing messages)
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
@@ -107,13 +112,9 @@ export function useMessageEvents() {
           }));
           queryClient.setQueryData<Record<string, any>>(["allLastMessageTimestamps"], (old) => ({
             ...(old || {}),
-            [conversationId]: Math.floor(new Date(message.timestamp).getTime() / 1000),
+            [conversationId]: Math.floor(timeToDate(message.timestamp).getTime() / 1000),
           }));
         }
-        
-        // Optimistically inject the message into the messages cache so it shows up instantly,
-        // even if the conversation was not yet synced/loaded.
-        const conversationId = message.protocolConvId;
         // Track whether the setQueryData updater actually added a genuinely new message.
         // Using an object so TypeScript's control-flow narrowing doesn't prevent mutation
         // inside the setQueryData callback from being visible outside.
