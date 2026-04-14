@@ -1282,6 +1282,13 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 
 			total := w.storeMessagesForConversation(convID, converted)
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
+
+			// Emit event for the latest message so the UI can update previews
+			latest := converted[len(converted)-1]
+			select {
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: latest}:
+			default:
+			}
 		}
 	}
 }
