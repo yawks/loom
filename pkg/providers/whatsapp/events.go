@@ -621,8 +621,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if v != nil && v.Data != nil {
 			fmt.Printf("WhatsApp: ===== HISTORY SYNC STARTED =====\n")
 			w.cacheConversationsFromHistory(v.Data)
-			// NOTE: We no longer call cacheMessagesFromHistory here - messages are loaded on-demand
-			// w.cacheMessagesFromHistory(v.Data)
+			// Process history messages to populate previews and cache
+			w.cacheMessagesFromHistory(v.Data)
 			// NOTE: We also no longer call processCallLogRecords here - it queries the database for messages
 			// Call logs will be processed when messages are loaded on-demand (when clicking on a conversation)
 			// fmt.Printf("WhatsApp: ===== PROCESSING CALL LOG RECORDS =====\n")
