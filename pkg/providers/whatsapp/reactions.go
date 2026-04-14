@@ -80,7 +80,7 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 
 	// Emit reaction event
 	select {
-	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceID(),
+	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceId(),
 		ConversationID: conversationID,
 		MessageID:      messageID,
 		UserID:         currentUserID,
@@ -163,7 +163,7 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 
 	// Emit reaction event
 	select {
-	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceID(),
+	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceId(),
 		ConversationID: conversationID,
 		MessageID:      messageID,
 		UserID:         currentUserID,

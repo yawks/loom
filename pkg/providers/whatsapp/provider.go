@@ -91,7 +91,7 @@ func (w *WhatsAppProvider) emitSyncStatus(status core.SyncStatusType, message st
 
 	select {
 	case w.eventChan <- core.SyncStatusEvent{
-		InstanceID: w.getInstanceID(),
+		InstanceID: w.getInstanceId(),
 		Status:     status,
 		Message:    message,
 		Progress:   progress,
@@ -609,7 +609,7 @@ func (w *WhatsAppProvider) GetAuthQRCode() (string, error) {
 	return w.GetQRCode()
 }
 
-func (w *WhatsAppProvider) getInstanceID() string {
+func (w *WhatsAppProvider) getInstanceId() string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	id, _ := w.config["_instance_id"].(string)

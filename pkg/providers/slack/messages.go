@@ -144,7 +144,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	// Emit MessageEvent to notify frontend
 	if eventChan != nil {
 		select {
-		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceID(), Message: *sentMessage}:
+		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: *sentMessage}:
 			p.log("SlackProvider.SendMessage: MessageEvent emitted successfully for sent message %s\n", timestamp)
 		default:
 			p.log("SlackProvider.SendMessage: WARNING - Failed to emit MessageEvent (channel full) for sent message %s\n", timestamp)
@@ -346,7 +346,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	// Emit MessageEvent to notify frontend
 	if eventChan != nil {
 		select {
-		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceID(), Message: *sentMessage}:
+		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: *sentMessage}:
 			p.log("SlackProvider.SendFile: MessageEvent emitted successfully for sent file %s\n", fileUpload.ID)
 		default:
 			p.log("SlackProvider.SendFile: WARNING - Failed to emit MessageEvent (channel full) for sent file %s\n", fileUpload.ID)
@@ -864,7 +864,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 	// Emit MessageEvent to notify frontend of the update
 	if eventChan != nil {
 		select {
-		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceID(), Message: existingMsg}:
+		case eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: existingMsg}:
 			p.log("SlackProvider.EditMessage: MessageEvent emitted successfully for edited message %s\n", messageID)
 		default:
 			p.log("SlackProvider.EditMessage: WARNING - Failed to emit MessageEvent (channel full) for edited message %s\n", messageID)
@@ -1462,7 +1462,7 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 	// Emit an immediate reaction event so the frontend updates without waiting for polling.
 	if p.selfUserID != "" {
 		select {
-		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
+		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
 			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
 			MessageID:      messageID,
 			UserID:         p.selfUserID,
@@ -1517,7 +1517,7 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 	// Emit an immediate reaction event so the frontend updates without waiting for polling.
 	if p.selfUserID != "" {
 		select {
-		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceID(),
+		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
 			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
 			MessageID:      messageID,
 			UserID:         p.selfUserID,

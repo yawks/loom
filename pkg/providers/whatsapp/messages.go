@@ -372,7 +372,7 @@ func (w *WhatsAppProvider) handleRevokedProtocolMessage(evt *events.Message, pro
 
 	if emitEvent {
 		select {
-		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *updated}:
+		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *updated}:
 			fmt.Printf("WhatsApp: MessageEvent emitted for revoked message %s\n", msgID)
 		default:
 			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for revoked message %s (channel full)\n", msgID)
@@ -528,7 +528,7 @@ func (w *WhatsAppProvider) handleEditedProtocolMessage(evt *events.Message, prot
 	if updated != nil && emitEvent {
 		fmt.Printf("WhatsApp: Emitting MessageEvent for edited message %s with body: '%s', isEdited: %v\n", msgID, updated.Body, updated.IsEdited)
 		select {
-		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *updated}:
+		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *updated}:
 			fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", msgID)
 		default:
 			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", msgID)
@@ -1286,7 +1286,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// Emit event for the latest message so the UI can update previews
 			latest := converted[len(converted)-1]
 			select {
-			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: latest}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: latest}:
 			default:
 			}
 		}
@@ -1839,7 +1839,7 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 
 	// Emit MessageEvent to notify frontend
 	select {
-	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *sentMessage}:
+	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *sentMessage}:
 		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent message %s\n", sentMessage.ProtocolMsgID)
 	default:
 		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent message %s\n", sentMessage.ProtocolMsgID)
@@ -1970,7 +1970,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 
 	// Emit MessageEvent to notify frontend
 	select {
-	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *sentMessage}:
+	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *sentMessage}:
 		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent reply %s\n", sentMessage.ProtocolMsgID)
 	default:
 		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent reply %s\n", sentMessage.ProtocolMsgID)
@@ -2083,7 +2083,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 
 	// Emit MessageEvent to notify frontend
 	select {
-	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: updatedMessage}:
+	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: updatedMessage}:
 		fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", messageID)
 	default:
 		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", messageID)
@@ -2159,7 +2159,7 @@ func (w *WhatsAppProvider) DeleteMessage(conversationID string, messageID string
 	// Emit MessageEvent to notify frontend
 	if updated != nil {
 		select {
-		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *updated}:
+		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *updated}:
 			fmt.Printf("WhatsApp: MessageEvent emitted for deleted message %s\n", messageID)
 		default:
 			fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for deleted message %s\n", messageID)
@@ -2333,7 +2333,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 
 			// Emit MessageEvent to notify frontend
 			select {
-			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *sentMessage}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *sentMessage}:
 				fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent file %s\n", sentMessage.ProtocolMsgID)
 			default:
 				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent file %s\n", sentMessage.ProtocolMsgID)
@@ -2356,7 +2356,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	w.appendMessageToConversation(sentMessage)
 
 	select {
-	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceID(), Message: *sentMessage}:
+	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *sentMessage}:
 		fmt.Printf("WhatsApp: MessageEvent emitted successfully for sent file %s\n", sentMessage.ProtocolMsgID)
 	default:
 		fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for sent file %s\n", sentMessage.ProtocolMsgID)

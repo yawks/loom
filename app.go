@@ -1086,8 +1086,8 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 	// Notify frontend
 	if a.ctx != nil {
 		type deletedPayload struct {
-			ConversationID string `json:"ConversationID"`
-			MessageID      string `json:"MessageID"`
+			ConversationID string `json:"conversationId"`
+			MessageID      string `json:"messageId"`
 		}
 		payload, _ := json.Marshal(deletedPayload{ConversationID: conversationID, MessageID: messageID})
 		runtime.EventsEmit(a.ctx, "message-deleted", string(payload))
