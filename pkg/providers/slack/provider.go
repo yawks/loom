@@ -374,7 +374,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			// Emit new message events for each message so the UI updates
 			for _, msg := range newMessages {
 				select {
-				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceID(),
+				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(),
 					Message: msg,
 				}:
 				default:
@@ -412,7 +412,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			if err == nil && convInfo != nil && convInfo.LastRead != "" {
 				// Emit read status event so frontend marks messages as read
 				select {
-				case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceID(),
+				case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
 					ConversationID: conv.ProtocolConvID,
 					LastReadTS:     convInfo.LastRead,
 				}:
@@ -435,7 +435,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 	// so the UI shows those channels in Recent/Unread tabs
 	if newConversationsCreated > 0 {
 		select {
-		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(), UserID: "refresh", Status: "new_conversations_discovered"}:
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(), UserID: "refresh", Status: "new_conversations_discovered"}:
 			p.log("SlackProvider.incrementalSyncExistingConversations: Triggered contact refresh for %d new conversations\n", newConversationsCreated)
 		default:
 			p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping contact refresh\n")
@@ -982,7 +982,7 @@ func (p *SlackProvider) checkStatusChanges() {
 		if !exists || cached.status != newStatus || cached.statusEmoji != newStatusEmoji || cached.statusText != newStatusText {
 			// Status changed, emit event
 			select {
-			case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceID(),
+			case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(),
 				UserID:      user.ID,
 				Status:      newStatus,
 				StatusEmoji: newStatusEmoji,
@@ -1119,7 +1119,7 @@ func (p *SlackProvider) GetAuthQRCode() (string, error) {
 	return "", fmt.Errorf("Slack does not support QR code authentication")
 }
 
-func (p *SlackProvider) getInstanceID() string {
+func (p *SlackProvider) getInstanceId() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	id, _ := p.config.GetString("_instance_id")

@@ -131,7 +131,7 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 		// Emit contact refresh event
 		select {
-		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceID(), UserID: "refresh", Status: "sync_complete"}:
+		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "sync_complete"}:
 		default:
 		}
 
