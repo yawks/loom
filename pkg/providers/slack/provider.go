@@ -248,6 +248,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%')
 		GROUP BY protocol_conv_id
 		ORDER BY MAX(timestamp) DESC
+		LIMIT 100
 	`).Scan(&results).Error
 
 	if err != nil {
@@ -312,6 +313,12 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 
 	// Sync each conversation
 	for i, conv := range conversations {
+		// Limit synchronization to recent rooms (e.g., active in last 30 days) to save CPU
+		// if we have hundreds of rooms.
+		if len(conversations) > 50 && time.Since(conv.LastTimestamp) > 30*24*time.Hour {
+			continue
+		}
+
 		progress := int((float64(i+1) / float64(len(conversations))) * 100)
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
 
