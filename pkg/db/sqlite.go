@@ -74,8 +74,36 @@ func InitDatabase() error {
 		return fmt.Errorf("failed to migrate linked account: %w", err)
 	}
 
+	// Performance optimization: ensure crucial indices exist
+	err = ensureIndices(db)
+	if err != nil {
+		fmt.Printf("Warning: Failed to ensure some indices: %v\n", err)
+	}
+
 	DB = db
 	fmt.Println("Database connection successful and schema migrated.")
+	return nil
+}
+
+// ensureIndices adds crucial performance indices that might be missing
+func ensureIndices(db *gorm.DB) error {
+	indices := []struct {
+		Name  string
+		Table string
+		Cols  string
+	}{
+		{"idx_linked_accounts_meta_contact_id", "linked_accounts", "meta_contact_id"},
+		{"idx_conversations_linked_account_id", "conversations", "linked_account_id"},
+		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},
+		{"idx_reactions_message_id", "reactions", "message_id"},
+	}
+
+	for _, idx := range indices {
+		err := db.Exec(fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s(%s)", idx.Name, idx.Table, idx.Cols)).Error
+		if err != nil {
+			fmt.Printf("Error creating index %s: %v\n", idx.Name, err)
+		}
+	}
 	return nil
 }
 
