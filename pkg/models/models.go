@@ -127,10 +127,10 @@ func (LIDMapping) TableName() string {
 // Reaction represents a reaction to a message.
 type Reaction struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
-	MessageID uint      `gorm:"index" json:"messageId"` // Foreign key to Message
-	UserID    string    `json:"userId"`                 // User who reacted
-	Emoji     string    `json:"emoji"`                  // Emoji reaction (e.g., "👍", "❤️")
-	CreatedAt time.Time `json:"createdAt"`
+	MessageID uint      `gorm:"index" json:"messageId"`                                   // Foreign key to Message
+	UserID    string    `json:"userId"`                                                   // User who reacted
+	Emoji     string    `json:"emoji"`                                                    // Emoji reaction (e.g., "👍", "❤️")
+	CreatedAt time.Time `gorm:"index:idx_reactions_created_at;priority:1" json:"createdAt"` // Index for last reaction timestamps
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 

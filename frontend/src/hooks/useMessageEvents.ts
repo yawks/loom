@@ -73,8 +73,8 @@ export function useMessageEvents() {
 
         registerIncomingMessage(message);
 
-        // Invalidate sort-order queries and contacts list
-        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        // Invalidate sort-order queries
+        // Note: Stop invalidating metaContacts here as it's expensive and rarely needed for a new message
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
@@ -223,7 +223,8 @@ export function useMessageEvents() {
             );
           }
         }
-        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        // Note: Stop invalidating metaContacts here as it's expensive and rarely needed for a receipt
+        // Note: Stop invalidating metaContacts here as it's expensive and rarely needed for a reaction
       } catch (error) {
         console.error("useMessageEvents: Failed to parse receipt event:", error);
       }

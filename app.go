@@ -1316,29 +1316,25 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 		return map[string]models.Message{}, nil
 	}
 
-	// Get all conversations that have messages
-	var conversations []string
-	err := db.DB.Model(&models.Message{}).
-		Distinct("protocol_conv_id").
-		Pluck("protocol_conv_id", &conversations).Error
+	// Use a window function to get the latest message for each conversation in a single query
+	// This is MUCH faster than N+1 queries
+	var messages []models.Message
+	err := db.DB.Raw(`
+		SELECT * FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC) as rn
+			FROM messages
+			WHERE deleted_at IS NULL
+		) WHERE rn = 1
+	`).Preload("Reactions").Find(&messages).Error
 
 	if err != nil {
+		fmt.Printf("[GetAllLastMessages] Error: %v\n", err)
 		return map[string]models.Message{}, err
 	}
 
 	result := make(map[string]models.Message)
-
-	// For each conversation, get the latest message
-	for _, convID := range conversations {
-		var message models.Message
-		err := db.DB.Where("protocol_conv_id = ?", convID).
-			Preload("Reactions").
-			Order("timestamp desc").
-			First(&message).Error
-
-		if err == nil {
-			result[convID] = message
-		}
+	for _, msg := range messages {
+		result[msg.ProtocolConvID] = msg
 	}
 
 	return result, nil
@@ -1389,10 +1385,12 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 	}
 
 	// Single query: latest reaction timestamp per conversation
+	// Optimized: Use a subquery to avoid a large join if possible, or ensure indices are used
 	var reactionTimestamps []convMaxTime
-	if err = db.DB.Model(&models.Reaction{}).
+	if err = db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
 		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
+		Where("messages.deleted_at IS NULL").
 		Group("messages.protocol_conv_id").
 		Scan(&reactionTimestamps).Error; err == nil {
 		for _, row := range reactionTimestamps {
