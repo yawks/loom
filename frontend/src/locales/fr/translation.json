@@ -206,5 +206,7 @@
   "create_group": "Créer le groupe",
   "open_chat": "Ouvrir la discussion",
   "creating": "Création...",
-  "all": "Tous"
+  "all": "Tous",
+  "no_unread_messages": "Pas de messages non lus",
+  "view_recent": "Voir les messages récents"
 }

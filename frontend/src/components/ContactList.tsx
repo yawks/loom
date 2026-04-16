@@ -242,6 +242,7 @@ export function ContactList() {
           }
         },
         staleTime: 5000, // Cache for 5 seconds (more frequent updates for active calls)
+        placeholderData: (previousData) => previousData,
   });
 
   const hasActiveCallByConversation = useMemo(() => {
@@ -262,6 +263,7 @@ export function ContactList() {
           }
         },
         staleTime: 30000, // Cache for 30 seconds
+        placeholderData: (previousData) => previousData,
   });
 
   const messageCountByConversation = useMemo(() => {
@@ -403,6 +405,21 @@ export function ContactList() {
       </div>
       <div className="flex-1 overflow-y-auto scroll-area">
         <div className="space-y-1 p-2">
+          {sortBy === "unread" && filteredContacts.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center">
+              <Inbox className="h-12 w-12 text-muted-foreground/30 mb-4" />
+              <p className="text-sm text-muted-foreground mb-4">
+                {t("no_unread_messages") || "Pas de messages non lus"}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSortBy("last_message")}
+              >
+                {t("view_recent") || "Voir les messages récents"}
+              </Button>
+            </div>
+          )}
           {filteredContacts.map((contact) => {
             const conversationId =
               contact.linkedAccounts[0]?.conversationId ??
@@ -592,7 +609,10 @@ export function ContactList() {
                 </div>
                 <div className="flex flex-col flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium truncate">
+                  <span className={cn(
+                    "text-sm font-medium truncate",
+                    unreadCount > 0 && "font-bold text-foreground"
+                  )}>
                     {contact.displayName}
                   </span>
                   <div className="ml-auto flex items-center gap-1.5">
