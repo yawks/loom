@@ -124,16 +124,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
       // Filter out contacts with no messages only for the "recent" tab
       if (sortBy === "last_message") {
-        const timestampsCount = Object.keys(lastMessageDates).length;
-        if (timestampsCount > 0) {
-          // Avoid flickering: only filter if we have more than one timestamp
-          // or if we have timestamps for all contacts.
-          // This prevents the list from emptying when one new message arrives
-          // and briefly becomes the only item in the timestamps map.
-          if (timestampsCount >= 2 || contactsWithAliases.length <= timestampsCount) {
-            sorted = sorted.filter((contact) => getContactTime(contact) > 0);
-          }
-        }
+        sorted = sorted.filter((contact) => getContactTime(contact) > 0);
       }
     }
 
