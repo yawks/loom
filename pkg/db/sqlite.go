@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -76,6 +77,47 @@ func InitDatabase() error {
 	DB = db
 	fmt.Println("Database connection successful and schema migrated.")
 	return nil
+}
+
+// ParseTime converts various time representations from SQLite to int64 Unix timestamp.
+func ParseTime(v interface{}) int64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case time.Time:
+		return val.Unix()
+	case int64:
+		return val
+	case float64:
+		return int64(val)
+	case int:
+		return int64(val)
+	case string:
+		// SQLite often uses '2006-01-02 15:04:05.999999999+00:00'
+		// or '2006-01-02 15:04:05' or RFC3339
+		formats := []string{
+			time.RFC3339,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			time.DateTime,
+		}
+		for _, f := range formats {
+			if t, err := time.Parse(f, val); err == nil {
+				return t.Unix()
+			}
+		}
+		// Try to parse as float/int string
+		var f float64
+		if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
+			return int64(f)
+		}
+	case []byte:
+		s := string(val)
+		return ParseTime(s)
+	}
+	return 0
 }
 
 // migrateProviderConfiguration handles the migration of ProviderConfiguration table

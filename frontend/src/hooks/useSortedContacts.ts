@@ -28,7 +28,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
   // Récupérer tous les timestamps des derniers messages en une seule requête
   // Toujours activé pour que les données soient disponibles immédiatement lors du basculement vers "Récents"
-  const { data: allLastMessageTimestamps = {}, isPlaceholderData: isTimestampsPlaceholder } = useQuery<Record<string, any>, Error>({
+  const { data: allLastMessageTimestamps = {} } = useQuery<Record<string, any>, Error>({
     queryKey: ["allLastMessageTimestamps"],
     queryFn: async () => {
       try {
