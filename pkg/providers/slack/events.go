@@ -100,24 +100,28 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 	params := slack.NewSearchParameters()
 	params.Sort = "timestamp"
 	params.SortDirection = "asc"
-	params.Count = 100 // Get up to 100 recent matching messages
-
-	search, err := client.SearchMessages(query, params)
-	if err != nil {
-		return since, err
-	}
-
-	if len(search.Matches) == 0 {
-		return since, nil
-	}
-
-	p.log("SlackProvider.pollGlobalUpdates: Found %d new messages via search (since %s)\n", len(search.Matches), since.Format(time.RFC3339))
+	params.Count = 100 // Get up to 100 messages per page
 
 	latestTimestamp := since
 	newConversationsFound := false
+	page := 1
 
-	// Process matches
-	for _, match := range search.Matches {
+	for {
+		params.Page = page
+		search, err := client.SearchMessages(query, params)
+		if err != nil {
+			return latestTimestamp, err
+		}
+
+		if len(search.Matches) == 0 {
+			break
+		}
+
+		p.log("SlackProvider.pollGlobalUpdates: Found %d new messages on page %d via search (since %s)\n",
+			len(search.Matches), page, since.Format(time.RFC3339))
+
+		// Process matches
+		for _, match := range search.Matches {
 		// Parse timestamp
 		tsFloat, err := strconv.ParseFloat(match.Timestamp, 64)
 		if err != nil {
@@ -203,12 +207,19 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			}
 		}
 
-		// Emit event
-		select {
-		case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: msg}:
-		default:
-			p.log("SlackProvider.pollGlobalUpdates: Event channel full, dropping message %s\n", msg.ProtocolMsgID)
+			// Emit event
+			select {
+			case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: msg}:
+			default:
+				// Avoid logging per-message drops to save CPU/logs
+			}
 		}
+
+		if page >= search.Paging.Pages || page >= 10 { // Limit to 10 pages (1000 messages) to prevent infinite loop
+			break
+		}
+		page++
+		time.Sleep(100 * time.Millisecond) // Respect rate limits
 	}
 
 	// If we found messages in new conversations, trigger a contact refresh

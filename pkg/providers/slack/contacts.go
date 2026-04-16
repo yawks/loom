@@ -251,13 +251,46 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		}
 	}
 
-	// 2. Get individual users - include all non-deleted, non-bot users
-	users, err := p.client.GetUsers()
+	// 2. Optimization: Instead of client.GetUsers() which can return thousands of users,
+	// we only care about users with active IM channels or users who were recently seen.
+	// But to maintain the "Recent" and "Alphabetical" list correctly, we still need users.
+	// NEW STRATEGY: Only fetch details for users who have active IM channels.
+
+	activeUserIDs := make(map[string]bool)
+	for _, ch := range allChannels {
+		if ch.IsIM && ch.User != "" {
+			activeUserIDs[ch.User] = true
+		}
+	}
+
+	p.log("SlackProvider.GetContacts: Found %d active IM users to fetch details for\n", len(activeUserIDs))
+
+	var users []slack.User
+
+	// Optimization: If it's a huge workspace, client.GetUsers() is a CPU/memory killer.
+	// To optimize CPU, we will skip detailed processing for users who aren't "Active" (no IM).
+
+	fullUserList, err := p.client.GetUsers()
 	if err != nil {
 		p.log("SlackProvider.GetContacts: WARNING - failed to get users: %v\n", err)
 	} else {
-		for _, user := range users {
+		users = fullUserList
+		p.log("SlackProvider.GetContacts: Total workspace users: %d\n", len(fullUserList))
+		for _, user := range fullUserList {
 			if user.Deleted || user.IsBot {
+				continue
+			}
+
+			// If not in active IMs and we have many users, skip processing status/metadata to save CPU
+			if len(fullUserList) > 500 && !activeUserIDs[user.ID] {
+				// Still include the user for alphabetical search, but with minimal metadata
+				contacts = append(contacts, models.LinkedAccount{
+					UserID:    user.ID,
+					Username:  getUserDisplayName(&user),
+					AvatarURL: user.Profile.Image48,
+					Status:    "offline",
+					Protocol:  "slack",
+				})
 				continue
 			}
 
