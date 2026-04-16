@@ -20,7 +20,7 @@ type MetaContact struct {
 // LinkedAccount represents a protocol-specific account (WhatsApp, Slack, etc.).
 type LinkedAccount struct {
 	ID                 uint           `gorm:"primarykey" json:"id"`
-	MetaContactID      uint           `json:"metaContactId"`
+	MetaContactID      uint           `gorm:"index" json:"metaContactId"`
 	Protocol           string         `gorm:"index" json:"protocol"`           // "slack", "whatsapp", "google_messages"
 	ProviderInstanceID string         `gorm:"index" json:"providerInstanceId"` // ID of the provider instance (e.g., "whatsapp-1")
 	UserID             string         `json:"userId"`                          // User's ID on the remote platform (canonical ID, e.g., phone number for WhatsApp)
@@ -65,11 +65,11 @@ type GroupParticipant struct {
 type Message struct {
 	ID               uint             `gorm:"primarykey" json:"id"`
 	ConversationID   uint             `json:"conversationId"`
-	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id" json:"protocolConvId"` // Conversation ID on the platform
-	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                 // Message ID on the platform
-	SenderID         string           `json:"senderId"`                                                                                         // Sender's ID on the platform
-	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                    // Human-readable sender name (not persisted yet)
-	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                               // Sender's avatar URL (not persisted yet)
+	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id;index:idx_messages_deleted_conv,priority:2" json:"protocolConvId"` // Conversation ID on the platform
+	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                                                           // Message ID on the platform
+	SenderID         string           `json:"senderId"`                                                                                                                                   // Sender's ID on the platform
+	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                                                              // Human-readable sender name (not persisted yet)
+	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                                                                         // Sender's avatar URL (not persisted yet)
 	Body             string           `json:"body"`
 	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
@@ -92,8 +92,8 @@ type Message struct {
 	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
 	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
 	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
-	CallIsVideo      bool             `json:"callIsVideo"`                                     // Whether the call was a video call (from CallLogMessage)
-	DeletedAt        gorm.DeletedAt   `gorm:"index" json:"-"`
+	CallIsVideo      bool             `json:"callIsVideo"`                                                            // Whether the call was a video call (from CallLogMessage)
+	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1" json:"-"`
 }
 
 // MessageReceipt represents a delivery or read receipt for a message.
