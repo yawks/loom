@@ -1368,34 +1368,49 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		MaxTime        interface{}
 	}
 
-	var msgTimestamps []convMaxTime
-	if err = db.DB.Model(&models.Message{}).
+	// Single query: latest message timestamp per conversation
+	// We use manual row scanning to avoid aggregate scan errors in SQLite
+	rows, err := db.DB.Model(&models.Message{}).
 		Select("protocol_conv_id, MAX(timestamp) as max_time").
 		Group("protocol_conv_id").
-		Scan(&msgTimestamps).Error; err != nil {
+		Rows()
+	if err != nil {
 		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
 		return map[string]int64{}, err
 	}
+	defer rows.Close()
 
-	for _, row := range msgTimestamps {
-		if ts := db.ParseTime(row.MaxTime); ts > 0 {
-			result[row.ProtocolConvID] = ts
+	for rows.Next() {
+		var protocolConvID string
+		var maxTime interface{}
+		if err := rows.Scan(&protocolConvID, &maxTime); err != nil {
+			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning message row: %v\n", err)
+			continue
+		}
+		if ts := db.ParseTime(maxTime); ts > 0 {
+			result[protocolConvID] = ts
 		}
 	}
 
 	// Single query: latest reaction timestamp per conversation
 	// Optimized: Use a faster join or skip if it's too slow.
 	// For now, let's keep it but ensure indices are used and handle time parsing.
-	var reactionTimestamps []convMaxTime
-	if err = db.DB.Table("reactions").
+	reactionRows, err := db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
 		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
 		Where("messages.deleted_at IS NULL").
 		Group("messages.protocol_conv_id").
-		Scan(&reactionTimestamps).Error; err == nil {
-		for _, row := range reactionTimestamps {
-			if ts := db.ParseTime(row.MaxTime); ts > result[row.ProtocolConvID] {
-				result[row.ProtocolConvID] = ts
+		Rows()
+	if err == nil {
+		defer reactionRows.Close()
+		for reactionRows.Next() {
+			var protocolConvID string
+			var maxTime interface{}
+			if err := reactionRows.Scan(&protocolConvID, &maxTime); err != nil {
+				continue
+			}
+			if ts := db.ParseTime(maxTime); ts > result[protocolConvID] {
+				result[protocolConvID] = ts
 			}
 		}
 	}
