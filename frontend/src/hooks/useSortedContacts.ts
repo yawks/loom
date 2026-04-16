@@ -98,13 +98,17 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
     // Helper function to get the timestamp for sorting
     const getContactTime = (contact: models.MetaContact): number => {
+      let maxTime = 0;
       for (const acc of contact.linkedAccounts) {
         const id = acc.conversationId ?? acc.userId;
         if (id && lastMessageDates[id]) {
-          return lastMessageDates[id].getTime();
+          const time = lastMessageDates[id].getTime();
+          if (time > maxTime) {
+            maxTime = time;
+          }
         }
       }
-      return 0;
+      return maxTime;
     };
 
     if (sortBy === "alphabetical") {
