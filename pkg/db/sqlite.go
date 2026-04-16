@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -112,6 +113,16 @@ func ParseTime(v interface{}) int64 {
 	if v == nil {
 		return 0
 	}
+
+	// Handle pointer types
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return 0
+		}
+		return ParseTime(rv.Elem().Interface())
+	}
+
 	switch val := v.(type) {
 	case time.Time:
 		return val.Unix()
