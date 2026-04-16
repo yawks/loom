@@ -1355,7 +1355,7 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 	// Single query: latest message timestamp per conversation
 	type convMaxTime struct {
 		ProtocolConvID string
-		MaxTime        time.Time
+		MaxTime        interface{}
 	}
 
 	var msgTimestamps []convMaxTime
@@ -1367,7 +1367,25 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		return map[string]int64{}, err
 	}
 	for _, row := range msgTimestamps {
-		result[row.ProtocolConvID] = row.MaxTime.Unix()
+		if row.MaxTime == nil {
+			continue
+		}
+		var ts int64
+		switch v := row.MaxTime.(type) {
+		case time.Time:
+			ts = v.Unix()
+		case string:
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				ts = t.Unix()
+			} else if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+				ts = t.Unix()
+			}
+		case int64:
+			ts = v
+		}
+		if ts > 0 {
+			result[row.ProtocolConvID] = ts
+		}
 	}
 
 	// Single query: latest reaction timestamp per conversation
@@ -1378,7 +1396,23 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		Group("messages.protocol_conv_id").
 		Scan(&reactionTimestamps).Error; err == nil {
 		for _, row := range reactionTimestamps {
-			if ts := row.MaxTime.Unix(); ts > result[row.ProtocolConvID] {
+			if row.MaxTime == nil {
+				continue
+			}
+			var ts int64
+			switch v := row.MaxTime.(type) {
+			case time.Time:
+				ts = v.Unix()
+			case string:
+				if t, err := time.Parse(time.RFC3339, v); err == nil {
+					ts = t.Unix()
+				} else if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
+					ts = t.Unix()
+				}
+			case int64:
+				ts = v
+			}
+			if ts > result[row.ProtocolConvID] {
 				result[row.ProtocolConvID] = ts
 			}
 		}
