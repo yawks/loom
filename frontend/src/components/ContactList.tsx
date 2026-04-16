@@ -93,25 +93,36 @@ export function ContactList() {
   }, []);
 
   // Listen for contact refresh events
+  // Use a ref to debounce to avoid high-frequency refetches during mass sync
+  const refreshTimeoutRef = useMemo(() => ({ current: null as ReturnType<typeof setTimeout> | null }), []);
   useEffect(() => {
     const unsubscribe = EventsOn("contacts-refresh", () => {
-      // Invalidate and refetch contacts when sync completes or new message arrives
-      queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
-      queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-      // Invalidate last message queries to update sorting and previews
-      queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
-      queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
-      queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
-      // Invalidate active calls queries to update call badges
-      queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+
+      refreshTimeoutRef.current = setTimeout(() => {
+        // Invalidate and refetch contacts when sync completes or new message arrives
+        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
+        // Invalidate last message queries to update sorting and previews
+        queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        // Invalidate active calls queries to update call badges
+        queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+      }, 500); // 500ms debounce
     });
 
     return () => {
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
       if (unsubscribe) {
         unsubscribe();
       }
     };
-  }, [queryClient]);
+  }, [queryClient, refreshTimeoutRef]);
 
   // Listen for contact status change events
   useEffect(() => {

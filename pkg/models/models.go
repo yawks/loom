@@ -9,7 +9,7 @@ import (
 
 // MetaContact is the unified contact displayed to the user.
 type MetaContact struct {
-	ID             uint            `gorm:"primarykey" json:"id"`
+	ID             uint            `gorm:"primarykey;index" json:"id"`
 	DisplayName    string          `json:"displayName"`
 	AvatarURL      string          `json:"avatarUrl"`
 	LinkedAccounts []LinkedAccount `gorm:"foreignKey:MetaContactID" json:"linkedAccounts"`
@@ -20,7 +20,7 @@ type MetaContact struct {
 // LinkedAccount represents a protocol-specific account (WhatsApp, Slack, etc.).
 type LinkedAccount struct {
 	ID                 uint           `gorm:"primarykey" json:"id"`
-	MetaContactID      uint           `gorm:"index" json:"metaContactId"`
+	MetaContactID      uint           `gorm:"index:idx_la_meta_contact_id" json:"metaContactId"`
 	Protocol           string         `gorm:"index" json:"protocol"`           // "slack", "whatsapp", "google_messages"
 	ProviderInstanceID string         `gorm:"index" json:"providerInstanceId"` // ID of the provider instance (e.g., "whatsapp-1")
 	UserID             string         `json:"userId"`                          // User's ID on the remote platform (canonical ID, e.g., phone number for WhatsApp)
@@ -65,13 +65,13 @@ type GroupParticipant struct {
 type Message struct {
 	ID               uint             `gorm:"primarykey" json:"id"`
 	ConversationID   uint             `json:"conversationId"`
-	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id;index:idx_messages_deleted_conv,priority:2" json:"protocolConvId"` // Conversation ID on the platform
-	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                                                           // Message ID on the platform
-	SenderID         string           `json:"senderId"`                                                                                                                                   // Sender's ID on the platform
-	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                                                              // Human-readable sender name (not persisted yet)
-	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                                                                         // Sender's avatar URL (not persisted yet)
+	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id;index:idx_messages_deleted_conv,priority:2;index:idx_msg_conv_ts_del,priority:1" json:"protocolConvId"` // Conversation ID on the platform
+	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                                                                                                // Message ID on the platform
+	SenderID         string           `json:"senderId"`                                                                                                                                                                        // Sender's ID on the platform
+	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                                                                                                   // Human-readable sender name (not persisted yet)
+	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                                                                                                              // Sender's avatar URL (not persisted yet)
 	Body             string           `json:"body"`
-	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2" json:"timestamp"`
+	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
 	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
 	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
@@ -92,8 +92,8 @@ type Message struct {
 	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
 	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
 	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
-	CallIsVideo      bool             `json:"callIsVideo"`                                                            // Whether the call was a video call (from CallLogMessage)
-	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1" json:"-"`
+	CallIsVideo      bool             `json:"callIsVideo"`                                                                          // Whether the call was a video call (from CallLogMessage)
+	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 
 // MessageReceipt represents a delivery or read receipt for a message.
@@ -127,10 +127,10 @@ func (LIDMapping) TableName() string {
 // Reaction represents a reaction to a message.
 type Reaction struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
-	MessageID uint      `gorm:"index" json:"messageId"`                                   // Foreign key to Message
-	UserID    string    `json:"userId"`                                                   // User who reacted
-	Emoji     string    `json:"emoji"`                                                    // Emoji reaction (e.g., "👍", "❤️")
-	CreatedAt time.Time `gorm:"index:idx_reactions_created_at;priority:1" json:"createdAt"` // Index for last reaction timestamps
+	MessageID uint      `gorm:"index:idx_reactions_msg_id_created_at,priority:1" json:"messageId"`                          // Foreign key to Message
+	UserID    string    `json:"userId"`                                                                                     // User who reacted
+	Emoji     string    `json:"emoji"`                                                                                      // Emoji reaction (e.g., "👍", "❤️")
+	CreatedAt time.Time `gorm:"index:idx_reactions_msg_id_created_at,priority:2;index:idx_reactions_created_at" json:"createdAt"` // Index for last reaction timestamps
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 

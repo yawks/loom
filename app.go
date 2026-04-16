@@ -1362,30 +1362,55 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
 		return map[string]int64{}, err
 	}
-	for _, row := range msgTimestamps {
-		if row.MaxTime == nil {
-			continue
+	parseTime := func(v interface{}) int64 {
+		if v == nil {
+			return 0
 		}
-		var ts int64
-		switch v := row.MaxTime.(type) {
+		switch val := v.(type) {
 		case time.Time:
-			ts = v.Unix()
-		case string:
-			if t, err := time.Parse(time.RFC3339, v); err == nil {
-				ts = t.Unix()
-			} else if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
-				ts = t.Unix()
-			}
+			return val.Unix()
 		case int64:
-			ts = v
+			return val
+		case float64:
+			return int64(val)
+		case int:
+			return int64(val)
+		case string:
+			// SQLite often uses '2006-01-02 15:04:05.999999999+00:00'
+			// or '2006-01-02 15:04:05' or RFC3339
+			formats := []string{
+				time.RFC3339,
+				"2006-01-02 15:04:05.999999999-07:00",
+				"2006-01-02 15:04:05.999999999",
+				"2006-01-02 15:04:05",
+				time.DateTime,
+			}
+			for _, f := range formats {
+				if t, err := time.Parse(f, val); err == nil {
+					return t.Unix()
+				}
+			}
+			// Try to parse as float/int string
+			var f float64
+			if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
+				return int64(f)
+			}
+		case []byte:
+			s := string(val)
+			return parseTime(s)
 		}
-		if ts > 0 {
+		return 0
+	}
+
+	for _, row := range msgTimestamps {
+		if ts := parseTime(row.MaxTime); ts > 0 {
 			result[row.ProtocolConvID] = ts
 		}
 	}
 
 	// Single query: latest reaction timestamp per conversation
-	// Optimized: Use a subquery to avoid a large join if possible, or ensure indices are used
+	// Optimized: Use a faster join or skip if it's too slow.
+	// For now, let's keep it but ensure indices are used and handle time parsing.
 	var reactionTimestamps []convMaxTime
 	if err = db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
@@ -1394,23 +1419,7 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		Group("messages.protocol_conv_id").
 		Scan(&reactionTimestamps).Error; err == nil {
 		for _, row := range reactionTimestamps {
-			if row.MaxTime == nil {
-				continue
-			}
-			var ts int64
-			switch v := row.MaxTime.(type) {
-			case time.Time:
-				ts = v.Unix()
-			case string:
-				if t, err := time.Parse(time.RFC3339, v); err == nil {
-					ts = t.Unix()
-				} else if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
-					ts = t.Unix()
-				}
-			case int64:
-				ts = v
-			}
-			if ts > result[row.ProtocolConvID] {
+			if ts := parseTime(row.MaxTime); ts > result[row.ProtocolConvID] {
 				result[row.ProtocolConvID] = ts
 			}
 		}
