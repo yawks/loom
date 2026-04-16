@@ -206,5 +206,7 @@
   "create_group": "Create Group",
   "open_chat": "Open Chat",
   "creating": "Creating...",
-  "all": "All"
+  "all": "All",
+  "no_unread_messages": "No unread messages",
+  "view_recent": "View recent messages"
 }
