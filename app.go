@@ -671,13 +671,26 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 	if db.DB == nil {
 		return []models.MetaContact{}, nil
 	}
+
+	// Single query to fetch MetaContacts with LinkedAccounts and their ConversationIDs
+	// Using Joins and Preload optimization to avoid N+1 and slow scans
 	var metaContacts []models.MetaContact
+
+	// Preload LinkedAccounts as before
 	err := db.DB.Preload("LinkedAccounts").Find(&metaContacts).Error
 	if err != nil {
 		return metaContacts, err
 	}
 
-	// Collect all linked account IDs to batch-fetch their conversation IDs
+	// Efficiently fetch all ConversationIDs for all LinkedAccounts in one go
+	// We use a join with conversations to map linked_account_id to protocol_conv_id
+	type laConvMapping struct {
+		LinkedAccountID uint
+		ProtocolConvID  string
+	}
+	var mappings []laConvMapping
+
+	// Collect all linked account IDs
 	var laIDs []uint
 	for _, mc := range metaContacts {
 		for _, la := range mc.LinkedAccounts {
@@ -685,34 +698,35 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 		}
 	}
 
-	// Single query to get the protocol conversation ID for each linked account
 	if len(laIDs) > 0 {
-		var conversations []models.Conversation
-		db.DB.Select("linked_account_id, protocol_conv_id").
+		// Single query to get all mappings, ordered by ID for determinism
+		db.DB.Table("conversations").
+			Select("linked_account_id, protocol_conv_id").
 			Where("linked_account_id IN ?", laIDs).
 			Order("id ASC").
-			Find(&conversations)
+			Scan(&mappings)
 
-		// Build a map: linkedAccountID -> protocolConvID (keep first found)
-		convMap := make(map[uint]string, len(conversations))
-		for _, conv := range conversations {
-			if _, exists := convMap[conv.LinkedAccountID]; !exists {
-				convMap[conv.LinkedAccountID] = conv.ProtocolConvID
+		// Create mapping for fast lookup
+		mappingMap := make(map[uint]string)
+		for _, m := range mappings {
+			// If there are multiple conversations for one linked account, keep the first one
+			if _, exists := mappingMap[m.LinkedAccountID]; !exists {
+				mappingMap[m.LinkedAccountID] = m.ProtocolConvID
 			}
 		}
 
-		// Populate ConversationID on each LinkedAccount
+		// Apply mappings to metaContacts
 		for i := range metaContacts {
 			for j := range metaContacts[i].LinkedAccounts {
 				la := &metaContacts[i].LinkedAccounts[j]
-				if protocolConvID, ok := convMap[la.ID]; ok {
-					la.ConversationID = protocolConvID
+				if convID, ok := mappingMap[la.ID]; ok {
+					la.ConversationID = convID
 				}
 			}
 		}
 	}
 
-	return metaContacts, err
+	return metaContacts, nil
 }
 
 // enrichMessagesWithSenderNames enriches messages with sender names from LinkedAccount table
