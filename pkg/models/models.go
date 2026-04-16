@@ -65,13 +65,13 @@ type GroupParticipant struct {
 type Message struct {
 	ID               uint             `gorm:"primarykey" json:"id"`
 	ConversationID   uint             `json:"conversationId"`
-	ProtocolConvID   string           `json:"protocolConvId"`                     // Conversation ID on the platform
-	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`   // Message ID on the platform
-	SenderID         string           `json:"senderId"`                           // Sender's ID on the platform
-	SenderName       string           `gorm:"-" json:"senderName,omitempty"`      // Human-readable sender name (not persisted yet)
-	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"` // Sender's avatar URL (not persisted yet)
+	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id" json:"protocolConvId"` // Conversation ID on the platform
+	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                 // Message ID on the platform
+	SenderID         string           `json:"senderId"`                                                                                         // Sender's ID on the platform
+	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                    // Human-readable sender name (not persisted yet)
+	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                               // Sender's avatar URL (not persisted yet)
 	Body             string           `json:"body"`
-	Timestamp        time.Time        `json:"timestamp"`
+	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
 	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
 	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
