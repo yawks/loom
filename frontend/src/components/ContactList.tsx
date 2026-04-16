@@ -77,6 +77,11 @@ export function ContactList() {
 
         if (status === "completed") {
           setSyncStatus("completed");
+          // Trigger a full refresh when sync completes to ensure perfect sorting and counts
+          queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+          queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+          queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
+          queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
         } else if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
           setSyncStatus("syncing");
         }
