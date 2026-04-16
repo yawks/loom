@@ -1362,48 +1362,9 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
 		return map[string]int64{}, err
 	}
-	parseTime := func(v interface{}) int64 {
-		if v == nil {
-			return 0
-		}
-		switch val := v.(type) {
-		case time.Time:
-			return val.Unix()
-		case int64:
-			return val
-		case float64:
-			return int64(val)
-		case int:
-			return int64(val)
-		case string:
-			// SQLite often uses '2006-01-02 15:04:05.999999999+00:00'
-			// or '2006-01-02 15:04:05' or RFC3339
-			formats := []string{
-				time.RFC3339,
-				"2006-01-02 15:04:05.999999999-07:00",
-				"2006-01-02 15:04:05.999999999",
-				"2006-01-02 15:04:05",
-				time.DateTime,
-			}
-			for _, f := range formats {
-				if t, err := time.Parse(f, val); err == nil {
-					return t.Unix()
-				}
-			}
-			// Try to parse as float/int string
-			var f float64
-			if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
-				return int64(f)
-			}
-		case []byte:
-			s := string(val)
-			return parseTime(s)
-		}
-		return 0
-	}
 
 	for _, row := range msgTimestamps {
-		if ts := parseTime(row.MaxTime); ts > 0 {
+		if ts := db.ParseTime(row.MaxTime); ts > 0 {
 			result[row.ProtocolConvID] = ts
 		}
 	}
@@ -1419,7 +1380,7 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		Group("messages.protocol_conv_id").
 		Scan(&reactionTimestamps).Error; err == nil {
 		for _, row := range reactionTimestamps {
-			if ts := parseTime(row.MaxTime); ts > result[row.ProtocolConvID] {
+			if ts := db.ParseTime(row.MaxTime); ts > result[row.ProtocolConvID] {
 				result[row.ProtocolConvID] = ts
 			}
 		}
