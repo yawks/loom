@@ -78,6 +78,7 @@ export function useMessageEvents() {
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+        queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
 
         // Update last message in cache directly for immediate UI update
         if (conversationId) {

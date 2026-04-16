@@ -1,7 +1,7 @@
 import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetAllActiveCalls, GetAllMessageCounts, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -94,7 +94,7 @@ export function ContactList() {
 
   // Listen for contact refresh events
   // Use a ref to debounce to avoid high-frequency refetches during mass sync
-  const refreshTimeoutRef = useMemo(() => ({ current: null as ReturnType<typeof setTimeout> | null }), []);
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const unsubscribe = EventsOn("contacts-refresh", () => {
       if (refreshTimeoutRef.current) {
@@ -151,20 +151,37 @@ export function ContactList() {
     };
   }, [queryClient]);
 
-  // Also listen for new messages to update active call badges
+  // Also listen for new messages to update active call badges and previews/sorting
   useEffect(() => {
     const unsubscribe = EventsOn("new-message", () => {
-      // Invalidate active calls queries when a new message arrives
-      // This ensures the badge disappears immediately when CallTerminate updates the message
-      queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+
+      refreshTimeoutRef.current = setTimeout(() => {
+        // Invalidate active calls queries when a new message arrives
+        // This ensures the badge disappears immediately when CallTerminate updates the message
+        queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+
+        // Invalidate last message queries to update sorting and previews
+        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
+
+        // Optionally refetch contacts if names/avatars might have changed (though usually just messages)
+        // queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+      }, 300); // 300ms debounce
     });
 
     return () => {
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
       if (unsubscribe) {
         unsubscribe();
       }
     };
-  }, [queryClient]);
+  }, [queryClient, refreshTimeoutRef]);
 
   // Update metaContacts in store
   useEffect(() => {
@@ -529,7 +546,7 @@ export function ContactList() {
                   "hover:bg-muted",
                   isSelected && "ring-1 ring-primary/40",
                   isEmptyDuringSync && "opacity-50",
-                  unreadCount > 0 && !isSelected && "bg-muted/50 font-medium"
+                  unreadCount > 0 && !isSelected && "bg-muted/50"
                 )}
                 onClick={() => setSelectedContact(contact)}
               >
