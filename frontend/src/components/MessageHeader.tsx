@@ -3,6 +3,7 @@ import { Info, MessageSquare } from "lucide-react";
 import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import type { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
+import { useAppStore } from "@/lib/store";
 
 export function MessageHeader({
   displayName,
@@ -16,6 +17,10 @@ export function MessageHeader({
   onToggleDetails: () => void;
 }) {
   const { t } = useTranslation();
+  const capabilities = useAppStore((state) => state.capabilities);
+
+  const instanceId = linkedAccounts[0]?.providerInstanceId;
+  const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true;
 
   return (
     <div className="p-4 border-b flex justify-between items-center shrink-0">
@@ -29,14 +34,16 @@ export function MessageHeader({
         >
           <Info className="h-4 w-4" />
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onToggleThreads}
-          title={t("threads")}
-        >
-          <MessageSquare className="h-4 w-4" />
-        </Button>
+        {supportsThreads && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleThreads}
+            title={t("threads")}
+          >
+            <MessageSquare className="h-4 w-4" />
+          </Button>
+        )}
         <ProtocolSwitcher linkedAccounts={linkedAccounts} />
       </div>
     </div>

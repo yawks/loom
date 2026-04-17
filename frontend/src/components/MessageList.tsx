@@ -1,4 +1,4 @@
-import { AddReaction, DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, EditMessage, GetCapabilities, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -263,6 +263,8 @@ export function MessageList({
   }, [selectedConversation?.id, setIsTypingInInput]);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const setCapabilities = useAppStore((state) => state.setCapabilities);
+
   // Prefer the actual protocolConvId exposed by the backend (conversationId field).
   // This avoids a mismatch for provider DMs where linkedAccount.userId is a provider user ID
   // (e.g. "U123") but messages are stored under the DM channel ID (e.g. "D456").
@@ -547,6 +549,20 @@ export function MessageList({
     }
     return undefined;
   }, [messages]);
+
+  // Load provider capabilities
+  const instanceId = selectedConversation.linkedAccounts[0]?.providerInstanceId;
+  useEffect(() => {
+    if (!instanceId) return;
+
+    GetCapabilities(instanceId)
+      .then((caps) => {
+        setCapabilities(instanceId, caps);
+      })
+      .catch((error) => {
+        console.error("Failed to fetch capabilities:", error);
+      });
+  }, [instanceId, setCapabilities]);
 
   // Load participant names for groups and provider conversations
   useEffect(() => {

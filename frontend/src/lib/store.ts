@@ -26,6 +26,8 @@ interface AppState {
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   selectedUserId: string | null;
   setSelectedUserId: (userId: string | null) => void;
+  capabilities: Record<string, core.Capabilities>;
+  setCapabilities: (instanceId: string, capabilities: core.Capabilities) => void;
   isTypingInInput: boolean;
   setIsTypingInInput: (isTyping: boolean) => void;
   // Navigation history
@@ -106,6 +108,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   selectedUserId: null,
   setSelectedUserId: (userId) => set({ selectedUserId: userId }),
+  capabilities: {},
+  setCapabilities: (instanceId, caps) => set((state) => ({
+    capabilities: { ...state.capabilities, [instanceId]: caps }
+  })),
   isTypingInInput: false,
   setIsTypingInInput: (isTyping: boolean) => set({ isTypingInInput: isTyping }),
   selectedAvatarUrl: null,

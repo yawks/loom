@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { ReactionPicker } from "./ReactionPicker";
+import { useAppStore } from "@/lib/store";
 
 interface MessageActionsProps {
   isFromMe: boolean;
@@ -41,7 +42,10 @@ export function MessageActions({
   instanceId,
 }: MessageActionsProps) {
   const { t } = useTranslation();
+  const capabilities = useAppStore((state) => state.capabilities);
   const [internalOpen, setInternalOpen] = useState(false);
+
+  const supportsReactions = instanceId ? capabilities[instanceId]?.supportsReactions ?? true : true;
 
   // Only allow popover to be open if this message is being hovered
   const canBeOpen = !messageId || openActionsMessageId === messageId;
@@ -80,7 +84,7 @@ export function MessageActions({
           <Reply className="h-4 w-4" />
         </Button>
       )}
-      {onReact && (
+      {onReact && supportsReactions && (
         <ReactionPicker
           onReactionSelect={onReact}
           currentReactions={currentReactions}
