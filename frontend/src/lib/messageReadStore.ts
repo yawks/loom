@@ -231,10 +231,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           if (isCallMessage) {
             nextState[messageId] = true; // Call messages are always marked as read
           } else {
-            // Always check lastReadTS from Slack to determine read state
-            // This ensures we use Slack's own read markers rather than guessing
+            // Always check lastReadTS from provider to determine read state
+            // This ensures we use provider's own read markers rather than guessing
             if (lastReadTS) {
-              // Parse Slack timestamp and compare with message timestamp
+              // Parse provider timestamp and compare with message timestamp
               const lastReadTimestamp = parseFloat(lastReadTS);
               if (!isNaN(lastReadTimestamp)) {
                 const lastReadDate = new Date(lastReadTimestamp * 1000);
@@ -252,7 +252,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
               }
             } else {
               // No lastReadTS: mark all messages as read by default on initial sync
-              // This prevents showing old messages as unread when we don't have Slack's read marker yet
+              // This prevents showing old messages as unread when we don't have provider's read marker yet
               nextState[messageId] = true;
               console.log(`messageReadStore: No lastReadTS for ${conversationId}, marking message ${messageId} as read by default`);
             }
@@ -370,7 +370,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return;
     }
     
-    // Parse Slack timestamp (format: "1502126650.000003")
+    // Parse provider timestamp (format: "1502126650.000003")
     const lastReadTimestamp = parseFloat(lastReadTS);
     if (isNaN(lastReadTimestamp)) {
       console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}`);
@@ -400,7 +400,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       hasChanged = true;
       
       // IMPORTANT: Re-evaluate all messages' read state based on the new lastReadTS
-      // This ensures that when we receive the lastReadTS from Slack, we update the state
+      // This ensures that when we receive the lastReadTS from provider, we update the state
       const lastReadDate = new Date(lastReadTimestamp * 1000);
       
       Object.keys(updatedConversation).forEach((messageId) => {
@@ -421,7 +421,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
             messageTimestamp = parseFloat(parts[1]);
           }
         } else {
-          // Assume it's a Slack protocol message ID (timestamp format)
+          // Assume it's a provider protocol message ID (timestamp format)
           messageTimestamp = parseFloat(messageId);
         }
         

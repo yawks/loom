@@ -7,7 +7,7 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Calendar, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { SlackEmoji } from "./SlackEmoji";
+import { Emoji } from "./Emoji";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
@@ -87,7 +87,7 @@ function getSenderDisplayName(
   return senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
+    .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
@@ -274,7 +274,7 @@ export function ParticipantsList({
           }
         }
 
-        // Find the participant's own linked account for Slack status/emoji/avatar.
+        // Find the participant's own linked account for provider status/emoji/avatar.
         // First try direct match in selectedConversation (works for DMs).
         // Fall back to metaContacts store (works for channel participants).
         const participantLinkedAccount = (() => {
@@ -297,7 +297,7 @@ export function ParticipantsList({
           || undefined;
         const avatarUrl = participantLinkedAccount?.avatarUrl || participant.senderAvatarUrl;
 
-        // Effective status: linked account status (Slack) takes precedence over presenceMap (WhatsApp)
+        // Effective status: linked account status (provider) takes precedence over presenceMap (WhatsApp)
         const effectiveStatus = linkedAccountStatus || (presenceMatch ? "online" : "offline");
 
         return (
@@ -500,7 +500,7 @@ function ParticipantItem({
             className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
             title={statusEmoji}
           >
-            <SlackEmoji
+            <Emoji
               emoji={statusEmoji}
               providerInstanceId={providerInstanceId}
               size={12}

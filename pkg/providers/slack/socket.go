@@ -97,11 +97,11 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		}
 	}
 
-	// Resolve sender name (fallback to user ID)
-	senderName := p.resolveSlackUserName(ev.User)
+	// Resolve sender name and avatar
+	senderName, senderAvatarURL := p.resolveUserInfo(ev.User)
 
 	// Ensure the conversation/contact exists in DB so it shows up in Recent/All lists
-	displayName := p.resolveSlackConversationName(ev.Channel, senderName)
+	displayName := p.resolveConversationName(ev.Channel, senderName)
 	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
 		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
 	}
@@ -131,15 +131,16 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	// Basic message construction
 	msg := models.Message{
-		ProtocolConvID: ev.Channel,
-		ProtocolMsgID:  ev.TimeStamp, // Slack uses timestamp as ID
-		SenderID:       ev.User,
-		SenderName:     senderName,
-		Body:           ev.Text,
-		Timestamp:      timestamp,
-		IsFromMe:       isFromMe,
-		Attachments:    "[]", // Handle attachments if any
-		CallType:       callType,
+		ProtocolConvID:  ev.Channel,
+		ProtocolMsgID:   ev.TimeStamp, // Slack uses timestamp as ID
+		SenderID:        ev.User,
+		SenderName:      senderName,
+		SenderAvatarURL: senderAvatarURL,
+		Body:            p.preprocessMessageBody(ev.Text),
+		Timestamp:       timestamp,
+		IsFromMe:        isFromMe,
+		Attachments:     "[]", // Handle attachments if any
+		CallType:        callType,
 	}
 
 	// Check if this conversation already has messages in DB (to decide if we need an initial sync)

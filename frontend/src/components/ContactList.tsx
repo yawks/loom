@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { MessageText } from "./MessageText";
 import { NewConversationModal } from "./NewConversationModal";
-import { SlackEmoji } from "./SlackEmoji";
+import { Emoji } from "./Emoji";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -486,7 +486,7 @@ export function ContactList() {
                 return false;
               }
 
-              // First, check if any linkedAccount has status "online" (for Slack and other providers)
+              // First, check if any linkedAccount has status "online" (for provider and other providers)
               const statusMatch = contact.linkedAccounts.some(
                 (account) => account.status === "online"
               );
@@ -581,7 +581,7 @@ export function ContactList() {
                           className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
                           title={statusEmojiData.emoji}
                         >
-                          <SlackEmoji
+                          <Emoji
                             emoji={statusEmojiData.emoji}
                             providerInstanceId={statusEmojiData.providerInstanceId}
                             size={12}
@@ -689,7 +689,6 @@ export function ContactList() {
                           <MessageText
                             text={lastMessage.body}
                             providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}
-                            isSlack={contact.linkedAccounts[0]?.protocol === "slack"}
                             emojiSize={12}
                             className="inline"
                             preview={true}

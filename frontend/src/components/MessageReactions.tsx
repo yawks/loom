@@ -5,8 +5,8 @@ import {
 } from "@/components/ui/popover";
 import { useMemo, useState } from "react";
 
-import { SlackEmoji } from "./SlackEmoji";
-import { cleanSlackEmoji } from "@/lib/userDisplayNames";
+import { Emoji } from "./Emoji";
+import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 
@@ -34,7 +34,7 @@ function getDisplayName(
     }
   }
   
-  // If not found in participantNames, try to find in messages (for Slack user IDs)
+  // If not found in participantNames, try to find in messages (for provider user IDs)
   if (allMessages) {
     for (const message of allMessages) {
       if (message.senderId === userId && message.senderName && message.senderName.trim().length > 0) {
@@ -43,9 +43,9 @@ function getDisplayName(
     }
   }
   
-  // For Slack user IDs (U1234567890), return a formatted version
+  // For provider user IDs (U1234567890), return a formatted version
   if (userId.startsWith("U") && /^U[A-Z0-9]+$/.test(userId)) {
-    // Slack user ID - return as-is (will be handled by UI or backend lookup)
+    // provider user ID - return as-is (will be handled by UI or backend lookup)
     return userId;
   }
   
@@ -75,7 +75,7 @@ function getDisplayName(
   return userId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
+    .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
@@ -114,7 +114,7 @@ export function MessageReactions({
     
     reactions.forEach((reaction) => {
       // First, normalize format: ensure emoji has colons for proper cleaning
-      // Slack reactions can be stored as "+1::skin-tone-2" or ":+1::skin-tone-2:"
+      // Reactions can be stored as "+1::skin-tone-2" or ":+1::skin-tone-2:"
       let normalizedEmoji = reaction.emoji;
       if (!normalizedEmoji.startsWith(":")) {
         normalizedEmoji = `:${normalizedEmoji}`;
@@ -124,7 +124,7 @@ export function MessageReactions({
       }
       
       // Now clean skin-tone modifiers from normalized emoji
-      let cleanedEmoji = cleanSlackEmoji(normalizedEmoji);
+      let cleanedEmoji = cleanEmoji(normalizedEmoji);
       
       // Ensure cleaned emoji still has colons (in case it was removed)
       if (!cleanedEmoji.startsWith(":")) {
@@ -169,7 +169,7 @@ export function MessageReactions({
 
         const buttonContent = (
           <>
-            <SlackEmoji
+            <Emoji
               emoji={group.emoji}
               providerInstanceId={providerInstanceId}
               size={16}

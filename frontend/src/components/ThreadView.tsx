@@ -59,7 +59,7 @@ function getSenderDisplayName(message: models.Message, t: (key: string) => strin
   return message.senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
+    .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
@@ -197,7 +197,7 @@ export function ThreadView() {
                   <MessageText
                     text={message.body}
                     providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-                    isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+
                     emojiSize={14}
                     isFromMe={message.isFromMe}
                   />
@@ -279,7 +279,7 @@ export function ThreadView() {
                             text={message.body}
                             providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
                             emojiSize={14}
-                            isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+
                             isFromMe={message.isFromMe}
                           />
                           </div>
@@ -289,7 +289,7 @@ export function ThreadView() {
                         <MessageText
                           text={message.body}
                           providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-                          isSlack={selectedContact?.linkedAccounts[0]?.protocol === "slack"}
+
                           emojiSize={14}
                           isFromMe={message.isFromMe}
                         />

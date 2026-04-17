@@ -32,9 +32,9 @@ export function ReactionPicker({
   const [open, setOpen] = useState(false);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
 
-  // Fetch Slack custom emojis when the picker opens (once per session)
+  // Fetch custom emojis when the picker opens (once per session)
   useEffect(() => {
-    if (!open || provider !== "slack" || !instanceId) return;
+    if (!open || !instanceId) return;
     if (customEmojis.length > 0) return;
 
     GetCustomEmojis(instanceId)
@@ -54,7 +54,7 @@ export function ReactionPicker({
 
   const handleEmojiClick = (emojiData: EmojiClickData) => {
     if (emojiData.isCustom) {
-      // Custom Slack emoji — pass as :name: so handleReaction can strip the colons
+      // Custom emoji — pass as :name: so handleReaction can strip the colons
       onReactionSelect(`:${emojiData.unified}:`);
     } else {
       // Standard unicode emoji

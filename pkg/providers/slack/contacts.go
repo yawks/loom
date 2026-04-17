@@ -175,8 +175,8 @@ func (p *SlackProvider) GetContactName(contactID string) (string, error) {
 		return name, nil
 	}
 
-	// Fallback: try resolveSlackUserName which has more fallback logic
-	name := p.resolveSlackUserName(contactID)
+	// Fallback: try resolveUserName which has more fallback logic
+	name := p.resolveUserName(contactID)
 	if name != "" && name != contactID {
 		return name, nil
 	}
@@ -800,7 +800,7 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 	if err != nil {
 		// LinkedAccount doesn't exist, create it
 		// Try to get a display name for the conversation
-		displayName := p.resolveSlackConversationName(protocolConvID, "")
+		displayName := p.resolveConversationName(protocolConvID, "")
 		if displayName == "" {
 			displayName = protocolConvID // Fallback to ID if we can't resolve name
 		}

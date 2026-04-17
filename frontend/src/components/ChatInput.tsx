@@ -2,7 +2,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import EmojiPicker, { Theme } from "emoji-picker-react";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -71,10 +71,18 @@ const extractPathsFromText = (text: string | null): string[] => {
     );
 };
 
+// Matches the internal CustomEmoji type expected by emoji-picker-react
+interface CustomEmoji {
+  id: string;
+  names: string[];
+  imgUrl: string;
+}
+
 export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId }: ChatInputProps) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -401,8 +409,32 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     // Shift+Enter allows new line
   };
 
-  const handleEmojiClick = (emojiData: { emoji: string }) => {
-    setMessage((prev) => prev + emojiData.emoji);
+  // Fetch custom emojis when the picker opens
+  useEffect(() => {
+    if (!isEmojiPickerOpen || !selectedContact) return;
+    if (customEmojis.length > 0) return;
+
+    const instanceId = selectedContact.linkedAccounts[0]?.providerInstanceId;
+    if (!instanceId) return;
+
+    GetCustomEmojis(instanceId)
+      .then((emojiMap: Record<string, string>) => {
+        if (!emojiMap) return;
+        const emojis: CustomEmoji[] = Object.entries(emojiMap).map(([name, url]) => ({
+          id: name,
+          names: [name],
+          imgUrl: url,
+        }));
+        setCustomEmojis(emojis);
+      })
+      .catch(() => {
+        // Silently ignore
+      });
+  }, [isEmojiPickerOpen, selectedContact, customEmojis.length]);
+
+  const handleEmojiClick = (emojiData: any) => {
+    const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;
+    setMessage((prev) => prev + emojiText);
     setIsEmojiPickerOpen(false);
     // Adjust height after emoji is added
     setTimeout(adjustTextareaHeight, 0);
@@ -650,9 +682,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               <Suspense fallback={<div className="w-[352px] h-[435px]" />}>
                 <EmojiPicker
                   onEmojiClick={handleEmojiClick}
+                  customEmojis={customEmojis}
                   theme={theme === "dark" ? Theme.DARK : Theme.LIGHT}
                   width={352}
                   height={435}
+                  lazyLoadEmojis
                 />
               </Suspense>
             </PopoverContent>
