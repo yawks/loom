@@ -24,10 +24,10 @@ export function timeToDate(time: any): Date {
 }
 
 /**
- * Transforms Slack URL format <URL|text> to Markdown format [text](URL)
+ * Transforms provider URL format <URL|text> to Markdown format [text](URL)
  * Also handles simple <URL> format (without pipe) -> [URL](URL)
  */
-export function transformSlackUrls(text: string): string {
+export function transformUrls(text: string): string {
   if (!text) return text;
   
   // Pattern to match <URL|text> or <URL>

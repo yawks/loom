@@ -1,4 +1,4 @@
-// Emoji URL cache for Slack custom emojis
+// Emoji URL cache for custom emojis
 // Maps providerInstanceId -> emojiName -> url
 
 const emojiUrlCache = new Map<string, Map<string, string | null>>();

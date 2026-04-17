@@ -136,9 +136,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		fmt.Printf("WhatsApp: Processing message event: ID=%s, Chat=%s, Sender=%s\n", msgID, convID, v.Info.Sender.String())
 
 		// First, convert the message to get its body
-		msg := w.convertWhatsAppMessage(v)
+		msg := w.convertMessage(v)
 		if msg == nil {
-			fmt.Printf("WhatsApp: WARNING - convertWhatsAppMessage returned nil for message %s\n", msgID)
+			fmt.Printf("WhatsApp: WARNING - convertMessage returned nil for message %s\n", msgID)
 			break
 		}
 
@@ -241,7 +241,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 
 		// Normal message processing
-		msg = w.convertWhatsAppMessage(v)
+		msg = w.convertMessage(v)
 		if msg != nil {
 			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s, Attachments: %s\n", msg.ProtocolMsgID, msg.Body, msg.Attachments)
 			// Check if message has media but no attachments
@@ -266,7 +266,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				fmt.Printf("WhatsApp: WARNING - Failed to emit ContactStatusEvent (channel full)\n")
 			}
 		} else {
-			fmt.Printf("WhatsApp: WARNING - convertWhatsAppMessage returned nil for message from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
+			fmt.Printf("WhatsApp: WARNING - convertMessage returned nil for message from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 		}
 	case *events.ChatPresence:
 		// Handle chat presence updates (typing indicators)

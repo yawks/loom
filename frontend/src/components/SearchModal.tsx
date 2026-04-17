@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
-import { SlackEmoji } from "./SlackEmoji";
+import { Emoji } from "./Emoji";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -235,7 +235,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                             className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
                             title={statusEmojiData.emoji}
                           >
-                            <SlackEmoji
+                            <Emoji
                               emoji={statusEmojiData.emoji}
                               providerInstanceId={statusEmojiData.providerInstanceId}
                               size={12}
