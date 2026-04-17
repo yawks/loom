@@ -295,13 +295,13 @@ export function ProviderConfigForm({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button onClick={handleConnect} disabled={connectState === "connecting" || connectState === "connected"}>
-            {connectState === "connecting" ? t("connecting") : connectState === "connected" ? t("show_qr_code") : t("show_qr_code")}
+          <Button onClick={handleConnect} disabled={connectState === "connecting" || (connectState === "connected" && !!qrCode)}>
+            {connectState === "connecting" ? t("connecting") : connectState === "connected" ? (qrCode ? t("connected") : t("loading_qr_code")) : t("show_qr_code")}
           </Button>
 
           {pollError && <p className="text-sm text-destructive">{pollError}</p>}
 
-          {connectState === "connecting" && !qrCode && (
+          {(connectState === "connecting" || (connectState === "connected" && !qrCode)) && (
             <div className="flex flex-col items-center gap-2">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <p className="text-sm text-muted-foreground">{t("loading_qr_code")}</p>
