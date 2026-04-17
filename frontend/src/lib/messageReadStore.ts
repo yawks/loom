@@ -475,20 +475,38 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
     // Check if conversation already has messages (to determine if this is a new message or existing history)
     set((state) => {
       const existingState = state.readByConversation[conversationId] || {};
-      const hasExisting = existingState && Object.keys(existingState).length > 0;
       
       if (existingState[messageId] !== undefined) {
-        console.log(`messageReadStore: Message ${messageId} already exists in store`);
         return state;
       }
       
-      // New messages are unread if conversation already exists, otherwise assume read (existing history)
+      // Use lastReadTS if available to determine read state
+      const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
+      let isRead: boolean;
+
       // Call messages are always marked as read (they don't count as unread messages)
-      // They have their own badge indicator
-      // Messages sent by the current user are always marked as read
+      // They have their own badge indicator. Messages sent by the current user are always marked as read.
       const isCallMessage = message.callType && message.callType.trim() !== "";
-      const isRead = isCallMessage || message.isFromMe ? true : (hasExisting ? false : true);
-      console.log(`messageReadStore: registerIncomingMessage - conversationId: ${conversationId}, messageId: ${messageId}, isFromMe: ${message.isFromMe}, isCallMessage: ${isCallMessage}, hasExisting: ${hasExisting}, will be marked as read: ${isRead}`);
+
+      if (isCallMessage || message.isFromMe) {
+        isRead = true;
+      } else if (lastReadTS) {
+        // Compare message timestamp with lastReadTS
+        const lastReadTimestamp = parseFloat(lastReadTS);
+        const messageDate = timeToDate(message.timestamp);
+        if (!isNaN(lastReadTimestamp)) {
+          const lastReadDate = new Date(lastReadTimestamp * 1000);
+          isRead = messageDate <= lastReadDate;
+        } else {
+          isRead = true;
+        }
+      } else {
+        // Fallback: unread if conversation already exists in store, otherwise read (history)
+        const hasExisting = existingState && Object.keys(existingState).filter(k => !k.startsWith("_")).length > 0;
+        isRead = !hasExisting;
+      }
+
+      console.log(`messageReadStore: registerIncomingMessage - ${conversationId}:${messageId}, isRead: ${isRead} (lastReadTS: ${lastReadTS || 'none'})`);
       
       const updatedConversation: ConversationReadState = {
         ...existingState,
