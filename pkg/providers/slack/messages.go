@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1162,9 +1163,23 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		// For now, we'll detect via text patterns
 	}
 
+	// Extract and optimize message body
+	body := msg.Text
+
+	// If text is empty or too short (e.g. "digest"), try extracting from blocks or attachments
+	if len(body) < 10 {
+		extracted := p.extractTextFromRichContent(msg)
+		if len(extracted) > len(body) {
+			body = extracted
+		}
+	}
+
+	// Resolve mentions in the body (e.g. <@U12345> -> @John Doe)
+	body = p.resolveMentionsInText(body)
+
 	// Detect huddle start/end via text patterns
 	// Common patterns: "started a huddle", "joined the huddle", "left the huddle", "ended the huddle"
-	textLower := strings.ToLower(msg.Text)
+	textLower := strings.ToLower(body)
 	if strings.Contains(textLower, "huddle") {
 		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
 			// Determine if it's a group or individual call
@@ -1189,7 +1204,7 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 	return models.Message{
 		ProtocolMsgID:   msg.Timestamp,
 		ProtocolConvID:  normalizedConversationID, // Use normalized ID
-		Body:            msg.Text,
+		Body:            body,
 		SenderID:        msg.User,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
@@ -1200,6 +1215,99 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		Attachments:     attachmentsJSON,
 		CallType:        callType,
 	}
+}
+
+// resolveMentionsInText replaces Slack-style mentions like <@U12345678> with @DisplayName
+func (p *SlackProvider) resolveMentionsInText(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// 1. Resolve User Mentions: <@U12345678> or <@U12345678|name>
+	userMentionRegex := regexp.MustCompile(`<@([A-Z0-9]+)(?:\|[^>]+)?>`)
+	text = userMentionRegex.ReplaceAllStringFunc(text, func(match string) string {
+		submatch := userMentionRegex.FindStringSubmatch(match)
+		if len(submatch) < 2 {
+			return match
+		}
+		userID := submatch[1]
+		displayName, err := p.GetContactName(userID)
+		if err == nil && displayName != "" {
+			return "@" + displayName
+		}
+		return "@" + userID
+	})
+
+	// 2. Resolve Subteam Mentions: <!subteam^S12345678|@handle>
+	subteamMentionRegex := regexp.MustCompile(`<!subteam\^[A-Z0-9]+\|@([^>]+)>`)
+	text = subteamMentionRegex.ReplaceAllStringFunc(text, func(match string) string {
+		submatch := subteamMentionRegex.FindStringSubmatch(match)
+		if len(submatch) >= 2 {
+			return "@" + submatch[1]
+		}
+		return match
+	})
+
+	// 3. Resolve Special Mentions: <!here>, <!channel>, <!everyone>
+	text = strings.ReplaceAll(text, "<!here>", "@here")
+	text = strings.ReplaceAll(text, "<!channel>", "@channel")
+	text = strings.ReplaceAll(text, "<!everyone>", "@everyone")
+
+	return text
+}
+
+// extractTextFromRichContent extracts a readable string from Slack Blocks and Attachments
+func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
+	var parts []string
+
+	// Extract from blocks (the modern way)
+	for _, block := range msg.Blocks.BlockSet {
+		switch b := block.(type) {
+		case *slack.SectionBlock:
+			if b.Text != nil {
+				parts = append(parts, b.Text.Text)
+			}
+			for _, field := range b.Fields {
+				parts = append(parts, field.Text)
+			}
+		case *slack.ContextBlock:
+			for _, elem := range b.ContextElements.Elements {
+				if textElem, ok := elem.(*slack.TextBlockObject); ok {
+					parts = append(parts, textElem.Text)
+				}
+			}
+		case *slack.HeaderBlock:
+			if b.Text != nil {
+				parts = append(parts, b.Text.Text)
+			}
+		}
+	}
+
+	// Extract from attachments (legacy but still common for bots/bridges)
+	for _, att := range msg.Attachments {
+		if att.Pretext != "" {
+			parts = append(parts, att.Pretext)
+		}
+		if att.Text != "" {
+			parts = append(parts, att.Text)
+		}
+		if att.Title != "" {
+			parts = append(parts, att.Title)
+		}
+		if att.Fallback != "" && len(parts) == 0 {
+			parts = append(parts, att.Fallback)
+		}
+		for _, field := range att.Fields {
+			if field.Title != "" {
+				parts = append(parts, field.Title+": "+field.Value)
+			} else {
+				parts = append(parts, field.Value)
+			}
+		}
+	}
+
+	result := strings.TrimSpace(strings.Join(parts, "\n"))
+	return result
 }
 
 func parseSlackTimestamp(tsStr string) time.Time {
