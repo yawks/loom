@@ -68,16 +68,16 @@ type Message struct {
 	ProtocolConvID   string           `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id;index:idx_messages_deleted_conv,priority:2;index:idx_msg_conv_ts_del,priority:1" json:"protocolConvId"` // Conversation ID on the platform
 	ProtocolMsgID    string           `gorm:"uniqueIndex" json:"protocolMsgId"`                                                                                                                                                // Message ID on the platform
 	SenderID         string           `json:"senderId"`                                                                                                                                                                        // Sender's ID on the platform
-	SenderName       string           `gorm:"-" json:"senderName,omitempty"`                                                                                                                                                   // Human-readable sender name (not persisted yet)
-	SenderAvatarURL  string           `gorm:"-" json:"senderAvatarUrl,omitempty"`                                                                                                                                              // Sender's avatar URL (not persisted yet)
+	SenderName       string           `json:"senderName,omitempty"`                                                                                                                                                            // Human-readable sender name
+	SenderAvatarURL  string           `json:"senderAvatarUrl,omitempty"`                                                                                                                                                       // Sender's avatar URL
 	Body             string           `json:"body"`
 	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
 	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
-	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
-	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`                        // Sender ID of the quoted message
-	QuotedSenderName string           `gorm:"-" json:"quotedSenderName,omitempty"`             // Sender name of the quoted message (not persisted)
-	QuotedBody       *string          `json:"quotedBody,omitempty"`                            // Body of the quoted message
+	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"` // ID of the message being replied to
+	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`               // Sender ID of the quoted message
+	QuotedSenderName string           `json:"quotedSenderName,omitempty"`             // Sender name of the quoted message
+	QuotedBody       *string          `json:"quotedBody,omitempty"`                   // Body of the quoted message
 	Attachments      string           `json:"attachments"`                                     // Could be a JSON []string of URLs/paths
 	Reactions        []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"` // Reactions to this message
 	Receipts         []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`  // Delivery and read receipts

@@ -662,7 +662,7 @@ func (w *WhatsAppProvider) updateCachedMessageDeletionAcrossConversations(msgID,
 	return nil
 }
 
-func (w *WhatsAppProvider) convertWhatsAppMessage(evt *events.Message) *models.Message {
+func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	msg := evt.Message
 	if msg == nil {
 		return nil
@@ -1215,7 +1215,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			if w.tryHandleProtocolMessage(evt, false) {
 				continue
 			}
-			if msg := w.convertWhatsAppMessage(evt); msg != nil {
+			if msg := w.convertMessage(evt); msg != nil {
 				// Extract reactions from WebMessageInfo
 				reactions := webMsgInfo.GetReactions()
 				if len(reactions) > 0 {
@@ -1825,13 +1825,22 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	}
 
 	// Convert to our Message model
+	senderID := w.client.Store.ID.String()
+	senderName := w.lookupSenderName(*w.client.Store.ID)
+	if senderName == "" {
+		senderName = senderID
+	}
+	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
+
 	sentMessage := &models.Message{
-		ProtocolConvID: conversationID,
-		ProtocolMsgID:  resp.ID,
-		SenderID:       w.client.Store.ID.String(),
-		Body:           text,
-		Timestamp:      time.Now(),
-		IsFromMe:       true,
+		ProtocolConvID:  conversationID,
+		ProtocolMsgID:   resp.ID,
+		SenderID:        senderID,
+		SenderName:      senderName,
+		SenderAvatarURL: senderAvatarURL,
+		Body:            text,
+		Timestamp:       time.Now(),
+		IsFromMe:        true,
 	}
 
 	// Store message in conversation cache and database
@@ -1952,10 +1961,19 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	}
 
 	// Convert to our Message model
+	senderID := w.client.Store.ID.String()
+	senderName := w.lookupSenderName(*w.client.Store.ID)
+	if senderName == "" {
+		senderName = senderID
+	}
+	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
+
 	sentMessage := &models.Message{
 		ProtocolConvID:   conversationID,
 		ProtocolMsgID:    resp.ID,
-		SenderID:         w.client.Store.ID.String(),
+		SenderID:         senderID,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
 		Body:             text,
 		Timestamp:        time.Now(),
 		IsFromMe:         true,
@@ -2318,14 +2336,23 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 			attachmentsJSON, _ := json.Marshal([]models.Attachment{attachment})
 
 			// Convert to our Message model
+			senderID := w.client.Store.ID.String()
+			senderName := w.lookupSenderName(*w.client.Store.ID)
+			if senderName == "" {
+				senderName = senderID
+			}
+			senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
+
 			sentMessage := &models.Message{
-				ProtocolConvID: conversationID,
-				ProtocolMsgID:  resp.ID,
-				SenderID:       w.client.Store.ID.String(),
-				Body:           "",
-				Attachments:    string(attachmentsJSON),
-				Timestamp:      time.Now(),
-				IsFromMe:       true,
+				ProtocolConvID:  conversationID,
+				ProtocolMsgID:   resp.ID,
+				SenderID:        senderID,
+				SenderName:      senderName,
+				SenderAvatarURL: senderAvatarURL,
+				Body:            "",
+				Attachments:     string(attachmentsJSON),
+				Timestamp:       time.Now(),
+				IsFromMe:        true,
 			}
 
 			// Store message in conversation cache and database
@@ -2344,13 +2371,22 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	}
 
 	// If caching failed, still return the message without attachment info
+	senderID := w.client.Store.ID.String()
+	senderName := w.lookupSenderName(*w.client.Store.ID)
+	if senderName == "" {
+		senderName = senderID
+	}
+	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
+
 	sentMessage := &models.Message{
-		ProtocolConvID: conversationID,
-		ProtocolMsgID:  resp.ID,
-		SenderID:       w.client.Store.ID.String(),
-		Body:           "",
-		Timestamp:      time.Now(),
-		IsFromMe:       true,
+		ProtocolConvID:  conversationID,
+		ProtocolMsgID:   resp.ID,
+		SenderID:        senderID,
+		SenderName:      senderName,
+		SenderAvatarURL: senderAvatarURL,
+		Body:            "",
+		Timestamp:       time.Now(),
+		IsFromMe:        true,
 	}
 
 	w.appendMessageToConversation(sentMessage)

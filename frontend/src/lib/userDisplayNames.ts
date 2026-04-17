@@ -1,15 +1,15 @@
 /**
- * Utility functions for handling user display names and Slack-specific text formatting
+ * Utility functions for handling user display names and provider-specific text formatting
  */
 
 import type { models } from "../../wailsjs/go/models";
 
 /**
- * Removes skin-tone modifiers from Slack emoji text
+ * Removes skin-tone modifiers from emoji text
  * Handles cases like ":+1::skin-tone-2:" -> ":+1:" or "+1::skin-tone-2" -> "+1"
  * This is used to clean emoji text before displaying it
  */
-export function cleanSlackEmoji(text: string): string {
+export function cleanEmoji(text: string): string {
   if (!text) return text;
   
   // Remove skin-tone modifiers from the text
@@ -26,7 +26,7 @@ export function cleanSlackEmoji(text: string): string {
 
 /**
  * Gets display name for a user ID from various sources
- * @param userId The user ID (e.g., Slack user ID like "U1234567890")
+ * @param userId The user ID (e.g., @userId like "U1234567890")
  * @param options Options object with participantNames map and/or allMessages array
  * @returns Display name for the user, or a fallback if not found
  */
@@ -47,7 +47,7 @@ export function getUserDisplayName(
     }
   }
 
-  // If not found, try to find in messages (for Slack user IDs)
+  // If not found, try to find in messages (for @userIds)
   if (options?.allMessages) {
     for (const message of options.allMessages) {
       // Check if this message is from the user we're looking for
@@ -58,10 +58,10 @@ export function getUserDisplayName(
   }
 
   // Fallback: format the ID in a readable way
-  // For Slack IDs (U1234567890), just return the ID as-is
+  // For User IDs (U1234567890), just return the ID as-is
   // For other formats, try to format them
   if (userId.startsWith("U") && /^U[A-Z0-9]+$/.test(userId)) {
-    // Slack user ID - return as-is (will be handled by UI)
+    // @userId - return as-is (will be handled by UI)
     return userId;
   }
 
@@ -81,7 +81,7 @@ export function getUserDisplayName(
   return userId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
+    .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");

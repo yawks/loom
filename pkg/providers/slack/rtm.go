@@ -103,11 +103,11 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		timestamp = time.Unix(int64(floatTS), int64((floatTS-float64(int64(floatTS)))*1e9))
 	}
 
-	// Resolve sender name (fallback to user ID)
-	senderName := p.resolveSlackUserName(ev.User)
+	// Resolve sender name and avatar
+	senderName, senderAvatarURL := p.resolveUserInfo(ev.User)
 
 	// Ensure the conversation/contact exists in DB so it shows up in Recent/All lists
-	displayName := p.resolveSlackConversationName(ev.Channel, senderName)
+	displayName := p.resolveConversationName(ev.Channel, senderName)
 	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
 		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
 	}
@@ -146,15 +146,16 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 
 	// Basic message construction
 	msg := models.Message{
-		ProtocolConvID: ev.Channel,
-		ProtocolMsgID:  ev.Timestamp, // Slack uses timestamp as ID
-		SenderID:       ev.User,
-		SenderName:     senderName,
-		Body:           ev.Text,
-		Timestamp:      timestamp,
-		IsFromMe:       isFromMe,
-		Attachments:    "[]", // Handle attachments if any
-		CallType:       callType,
+		ProtocolConvID:  ev.Channel,
+		ProtocolMsgID:   ev.Timestamp, // Slack uses timestamp as ID
+		SenderID:        ev.User,
+		SenderName:      senderName,
+		SenderAvatarURL: senderAvatarURL,
+		Body:            p.preprocessMessageBody(ev.Text),
+		Timestamp:       timestamp,
+		IsFromMe:        isFromMe,
+		Attachments:     "[]", // Handle attachments if any
+		CallType:        callType,
 	}
 
 	// Create the event
@@ -201,7 +202,7 @@ func (p *SlackProvider) handleRTMTypingEvent(ev *slack.UserTypingEvent) {
 		return
 	}
 
-	userName := p.resolveSlackUserName(ev.User)
+	userName := p.resolveUserName(ev.User)
 
 	select {
 	case p.eventChan <- core.TypingEvent{InstanceID: p.getInstanceId(),
@@ -215,16 +216,16 @@ func (p *SlackProvider) handleRTMTypingEvent(ev *slack.UserTypingEvent) {
 	}
 }
 
-// resolveSlackUserName returns a best-effort display name for a user ID
-func (p *SlackProvider) resolveSlackUserName(userID string) string {
+// resolveUserInfo returns a best-effort display name and avatar URL for a user ID
+func (p *SlackProvider) resolveUserInfo(userID string) (string, string) {
 	if userID == "" {
-		return ""
+		return "", ""
 	}
 
 	// First, try database cache
-	cachedName, _ := p.getUserNameFromCache(userID)
+	cachedName, cachedAvatar := p.getUserNameFromCache(userID)
 	if cachedName != "" && cachedName != userID {
-		return cachedName
+		return cachedName, cachedAvatar
 	}
 
 	// Check memory cache
@@ -237,17 +238,23 @@ func (p *SlackProvider) resolveSlackUserName(userID string) string {
 		if name == "" {
 			name = user.Name
 		}
+
+		avatarURL := ""
+		if user.Profile.Image512 != "" {
+			avatarURL = user.Profile.Image512
+		} else if user.Profile.Image192 != "" {
+			avatarURL = user.Profile.Image192
+		} else if user.Profile.Image72 != "" {
+			avatarURL = user.Profile.Image72
+		} else if user.Profile.Image48 != "" {
+			avatarURL = user.Profile.Image48
+		}
+
 		p.userCacheMu.RUnlock()
 		if name != "" && name != userID {
 			// Persist to database cache
-			avatarURL := ""
-			if user.Profile.Image512 != "" {
-				avatarURL = user.Profile.Image512
-			} else if user.Profile.Image48 != "" {
-				avatarURL = user.Profile.Image48
-			}
 			p.saveUserNameToCache(userID, name, avatarURL)
-			return name
+			return name, avatarURL
 		}
 	} else {
 		p.userCacheMu.RUnlock()
@@ -268,6 +275,17 @@ func (p *SlackProvider) resolveSlackUserName(userID string) string {
 				name = user.Name
 			}
 
+			avatarURL := ""
+			if user.Profile.Image512 != "" {
+				avatarURL = user.Profile.Image512
+			} else if user.Profile.Image192 != "" {
+				avatarURL = user.Profile.Image192
+			} else if user.Profile.Image72 != "" {
+				avatarURL = user.Profile.Image72
+			} else if user.Profile.Image48 != "" {
+				avatarURL = user.Profile.Image48
+			}
+
 			// Update memory cache
 			p.userCacheMu.Lock()
 			p.userCache[userID] = user
@@ -275,29 +293,42 @@ func (p *SlackProvider) resolveSlackUserName(userID string) string {
 
 			// Persist to database cache
 			if name != "" && name != userID {
-				avatarURL := ""
-				if user.Profile.Image512 != "" {
-					avatarURL = user.Profile.Image512
-				} else if user.Profile.Image48 != "" {
-					avatarURL = user.Profile.Image48
-				}
 				p.saveUserNameToCache(userID, name, avatarURL)
-				return name
+				return name, avatarURL
 			}
 		}
 	}
 
-	return userID
+	return userID, ""
 }
 
-// resolveSlackConversationName tries to find a readable name for a channel/DM
-func (p *SlackProvider) resolveSlackConversationName(conversationID string, fallback string) string {
+// resolveUserName returns a best-effort display name for a user ID
+func (p *SlackProvider) resolveUserName(userID string) string {
+	name, _ := p.resolveUserInfo(userID)
+	return name
+}
+
+// resolveConversationName tries to find a readable name for a channel/DM
+func (p *SlackProvider) resolveConversationName(conversationID string, fallback string) string {
 	if conversationID == "" {
 		return fallback
 	}
 
 	// DMs: use sender name
 	if strings.HasPrefix(conversationID, "D") {
+		if fallback != "" && !strings.HasPrefix(fallback, "U") {
+			return fallback
+		}
+
+		// Try to resolve user ID from DM channel ID
+		actualUserID := p.normalizeDMConversationID(conversationID)
+		if actualUserID != conversationID {
+			name, _ := p.resolveUserInfo(actualUserID)
+			if name != "" && name != actualUserID {
+				return name
+			}
+		}
+
 		if fallback != "" {
 			return fallback
 		}
@@ -526,7 +557,7 @@ func (p *SlackProvider) syncConversationHistory(conversationID string) {
 	}
 
 	// Also make sure the conversation contact exists
-	conversationName := p.resolveSlackConversationName(conversationID, "")
+	conversationName := p.resolveConversationName(conversationID, "")
 	if conversationName != "" {
 		if err := p.ensureConversationContact(conversationID, conversationName); err != nil {
 			p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", conversationID, err)

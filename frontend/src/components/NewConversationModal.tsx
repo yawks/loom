@@ -15,7 +15,7 @@ import { CreateGroup } from "../../wailsjs/go/main/App";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlackEmoji } from "./SlackEmoji";
+import { Emoji } from "./Emoji";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import { models } from "../../wailsjs/go/models";
@@ -231,7 +231,7 @@ export function NewConversationModal({
                                                                     className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
                                                                     title={statusEmojiData.emoji}
                                                                 >
-                                                                    <SlackEmoji
+                                                                    <Emoji
                                                                         emoji={statusEmojiData.emoji}
                                                                         providerInstanceId={statusEmojiData.providerInstanceId}
                                                                         size={12}

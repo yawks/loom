@@ -143,7 +143,7 @@ export function useMessageEvents() {
           }
         }
 
-        // Ensure selected chat reflects the new message if IDs differ (e.g. Slack DMs)
+        // Ensure selected chat reflects the new message if IDs differ (e.g. DMs)
         if (state.isNewMessage && selectedContact) {
           const selectedConvId = selectedContact.linkedAccounts[0]?.conversationId ?? selectedContact.linkedAccounts[0]?.userId;
           if (selectedConvId && selectedConvId !== conversationId) {

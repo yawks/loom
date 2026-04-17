@@ -29,7 +29,8 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { TypingIndicator } from "./TypingIndicator";
 import { models } from "../../wailsjs/go/models";
-import { unicodeToSlackEmojiName } from "@/lib/emojiMap";
+import { unicodeToEmojiName } from "@/lib/emojiMap";
+
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useRenderCount } from "@/hooks/useRenderCount";
@@ -140,7 +141,7 @@ function getSenderDisplayName(
   return senderId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
-    .replace(/^slack-/, "")
+    .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
@@ -263,7 +264,7 @@ export function MessageList({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   // Prefer the actual protocolConvId exposed by the backend (conversationId field).
-  // This avoids a mismatch for Slack DMs where linkedAccount.userId is a Slack user ID
+  // This avoids a mismatch for provider DMs where linkedAccount.userId is a provider user ID
   // (e.g. "U123") but messages are stored under the DM channel ID (e.g. "D456").
   const conversationId =
     selectedConversation.linkedAccounts[0]?.conversationId ??
@@ -442,7 +443,7 @@ export function MessageList({
         return;
       }
 
-      // In Slack, parent messages of threads have threadId = protocolMsgId (they reference themselves)
+      // In provider, parent messages of threads have threadId = protocolMsgId (they reference themselves)
       // Thread replies have threadId = parent's protocolMsgId (different from their own ID)
       const isThreadReply = msg.threadId && msg.threadId !== msg.protocolMsgId;
 
@@ -547,7 +548,7 @@ export function MessageList({
     return undefined;
   }, [messages]);
 
-  // Load participant names for groups and Slack conversations
+  // Load participant names for groups and provider conversations
   useEffect(() => {
     if (!conversationId) {
       return;
@@ -571,9 +572,9 @@ export function MessageList({
         if (userIds.size > 0) {
           // Normalize IDs by removing ":digits" part (LID format for WhatsApp)
           // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
-          // For Slack IDs (U1234567890), keep as-is
+          // For provider IDs (U1234567890), keep as-is
           const normalizedIds = Array.from(userIds).map(id => {
-            // Only normalize WhatsApp IDs, not Slack IDs
+            // Only normalize WhatsApp IDs, not provider IDs
             if (id.includes("@s.whatsapp.net") || id.includes("@g.us")) {
               return id.replace(/:\d+@/, "@");
             }
@@ -593,7 +594,7 @@ export function MessageList({
             }
           });
           
-          // Also add names from message senderName fields (for Slack)
+          // Also add names from message senderName fields (for provider)
           messages.forEach((msg) => {
             if (msg.senderId && msg.senderName && msg.senderName.trim().length > 0) {
               namesMap.set(msg.senderId, msg.senderName);
@@ -614,26 +615,23 @@ export function MessageList({
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
     
-    // Determine the Slack emoji name to use
-    let slackEmojiName: string;
+    // Determine the emoji name to use for the API call
+    let emojiName: string;
     
     if (emoji.startsWith(":") && emoji.endsWith(":")) {
-      // Already in Slack format (e.g., ":thumbsup:" or ":+1:")
-      // Remove colons for API call
-      slackEmojiName = emoji.slice(1, -1);
+      // Already in :name: format (custom emoji)
+      emojiName = emoji.slice(1, -1);
     } else {
-      // Unicode emoji (e.g., "👍") - convert to Slack name
-      const converted = unicodeToSlackEmojiName(emoji);
-      if (!converted) {
-        console.error("Failed to convert emoji to Slack format:", emoji);
-        showToast(t("error"), "error");
-        return;
-      }
-      slackEmojiName = converted;
+      // Unicode emoji (e.g., "👍") - try to convert to name
+      const converted = unicodeToEmojiName(emoji);
+      // If we have a name, use it; otherwise use the Unicode emoji itself (WhatsApp style)
+      emojiName = converted || emoji;
     }
     
-    // Normalized emoji for DB comparison (with colons)
-    const normalizedEmojiForComparison = `:${slackEmojiName}:`;
+    // Normalized emoji for local comparison (ensure colons)
+    const normalizedEmojiForComparison = emojiName.startsWith(":")
+      ? emojiName
+      : emojiName.includes(":") ? emojiName : `:${emojiName}:`;
     
     // Debug: Log all reactions for this message
     console.log(`handleReaction: DEBUG - All reactions for message:`, messageReactions.map(r => ({
@@ -659,7 +657,7 @@ export function MessageList({
       }
     );
     
-    console.log(`handleReaction: emoji="${emoji}" -> slackName="${slackEmojiName}", normalized="${normalizedEmojiForComparison}", hasReaction=${hasReaction}, currentUser=${currentUserId}`);
+    console.log(`handleReaction: emoji="${emoji}" -> emojiName="${emojiName}", normalized="${normalizedEmojiForComparison}", hasReaction=${hasReaction}, currentUser=${currentUserId}`);
 
     // Optimistic update: immediately update the cache
     queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -711,11 +709,11 @@ export function MessageList({
     try {
       // Call API
       if (hasReaction) {
-        console.log(`handleReaction: Calling RemoveReaction("${conversationId}", "${protocolMsgId}", "${slackEmojiName}")`);
-        await RemoveReaction(conversationId, protocolMsgId, slackEmojiName);
+        console.log(`handleReaction: Calling RemoveReaction("${conversationId}", "${protocolMsgId}", "${emojiName}")`);
+        await RemoveReaction(conversationId, protocolMsgId, emojiName);
       } else {
-        console.log(`handleReaction: Calling AddReaction("${conversationId}", "${protocolMsgId}", "${slackEmojiName}")`);
-        await AddReaction(conversationId, protocolMsgId, slackEmojiName);
+        console.log(`handleReaction: Calling AddReaction("${conversationId}", "${protocolMsgId}", "${emojiName}")`);
+        await AddReaction(conversationId, protocolMsgId, emojiName);
       }
       
       // Don't refetch immediately - the optimistic update is enough
@@ -798,12 +796,9 @@ export function MessageList({
       return; // No unread messages, nothing to do
     }
 
-    // For Slack, optimize by calling MarkConversationAsRead once instead of MarkMessageAsRead for each message
-    const isSlack = selectedConversation.linkedAccounts[0]?.protocol === "slack";
-    
-    if (isSlack) {
-      // Call MarkConversationAsRead once for Slack to mark entire conversation as read
-      const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
+    // Call MarkConversationAsRead once to mark entire conversation as read
+    // This is more efficient than marking each message individually
+    const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
         return new Promise((resolve, reject) => {
           if (typeof window === "undefined" || !window.go?.main?.App) {
             reject(new Error("Wails runtime not available"));
@@ -816,49 +811,31 @@ export function MessageList({
           }
           fn(convId)
             .then(() => {
-              console.log(`MessageList: Successfully marked Slack conversation ${convId} as read`);
+              console.log(`MessageList: Successfully marked provider conversation ${convId} as read`);
               resolve();
             })
             .catch((error: Error) => {
-              console.error(`MessageList: Error marking Slack conversation as read:`, error);
+              console.error(`MessageList: Error marking provider conversation as read:`, error);
               reject(error);
             });
         });
       };
 
-      console.log(`MessageList: Marking Slack conversation ${conversationId} as read (${unreadMessages.length} unread messages)`);
-      markConversationAsReadOnServer(conversationId)
-        .then(() => {
-          // Mark all messages as read in the store
-          unreadMessages.forEach((msgId) => {
-            markMessageAsRead(conversationId, msgId);
-          });
-        })
-        .catch((error) => {
-          console.error(`MessageList: Failed to mark Slack conversation as read, falling back to individual marks:`, error);
-          // Fallback: mark each message individually
-          unreadMessages.forEach((msgId) => {
-            markMessageAsRead(conversationId, msgId);
-          });
+    console.log(`MessageList: Marking conversation ${conversationId} as read (${unreadMessages.length} unread messages)`);
+    markConversationAsReadOnServer(conversationId)
+      .then(() => {
+        // Mark all messages as read in the store
+        unreadMessages.forEach((msgId) => {
+          markMessageAsRead(conversationId, msgId);
         });
-    } else {
-      // For other providers (WhatsApp), mark each message individually
-      // Mark all loaded messages as read
-      if (mainMessages.length > 0) {
-        mainMessages.forEach((msg) => {
-          const messageId = getMessageDomId(msg);
-          if (conversationReadState[messageId] === false) {
-            markMessageAsRead(conversationId, messageId);
-          }
+      })
+      .catch((error) => {
+        console.error(`MessageList: Failed to mark conversation as read, falling back to individual marks:`, error);
+        // Fallback: mark each message individually
+        unreadMessages.forEach((msgId) => {
+          markMessageAsRead(conversationId, msgId);
         });
-      }
-
-      // Also mark all unread messages in the store as read (including obsolete ones)
-      console.log(`MessageList: Marking ${unreadMessages.length} unread messages as read for conversation ${conversationId}`);
-      unreadMessages.forEach((msgId) => {
-        markMessageAsRead(conversationId, msgId);
       });
-    }
   }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation]);
 
   const firstUnreadMessageId = useMemo(() => {
@@ -2255,7 +2232,7 @@ export function MessageList({
                                             <MessageText
                                               text={message.quotedBody}
                                               providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                              isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                               emojiSize={14}
                                               isFromMe={message.isFromMe}
                                             />
@@ -2266,7 +2243,7 @@ export function MessageList({
                                         <MessageText
                                           text={message.body}
                                           providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                          isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                           className="whitespace-pre-wrap"
                                           isFromMe={message.isFromMe}
                                         />
@@ -2412,7 +2389,7 @@ export function MessageList({
                                   <MessageText
                                     text={lastThreadMsg.body}
                                     providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                    isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                     emojiSize={14}
                                     preview={true}
                                     isFromMe={lastThreadMsg.isFromMe}
@@ -2653,6 +2630,8 @@ export function MessageList({
                                         .map((r) => r.emoji)}
                                       messageId={messageId}
                                       openActionsMessageId={openActionsMessageId}
+                                    provider={selectedConversation.linkedAccounts[0]?.protocol}
+                                    instanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                     />
                                   </div>
                                 )}
@@ -2672,6 +2651,8 @@ export function MessageList({
                                     .map((r) => r.emoji)}
                                   messageId={messageId}
                                   openActionsMessageId={openActionsMessageId}
+                                  provider={selectedConversation.linkedAccounts[0]?.protocol}
+                                  instanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
                                 />
                               </div>
                             )}
@@ -2775,7 +2756,7 @@ export function MessageList({
                                                 <MessageText
                                                   text={message.quotedBody}
                                                   providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                                   emojiSize={14}
                                                   isFromMe={message.isFromMe}
                                                 />
@@ -2790,7 +2771,7 @@ export function MessageList({
                                               <MessageText
                                                 text={message.body}
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
                                               />
@@ -2806,7 +2787,7 @@ export function MessageList({
                                               <MessageText
                                                 text={message.body}
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                                isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
                                               />
@@ -2925,7 +2906,7 @@ export function MessageList({
                                 <MessageText
                                   text={lastThreadMsg.body}
                                   providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-                                  isSlack={selectedConversation.linkedAccounts[0]?.protocol === "slack"}
+
                                   emojiSize={14}
                                   preview={true}
                                   isFromMe={lastThreadMsg.isFromMe}

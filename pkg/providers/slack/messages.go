@@ -64,36 +64,17 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	ts := parseSlackTimestamp(timestamp)
 
 	// Get current user info for sender details
-	var senderID string
-	var senderName string
-	var senderAvatarURL string
-	authTest, err := client.AuthTest()
-	if err == nil && authTest != nil {
-		senderID = authTest.UserID
-		// Get user info for sender name and avatar
-		user, err := client.GetUserInfo(senderID)
-		if err == nil && user != nil {
-			senderName = user.RealName
-			if senderName == "" && user.Profile.DisplayName != "" {
-				senderName = user.Profile.DisplayName
-			}
-			if senderName == "" {
-				senderName = user.Name
-			}
-			// Get avatar URL
-			if user.Profile.Image512 != "" {
-				senderAvatarURL = user.Profile.Image512
-			} else if user.Profile.Image192 != "" {
-				senderAvatarURL = user.Profile.Image192
-			} else if user.Profile.Image72 != "" {
-				senderAvatarURL = user.Profile.Image72
-			} else if user.Profile.Image48 != "" {
-				senderAvatarURL = user.Profile.Image48
-			} else if user.Profile.Image32 != "" {
-				senderAvatarURL = user.Profile.Image32
-			}
+	senderID := p.selfUserID
+	if senderID == "" {
+		authTest, err := client.AuthTest()
+		if err == nil && authTest != nil {
+			senderID = authTest.UserID
+			p.mu.Lock()
+			p.selfUserID = senderID
+			p.mu.Unlock()
 		}
 	}
+	senderName, senderAvatarURL := p.resolveUserInfo(senderID)
 
 	sentMessage := &models.Message{
 		ProtocolMsgID:   timestamp,
@@ -206,36 +187,17 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	}
 
 	// Get current user info for sender details
-	var senderID string
-	var senderName string
-	var senderAvatarURL string
-	authTest, err := client.AuthTest()
-	if err == nil && authTest != nil {
-		senderID = authTest.UserID
-		// Get user info for sender name and avatar
-		user, err := client.GetUserInfo(senderID)
-		if err == nil && user != nil {
-			senderName = user.RealName
-			if senderName == "" && user.Profile.DisplayName != "" {
-				senderName = user.Profile.DisplayName
-			}
-			if senderName == "" {
-				senderName = user.Name
-			}
-			// Get avatar URL
-			if user.Profile.Image512 != "" {
-				senderAvatarURL = user.Profile.Image512
-			} else if user.Profile.Image192 != "" {
-				senderAvatarURL = user.Profile.Image192
-			} else if user.Profile.Image72 != "" {
-				senderAvatarURL = user.Profile.Image72
-			} else if user.Profile.Image48 != "" {
-				senderAvatarURL = user.Profile.Image48
-			} else if user.Profile.Image32 != "" {
-				senderAvatarURL = user.Profile.Image32
-			}
+	senderID := p.selfUserID
+	if senderID == "" {
+		authTest, err := client.AuthTest()
+		if err == nil && authTest != nil {
+			senderID = authTest.UserID
+			p.mu.Lock()
+			p.selfUserID = senderID
+			p.mu.Unlock()
 		}
 	}
+	senderName, senderAvatarURL := p.resolveUserInfo(senderID)
 
 	// UploadFileV2 returns a generic File object, not a message ts.
 	// We need to fetch the message that was created by the file upload to get its timestamp.
@@ -498,7 +460,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	threadTimestamps := make(map[string]bool) // Track which messages have threads
 
 	for _, msg := range history.Messages {
-		convertedMsg := p.convertSlackMessage(msg, actualChannelID)
+		convertedMsg := p.convertMessage(msg, actualChannelID)
 		messages = append(messages, convertedMsg)
 
 		// Check if this message has a thread (has replies)
@@ -576,7 +538,7 @@ func (p *SlackProvider) getThreadReplies(channelID string, threadTS string) ([]m
 			if i == 0 {
 				continue
 			}
-			convertedMsg := p.convertSlackMessage(msg, channelID)
+			convertedMsg := p.convertMessage(msg, channelID)
 			// Ensure ThreadID is set
 			if convertedMsg.ThreadID == nil {
 				convertedMsg.ThreadID = &threadTS
@@ -914,75 +876,14 @@ func (p *SlackProvider) DeleteMessage(conversationID string, messageID string) e
 	return nil
 }
 
-func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID string) models.Message {
+func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string) models.Message {
 	// Normalize conversation ID to ensure consistency
 	normalizedConversationID := p.normalizeDMConversationID(conversationID)
 
 	ts := parseSlackTimestamp(msg.Timestamp)
 
 	// Get sender name and avatar
-	senderName := ""
-	senderAvatarURL := ""
-	if msg.User != "" {
-		// Check cache first
-		p.userCacheMu.RLock()
-		user, cached := p.userCache[msg.User]
-		p.userCacheMu.RUnlock()
-
-		if !cached {
-			// Try to get user info from Slack API
-			var err error
-			user, err = p.client.GetUserInfo(msg.User)
-			if err == nil && user != nil {
-				// Cache the user info
-				p.userCacheMu.Lock()
-				p.userCache[msg.User] = user
-				p.userCacheMu.Unlock()
-			} else {
-				// Fallback: use user ID if we can't get user info
-				senderName = msg.User
-				p.log("SlackProvider.convertSlackMessage: WARNING - failed to get user info for %s: %v\n", msg.User, err)
-			}
-		}
-
-		if user != nil {
-			// Use RealName if available, fallback to DisplayName, then Name
-			senderName = user.RealName
-			if senderName == "" && user.Profile.DisplayName != "" {
-				senderName = user.Profile.DisplayName
-			}
-			if senderName == "" {
-				senderName = user.Name
-			}
-
-			// Get avatar URL with fallback to different sizes
-			if user.Profile.Image512 != "" {
-				senderAvatarURL = user.Profile.Image512
-			} else if user.Profile.Image192 != "" {
-				senderAvatarURL = user.Profile.Image192
-			} else if user.Profile.Image72 != "" {
-				senderAvatarURL = user.Profile.Image72
-			} else if user.Profile.Image48 != "" {
-				senderAvatarURL = user.Profile.Image48
-			} else if user.Profile.Image32 != "" {
-				senderAvatarURL = user.Profile.Image32
-			}
-
-			// Persist to database cache for future use
-			if senderName != "" && senderName != msg.User {
-				p.saveUserNameToCache(msg.User, senderName, senderAvatarURL)
-			}
-		} else if senderName == "" || senderName == msg.User {
-			// Fallback: try to get from database cache
-			cachedName, cachedAvatar := p.getUserNameFromCache(msg.User)
-			if cachedName != "" && cachedName != msg.User {
-				senderName = cachedName
-				if cachedAvatar != "" {
-					senderAvatarURL = cachedAvatar
-				}
-			}
-		}
-	}
+	senderName, senderAvatarURL := p.resolveUserInfo(msg.User)
 
 	// Check if message is from me (compare with authenticated user)
 	isFromMe := false
@@ -1020,7 +921,7 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 	seenURLs := make(map[string]bool)    // Track URLs to avoid duplicates
 	seenFileIDs := make(map[string]bool) // Track file IDs to avoid duplicates
 
-	// p.log("SlackProvider.convertSlackMessage: Processing %d files, %d attachments for message %s\n", len(msg.Files), len(msg.Attachments), msg.Timestamp)
+	// p.log("SlackProvider.convertMessage: Processing %d files, %d attachments for message %s\n", len(msg.Files), len(msg.Attachments), msg.Timestamp)
 
 	// Process Files (slack.File objects)
 	// Use file ID as primary key for deduplication, fallback to URL
@@ -1030,19 +931,19 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		if file.ID != "" {
 			dedupKey = file.ID
 			if seenFileIDs[dedupKey] {
-				// p.log("SlackProvider.convertSlackMessage: SKIPPING duplicate file #%d (ID: %s, URL: %s) - already seen\n", i, file.ID, file.URLPrivate)
+				// p.log("SlackProvider.convertMessage: SKIPPING duplicate file #%d (ID: %s, URL: %s) - already seen\n", i, file.ID, file.URLPrivate)
 				continue
 			}
 			seenFileIDs[dedupKey] = true
-			// p.log("SlackProvider.convertSlackMessage: Processing file #%d (ID: %s, URL: %s, Name: %s, Size: %d, MimeType: %s)\n", i, file.ID, file.URLPrivate, file.Name, file.Size, file.Mimetype)
+			// p.log("SlackProvider.convertMessage: Processing file #%d (ID: %s, URL: %s, Name: %s, Size: %d, MimeType: %s)\n", i, file.ID, file.URLPrivate, file.Name, file.Size, file.Mimetype)
 		} else {
 			dedupKey = file.URLPrivate
 			if seenURLs[dedupKey] {
-				// p.log("SlackProvider.convertSlackMessage: SKIPPING duplicate file #%d (URL: %s, Name: %s) - already seen\n", i, file.URLPrivate, file.Name)
+				// p.log("SlackProvider.convertMessage: SKIPPING duplicate file #%d (URL: %s, Name: %s) - already seen\n", i, file.URLPrivate, file.Name)
 				continue
 			}
 			seenURLs[dedupKey] = true
-			// p.log("SlackProvider.convertSlackMessage: Processing file #%d (URL: %s, Name: %s, Size: %d, MimeType: %s) - no ID\n", i, file.URLPrivate, file.Name, file.Size, file.Mimetype)
+			// p.log("SlackProvider.convertMessage: Processing file #%d (URL: %s, Name: %s, Size: %d, MimeType: %s) - no ID\n", i, file.URLPrivate, file.Name, file.Size, file.Mimetype)
 		}
 
 		attachment := models.Attachment{
@@ -1073,10 +974,10 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 
 				if isVoiceMessage {
 					attachment.Type = "voice"
-					// p.log("SlackProvider.convertSlackMessage: Detected VOICE message (Size: %d, Name: %s, MimeType: %s)\n", file.Size, file.Name, file.Mimetype)
+					// p.log("SlackProvider.convertMessage: Detected VOICE message (Size: %d, Name: %s, MimeType: %s)\n", file.Size, file.Name, file.Mimetype)
 				} else {
 					attachment.Type = "audio"
-					// p.log("SlackProvider.convertSlackMessage: Detected AUDIO file (Size: %d, Name: %s, MimeType: %s)\n", file.Size, file.Name, file.Mimetype)
+					// p.log("SlackProvider.convertMessage: Detected AUDIO file (Size: %d, Name: %s, MimeType: %s)\n", file.Size, file.Name, file.Mimetype)
 				}
 			} else {
 				attachment.Type = "document"
@@ -1101,10 +1002,10 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		}
 
 		attachments = append(attachments, attachment)
-		// p.log("SlackProvider.convertSlackMessage: Added attachment (Type: %s, URL: %s, Name: %s)\n", attachment.Type, attachment.URL, attachment.FileName)
+		// p.log("SlackProvider.convertMessage: Added attachment (Type: %s, URL: %s, Name: %s)\n", attachment.Type, attachment.URL, attachment.FileName)
 	}
 
-	// p.log("SlackProvider.convertSlackMessage: After processing Files: %d attachments\n", len(attachments))
+	// p.log("SlackProvider.convertMessage: After processing Files: %d attachments\n", len(attachments))
 
 	// Process Attachments (slack.Attachment objects - rich formatting)
 	// Note: slack.Attachment is mainly for rich text formatting, not file attachments
@@ -1119,7 +1020,7 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 			for _, existingAtt := range attachments {
 				if existingAtt.URL == slackAttachment.ImageURL ||
 					existingAtt.Thumbnail == slackAttachment.ImageURL {
-					// p.log("SlackProvider.convertSlackMessage: SKIPPING attachment #%d (ImageURL: %s) - already processed as file\n", i, slackAttachment.ImageURL)
+					// p.log("SlackProvider.convertMessage: SKIPPING attachment #%d (ImageURL: %s) - already processed as file\n", i, slackAttachment.ImageURL)
 					alreadyProcessed = true
 					break
 				}
@@ -1133,24 +1034,24 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 					FileName: slackAttachment.Title,
 					MimeType: "image/png", // Default, Slack doesn't always provide this
 				})
-				// p.log("SlackProvider.convertSlackMessage: Added attachment from msg.Attachments (ImageURL: %s, Title: %s)\n", slackAttachment.ImageURL, slackAttachment.Title)
+				// p.log("SlackProvider.convertMessage: Added attachment from msg.Attachments (ImageURL: %s, Title: %s)\n", slackAttachment.ImageURL, slackAttachment.Title)
 			} else if seenURLs[slackAttachment.ImageURL] {
-				// p.log("SlackProvider.convertSlackMessage: SKIPPING attachment #%d (ImageURL: %s) - URL already seen\n", i, slackAttachment.ImageURL)
+				// p.log("SlackProvider.convertMessage: SKIPPING attachment #%d (ImageURL: %s) - URL already seen\n", i, slackAttachment.ImageURL)
 			}
 		}
 		// Note: Audio and video are typically in msg.Files, not in attachments
 	}
 
-	// p.log("SlackProvider.convertSlackMessage: Final attachments count: %d\n", len(attachments))
+	// p.log("SlackProvider.convertMessage: Final attachments count: %d\n", len(attachments))
 
 	// Convert attachments to JSON string
 	if len(attachments) > 0 {
 		attachmentsBytes, err := json.Marshal(attachments)
 		if err == nil {
 			attachmentsJSON = string(attachmentsBytes)
-			p.log("SlackProvider.convertSlackMessage: Serialized %d attachments to JSON (length: %d)\n", len(attachments), len(attachmentsJSON))
+			p.log("SlackProvider.convertMessage: Serialized %d attachments to JSON (length: %d)\n", len(attachments), len(attachmentsJSON))
 		} else {
-			p.log("SlackProvider.convertSlackMessage: Failed to marshal attachments: %v\n", err)
+			p.log("SlackProvider.convertMessage: Failed to marshal attachments: %v\n", err)
 		}
 	}
 
@@ -1174,8 +1075,8 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 		}
 	}
 
-	// Resolve mentions in the body (e.g. <@U12345> -> @John Doe)
-	body = p.resolveMentionsInText(body)
+	// Preprocess message body: resolve mentions, links, and formatting
+	body = p.preprocessMessageBody(body)
 
 	// Detect huddle start/end via text patterns
 	// Common patterns: "started a huddle", "joined the huddle", "left the huddle", "ended the huddle"
@@ -1217,13 +1118,34 @@ func (p *SlackProvider) convertSlackMessage(msg slack.Message, conversationID st
 	}
 }
 
-// resolveMentionsInText replaces Slack-style mentions like <@U12345678> with @DisplayName
-func (p *SlackProvider) resolveMentionsInText(text string) string {
+// preprocessMessageBody cleans and transforms Slack message text into standard Markdown.
+func (p *SlackProvider) preprocessMessageBody(text string) string {
 	if text == "" {
 		return text
 	}
 
-	// 1. Resolve User Mentions: <@U12345678> or <@U12345678|name>
+	// 1. Transform Slack URL format <URL|text> or <URL> to Markdown [text](URL)
+	urlRegex := regexp.MustCompile(`<([^|>]+)(?:\|([^>]+))?>`)
+	text = urlRegex.ReplaceAllStringFunc(text, func(match string) string {
+		submatch := urlRegex.FindStringSubmatch(match)
+		if len(submatch) < 2 {
+			return match
+		}
+		url := submatch[1]
+		linkText := url
+		if len(submatch) > 2 && submatch[2] != "" {
+			linkText = submatch[2]
+		}
+
+		// Handle user mentions separately (handled in next step)
+		if strings.HasPrefix(url, "@U") || strings.HasPrefix(url, "@W") {
+			return match
+		}
+
+		return "[" + linkText + "](" + url + ")"
+	})
+
+	// 2. Resolve User Mentions: <@U12345678> or <@U12345678|name>
 	userMentionRegex := regexp.MustCompile(`<@([A-Z0-9]+)(?:\|[^>]+)?>`)
 	text = userMentionRegex.ReplaceAllStringFunc(text, func(match string) string {
 		submatch := userMentionRegex.FindStringSubmatch(match)
@@ -1238,7 +1160,7 @@ func (p *SlackProvider) resolveMentionsInText(text string) string {
 		return "@" + userID
 	})
 
-	// 2. Resolve Subteam Mentions: <!subteam^S12345678|@handle>
+	// 3. Resolve Subteam Mentions: <!subteam^S12345678|@handle>
 	subteamMentionRegex := regexp.MustCompile(`<!subteam\^[A-Z0-9]+\|@([^>]+)>`)
 	text = subteamMentionRegex.ReplaceAllStringFunc(text, func(match string) string {
 		submatch := subteamMentionRegex.FindStringSubmatch(match)
@@ -1248,7 +1170,7 @@ func (p *SlackProvider) resolveMentionsInText(text string) string {
 		return match
 	})
 
-	// 3. Resolve Special Mentions: <!here>, <!channel>, <!everyone>
+	// 4. Resolve Special Mentions: <!here>, <!channel>, <!everyone>
 	text = strings.ReplaceAll(text, "<!here>", "@here")
 	text = strings.ReplaceAll(text, "<!channel>", "@channel")
 	text = strings.ReplaceAll(text, "<!everyone>", "@everyone")
@@ -1418,9 +1340,8 @@ func (p *SlackProvider) enrichMessagesWithSenderInfo(messages []models.Message) 
 	for i := range messages {
 		msg := &messages[i]
 
-		// Skip only if both name and avatar are already populated
-		// We still enrich if one is missing
-		if msg.SenderName != "" && msg.SenderAvatarURL != "" {
+		// Only enrich if missing
+		if msg.SenderName != "" && msg.SenderAvatarURL != "" && msg.SenderName != msg.SenderID {
 			continue
 		}
 
@@ -1429,90 +1350,12 @@ func (p *SlackProvider) enrichMessagesWithSenderInfo(messages []models.Message) 
 			continue
 		}
 
-		// First, try to get from database cache
-		if msg.SenderName == "" {
-			cachedName, cachedAvatar := p.getUserNameFromCache(msg.SenderID)
-			if cachedName != "" {
-				msg.SenderName = cachedName
-				if cachedAvatar != "" && msg.SenderAvatarURL == "" {
-					msg.SenderAvatarURL = cachedAvatar
-				}
-			}
+		name, avatar := p.resolveUserInfo(msg.SenderID)
+		if name != "" && (msg.SenderName == "" || msg.SenderName == msg.SenderID) {
+			msg.SenderName = name
 		}
-
-		// If still no name, try memory cache and API
-		if msg.SenderName == "" || msg.SenderName == msg.SenderID {
-			// Check memory cache first
-			var user *slack.User
-			var cached bool
-			p.userCacheMu.RLock()
-			user, cached = p.userCache[msg.SenderID]
-			p.userCacheMu.RUnlock()
-
-			if !cached {
-				// Try to get user info from Slack API
-				var err error
-				p.mu.RLock()
-				if p.client != nil {
-					user, err = p.client.GetUserInfo(msg.SenderID)
-				}
-				p.mu.RUnlock()
-
-				if err == nil && user != nil {
-					// Cache the user info in memory
-					p.userCacheMu.Lock()
-					p.userCache[msg.SenderID] = user
-					p.userCacheMu.Unlock()
-				}
-			}
-
-			if user != nil {
-				// Determine display name
-				displayName := user.RealName
-				if displayName == "" && user.Profile.DisplayName != "" {
-					displayName = user.Profile.DisplayName
-				}
-				if displayName == "" {
-					displayName = user.Name
-				}
-
-				// Update sender name if not set or if it's still the ID
-				if msg.SenderName == "" || msg.SenderName == msg.SenderID {
-					msg.SenderName = displayName
-				}
-
-				// Determine avatar URL
-				avatarURL := ""
-				if user.Profile.Image512 != "" {
-					avatarURL = user.Profile.Image512
-				} else if user.Profile.Image192 != "" {
-					avatarURL = user.Profile.Image192
-				} else if user.Profile.Image72 != "" {
-					avatarURL = user.Profile.Image72
-				} else if user.Profile.Image48 != "" {
-					avatarURL = user.Profile.Image48
-				} else if user.Profile.Image32 != "" {
-					avatarURL = user.Profile.Image32
-				}
-
-				// Update avatar URL if not set
-				if msg.SenderAvatarURL == "" && avatarURL != "" {
-					msg.SenderAvatarURL = avatarURL
-				}
-
-				// Persist to database cache for future use
-				if displayName != "" && displayName != msg.SenderID {
-					p.saveUserNameToCache(msg.SenderID, displayName, avatarURL)
-				}
-			}
-		}
-
-		// Final fallback: if name is still empty or is the ID, try to get from database cache one more time
-		if msg.SenderName == "" || msg.SenderName == msg.SenderID {
-			cachedName, _ := p.getUserNameFromCache(msg.SenderID)
-			if cachedName != "" && cachedName != msg.SenderID {
-				msg.SenderName = cachedName
-			}
+		if avatar != "" && msg.SenderAvatarURL == "" {
+			msg.SenderAvatarURL = avatar
 		}
 	}
 }
