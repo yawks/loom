@@ -42,6 +42,8 @@ type WhatsAppProvider struct {
 	disconnected         bool                            // Track if already disconnected
 	qrChan               <-chan whatsmeow.QRChannelItem  // QR code channel (must be obtained before Connect)
 	qrChanSet            bool                            // Track if QR channel has been set
+	qrListenerRunning    bool                            // Track if QR listener goroutine is running
+	qrListenerMu         sync.Mutex                      // Mutex for qrListenerRunning flag
 	avatarLoading        map[string]bool                 // Track which avatars are currently being loaded to avoid duplicates
 	avatarLoadingMu      sync.Mutex                      // Mutex for avatarLoading map
 	avatarFailures       map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
@@ -390,9 +392,10 @@ func (w *WhatsAppProvider) Connect() error {
 	// According to whatsmeow docs, GetQRChannel MUST be called before Connect()
 	if w.client.Store.ID == nil {
 		w.log("WhatsApp.Connect: Client not authenticated (Store.ID is nil), will get QR channel\n")
-		// Always get a fresh QR channel if not already set
+
+		// Ensure QR channel is obtained synchronously before Connect
 		if !w.qrChanSet {
-			w.log("WhatsApp.Connect: Getting QR channel...\n")
+			w.log("WhatsApp.Connect: Obtaining initial QR channel...\n")
 			qrChan, err := w.client.GetQRChannel(w.ctx)
 			if err != nil {
 				w.log("WhatsApp.Connect: ERROR - Failed to get QR channel: %v\n", err)
@@ -400,76 +403,115 @@ func (w *WhatsAppProvider) Connect() error {
 			}
 			w.qrChan = qrChan
 			w.qrChanSet = true
-			w.log("WhatsApp: QR channel obtained successfully\n")
-		} else {
-			w.log("WhatsApp.Connect: QR channel already set, reusing existing channel\n")
+			w.log("WhatsApp.Connect: Initial QR channel obtained successfully\n")
 		}
 
-		w.log("WhatsApp: Starting to listen for QR events...\n")
+		// Start goroutine to handle QR code updates if not already running
+		w.qrListenerMu.Lock()
+		if !w.qrListenerRunning {
+			w.qrListenerRunning = true
+			go func() {
+				defer func() {
+					w.qrListenerMu.Lock()
+					w.qrListenerRunning = false
+					w.qrListenerMu.Unlock()
 
-		// Start goroutine to handle QR code updates
-		go func() {
-			qrCodeCount := 0
-			for {
-				select {
-				case <-w.ctx.Done():
-					// Provider was disconnected, exit goroutine
-					w.log("WhatsApp: QR code handler goroutine exiting - context cancelled\n")
-					return
-				case evt, ok := <-w.qrChan:
-					if !ok {
-						// Channel closed, exit goroutine
-						w.log("WhatsApp: QR code channel closed, exiting handler goroutine\n")
+					w.mu.Lock()
+					w.qrChanSet = false
+					w.qrChan = nil
+					w.mu.Unlock()
+				}()
+
+				qrCodeCount := 0
+				for {
+					w.mu.Lock()
+					// Exit if authenticated or client is nil
+					if w.client == nil || (w.client.Store != nil && w.client.Store.ID != nil) {
+						w.mu.Unlock()
 						return
 					}
 
-					if evt.Event == "code" {
-						w.qrMu.Lock()
-						// Only log if this is a new QR code (different from previous)
-						isNewQR := w.latestQRCode != evt.Code
-						w.latestQRCode = evt.Code
-						w.qrMu.Unlock()
-
-						if isNewQR {
-							qrCodeCount++
-							// Only log the first QR code and every 10th update to reduce log spam
-							if qrCodeCount == 1 || qrCodeCount%10 == 0 {
-								w.log("WhatsApp: QR code updated (update #%d, expires in ~30 seconds)\n", qrCodeCount)
-							}
+					if !w.qrChanSet {
+						w.log("WhatsApp: Refreshing QR channel...\n")
+						qrChan, err := w.client.GetQRChannel(w.ctx)
+						if err != nil {
+							w.log("WhatsApp: ERROR - Failed to get QR channel: %v\n", err)
+							w.mu.Unlock()
+							time.Sleep(5 * time.Second)
+							continue
 						}
-					} else if evt.Event == "success" {
-						w.log("WhatsApp: ✅ QR code scanned successfully! Login in progress...\n")
-						w.qrMu.Lock()
-						w.latestQRCode = ""
-						w.qrMu.Unlock()
-						// Emit fetching_contacts status immediately after QR scan to close the modal
-						w.emitSyncStatus(core.SyncStatusFetchingContacts, "QR code scanned, connecting...", -1)
-						// Don't return here, wait for the connection to complete
-						// The Connected event will be received via eventHandler
-					} else if evt.Event == "timeout" {
-						w.log("WhatsApp: ⏱️ QR code expired. Please reconnect to get a new one.\n")
-						w.qrMu.Lock()
-						w.latestQRCode = ""
-						w.qrMu.Unlock()
-						qrCodeCount = 0 // Reset counter for new QR code session
-						// Reset QR channel state to allow reconnection
-						w.mu.Lock()
-						w.qrChanSet = false
-						w.qrChan = nil
-						w.mu.Unlock()
-					} else {
-						// Only log unknown events, not every code update
-						w.log("WhatsApp: QR channel event: %s\n", evt.Event)
+						w.qrChan = qrChan
+						w.qrChanSet = true
+						w.log("WhatsApp: QR channel refreshed successfully\n")
+					}
+					qrChan := w.qrChan
+					w.mu.Unlock()
+
+					select {
+					case <-w.ctx.Done():
+						// Provider was disconnected, exit goroutine
+						w.log("WhatsApp: QR code handler goroutine exiting - context cancelled\n")
+						return
+					case evt, ok := <-qrChan:
+						if !ok {
+							// Channel closed, reset to get a new one in next iteration
+							w.log("WhatsApp: QR code channel closed, will retry...\n")
+							w.mu.Lock()
+							w.qrChanSet = false
+							w.qrChan = nil
+							w.mu.Unlock()
+							time.Sleep(1 * time.Second)
+							continue
+						}
+
+						if evt.Event == "code" {
+							w.qrMu.Lock()
+							// Only log if this is a new QR code (different from previous)
+							isNewQR := w.latestQRCode != evt.Code
+							w.latestQRCode = evt.Code
+							w.qrMu.Unlock()
+
+							if isNewQR {
+								qrCodeCount++
+								// Only log the first QR code and every 10th update to reduce log spam
+								if qrCodeCount == 1 || qrCodeCount%10 == 0 {
+									w.log("WhatsApp: QR code updated (update #%d, expires in ~30 seconds)\n", qrCodeCount)
+								}
+							}
+						} else if evt.Event == "success" {
+							w.log("WhatsApp: ✅ QR code scanned successfully! Login in progress...\n")
+							w.qrMu.Lock()
+							w.latestQRCode = ""
+							w.qrMu.Unlock()
+							// Emit fetching_contacts status immediately after QR scan to close the modal
+							w.emitSyncStatus(core.SyncStatusFetchingContacts, "QR code scanned, connecting...", -1)
+							return // Exit goroutine on success
+						} else if evt.Event == "timeout" {
+							w.log("WhatsApp: ⏱️ QR code expired. Refreshing for a new one...\n")
+							w.qrMu.Lock()
+							w.latestQRCode = ""
+							w.qrMu.Unlock()
+							qrCodeCount = 0 // Reset counter for new QR code session
+							// Reset QR channel state to allow getting a new one in next iteration
+							w.mu.Lock()
+							w.qrChanSet = false
+							w.qrChan = nil
+							w.mu.Unlock()
+						} else {
+							// Only log unknown events, not every code update
+							w.log("WhatsApp: QR channel event: %s\n", evt.Event)
+						}
 					}
 				}
-			}
-		}()
+			}()
+		}
+		w.qrListenerMu.Unlock()
 	} else {
 		w.log("WhatsApp: Already logged in as %s, no QR code needed\n", w.client.Store.ID)
 		w.log("WhatsApp.Connect: WARNING - Client is authenticated, QR code will not be generated\n")
 	}
 
-	// Connect (this must be called after getting the QR channel)
+	// Connect (this must be called after getting the QR channel or starting the listener)
 	// Note: GetQRChannel must be called before Connect() according to whatsmeow docs
 	w.log("WhatsApp: Attempting to connect client...\n")
 	if err := w.client.Connect(); err != nil {
