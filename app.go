@@ -347,6 +347,54 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 	a.setupSystemTray(ctx)
+	go a.startWakeDetector()
+}
+
+// startWakeDetector monitors for system sleep/wake by detecting large time gaps
+func (a *App) startWakeDetector() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	lastTick := time.Now()
+	for {
+		select {
+		case now := <-ticker.C:
+			// If more than 30 seconds have passed since the last 10-second tick,
+			// the computer was likely asleep or the system was heavily throttled.
+			if now.Sub(lastTick) > 30*time.Second {
+				log.Printf("[WakeDetector] System wake detected (gap: %v). Triggering resync...", now.Sub(lastTick))
+				// Wait a few seconds for network to stabilize
+				time.Sleep(5 * time.Second)
+				a.resyncAllProviders()
+			}
+			lastTick = now
+		case <-a.ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *App) resyncAllProviders() {
+	if a.providerManager == nil {
+		return
+	}
+
+	providers := a.providerManager.GetConfiguredProviders()
+	log.Printf("[App] Resyncing %d configured providers after system wake", len(providers))
+
+	for _, pInfo := range providers {
+		provider, err := a.providerManager.GetProvider(pInfo.InstanceID)
+		if err != nil {
+			continue
+		}
+
+		// Sync history since 24 hours ago to catch up on missed messages
+		since := time.Now().Add(-24 * time.Hour)
+		go func(p core.Provider, sid string, t time.Time) {
+			log.Printf("[App] Triggering catch-up sync for %s", sid)
+			p.SyncHistory(t)
+		}(provider, pInfo.InstanceID, since)
+	}
 }
 
 // domReady is called when the frontend DOM is ready. It is the right place to start
