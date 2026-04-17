@@ -83,7 +83,7 @@ func NewSlackProvider() *SlackProvider {
 	return &SlackProvider{
 		userCache:          make(map[string]*slack.User),
 		emojiCache:         make(map[string]string),
-		eventChan:          make(chan core.ProviderEvent, 100), // Buffered channel to avoid blocking
+		eventChan:          make(chan core.ProviderEvent, 500), // Increased buffer to handle high-volume sync
 		stopChan:           make(chan struct{}),
 		statusCache:        make(map[string]userStatus),
 		mpimProcessingChan: make(chan struct{}, 1), // Buffered channel for MPIM processing completion

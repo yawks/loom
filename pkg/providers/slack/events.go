@@ -369,21 +369,9 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// Add a small delay to ensure footer is visible before starting the actual work
 	time.Sleep(200 * time.Millisecond)
 
-	// 1. Recover missing messages using Search API
-	// This acts like a "catch-up" poll
-	ctx := context.Background()
-	p.log("SlackProvider.SyncHistory: Calling pollGlobalUpdates...\n")
-	_, err := p.pollGlobalUpdates(ctx, since)
-	p.log("SlackProvider.SyncHistory: pollGlobalUpdates returned (err=%v)\n", err)
-	if err != nil {
-		p.log("SlackProvider.SyncHistory: Warning: Search sync failed: %v. Continuing to contact sync.\n", err)
-	} else {
-		p.emitSyncStatus(core.SyncStatusFetchingHistory, "Recent messages synced.", 50)
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	// 2. Refresh Contacts (in case of new channels/users)
-	p.emitSyncStatus(core.SyncStatusFetchingContacts, "Fetching conversations...", 60)
+	// 1. Refresh Contacts (in case of new channels/users)
+	// We do this first so we have read markers (LastRead) before catch-up messages arrive
+	p.emitSyncStatus(core.SyncStatusFetchingContacts, "Fetching conversations...", 20)
 
 	// Get all conversations (users and channels) - only members
 	contacts, err := p.GetContacts()
@@ -489,6 +477,21 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 			default:
 			}
 		}
+	}
+
+	// 2. Recover missing messages using Search API
+	// This acts like a "catch-up" poll. Since we emitted LastRead markers above,
+	// incoming catch-up messages will be correctly categorized as read/unread by the frontend.
+	p.emitSyncStatus(core.SyncStatusFetchingHistory, "Syncing recent messages via Search...", 50)
+	ctx := context.Background()
+	p.log("SlackProvider.SyncHistory: Calling pollGlobalUpdates...\n")
+	_, err = p.pollGlobalUpdates(ctx, since)
+	p.log("SlackProvider.SyncHistory: pollGlobalUpdates returned (err=%v)\n", err)
+	if err != nil {
+		p.log("SlackProvider.SyncHistory: Warning: Search sync failed: %v.\n", err)
+	} else {
+		p.emitSyncStatus(core.SyncStatusFetchingHistory, "Recent messages synced.", 70)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Wait for MPIM processing to complete (with timeout)

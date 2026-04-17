@@ -201,6 +201,16 @@ export function ContactList() {
   // Use shared hook for sorted contacts
   const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
 
+  // Safety net: ensure all last messages are registered in the message read store
+  const registerIncomingMessage = useMessageReadStore((state) => state.registerIncomingMessage);
+  useEffect(() => {
+    Object.values(lastMessages).forEach((msg) => {
+      if (msg) {
+        registerIncomingMessage(msg);
+      }
+    });
+  }, [lastMessages, registerIncomingMessage]);
+
   // Filter contacts by selected provider
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const sortedContacts = useMemo(() => {
