@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { models } from "../../wailsjs/go/models";
+import type { core, models } from "../../wailsjs/go/models";
 
 interface AppState {
   selectedContact: models.MetaContact | null;
