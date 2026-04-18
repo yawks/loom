@@ -214,9 +214,9 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	w.log("WhatsAppProvider.Init: Client logger initialized\n")
 
 	// Set custom OS info for WhatsApp registration
-	// This changes the connector name from "whatsmeow" to "Loom"
-	store.SetOSInfo("Loom", [3]uint32{1, 0, 0})
-	w.log("WhatsAppProvider.Init: Custom OS info set to 'Loom'\n")
+	// Using macOS with a recent version is safer to avoid err-client-outdated issues
+	store.SetOSInfo("macOS", [3]uint32{15, 0, 0})
+	w.log("WhatsAppProvider.Init: OS info set to macOS 15.0\n")
 
 	// Enable call log history in DeviceProps
 	// This must be done before creating the client

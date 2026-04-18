@@ -70,6 +70,10 @@ export function GetAvatar(arg1) {
   return window['go']['main']['App']['GetAvatar'](arg1);
 }
 
+export function GetCapabilities(arg1) {
+  return window['go']['main']['App']['GetCapabilities'](arg1);
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -84,6 +88,10 @@ export function GetContactAliases() {
 
 export function GetConversationsWithMessages() {
   return window['go']['main']['App']['GetConversationsWithMessages']();
+}
+
+export function GetCustomEmojis(arg1) {
+  return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
 
 export function GetGroupParticipants(arg1) {
@@ -112,10 +120,6 @@ export function GetProviderQRCode(arg1) {
 
 export function GetProviderSchema(arg1) {
   return window['go']['main']['App']['GetProviderSchema'](arg1);
-}
-
-export function GetCustomEmojis(arg1) {
-  return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
 
 export function GetThreadMessages(arg1, arg2) {
@@ -164,10 +168,6 @@ export function SendReply(arg1, arg2, arg3) {
 
 export function SetActiveProvider(arg1) {
   return window['go']['main']['App']['SetActiveProvider'](arg1);
-}
-
-export function GetCapabilities(arg1) {
-  return window['go']['main']['App']['GetCapabilities'](arg1);
 }
 
 export function SetContactAlias(arg1, arg2) {
