@@ -325,39 +325,26 @@ func (w *WhatsAppProvider) IsAuthenticated() bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	// Check if we have a device store - if it exists, we can authenticate
-	// The device store existing means we have credentials stored
-	if w.deviceStore != nil {
-		// Try to get the device store's ID via reflection or direct check
-		// The device store is of type *store.Device
-		// First check via the client if available and connected
-		if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
-			return true
-		}
-		// If client is not yet initialized or not connected, check the container
-		if w.container != nil {
-			// Try to get the first device from the container
-			ctx := context.Background()
-			deviceStore, err := w.container.GetFirstDevice(ctx)
-			if err == nil && deviceStore != nil {
-				// Check if device has an ID (was previously authenticated)
-				// Use reflection to check ID field
-				deviceValue := reflect.ValueOf(deviceStore).Elem()
-				idField := deviceValue.FieldByName("ID")
-				if idField.IsValid() && !idField.IsNil() {
-					return true
-				}
-			}
-		}
-		// If we have a deviceStore but can't check ID directly, assume authenticated
-		// This handles the case where deviceStore exists but client isn't connected yet
+	// Check if client and store are initialized and have an ID
+	// This is the most reliable way to check if we are currently authenticated
+	if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
 		return true
 	}
 
-	// Fallback: check if client and store are initialized and have an ID
-	if w.client != nil && w.client.Store != nil {
-		// If Store.ID is set, we're authenticated
-		return w.client.Store.ID != nil
+	// Check the device store from the container if client is not connected
+	if w.container != nil {
+		// Try to get the first device from the container
+		// Use a short timeout to avoid blocking
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		deviceStore, err := w.container.GetFirstDevice(ctx)
+		if err == nil && deviceStore != nil {
+			// Check if device has an ID (was previously authenticated)
+			if deviceStore.ID != nil {
+				return true
+			}
+		}
 	}
 
 	return false
@@ -365,9 +352,9 @@ func (w *WhatsAppProvider) IsAuthenticated() bool {
 
 func (w *WhatsAppProvider) Connect() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	if w.client == nil {
+		w.mu.Unlock()
 		return fmt.Errorf("client not initialized, call Init first")
 	}
 
@@ -386,14 +373,15 @@ func (w *WhatsAppProvider) Connect() error {
 			w.log("WhatsApp: Client is connected but not authenticated, disconnecting to allow QR code flow...\n")
 			w.client.Disconnect()
 			// Reset QR channel state
-			w.mu.Unlock()
-			time.Sleep(500 * time.Millisecond) // Give it time to disconnect
-			w.mu.Lock()
 			w.qrChanSet = false
 			w.qrChan = nil
+			w.mu.Unlock()
+			time.Sleep(1 * time.Second) // Give it more time to disconnect
+			w.mu.Lock()
 		} else {
 			// Already connected and authenticated
 			w.log("WhatsApp: Already connected and logged in as %s\n", w.client.Store.ID)
+			w.mu.Unlock()
 			return nil
 		}
 	}
@@ -403,12 +391,18 @@ func (w *WhatsAppProvider) Connect() error {
 	if w.client.Store.ID == nil {
 		w.log("WhatsApp.Connect: Client not authenticated (Store.ID is nil), will get QR channel\n")
 
+		// Clear latest QR code to avoid showing stale one
+		w.qrMu.Lock()
+		w.latestQRCode = ""
+		w.qrMu.Unlock()
+
 		// Ensure QR channel is obtained synchronously before Connect
 		if !w.qrChanSet {
 			w.log("WhatsApp.Connect: Obtaining initial QR channel...\n")
 			qrChan, err := w.client.GetQRChannel(w.ctx)
 			if err != nil {
 				w.log("WhatsApp.Connect: ERROR - Failed to get QR channel: %v\n", err)
+				w.mu.Unlock()
 				return fmt.Errorf("failed to get QR channel: %w", err)
 			}
 			w.qrChan = qrChan
@@ -448,7 +442,7 @@ func (w *WhatsAppProvider) Connect() error {
 							w.log("WhatsApp: Disconnecting before refreshing QR channel\n")
 							w.client.Disconnect()
 							w.mu.Unlock()
-							time.Sleep(500 * time.Millisecond)
+							time.Sleep(1 * time.Second)
 							w.mu.Lock()
 						}
 
@@ -487,6 +481,8 @@ func (w *WhatsAppProvider) Connect() error {
 							continue
 						}
 
+						w.log("WhatsApp: Received QR channel event: %s\n", evt.Event)
+
 						if evt.Event == "code" {
 							w.qrMu.Lock()
 							// Only log if this is a new QR code (different from previous)
@@ -496,10 +492,7 @@ func (w *WhatsAppProvider) Connect() error {
 
 							if isNewQR {
 								qrCodeCount++
-								// Only log the first QR code and every 10th update to reduce log spam
-								if qrCodeCount == 1 || qrCodeCount%10 == 0 {
-									w.log("WhatsApp: QR code updated (update #%d, expires in ~30 seconds)\n", qrCodeCount)
-								}
+								w.log("WhatsApp: QR code updated (update #%d, code length: %d)\n", qrCodeCount, len(evt.Code))
 							}
 						} else if evt.Event == "success" {
 							w.log("WhatsApp: ✅ QR code scanned successfully! Login in progress...\n")
@@ -520,9 +513,6 @@ func (w *WhatsAppProvider) Connect() error {
 							w.qrChanSet = false
 							w.qrChan = nil
 							w.mu.Unlock()
-						} else {
-							// Only log unknown events, not every code update
-							w.log("WhatsApp: QR channel event: %s\n", evt.Event)
 						}
 					}
 				}
@@ -535,14 +525,13 @@ func (w *WhatsAppProvider) Connect() error {
 	}
 
 	// Connect (this must be called after getting the QR channel or starting the listener)
-	// Note: GetQRChannel must be called before Connect() according to whatsmeow docs
+	// We MUST NOT hold the lock during Connect() because it might trigger events
+	// that need the lock (deadlock risk).
+	client := w.client
+	w.mu.Unlock()
+
 	w.log("WhatsApp: Attempting to connect client...\n")
-
-	// We call Connect() even if already connected to ensure the QR flow starts
-	// whatsmeow's Connect() is safe to call if already connected (it will just return nil or "already connected")
-	// but here we manually handle the connection to be sure.
-
-	err := w.client.Connect()
+	err := client.Connect()
 	if err != nil {
 		if err.Error() == "websocket is already connected" {
 			w.log("WhatsApp: Client is already connected, proceeding\n")
