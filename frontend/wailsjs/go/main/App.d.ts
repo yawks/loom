@@ -48,6 +48,8 @@ export function GetContactAliases():Promise<Record<string, string>>;
 
 export function GetConversationsWithMessages():Promise<Array<string>>;
 
+export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
+
 export function GetGroupParticipants(arg1:string):Promise<Array<models.GroupParticipant>>;
 
 export function GetMessagesForConversation(arg1:string):Promise<Array<models.Message>>;
@@ -61,8 +63,6 @@ export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, s
 export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
-
-export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 
