@@ -26,6 +26,38 @@ export namespace core {
 	        this.configSchema = source["configSchema"];
 	    }
 	}
+	export class Capabilities {
+	    supportsThreads: boolean;
+	    supportsReactions: boolean;
+	    supportsCustomEmojis: boolean;
+	    supportsTypingIndicator: boolean;
+	    supportsGroupManagement: boolean;
+	    supportsDeleteMessage: boolean;
+	    supportsEditMessage: boolean;
+	    supportsReadReceipts: boolean;
+	    supportsPinConversation: boolean;
+	    supportsMuteConversation: boolean;
+	    supportsQRCodeAuth: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new Capabilities(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supportsThreads = source["supportsThreads"];
+	        this.supportsReactions = source["supportsReactions"];
+	        this.supportsCustomEmojis = source["supportsCustomEmojis"];
+	        this.supportsTypingIndicator = source["supportsTypingIndicator"];
+	        this.supportsGroupManagement = source["supportsGroupManagement"];
+	        this.supportsDeleteMessage = source["supportsDeleteMessage"];
+	        this.supportsEditMessage = source["supportsEditMessage"];
+	        this.supportsReadReceipts = source["supportsReadReceipts"];
+	        this.supportsPinConversation = source["supportsPinConversation"];
+	        this.supportsMuteConversation = source["supportsMuteConversation"];
+	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
+	    }
+	}
 
 }
 

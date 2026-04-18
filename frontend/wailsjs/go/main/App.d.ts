@@ -38,6 +38,8 @@ export function GetAvailableProviders():Promise<Array<core.ProviderInfo>>;
 
 export function GetAvatar(arg1:string):Promise<string>;
 
+export function GetCapabilities(arg1:string):Promise<core.Capabilities>;
+
 export function GetConfig():Promise<Record<string, any>>;
 
 export function GetConfiguredProviders():Promise<Array<core.ProviderInfo>>;
