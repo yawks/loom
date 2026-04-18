@@ -371,6 +371,13 @@ func (w *WhatsAppProvider) Connect() error {
 		return fmt.Errorf("client not initialized, call Init first")
 	}
 
+	// Reset disconnected flag and recreate context if needed
+	if w.disconnected {
+		w.log("WhatsApp.Connect: Re-initializing context after disconnect\n")
+		w.disconnected = false
+		w.ctx, w.cancel = context.WithCancel(context.Background())
+	}
+
 	// Check if client is already connected
 	// If connected but not authenticated (no Store.ID), disconnect first to allow QR code flow
 	if w.client.IsConnected() {
@@ -379,6 +386,9 @@ func (w *WhatsAppProvider) Connect() error {
 			w.log("WhatsApp: Client is connected but not authenticated, disconnecting to allow QR code flow...\n")
 			w.client.Disconnect()
 			// Reset QR channel state
+			w.mu.Unlock()
+			time.Sleep(500 * time.Millisecond) // Give it time to disconnect
+			w.mu.Lock()
 			w.qrChanSet = false
 			w.qrChan = nil
 		} else {
@@ -433,6 +443,15 @@ func (w *WhatsAppProvider) Connect() error {
 
 					if !w.qrChanSet {
 						w.log("WhatsApp: Refreshing QR channel...\n")
+						// Ensure we are disconnected before getting a new channel to restart the flow
+						if w.client.IsConnected() {
+							w.log("WhatsApp: Disconnecting before refreshing QR channel\n")
+							w.client.Disconnect()
+							w.mu.Unlock()
+							time.Sleep(500 * time.Millisecond)
+							w.mu.Lock()
+						}
+
 						qrChan, err := w.client.GetQRChannel(w.ctx)
 						if err != nil {
 							w.log("WhatsApp: ERROR - Failed to get QR channel: %v\n", err)
@@ -442,7 +461,12 @@ func (w *WhatsAppProvider) Connect() error {
 						}
 						w.qrChan = qrChan
 						w.qrChanSet = true
-						w.log("WhatsApp: QR channel refreshed successfully\n")
+						w.log("WhatsApp: QR channel refreshed successfully, re-connecting...\n")
+
+						// Re-connect to start receiving codes on the new channel
+						if err := w.client.Connect(); err != nil {
+							w.log("WhatsApp: WARNING - Failed to re-connect in listener: %v\n", err)
+						}
 					}
 					qrChan := w.qrChan
 					w.mu.Unlock()
@@ -460,7 +484,6 @@ func (w *WhatsAppProvider) Connect() error {
 							w.qrChanSet = false
 							w.qrChan = nil
 							w.mu.Unlock()
-							time.Sleep(1 * time.Second)
 							continue
 						}
 
@@ -514,16 +537,21 @@ func (w *WhatsAppProvider) Connect() error {
 	// Connect (this must be called after getting the QR channel or starting the listener)
 	// Note: GetQRChannel must be called before Connect() according to whatsmeow docs
 	w.log("WhatsApp: Attempting to connect client...\n")
-	if err := w.client.Connect(); err != nil {
-		// Check if error is because already connected
+
+	// We call Connect() even if already connected to ensure the QR flow starts
+	// whatsmeow's Connect() is safe to call if already connected (it will just return nil or "already connected")
+	// but here we manually handle the connection to be sure.
+
+	err := w.client.Connect()
+	if err != nil {
 		if err.Error() == "websocket is already connected" {
-			w.log("WhatsApp: Client is already connected, skipping Connect()\n")
-			return nil
+			w.log("WhatsApp: Client is already connected, proceeding\n")
+		} else {
+			return fmt.Errorf("failed to connect: %w", err)
 		}
-		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	w.log("WhatsApp: Client connected, waiting for QR scan...\n")
+	w.log("WhatsApp: Client connected/connecting, waiting for QR codes...\n")
 	w.log("WhatsApp: IMPORTANT - Make sure to scan the QR code using WhatsApp > Settings > Linked Devices on your phone\n")
 
 	return nil
