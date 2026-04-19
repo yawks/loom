@@ -509,6 +509,16 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
 					}
 				case core.ContactStatusEvent:
+					// Convert local avatar path to base64 URL if this is an avatar update event
+					if e.Status == "avatar_updated" && e.UserID != "refresh" && e.UserID != "" {
+						// The UserID in WhatsApp events is the JID
+						// We need to fetch the updated avatar path from DB or provider cache
+						// Since App doesn't have direct access to provider cache, we'll let the frontend
+						// re-query MetaContacts which will now have the base64 avatar.
+						// BUT to make it immediate, we should trigger a refresh.
+						runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+					}
+
 					statusJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
@@ -559,6 +569,7 @@ func (a *App) GetAvatar(path string) string {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		fmt.Printf("[App.GetAvatar] Error reading file at %s: %v\n", path, err)
 		return ""
 	}
 	mimeType := "image/jpeg"
@@ -763,12 +774,31 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 			}
 		}
 
-		// Apply mappings to metaContacts
+		// Apply mappings and convert avatar paths to base64
 		for i := range metaContacts {
+			if metaContacts[i].AvatarURL != "" {
+				metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
+			}
 			for j := range metaContacts[i].LinkedAccounts {
 				la := &metaContacts[i].LinkedAccounts[j]
 				if convID, ok := mappingMap[la.ID]; ok {
 					la.ConversationID = convID
+				}
+				if la.AvatarURL != "" {
+					la.AvatarURL = a.GetAvatar(la.AvatarURL)
+				}
+			}
+		}
+	} else {
+		// Even if no mappings found, still process base64 conversion for MetaContacts
+		for i := range metaContacts {
+			if metaContacts[i].AvatarURL != "" {
+				metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
+			}
+			for j := range metaContacts[i].LinkedAccounts {
+				la := &metaContacts[i].LinkedAccounts[j]
+				if la.AvatarURL != "" {
+					la.AvatarURL = a.GetAvatar(la.AvatarURL)
 				}
 			}
 		}
@@ -887,10 +917,13 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 				}
 			}
 
-			// Enrich avatar if missing
-			if msg.SenderAvatarURL == "" {
+			// Enrich avatar if missing OR if it's a local path (needs base64)
+			if msg.SenderAvatarURL == "" || (!strings.HasPrefix(msg.SenderAvatarURL, "data:") && !strings.HasPrefix(msg.SenderAvatarURL, "http")) {
 				if avatar, ok := avatarMap[instID][msg.SenderID]; ok {
-					msg.SenderAvatarURL = avatar
+					msg.SenderAvatarURL = a.GetAvatar(avatar)
+				} else if msg.SenderAvatarURL != "" {
+					// It has a value but it's a local path
+					msg.SenderAvatarURL = a.GetAvatar(msg.SenderAvatarURL)
 				}
 			}
 		}
