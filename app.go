@@ -783,95 +783,122 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		return
 	}
 
-	// Collect unique sender IDs
-	senderIDs := make(map[string]bool)
+	// 1. Get ConversationID -> ProviderInstanceID mapping
+	convIDs := make([]uint, 0)
+	seenConvIDs := make(map[uint]bool)
 	for _, msg := range messages {
-		if msg.SenderID != "" {
-			senderIDs[msg.SenderID] = true
+		if msg.ConversationID != 0 && !seenConvIDs[msg.ConversationID] {
+			convIDs = append(convIDs, msg.ConversationID)
+			seenConvIDs[msg.ConversationID] = true
 		}
 	}
 
-	if len(senderIDs) == 0 {
-		return
+	convToInstance := make(map[uint]string)
+	if len(convIDs) > 0 {
+		var results []struct {
+			ID                 uint
+			ProviderInstanceID string
+		}
+		// Query conversations joined with linked_accounts to get the instance ID for each conversation
+		db.DB.Table("conversations").
+			Select("conversations.id, linked_accounts.provider_instance_id").
+			Joins("join linked_accounts on conversations.linked_account_id = linked_accounts.id").
+			Where("conversations.id IN ?", convIDs).
+			Scan(&results)
+
+		for _, res := range results {
+			convToInstance[res.ID] = res.ProviderInstanceID
+		}
 	}
 
-	// Get instance ID from active provider
-	instanceID := ""
-	if a.getActiveProvider() != nil {
-		if config := a.getActiveProvider().GetConfig(); config != nil {
-			if id, ok := config["_instance_id"].(string); ok {
-				instanceID = id
+	// 2. Group SenderIDs by InstanceID
+	instanceToSenderIDs := make(map[string]map[string]bool)
+	for _, msg := range messages {
+		instID := convToInstance[msg.ConversationID]
+		if instID == "" {
+			// Fallback: If we can't find the instance from the conversation (e.g. new message not yet stored),
+			// check if we have an active provider as a last resort fallback.
+			if a.getActiveProvider() != nil {
+				if config := a.getActiveProvider().GetConfig(); config != nil {
+					if id, ok := config["_instance_id"].(string); ok {
+						instID = id
+						convToInstance[msg.ConversationID] = instID
+					}
+				}
+			}
+		}
+
+		if instID != "" && msg.SenderID != "" {
+			if _, ok := instanceToSenderIDs[instID]; !ok {
+				instanceToSenderIDs[instID] = make(map[string]bool)
+			}
+			instanceToSenderIDs[instID][msg.SenderID] = true
+		}
+	}
+
+	// 3. Query LinkedAccounts for each instance to get names and avatars
+	nameMap := make(map[string]map[string]string)   // instanceID -> userID -> name
+	avatarMap := make(map[string]map[string]string) // instanceID -> userID -> avatar
+
+	for instID, senderIDs := range instanceToSenderIDs {
+		userIDList := make([]string, 0, len(senderIDs))
+		for userID := range senderIDs {
+			userIDList = append(userIDList, userID)
+		}
+
+		var accounts []models.LinkedAccount
+		err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instID, userIDList).
+			Find(&accounts).Error
+		if err != nil {
+			fmt.Printf("enrichMessagesWithSenderNames: Failed to query LinkedAccount for instance %s: %v\n", instID, err)
+			continue
+		}
+
+		nameMap[instID] = make(map[string]string)
+		avatarMap[instID] = make(map[string]string)
+		for _, account := range accounts {
+			if account.Username != "" && account.Username != account.UserID {
+				nameMap[instID][account.UserID] = account.Username
+			}
+			if account.AvatarURL != "" {
+				avatarMap[instID][account.UserID] = account.AvatarURL
 			}
 		}
 	}
 
-	if instanceID == "" {
-		fmt.Printf("enrichMessagesWithSenderNames: WARNING - No instance ID found\n")
-		return
-	}
-
-	// Query LinkedAccount for all sender IDs at once
-	userIDList := make([]string, 0, len(senderIDs))
-	for userID := range senderIDs {
-		userIDList = append(userIDList, userID)
-	}
-
-	var linkedAccounts []models.LinkedAccount
-	err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instanceID, userIDList).
-		Find(&linkedAccounts).Error
-	if err != nil {
-		fmt.Printf("enrichMessagesWithSenderNames: Failed to query LinkedAccount: %v\n", err)
-		return
-	}
-
-	fmt.Printf("enrichMessagesWithSenderNames: Found %d LinkedAccounts for %d sender IDs (instance: %s)\n",
-		len(linkedAccounts), len(userIDList), instanceID)
-
-	// Build maps of userID -> username and userID -> avatar
-	nameMap := make(map[string]string)
-	avatarMap := make(map[string]string)
-	for _, account := range linkedAccounts {
-		if account.Username != "" && account.Username != account.UserID {
-			nameMap[account.UserID] = account.Username
-			fmt.Printf("enrichMessagesWithSenderNames: Mapped %s -> %s\n", account.UserID, account.Username)
-		} else {
-			fmt.Printf("enrichMessagesWithSenderNames: WARNING - LinkedAccount for %s has no valid username (Username='%s')\n",
-				account.UserID, account.Username)
-		}
-
-		// Also map avatar URL if available
-		if account.AvatarURL != "" {
-			avatarMap[account.UserID] = account.AvatarURL
-		}
-	}
-
-	// Enrich messages with names and avatars
+	// 4. Enrich messages with names and avatars
 	enrichedCount := 0
 	notFoundCount := 0
 	for i := range messages {
 		msg := &messages[i]
+		instID := convToInstance[msg.ConversationID]
+		if instID == "" {
+			continue
+		}
+
 		if msg.SenderID != "" {
-			// Enrich name if missing
-			if msg.SenderName == "" {
-				if name, ok := nameMap[msg.SenderID]; ok {
+			// Enrich name if missing OR if it currently contains the ID (fix for previously bad persisted data)
+			if msg.SenderName == "" || msg.SenderName == msg.SenderID {
+				if name, ok := nameMap[instID][msg.SenderID]; ok {
 					msg.SenderName = name
 					enrichedCount++
 				} else {
 					notFoundCount++
-					fmt.Printf("enrichMessagesWithSenderNames: WARNING - No name found for sender %s\n", msg.SenderID)
 				}
 			}
 
 			// Enrich avatar if missing
 			if msg.SenderAvatarURL == "" {
-				if avatar, ok := avatarMap[msg.SenderID]; ok {
+				if avatar, ok := avatarMap[instID][msg.SenderID]; ok {
 					msg.SenderAvatarURL = avatar
 				}
 			}
 		}
 	}
 
-	fmt.Printf("enrichMessagesWithSenderNames: Enriched %d messages, %d names not found\n", enrichedCount, notFoundCount)
+	if enrichedCount > 0 || notFoundCount > 0 {
+		fmt.Printf("enrichMessagesWithSenderNames: Enriched %d messages, %d names still not found\n", enrichedCount, notFoundCount)
+	}
 }
 
 // GetMessagesForConversation - Renamed from GetMessages to match frontend expected name

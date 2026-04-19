@@ -299,7 +299,7 @@ func (p *SlackProvider) resolveUserInfo(userID string) (string, string) {
 		}
 	}
 
-	return userID, ""
+	return "", ""
 }
 
 // resolveUserName returns a best-effort display name for a user ID

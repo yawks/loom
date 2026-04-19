@@ -1,4 +1,4 @@
-import { AddReaction, DeleteMessage, EditMessage, GetCapabilities, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, EditMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, RemoveReaction, SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -117,34 +117,8 @@ function getSenderDisplayName(
     return senderName;
   }
 
-  // For WhatsApp IDs like "33631207926@s.whatsapp.net", extract and format the phone number
-  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    // Format phone number with spaces for readability
-    // Example: 33631207926 -> +33 6 31 20 79 26
-    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      // French phone number format: +33 followed by 9 digits (without leading 0)
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      // Format as +33 X XX XX XX XX
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
-      return formatted;
-    } else {
-      // Other formats: add spaces every 2 digits
-      const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
-      return `+${formatted}`;
-    }
-  }
-
-  // Fallback for other ID formats
-  return senderId
-    .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
-    .replace(/^[a-z]+-/, "")
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+  // Fallback if no name provided by backend
+  return senderId;
 }
 
 // Wrapper function to use Wails with React Query's infinite query
@@ -263,8 +237,6 @@ export function MessageList({
   }, [selectedConversation?.id, setIsTypingInInput]);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const setCapabilities = useAppStore((state) => state.setCapabilities);
-
   // Prefer the actual protocolConvId exposed by the backend (conversationId field).
   // This avoids a mismatch for provider DMs where linkedAccount.userId is a provider user ID
   // (e.g. "U123") but messages are stored under the DM channel ID (e.g. "D456").
@@ -390,20 +362,18 @@ export function MessageList({
   }, [messages]);
 
   // Determine if this is a group conversation
-  // For WhatsApp, groups have "@g.us" in the conversation ID
-  // For other providers, we can check if there are multiple unique senders
   const isGroupConversation = useMemo(() => {
-    if (conversationId.includes("@g.us")) {
-      return true; // WhatsApp group
+    // Check if the provider explicitly marks it as a group
+    if (selectedConversation.linkedAccounts[0]?.isGroup) {
+      return true;
     }
-    // Check if there are multiple unique senders in the messages
-    // Use messagesKey to avoid recalculation when messages array reference changes but content is same
+    // Fallback: Check if there are multiple unique senders in the messages
     if (messages.length > 0) {
       const uniqueSenders = new Set(messages.map((m) => m.senderId));
       return uniqueSenders.size > 2; // More than 2 (me + at least 2 others)
     }
     return false;
-  }, [conversationId, messagesKey, messages.length]);
+  }, [selectedConversation.linkedAccounts, messages]);
 
   // With reverse scroll, we don't need complex scroll restoration logic
   // The browser naturally maintains scroll position when new items are added at the "bottom" (visually top)
@@ -550,20 +520,6 @@ export function MessageList({
     return undefined;
   }, [messages]);
 
-  // Load provider capabilities
-  const instanceId = selectedConversation.linkedAccounts[0]?.providerInstanceId;
-  useEffect(() => {
-    if (!instanceId) return;
-
-    GetCapabilities(instanceId)
-      .then((caps) => {
-        setCapabilities(instanceId, caps);
-      })
-      .catch((error) => {
-        console.error("Failed to fetch capabilities:", error);
-      });
-  }, [instanceId, setCapabilities]);
-
   // Load participant names for groups and provider conversations
   useEffect(() => {
     if (!conversationId) {
@@ -586,16 +542,8 @@ export function MessageList({
           }
         });
         if (userIds.size > 0) {
-          // Normalize IDs by removing ":digits" part (LID format for WhatsApp)
-          // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
-          // For provider IDs (U1234567890), keep as-is
-          const normalizedIds = Array.from(userIds).map(id => {
-            // Only normalize WhatsApp IDs, not provider IDs
-            if (id.includes("@s.whatsapp.net") || id.includes("@g.us")) {
-              return id.replace(/:\d+@/, "@");
-            }
-            return id;
-          });
+          // Normalize IDs if needed (backend should ideally handle this)
+          const normalizedIds = Array.from(userIds);
           const names = await GetParticipantNames(normalizedIds);
 
           // Create a map that includes both normalized and original IDs
@@ -645,8 +593,8 @@ export function MessageList({
     }
     
     // Normalized emoji for local comparison (ensure colons)
-    const normalizedEmojiForComparison = emojiName.startsWith(":")
-      ? emojiName
+    const normalizedEmojiForComparison = emojiName.startsWith(":") 
+      ? emojiName 
       : emojiName.includes(":") ? emojiName : `:${emojiName}:`;
     
     // Debug: Log all reactions for this message
@@ -2248,7 +2196,7 @@ export function MessageList({
                                             <MessageText
                                               text={message.quotedBody}
                                               providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                              
                                               emojiSize={14}
                                               isFromMe={message.isFromMe}
                                             />
@@ -2259,7 +2207,7 @@ export function MessageList({
                                         <MessageText
                                           text={message.body}
                                           providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                          
                                           className="whitespace-pre-wrap"
                                           isFromMe={message.isFromMe}
                                         />
@@ -2405,7 +2353,7 @@ export function MessageList({
                                   <MessageText
                                     text={lastThreadMsg.body}
                                     providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                    
                                     emojiSize={14}
                                     preview={true}
                                     isFromMe={lastThreadMsg.isFromMe}
@@ -2772,7 +2720,7 @@ export function MessageList({
                                                 <MessageText
                                                   text={message.quotedBody}
                                                   providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                                  
                                                   emojiSize={14}
                                                   isFromMe={message.isFromMe}
                                                 />
@@ -2787,7 +2735,7 @@ export function MessageList({
                                               <MessageText
                                                 text={message.body}
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                                
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
                                               />
@@ -2803,7 +2751,7 @@ export function MessageList({
                                               <MessageText
                                                 text={message.body}
                                                 providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                                
                                                 emojiSize={16}
                                                 isFromMe={message.isFromMe}
                                               />
@@ -2922,7 +2870,7 @@ export function MessageList({
                                 <MessageText
                                   text={lastThreadMsg.body}
                                   providerInstanceId={selectedConversation.linkedAccounts[0]?.providerInstanceId}
-
+                                  
                                   emojiSize={14}
                                   preview={true}
                                   isFromMe={lastThreadMsg.isFromMe}
