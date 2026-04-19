@@ -49,6 +49,7 @@ type SlackProvider struct {
 	dmChannelCache     map[string]string        // Cache: DM channel ID (D...) -> User ID (U...)
 	dmChannelCacheMu   sync.RWMutex             // Mutex for DM channel cache
 	selfUserID         string                   // Cached authenticated user ID (from AuthTest)
+	selfTeamID         string                   // Cached authenticated team ID (from AuthTest)
 }
 
 // userStatus represents the cached status information for a user
@@ -481,6 +482,7 @@ func (p *SlackProvider) Connect() error {
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
 	p.selfUserID = authInfo.UserID
+	p.selfTeamID = authInfo.TeamID
 
 	// Determine connection mode based on token type
 	token, _ := p.config.GetString("token")

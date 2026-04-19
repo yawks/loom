@@ -196,7 +196,8 @@
     "failed": "Appel échoué",
     "rejected": "Appel rejeté",
     "participants": "{{count}} participants",
-    "activeCall": "Appel en cours"
+    "activeCall": "Appel en cours",
+    "joinHuddle": "Rejoindre le huddle"
   },
   "new_conversation": "Nouvelle Conversation",
   "conversation_title": "Titre de la conversation",

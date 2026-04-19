@@ -8,7 +8,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.42
-	github.com/slack-go/slack v0.17.3
+	github.com/slack-go/slack v0.22.0
 	github.com/wailsapp/wails/v2 v2.11.0
 	go.mau.fi/whatsmeow v0.0.0-20260416104156-3ff20cd3462a
 	google.golang.org/protobuf v1.36.11

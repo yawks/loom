@@ -94,6 +94,7 @@ type Message struct {
 	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
 	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
 	CallIsVideo      bool             `json:"callIsVideo"`                                                                          // Whether the call was a video call (from CallLogMessage)
+	CallJoinURL      string           `json:"callJoinUrl,omitempty"`                                                                // URL to join the call (e.g., Slack huddle link)
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 

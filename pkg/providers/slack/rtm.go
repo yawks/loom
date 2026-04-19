@@ -123,6 +123,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 
 	// Check if this is a huddle-related message
 	callType := ""
+	callJoinURL := ""
 	textLower := strings.ToLower(ev.Text)
 	if strings.Contains(textLower, "huddle") {
 		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
@@ -132,6 +133,15 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 				callType = "incoming_group_call"
 			} else {
 				callType = "incoming_call"
+			}
+
+			// Construct Join URL
+			p.mu.RLock()
+			teamID := p.selfTeamID
+			p.mu.RUnlock()
+			if teamID != "" && ev.Channel != "" {
+				// Format as requested: https://app.slack.com/client/TEAM_ID/CHANNEL_ID
+				callJoinURL = fmt.Sprintf("https://app.slack.com/client/%s/%s", teamID, ev.Channel)
 			}
 		} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
 			// Huddle ended - we'll mark it as missed
@@ -156,6 +166,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		IsFromMe:        isFromMe,
 		Attachments:     "[]", // Handle attachments if any
 		CallType:        callType,
+		CallJoinURL:     callJoinURL,
 	}
 
 	// Create the event

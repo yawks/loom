@@ -170,7 +170,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 		}
 	}
 
-	params := slack.UploadFileV2Parameters{
+	params := slack.UploadFileParameters{
 		Channel:  actualChannelID,
 		File:     file.FileName,
 		Reader:   bytes.NewReader(file.Data),
@@ -181,7 +181,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 		params.ThreadTimestamp = *threadID
 	}
 
-	fileUpload, err := client.UploadFileV2(params)
+	fileUpload, err := client.UploadFile(params)
 	if err != nil {
 		return nil, err
 	}
@@ -1080,6 +1080,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 
 	// Detect huddle start/end via text patterns
 	// Common patterns: "started a huddle", "joined the huddle", "left the huddle", "ended the huddle"
+	callJoinURL := ""
 	textLower := strings.ToLower(body)
 	if strings.Contains(textLower, "huddle") {
 		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
@@ -1090,6 +1091,15 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 				callType = "incoming_group_call"
 			} else {
 				callType = "incoming_call"
+			}
+
+			// Construct Join URL
+			p.mu.RLock()
+			teamID := p.selfTeamID
+			p.mu.RUnlock()
+			if teamID != "" && normalizedConversationID != "" {
+				// Format as requested: https://app.slack.com/client/TEAM_ID/CHANNEL_ID
+				callJoinURL = fmt.Sprintf("https://app.slack.com/client/%s/%s", teamID, normalizedConversationID)
 			}
 		} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
 			// Huddle ended - we'll mark it as missed
@@ -1115,6 +1125,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		Reactions:       reactions,
 		Attachments:     attachmentsJSON,
 		CallType:        callType,
+		CallJoinURL:     callJoinURL,
 	}
 }
 

@@ -1,8 +1,10 @@
-import { Clock, Phone, Video, VideoOff, X } from "lucide-react";
+import { Clock, ExternalLink, Phone, Video, VideoOff, X } from "lucide-react";
 
-import type { models } from "../../wailsjs/go/models";
+import { timeToDate } from "@/lib/utils";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "./ui/button";
+import type { models } from "../../wailsjs/go/models";
 
 // Custom icon component for missed calls: Phone with X overlay
 const PhoneWithX = ({ className }: { className?: string }) => (
@@ -169,6 +171,29 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   const Icon = callInfo.icon;
   const hasSummary = message.callDurationSecs != null || message.callOutcome || participants.length > 0;
 
+  // Huddle is considered active if it has a join URL, hasn't been marked as missed/ended,
+  // and is less than 2 hours old
+  const isHuddleActive = useMemo(() => {
+    const msg = message as any;
+    if (!msg.callJoinUrl) return false;
+
+    // If callType contains "missed", it's ended
+    if (message.callType?.includes("missed")) return false;
+
+    const huddleTime = timeToDate(message.timestamp).getTime();
+    const now = new Date().getTime();
+    const twoHoursInMs = 2 * 60 * 60 * 1000;
+
+    return (now - huddleTime) < twoHoursInMs;
+  }, [message]);
+
+  const handleJoinHuddle = () => {
+    const msg = message as any;
+    if (msg.callJoinUrl) {
+      window.open(msg.callJoinUrl, "_blank");
+    }
+  };
+
   if (layout === "bubble") {
     // Bubble layout: centered, visually distinct bubble
     return (
@@ -190,6 +215,17 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
                 <span>{t("call.participants", { count: callInfo.participantCount })}</span>
               )}
             </div>
+          )}
+          {isHuddleActive && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-8 gap-2 rounded-full border-primary/20 hover:bg-primary/10"
+              onClick={handleJoinHuddle}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {t("call.joinHuddle")}
+            </Button>
           )}
         </div>
       </div>
@@ -213,6 +249,19 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
             {callInfo.participantCount > 0 && isGroup && (
               <span>{t("call.participants", { count: callInfo.participantCount })}</span>
             )}
+          </div>
+        )}
+        {isHuddleActive && (
+          <div className="ml-5 mt-1">
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-xs gap-1 h-6"
+              onClick={handleJoinHuddle}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {t("call.joinHuddle")}
+            </Button>
           </div>
         )}
       </div>
