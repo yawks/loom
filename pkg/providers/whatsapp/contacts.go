@@ -398,12 +398,13 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 	}
 
 	// Load avatars asynchronously in background (non-blocking)
-	// Always try to load avatars, even if some are already loading
-	// The loadAvatarsAsync function will skip accounts that are already loading
-	go func() {
-		// Only load top 50 avatars during initial sync
-		w.loadAvatarsAsync(linkedAccounts, 50)
-	}()
+	// Only load avatars during the very first sync to avoid redundant requests on every startup
+	if w.lastSyncTimestamp == nil {
+		go func() {
+			// Only load top 50 avatars during initial sync
+			w.loadAvatarsAsync(linkedAccounts, 50)
+		}()
+	}
 
 	return linkedAccounts, nil
 }

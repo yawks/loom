@@ -220,9 +220,16 @@ func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
 
 			// Update DB
 			if db.DB != nil {
+				// Update LinkedAccount
 				db.DB.Model(&models.LinkedAccount{}).
 					Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).
 					Update("avatar_url", avatarURL)
+
+				// Also update MetaContact if it exists
+				var account models.LinkedAccount
+				if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).First(&account).Error; err == nil && account.MetaContactID != 0 {
+					db.DB.Model(&models.MetaContact{}).Where("id = ?", account.MetaContactID).Update("avatar_url", avatarURL)
+				}
 			}
 
 			// Emit event
@@ -340,7 +347,7 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 
 			avatarURL := w.getProfilePictureURL(j)
 			if avatarURL != "" {
-				fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
+			// fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
 				// Update the cached conversation if it exists
 				w.mu.Lock()
 				if cached, exists := w.conversations[account.UserID]; exists {
@@ -402,7 +409,7 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 					fmt.Printf("WhatsApp: Failed to emit avatar_updated event (channel full)\n")
 				}
 			} else {
-				fmt.Printf("WhatsApp: No avatar available for %s\n", account.UserID)
+				// fmt.Printf("WhatsApp: No avatar available for %s\n", account.UserID)
 			}
 
 			// Update progress

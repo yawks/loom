@@ -1566,12 +1566,13 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 		w.mu.RUnlock()
 
 		// Load avatars asynchronously in background (non-blocking)
-		// Always try to load avatars, even if some are already loading
-		// The loadAvatarsAsync function will skip accounts that are already loading
-		go func() {
-			// Only load top 50 avatars during history sync
-			w.loadAvatarsAsync(cachedAccounts, 50)
-		}()
+		// Only load avatars during the very first sync to avoid redundant requests
+		if w.lastSyncTimestamp == nil {
+			go func() {
+				// Only load top 50 avatars during history sync
+				w.loadAvatarsAsync(cachedAccounts, 50)
+			}()
+		}
 	}
 }
 
