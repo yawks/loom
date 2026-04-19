@@ -269,6 +269,16 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 				w.avatarLoadingMu.Unlock()
 			}()
 
+			// Get instance ID
+			w.mu.RLock()
+			instanceID := ""
+			if w.config != nil {
+				if id, ok := w.config["_instance_id"].(string); ok {
+					instanceID = id
+				}
+			}
+			w.mu.RUnlock()
+
 			avatarURL := w.getProfilePictureURL(j)
 			if avatarURL != "" {
 				fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
@@ -281,13 +291,15 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 				} else {
 					// Create entry in cache
 					w.conversations[account.UserID] = models.LinkedAccount{
-						Protocol:  "whatsapp",
-						UserID:    account.UserID,
-						Username:  account.Username,
-						AvatarURL: avatarURL,
-						Status:    account.Status,
-						CreatedAt: account.CreatedAt,
-						UpdatedAt: time.Now(),
+						Protocol:           "whatsapp",
+						ProviderInstanceID: instanceID,
+						UserID:             account.UserID,
+						Username:           account.Username,
+						IsGroup:            false,
+						AvatarURL:          avatarURL,
+						Status:             account.Status,
+						CreatedAt:          account.CreatedAt,
+						UpdatedAt:          time.Now(),
 					}
 					fmt.Printf("WhatsApp: Created cached conversation entry for %s\n", account.UserID)
 				}
@@ -307,13 +319,15 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 					} else {
 						// Create new
 						newAccount := models.LinkedAccount{
-							Protocol:  "whatsapp",
-							UserID:    account.UserID,
-							Username:  account.Username,
-							AvatarURL: avatarURL,
-							Status:    account.Status,
-							CreatedAt: account.CreatedAt,
-							UpdatedAt: time.Now(),
+							Protocol:           "whatsapp",
+							ProviderInstanceID: instanceID,
+							UserID:             account.UserID,
+							Username:           account.Username,
+							IsGroup:            false,
+							AvatarURL:          avatarURL,
+							Status:             account.Status,
+							CreatedAt:          account.CreatedAt,
+							UpdatedAt:          time.Now(),
 						}
 						if err := db.DB.Create(&newAccount).Error; err != nil {
 							fmt.Printf("WhatsApp: Failed to create LinkedAccount in database for %s: %v\n", account.UserID, err)

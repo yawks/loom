@@ -287,6 +287,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 				contacts = append(contacts, models.LinkedAccount{
 					UserID:    user.ID,
 					Username:  getUserDisplayName(&user),
+					IsGroup:   false,
 					AvatarURL: user.Profile.Image48,
 					Status:    "offline",
 					Protocol:  "slack",
@@ -387,6 +388,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			contacts = append(contacts, models.LinkedAccount{
 				UserID:    user.ID,
 				Username:  displayName, // Use display name instead of username
+				IsGroup:   false, // Individual user
 				AvatarURL: avatarURL,
 				Status:    status,
 				Protocol:  "slack",
@@ -431,6 +433,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		contacts = append(contacts, models.LinkedAccount{
 			UserID:   channel.ID,
 			Username: displayName,
+			IsGroup:  true,
 			Status:   "offline", // Channels don't have online status
 			Protocol: "slack",
 			Extra:    extraJSON,
@@ -690,6 +693,7 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 			ProviderInstanceID: instanceID,
 			UserID:             userID,
 			Username:           username,
+			IsGroup:            true, // MPIM is a group
 			Status:             "offline", // Default status
 			Protocol:           "slack",
 			CreatedAt:          time.Now(),

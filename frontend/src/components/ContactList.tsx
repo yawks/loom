@@ -477,16 +477,15 @@ export function ContactList() {
             const isEmptyDuringSync = syncStatus === "syncing" && messageCount === 0;
 
             // Check if contact is online (only for DM, not groups)
-            const isGroup = conversationId.endsWith("@g.us");
+            const isGroup = contact.linkedAccounts[0]?.isGroup;
 
-            // Helper to check if a LID in presenceMap matches any linkedAccount
+            // Helper to check if any account in the presence map is online
             const checkPresenceMatch = () => {
               if (isGroup) {
-                //console.log(`[ContactList] Skipping presence check for group: ${contact.displayName}`);
                 return false;
               }
 
-              // First, check if any linkedAccount has status "online" (for provider and other providers)
+              // 1. Check if any linkedAccount has status "online" (from provider metadata)
               const statusMatch = contact.linkedAccounts.some(
                 (account) => account.status === "online"
               );
@@ -494,53 +493,12 @@ export function ContactList() {
                 return true;
               }
 
-              //console.log(`[ContactList] Checking presence for ${contact.displayName}, linkedAccounts:`, contact.linkedAccounts.map(a => a.userId));
-              //console.log(`[ContactList] Current presenceMap:`, presenceMap);
-
-              // First, try direct match
-              const directMatch = contact.linkedAccounts.some(
-                (account) => {
-                  const isOnline = presenceMap[account.userId] === true;
-                  //console.log(`[ContactList] Checking direct match for ${account.userId}: ${isOnline}`);
-                  if (isOnline) {
-                    //console.log(`[ContactList] ✓ Direct match found for ${contact.displayName}: ${account.userId}`);
-                  }
-                  return isOnline;
-                }
+              // 2. Check presence map for any of the linked accounts
+              const presenceMatch = contact.linkedAccounts.some(
+                (account) => presenceMap[account.userId] === true
               );
-              if (directMatch) return true;
-
-              // If no direct match, try to match by phone number
-              // LID format: "149044005437527@lid" or "216350555386047@lid"
-              // JID format: "33XXXXXXXXX@s.whatsapp.net"
-              //console.log(`[ContactList] No direct match, trying phone number matching...`);
-              for (const [lid, isOnline] of Object.entries(presenceMap)) {
-                if (!isOnline || !lid.endsWith("@lid")) continue;
-
-                // Extract phone number from LID (remove @lid and any :X suffix)
-                const lidPhone = lid.replace(/@lid$/, "").replace(/:\d+$/, "");
-                //console.log(`[ContactList] Checking LID ${lid} (extracted phone: ${lidPhone})`);
-
-                // Check if any linkedAccount contains this phone number
-                const phoneMatch = contact.linkedAccounts.some(account => {
-                  const jid = account.userId;
-                  // Extract phone from JID (e.g., "33677815440@s.whatsapp.net" -> "33677815440")
-                  const jidPhone = jid.split("@")[0];
-                  const matches = jidPhone === lidPhone;
-                  //console.log(`[ContactList]   Comparing LID phone ${lidPhone} with JID ${jid} (phone: ${jidPhone}): ${matches}`);
-                  if (matches) {
-                    //console.log(`[ContactList] ✓ Phone match: LID ${lid} (phone: ${lidPhone}) matches JID ${jid} (phone: ${jidPhone}) for contact ${contact.displayName}`);
-                  }
-                  return matches;
-                });
-
-                if (phoneMatch) {
-                  return true;
-                }
-              }
-
-              //console.log(`[ContactList] ✗ No match found for ${contact.displayName}`);
-              return false;
+              
+              return presenceMatch;
             };
 
             const isOnline = checkPresenceMatch();
