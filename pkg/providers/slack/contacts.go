@@ -403,7 +403,8 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	var mpimChannels []slack.Channel // Store MPIMs for async processing
 	for _, channel := range allChannels {
 		// Skip IMs (handled via users) and channels we left
-		if channel.IsIM || !channel.IsMember {
+		// Strictly hide archived channels as requested
+		if channel.IsIM || !channel.IsMember || channel.IsArchived {
 			filteredCount++
 			continue
 		}
@@ -413,6 +414,29 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 		// For mpim, use temporary name
 		if channel.IsMpIM {
+			// Optimization: Hide MPIMs with 0 members and no history as requested
+			// channel.NumMembers is only available if specifically requested or via conversations.info
+			// but we can check if we have any members in the list (if available) or wait for async resolution.
+			// Since we want to avoid "useless things", we'll let async process them and hide them later if empty.
+			// BUT the user said "Group chat" grayed out are the problem.
+
+			// If we know it's empty, skip it.
+			if channel.NumMembers == 0 {
+				// Verify if we have messages in DB for this channel
+				hasHistory := false
+				if db.DB != nil {
+					var count int64
+					db.DB.Model(&models.Message{}).Where("protocol_conv_id = ?", channel.ID).Count(&count)
+					hasHistory = count > 0
+				}
+
+				if !hasHistory {
+					p.log("SlackProvider.GetContacts: Skipping empty MPIM %s (%s)\n", channel.ID, channel.Name)
+					filteredCount++
+					continue
+				}
+			}
+
 			mpimChannels = append(mpimChannels, channel)
 			displayName = "Group Chat"
 		}
@@ -592,7 +616,14 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		// Sort names for consistency
 		displayName := "Group Chat"
 		if len(participantNames) > 0 {
-			displayName = strings.Join(participantNames, ", ")
+			// Limit to 5 names as requested, then add "+X others"
+			const maxNames = 5
+			if len(participantNames) > maxNames {
+				remaining := len(participantNames) - maxNames
+				displayName = strings.Join(participantNames[:maxNames], ", ") + fmt.Sprintf(" +%d", remaining)
+			} else {
+				displayName = strings.Join(participantNames, ", ")
+			}
 		} else if channel.Name != "" {
 			displayName = channel.Name
 		}

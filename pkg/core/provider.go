@@ -264,6 +264,10 @@ type Provider interface {
 
 	// GetAuthQRCode returns the QR code for authentication.
 	GetAuthQRCode() (string, error)
+
+	// RefreshContact refreshes the metadata for a specific contact.
+	// This is used to update information like avatars when a conversation is opened.
+	RefreshContact(contactID string) error
 }
 
 // Capabilities defines the features supported by a provider.

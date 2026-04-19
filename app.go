@@ -936,6 +936,15 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	// Enrich messages with sender names from LinkedAccount
 	a.enrichMessagesWithSenderNames(messages)
 
+	// Trigger contact refresh in background when opening conversation
+	if provider := a.getActiveProvider(); provider != nil {
+		go func() {
+			if err := provider.RefreshContact(conversationID); err != nil {
+				fmt.Printf("App.GetMessagesForConversation: failed to refresh contact %s: %v\n", conversationID, err)
+			}
+		}()
+	}
+
 	return messages, err
 }
 
