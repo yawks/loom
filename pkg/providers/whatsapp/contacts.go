@@ -358,10 +358,22 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 				}
 
 				// Only update LinkedAccount if significantly changed to avoid redundant writes
-				if existing.Username != contact.Username || existing.AvatarURL != contact.AvatarURL || metaUpdated {
+				changed := false
+				if existing.Username != contact.Username {
 					existing.Username = contact.Username
+					changed = true
+				}
+				// ONLY update avatar if the new one is NOT empty to avoid wiping cached avatars
+				if contact.AvatarURL != "" && existing.AvatarURL != contact.AvatarURL {
 					existing.AvatarURL = contact.AvatarURL
+					changed = true
+				}
+				if existing.Status != contact.Status {
 					existing.Status = contact.Status
+					changed = true
+				}
+
+				if changed || metaUpdated {
 					existing.UpdatedAt = time.Now()
 					if err := db.DB.Save(&existing).Error; err != nil {
 						fmt.Printf("WhatsApp: Failed to update LinkedAccount for %s: %v\n", contact.UserID, err)
@@ -398,8 +410,18 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 	}
 
 	// Load avatars asynchronously in background (non-blocking)
-	// Only load avatars during the very first sync to avoid redundant requests on every startup
-	if w.lastSyncTimestamp == nil {
+	// Trigger initial bulk avatar load if no avatars are cached
+	// We count how many non-empty avatars we have in the current contact list
+	hasAvatars := false
+	for _, acc := range linkedAccounts {
+		if acc.AvatarURL != "" {
+			hasAvatars = true
+			break
+		}
+	}
+
+	if !hasAvatars || w.lastSyncTimestamp == nil {
+		fmt.Printf("WhatsApp: Triggering bulk avatar sync (hasAvatars=%v, firstSync=%v)\n", hasAvatars, w.lastSyncTimestamp == nil)
 		go func() {
 			// Only load top 50 avatars during initial sync
 			w.loadAvatarsAsync(linkedAccounts, 50)
