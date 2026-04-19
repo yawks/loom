@@ -197,7 +197,7 @@ export function ThreadView() {
                   <MessageText
                     text={message.body}
                     providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-
+                    
                     emojiSize={14}
                     isFromMe={message.isFromMe}
                   />
@@ -279,7 +279,7 @@ export function ThreadView() {
                             text={message.body}
                             providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
                             emojiSize={14}
-
+                            
                             isFromMe={message.isFromMe}
                           />
                           </div>
@@ -289,7 +289,7 @@ export function ThreadView() {
                         <MessageText
                           text={message.body}
                           providerInstanceId={selectedContact?.linkedAccounts[0]?.providerInstanceId}
-
+                          
                           emojiSize={14}
                           isFromMe={message.isFromMe}
                         />

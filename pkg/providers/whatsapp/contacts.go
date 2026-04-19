@@ -474,6 +474,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			ProviderInstanceID: instanceID,
 			UserID:             jid.String(),
 			Username:           displayName,
+			IsGroup:            jid.Server == types.GroupServer,
 			AvatarURL:          "", // Will be loaded asynchronously if needed
 			Status:             "offline",
 			CreatedAt:          now,
@@ -502,6 +503,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			ProviderInstanceID: instanceID,
 			UserID:             groupJID,
 			Username:           displayName,
+			IsGroup:            true,
 			AvatarURL:          "",
 			Status:             "offline",
 			CreatedAt:          now,
@@ -555,6 +557,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 					Protocol:  "whatsapp",
 					UserID:    groupJID,
 					Username:  displayName,
+					IsGroup:   true,
 					AvatarURL: "",
 					Status:    "offline",
 					CreatedAt: now,

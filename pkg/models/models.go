@@ -26,9 +26,10 @@ type LinkedAccount struct {
 	UserID             string         `json:"userId"`                          // User's ID on the remote platform (canonical ID, e.g., phone number for WhatsApp)
 	Username           string         `json:"username"`
 	AvatarURL          string         `json:"avatarUrl,omitempty"`                 // Profile picture URL from the provider
-	Status             string         `json:"status"`                              // "online", "offline", "away", "busy", etc.
-	LastSeen           *time.Time     `json:"lastSeen,omitempty"`                  // Last seen timestamp (nil if not available)
-	Extra              string         `gorm:"type:text" json:"extra,omitempty"`    // JSON-encoded extra data (e.g., LID mappings for WhatsApp)
+	Status             string         `json:"status"`                          // "online", "offline", "away", "busy", etc.
+	IsGroup            bool           `json:"isGroup"`                         // Whether this account represents a group/channel
+	LastSeen           *time.Time     `json:"lastSeen,omitempty"`              // Last seen timestamp (nil if not available)
+	Extra              string         `gorm:"type:text" json:"extra,omitempty"` // JSON-encoded extra data (e.g., LID mappings for WhatsApp)
 	Conversations      []Conversation `gorm:"foreignKey:LinkedAccountID" json:"-"` // Avoid JSON cycles
 	ConversationID     string         `gorm:"-" json:"conversationId,omitempty"`   // Computed: ProtocolConvID of the associated Conversation (not persisted)
 	CreatedAt          time.Time      `json:"createdAt"`

@@ -311,28 +311,11 @@ export function useMessageEvents() {
       
       try {
         const typing: TypingEvent = JSON.parse(typingJSON);
-        let resolvedConvId = typing.conversationId;
-        
-        if (typing.conversationId.includes("@lid")) {
-          const resolveLIDFn = window.go?.main?.App?.ResolveLID as ((lid: string) => Promise<string>) | undefined;
-          if (resolveLIDFn) {
-            const resolved = await resolveLIDFn(typing.conversationId);
-            if (resolved && resolved !== typing.conversationId) {
-              resolvedConvId = resolved;
-            } else if (typing.userId.includes("@s.whatsapp.net")) {
-              resolvedConvId = typing.userId;
-            } else {
-              return;
-            }
-          } else {
-            return;
-          }
-        }
         
         if (typing.isTyping) {
-          setTyping(resolvedConvId, typing.userId, typing.userName);
+          setTyping(typing.conversationId, typing.userId, typing.userName);
         } else {
-          setNotTyping(resolvedConvId, typing.userId);
+          setNotTyping(typing.conversationId, typing.userId);
         }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse typing event:", error);
