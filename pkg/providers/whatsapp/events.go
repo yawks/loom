@@ -1569,7 +1569,8 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 		// Always try to load avatars, even if some are already loading
 		// The loadAvatarsAsync function will skip accounts that are already loading
 		go func() {
-			w.loadAvatarsAsync(cachedAccounts)
+			// Only load top 50 avatars during history sync
+			w.loadAvatarsAsync(cachedAccounts, 50)
 		}()
 	}
 }

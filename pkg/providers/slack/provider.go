@@ -1126,6 +1126,12 @@ func (p *SlackProvider) GetAuthQRCode() (string, error) {
 	return "", fmt.Errorf("Slack does not support QR code authentication")
 }
 
+func (p *SlackProvider) RefreshContact(contactID string) error {
+	// For Slack, we can just resolve the user name again which updates the cache
+	p.ResolveUserNames([]string{contactID})
+	return nil
+}
+
 func (p *SlackProvider) getInstanceId() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

@@ -180,7 +180,63 @@ func (w *WhatsAppProvider) saveAvatarFailures() {
 	}
 }
 
-func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
+func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
+	jid, err := types.ParseJID(contactID)
+	if err != nil {
+		return err
+	}
+
+	// For RefreshContact (called on opening conversation), we allow retrying even if it previously failed
+	// but we still want to avoid constant spamming of the WhatsApp API.
+	// However, the user explicitly said "yes" to "every single time you click a contact".
+
+	// Remove from failures to allow retry
+	w.avatarFailuresMu.Lock()
+	delete(w.avatarFailures, contactID)
+	w.avatarFailuresMu.Unlock()
+
+	go func() {
+		avatarURL := w.getProfilePictureURL(jid)
+		if avatarURL != "" {
+			// Get instance ID
+			w.mu.RLock()
+			instanceID := ""
+			if w.config != nil {
+				if id, ok := w.config["_instance_id"].(string); ok {
+					instanceID = id
+				}
+			}
+			w.mu.RUnlock()
+
+			// Update cache
+			w.mu.Lock()
+			if cached, exists := w.conversations[contactID]; exists {
+				if cached.AvatarURL != avatarURL {
+					cached.AvatarURL = avatarURL
+					w.conversations[contactID] = cached
+				}
+			}
+			w.mu.Unlock()
+
+			// Update DB
+			if db.DB != nil {
+				db.DB.Model(&models.LinkedAccount{}).
+					Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).
+					Update("avatar_url", avatarURL)
+			}
+
+			// Emit event
+			select {
+			case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: contactID, Status: "avatar_updated"}:
+			default:
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, limit int) {
 	if w.client == nil {
 		return
 	}
@@ -189,6 +245,9 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 	accountsToLoad := make([]models.LinkedAccount, 0)
 
 	for _, acc := range accounts {
+		if limit > 0 && len(accountsToLoad) >= limit {
+			break
+		}
 		// Skip groups
 		jid, err := types.ParseJID(acc.UserID)
 		if err != nil || jid.Server == types.GroupServer {
