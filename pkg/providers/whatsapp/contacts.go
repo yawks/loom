@@ -340,7 +340,8 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 					}
 				}
 
-				// Update MetaContact.DisplayName to match LinkedAccount.Username
+				// Update MetaContact.DisplayName to match LinkedAccount.Username if changed
+				metaUpdated := false
 				if contact.MetaContactID > 0 {
 					var metaContact models.MetaContact
 					if err := db.DB.First(&metaContact, contact.MetaContactID).Error; err == nil {
@@ -349,13 +350,22 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 							metaContact.UpdatedAt = time.Now()
 							if err := db.DB.Save(&metaContact).Error; err != nil {
 								fmt.Printf("WhatsApp: Failed to update MetaContact.DisplayName for %s: %v\n", contact.UserID, err)
+							} else {
+								metaUpdated = true
 							}
 						}
 					}
 				}
 
-				if err := db.DB.Save(&contact).Error; err != nil {
-					fmt.Printf("WhatsApp: Failed to update LinkedAccount for %s: %v\n", contact.UserID, err)
+				// Only update LinkedAccount if significantly changed to avoid redundant writes
+				if existing.Username != contact.Username || existing.AvatarURL != contact.AvatarURL || metaUpdated {
+					existing.Username = contact.Username
+					existing.AvatarURL = contact.AvatarURL
+					existing.Status = contact.Status
+					existing.UpdatedAt = time.Now()
+					if err := db.DB.Save(&existing).Error; err != nil {
+						fmt.Printf("WhatsApp: Failed to update LinkedAccount for %s: %v\n", contact.UserID, err)
+					}
 				}
 			} else {
 				// Record does not exist, create new MetaContact and LinkedAccount
@@ -391,7 +401,8 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 	// Always try to load avatars, even if some are already loading
 	// The loadAvatarsAsync function will skip accounts that are already loading
 	go func() {
-		w.loadAvatarsAsync(linkedAccounts)
+		// Only load top 50 avatars during initial sync
+		w.loadAvatarsAsync(linkedAccounts, 50)
 	}()
 
 	return linkedAccounts, nil
@@ -686,6 +697,12 @@ func (w *WhatsAppProvider) subscribeToContactPresence() {
 				seen[userID] = true
 			}
 		}
+	}
+
+	// Limit presence subscription to top 100 most recent contacts to avoid long startup delay and API spam
+	// We'll subscribe to others on-demand when their conversation is opened.
+	if len(dmContacts) > 100 {
+		dmContacts = dmContacts[:100]
 	}
 
 	fmt.Printf("WhatsApp: Found %d DM contacts to subscribe to presence\n", len(dmContacts))

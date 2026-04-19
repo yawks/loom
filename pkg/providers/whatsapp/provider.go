@@ -668,6 +668,11 @@ func (w *WhatsAppProvider) GetAuthQRCode() (string, error) {
 	return w.GetQRCode()
 }
 
+func (w *WhatsAppProvider) RefreshContact(contactID string) error {
+	// Implementation in avatars.go
+	return w.refreshContactMetadata(contactID)
+}
+
 func (w *WhatsAppProvider) getInstanceId() string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
