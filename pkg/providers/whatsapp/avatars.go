@@ -186,6 +186,17 @@ func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
 		return err
 	}
 
+	// Rate-limit avatar refreshes to avoid API spam and high CPU
+	// Check if we refreshed this contact in the last hour
+	w.avatarRefreshMu.Lock()
+	lastRefresh, exists := w.lastAvatarRefresh[contactID]
+	if exists && time.Since(lastRefresh) < 1*time.Hour {
+		w.avatarRefreshMu.Unlock()
+		return nil
+	}
+	w.lastAvatarRefresh[contactID] = time.Now()
+	w.avatarRefreshMu.Unlock()
+
 	// For RefreshContact (called on opening conversation), we allow retrying even if it previously failed
 	// but we still want to avoid constant spamming of the WhatsApp API.
 	// However, the user explicitly said "yes" to "every single time you click a contact".
@@ -208,12 +219,14 @@ func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
 			}
 			w.mu.RUnlock()
 
+			changed := false
 			// Update cache
 			w.mu.Lock()
 			if cached, exists := w.conversations[contactID]; exists {
 				if cached.AvatarURL != avatarURL {
 					cached.AvatarURL = avatarURL
 					w.conversations[contactID] = cached
+					changed = true
 				}
 			}
 			w.mu.Unlock()
@@ -221,21 +234,26 @@ func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
 			// Update DB
 			if db.DB != nil {
 				// Update LinkedAccount
-				db.DB.Model(&models.LinkedAccount{}).
-					Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).
+				res := db.DB.Model(&models.LinkedAccount{}).
+					Where("provider_instance_id = ? AND user_id = ? AND avatar_url != ?", instanceID, contactID, avatarURL).
 					Update("avatar_url", avatarURL)
 
-				// Also update MetaContact if it exists
-				var account models.LinkedAccount
-				if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).First(&account).Error; err == nil && account.MetaContactID != 0 {
-					db.DB.Model(&models.MetaContact{}).Where("id = ?", account.MetaContactID).Update("avatar_url", avatarURL)
+				if res.RowsAffected > 0 {
+					changed = true
+					// Also update MetaContact if it exists
+					var account models.LinkedAccount
+					if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).First(&account).Error; err == nil && account.MetaContactID != 0 {
+						db.DB.Model(&models.MetaContact{}).Where("id = ?", account.MetaContactID).Update("avatar_url", avatarURL)
+					}
 				}
 			}
 
-			// Emit event
-			select {
-			case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: contactID, Status: "avatar_updated"}:
-			default:
+			// Only emit event if something actually changed to avoid UI flickering and redundant refreshes
+			if changed {
+				select {
+				case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: contactID, Status: "avatar_updated"}:
+				default:
+				}
 			}
 		}
 	}()

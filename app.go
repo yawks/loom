@@ -40,6 +40,8 @@ type App struct {
 	eventCancels    map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
 	systemTray      *menu.Menu
 	pendingSyncs    []pendingSyncInfo // syncs deferred until domReady
+	avatarCache     map[string]string // Cache of path -> base64 data URL
+	avatarCacheMu   sync.RWMutex
 	mu              sync.RWMutex
 }
 
@@ -47,6 +49,7 @@ type App struct {
 func NewApp() *App {
 	return &App{
 		eventCancels: make(map[string]context.CancelFunc),
+		avatarCache:  make(map[string]string),
 	}
 }
 
@@ -564,12 +567,27 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 
 // GetAvatar retrieves an avatar file and returns a base64 data URL
 func (a *App) GetAvatar(path string) string {
+	if path == "" {
+		return ""
+	}
 	if strings.HasPrefix(path, "data:") || strings.HasPrefix(path, "http") {
 		return path
 	}
+
+	// Check cache first
+	a.avatarCacheMu.RLock()
+	if cached, ok := a.avatarCache[path]; ok {
+		a.avatarCacheMu.RUnlock()
+		return cached
+	}
+	a.avatarCacheMu.RUnlock()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("[App.GetAvatar] Error reading file at %s: %v\n", path, err)
+		// Only log real errors, not just "empty" placeholders
+		if path != "" {
+			fmt.Printf("[App.GetAvatar] Error reading file at %s: %v\n", path, err)
+		}
 		return ""
 	}
 	mimeType := "image/jpeg"
@@ -577,7 +595,14 @@ func (a *App) GetAvatar(path string) string {
 		mimeType = "image/png"
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
+	result := fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
+
+	// Save to cache
+	a.avatarCacheMu.Lock()
+	a.avatarCache[path] = result
+	a.avatarCacheMu.Unlock()
+
+	return result
 }
 
 func (a *App) GetConfig() map[string]interface{} {
@@ -776,30 +801,22 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 
 		// Apply mappings and convert avatar paths to base64
 		for i := range metaContacts {
-			if metaContacts[i].AvatarURL != "" {
-				metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
-			}
+			metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
 			for j := range metaContacts[i].LinkedAccounts {
 				la := &metaContacts[i].LinkedAccounts[j]
 				if convID, ok := mappingMap[la.ID]; ok {
 					la.ConversationID = convID
 				}
-				if la.AvatarURL != "" {
-					la.AvatarURL = a.GetAvatar(la.AvatarURL)
-				}
+				la.AvatarURL = a.GetAvatar(la.AvatarURL)
 			}
 		}
 	} else {
 		// Even if no mappings found, still process base64 conversion for MetaContacts
 		for i := range metaContacts {
-			if metaContacts[i].AvatarURL != "" {
-				metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
-			}
+			metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
 			for j := range metaContacts[i].LinkedAccounts {
 				la := &metaContacts[i].LinkedAccounts[j]
-				if la.AvatarURL != "" {
-					la.AvatarURL = a.GetAvatar(la.AvatarURL)
-				}
+				la.AvatarURL = a.GetAvatar(la.AvatarURL)
 			}
 		}
 	}
@@ -919,7 +936,7 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 
 			// Enrich avatar if missing OR if it's a local path (needs base64)
 			if msg.SenderAvatarURL == "" || (!strings.HasPrefix(msg.SenderAvatarURL, "data:") && !strings.HasPrefix(msg.SenderAvatarURL, "http")) {
-				if avatar, ok := avatarMap[instID][msg.SenderID]; ok {
+				if avatar, ok := avatarMap[instID][msg.SenderID]; ok && avatar != "" {
 					msg.SenderAvatarURL = a.GetAvatar(avatar)
 				} else if msg.SenderAvatarURL != "" {
 					// It has a value but it's a local path
