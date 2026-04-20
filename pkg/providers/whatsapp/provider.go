@@ -188,8 +188,8 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	dbConnStr := fmt.Sprintf("file:%s?_foreign_keys=on", dbPath)
 	w.log("WhatsAppProvider.Init: Database connection string created\n")
 
-	// Initialize database logger
-	dbLog := waLog.Stdout("Database", "DEBUG", false)
+	// Initialize database logger - reduced verbosity to WARN to save CPU
+	dbLog := waLog.Stdout("Database", "WARN", false)
 	w.log("WhatsAppProvider.Init: Database logger initialized\n")
 
 	// Create container
@@ -212,8 +212,8 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	w.deviceStore = deviceStore
 	w.log("WhatsAppProvider.Init: Device store retrieved successfully\n")
 
-	// Initialize client logger
-	clientLog := waLog.Stdout("Client", "DEBUG", false)
+	// Initialize client logger - reduced verbosity to WARN to save CPU
+	clientLog := waLog.Stdout("Client", "WARN", false)
 	w.log("WhatsAppProvider.Init: Client logger initialized\n")
 
 	// Set custom OS info for WhatsApp registration
