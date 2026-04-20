@@ -34,22 +34,21 @@ type pendingSyncInfo struct {
 
 // App struct
 type App struct {
-	ctx             context.Context
-	provider        core.Provider // Active provider (for UI actions)
-	providerManager *core.ProviderManager
-	eventCancels    map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
-	systemTray      *menu.Menu
-	pendingSyncs    []pendingSyncInfo // syncs deferred until domReady
-	avatarCache     map[string]string // Cache of path -> base64 data URL
-	avatarCacheMu   sync.RWMutex
-	mu              sync.RWMutex
+	ctx                   context.Context
+	provider              core.Provider // Active provider (for UI actions)
+	providerManager       *core.ProviderManager
+	eventCancels          map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
+	systemTray            *menu.Menu
+	pendingSyncs          []pendingSyncInfo // syncs deferred until domReady
+	refreshDebounceTimer  *time.Timer
+	refreshDebounceMu     sync.Mutex
+	mu                    sync.RWMutex
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
 		eventCancels: make(map[string]context.CancelFunc),
-		avatarCache:  make(map[string]string),
 	}
 }
 
@@ -474,9 +473,6 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				// Add instanceID to event if needed or handle it here
 				switch e := event.(type) {
 				case core.MessageEvent:
-					if e.Message.SenderAvatarURL != "" {
-						e.Message.SenderAvatarURL = a.GetAvatar(e.Message.SenderAvatarURL)
-					}
 					msgJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
@@ -512,14 +508,18 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
 					}
 				case core.ContactStatusEvent:
-					// Convert local avatar path to base64 URL if this is an avatar update event
+					// Debounce contacts-refresh for avatar updates to avoid UI freezing and high CPU
 					if e.Status == "avatar_updated" && e.UserID != "refresh" && e.UserID != "" {
-						// The UserID in WhatsApp events is the JID
-						// We need to fetch the updated avatar path from DB or provider cache
-						// Since App doesn't have direct access to provider cache, we'll let the frontend
-						// re-query MetaContacts which will now have the base64 avatar.
-						// BUT to make it immediate, we should trigger a refresh.
-						runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+						a.refreshDebounceMu.Lock()
+						if a.refreshDebounceTimer != nil {
+							a.refreshDebounceTimer.Stop()
+						}
+						a.refreshDebounceTimer = time.AfterFunc(1*time.Second, func() {
+							if a.ctx != nil {
+								runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+							}
+						})
+						a.refreshDebounceMu.Unlock()
 					}
 
 					statusJSON, _ := json.Marshal(e)
@@ -574,18 +574,10 @@ func (a *App) GetAvatar(path string) string {
 		return path
 	}
 
-	// Check cache first
-	a.avatarCacheMu.RLock()
-	if cached, ok := a.avatarCache[path]; ok {
-		a.avatarCacheMu.RUnlock()
-		return cached
-	}
-	a.avatarCacheMu.RUnlock()
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Only log real errors, not just "empty" placeholders
-		if path != "" {
+		// Don't log if path is obviously invalid or empty
+		if len(path) > 0 && !strings.Contains(path, " ") {
 			fmt.Printf("[App.GetAvatar] Error reading file at %s: %v\n", path, err)
 		}
 		return ""
@@ -595,14 +587,7 @@ func (a *App) GetAvatar(path string) string {
 		mimeType = "image/png"
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	result := fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
-
-	// Save to cache
-	a.avatarCacheMu.Lock()
-	a.avatarCache[path] = result
-	a.avatarCacheMu.Unlock()
-
-	return result
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
 }
 
 func (a *App) GetConfig() map[string]interface{} {
@@ -799,27 +784,20 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 			}
 		}
 
-		// Apply mappings and convert avatar paths to base64
+		// Apply mappings to metaContacts
 		for i := range metaContacts {
-			metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
 			for j := range metaContacts[i].LinkedAccounts {
 				la := &metaContacts[i].LinkedAccounts[j]
 				if convID, ok := mappingMap[la.ID]; ok {
 					la.ConversationID = convID
 				}
-				la.AvatarURL = a.GetAvatar(la.AvatarURL)
-			}
-		}
-	} else {
-		// Even if no mappings found, still process base64 conversion for MetaContacts
-		for i := range metaContacts {
-			metaContacts[i].AvatarURL = a.GetAvatar(metaContacts[i].AvatarURL)
-			for j := range metaContacts[i].LinkedAccounts {
-				la := &metaContacts[i].LinkedAccounts[j]
-				la.AvatarURL = a.GetAvatar(la.AvatarURL)
 			}
 		}
 	}
+
+	// Important: We do NOT convert local paths to base64 here in bulk.
+	// Large JSON payloads with base64 data cause major CPU and RAM spikes.
+	// Avatars are handled by the frontend calling GetAvatar on-demand.
 
 	return metaContacts, nil
 }
@@ -934,13 +912,10 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 				}
 			}
 
-			// Enrich avatar if missing OR if it's a local path (needs base64)
-			if msg.SenderAvatarURL == "" || (!strings.HasPrefix(msg.SenderAvatarURL, "data:") && !strings.HasPrefix(msg.SenderAvatarURL, "http")) {
+			// Enrich avatar if missing
+			if msg.SenderAvatarURL == "" {
 				if avatar, ok := avatarMap[instID][msg.SenderID]; ok && avatar != "" {
-					msg.SenderAvatarURL = a.GetAvatar(avatar)
-				} else if msg.SenderAvatarURL != "" {
-					// It has a value but it's a local path
-					msg.SenderAvatarURL = a.GetAvatar(msg.SenderAvatarURL)
+					msg.SenderAvatarURL = avatar
 				}
 			}
 		}
