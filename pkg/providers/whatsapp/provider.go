@@ -53,6 +53,8 @@ type WhatsAppProvider struct {
 	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
 	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
 	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
+	lastAvatarRefresh    map[string]time.Time            // Map of contactID to last refresh time
+	avatarRefreshMu      sync.Mutex                      // Mutex for lastAvatarRefresh map
 	logger               *logging.ProviderLogger         // Logger for this provider instance
 }
 
@@ -121,6 +123,7 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		avatarLoading:        make(map[string]bool),
 		avatarFailures:       make(map[string]bool),
 		lidToJIDMap:          make(map[string]string),
+		lastAvatarRefresh:    make(map[string]time.Time),
 	}
 }
 
