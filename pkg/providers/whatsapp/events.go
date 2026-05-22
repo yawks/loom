@@ -591,9 +591,16 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: Receipt event has no message IDs, skipping.\n")
 			break
 		}
-		receiptType := core.ReceiptTypeDelivery
-		if v.Type == types.ReceiptTypeRead {
+		var receiptType core.ReceiptType
+		switch v.Type {
+		case types.ReceiptTypeRead:
 			receiptType = core.ReceiptTypeRead
+		case types.ReceiptTypeReadSelf:
+			// Current user read these messages on another device — mark locally without
+			// looping a receipt back to the server.
+			receiptType = core.ReceiptTypeSelfRead
+		default:
+			receiptType = core.ReceiptTypeDelivery
 		}
 		fmt.Printf("WhatsApp: Processing receipt event for chat %s, type: %s, message IDs: %v\n", v.Chat.String(), receiptType, v.MessageIDs)
 		// Emit a ReceiptEvent for each message ID

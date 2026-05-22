@@ -1,4 +1,4 @@
-import { ChevronDown, MessageSquare, Moon, Sun, Terminal, Trash2, Type } from "lucide-react";
+import { ChevronDown, MessageSquare, Monitor, Moon, Sun, Terminal, Trash2, Type } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useState } from "react";
@@ -27,6 +27,7 @@ const messageLayouts = [
 ] as const;
 
 const themes = [
+  { code: "system", name: "System Theme", icon: Monitor },
   { code: "light", name: "Light Theme", icon: Sun },
   { code: "dark", name: "Dark Theme", icon: Moon },
 ] as const;
@@ -66,7 +67,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     setIsMessageLayoutPopoverOpen(false);
   };
 
-  const handleThemeChange = (newTheme: "light" | "dark") => {
+  const handleThemeChange = (newTheme: "light" | "dark" | "system") => {
     setTheme(newTheme);
     setIsThemePopoverOpen(false);
   };
@@ -141,7 +142,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                       const Icon = currentTheme.icon;
                       return <Icon className="mr-2 h-4 w-4" />;
                     })()}
-                    {t(currentTheme.code === "light" ? "light_theme" : "dark_theme")}
+                    {t(`${currentTheme.code}_theme`)}
                   </span>
                   <ChevronDown className="h-4 w-4 opacity-50" />
                 </Button>
@@ -155,10 +156,10 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                         key={themeOption.code}
                         variant={theme === themeOption.code ? "secondary" : "ghost"}
                         className="w-full justify-start"
-                        onClick={() => handleThemeChange(themeOption.code as "light" | "dark")}
+                        onClick={() => handleThemeChange(themeOption.code)}
                       >
                         <Icon className="mr-2 h-4 w-4" />
-                        {t(themeOption.code === "light" ? "light_theme" : "dark_theme")}
+                        {t(`${themeOption.code}_theme`)}
                         {theme === themeOption.code && (
                           <span className="ml-auto text-xs">✓</span>
                         )}

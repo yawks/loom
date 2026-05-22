@@ -218,7 +218,7 @@ export function ContactList() {
       return sortedContactsBase;
     }
     const filtered = sortedContactsBase.filter((contact) => {
-      const hasMatchingAccount = contact.linkedAccounts.some(
+      const hasMatchingAccount = (contact.linkedAccounts ?? []).some(
         (account) => account.providerInstanceId === selectedProviderFilter
       );
       if (!hasMatchingAccount) {
