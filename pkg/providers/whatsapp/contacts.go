@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow/types"
+	"gorm.io/gorm"
 )
 
 func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) string {
@@ -305,94 +306,135 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	fmt.Printf("WhatsApp: GetContacts returning %d conversations (%d cached + %d fallback)\n", len(linkedAccounts), cachedCount, len(fallbackAccounts))
 
-	// Save contacts to database with MetaContactID (like Slack does)
-	// This ensures contacts are visible in GetMetaContacts()
+	// Save contacts to database and keep the in-memory store in sync.
 	if db.DB != nil && instanceID != "" {
 		fmt.Printf("WhatsApp: Saving %d contacts to database\n", len(linkedAccounts))
-		for _, contact := range linkedAccounts {
-			// Ensure ProviderInstanceID is set
-			contact.ProviderInstanceID = instanceID
 
-			var existing models.LinkedAccount
-			// Check if LinkedAccount already exists
-			err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contact.UserID).First(&existing).Error
+		// Load existing accounts and their MetaContacts from the in-memory store — no DB queries.
+		existingByUserID := make(map[string]models.LinkedAccount)
+		for _, la := range db.ContactStore.FindByProvider(instanceID) {
+			existingByUserID[la.UserID] = la
+		}
 
-			if err == nil {
-				// Update existing
-				contact.ID = existing.ID                       // Keep the DB ID
-				contact.MetaContactID = existing.MetaContactID // Keep association
-				contact.CreatedAt = existing.CreatedAt
-				contact.UpdatedAt = time.Now()
+		now := time.Now()
+		var laToUpdate []models.LinkedAccount
+		var metaToUpdate []models.MetaContact
+		var newContacts []models.LinkedAccount
 
-				// If existing contact doesn't have MetaContactID, create one
-				if contact.MetaContactID == 0 {
-					metaContact := models.MetaContact{
-						DisplayName: contact.Username,
-						AvatarURL:   contact.AvatarURL,
-						CreatedAt:   time.Now(),
-						UpdatedAt:   time.Now(),
-					}
-					if err := db.DB.Create(&metaContact).Error; err != nil {
-						fmt.Printf("WhatsApp: Failed to create MetaContact for existing LinkedAccount %s: %v\n", contact.UserID, err)
-					} else {
-						contact.MetaContactID = metaContact.ID
-						fmt.Printf("WhatsApp: Created MetaContact (ID=%d) for existing LinkedAccount %s\n", metaContact.ID, contact.UserID)
+		for i := range linkedAccounts {
+			linkedAccounts[i].ProviderInstanceID = instanceID
+			existing, found := existingByUserID[linkedAccounts[i].UserID]
+			if !found {
+				linkedAccounts[i].CreatedAt = now
+				linkedAccounts[i].UpdatedAt = now
+				newContacts = append(newContacts, linkedAccounts[i])
+				continue
+			}
+
+			changed := false
+			if existing.Username != linkedAccounts[i].Username {
+				existing.Username = linkedAccounts[i].Username
+				changed = true
+			}
+			if linkedAccounts[i].AvatarURL != "" && existing.AvatarURL != linkedAccounts[i].AvatarURL {
+				existing.AvatarURL = linkedAccounts[i].AvatarURL
+				changed = true
+			}
+			if existing.Status != linkedAccounts[i].Status {
+				existing.Status = linkedAccounts[i].Status
+				changed = true
+			}
+
+			// Check MetaContact DisplayName using the in-memory store.
+			if existing.MetaContactID > 0 {
+				if meta, ok := db.ContactStore.FindMetaContact(existing.MetaContactID); ok {
+					if meta.DisplayName != linkedAccounts[i].Username && linkedAccounts[i].Username != "" {
+						meta.DisplayName = linkedAccounts[i].Username
+						meta.UpdatedAt = now
+						metaToUpdate = append(metaToUpdate, meta)
+						changed = true
 					}
 				}
+			}
 
-				// Update MetaContact.DisplayName to match LinkedAccount.Username
-				if contact.MetaContactID > 0 {
-					var metaContact models.MetaContact
-					if err := db.DB.First(&metaContact, contact.MetaContactID).Error; err == nil {
-						if metaContact.DisplayName != contact.Username && contact.Username != "" {
-							metaContact.DisplayName = contact.Username
-							metaContact.UpdatedAt = time.Now()
-							if err := db.DB.Save(&metaContact).Error; err != nil {
-								fmt.Printf("WhatsApp: Failed to update MetaContact.DisplayName for %s: %v\n", contact.UserID, err)
-							}
-						}
+			if changed {
+				existing.UpdatedAt = now
+				laToUpdate = append(laToUpdate, existing)
+			}
+		}
+
+		// Batch all updates in a single transaction, then sync the store.
+		updateCount := len(laToUpdate) + len(metaToUpdate)
+		if updateCount > 0 {
+			if err := db.DB.Transaction(func(tx *gorm.DB) error {
+				for i := range metaToUpdate {
+					if err := tx.Save(&metaToUpdate[i]).Error; err != nil {
+						return err
 					}
 				}
-
-				if err := db.DB.Save(&contact).Error; err != nil {
-					fmt.Printf("WhatsApp: Failed to update LinkedAccount for %s: %v\n", contact.UserID, err)
+				for i := range laToUpdate {
+					if err := tx.Save(&laToUpdate[i]).Error; err != nil {
+						return err
+					}
 				}
+				return nil
+			}); err != nil {
+				fmt.Printf("WhatsApp: Failed to batch-update contacts: %v\n", err)
 			} else {
-				// Record does not exist, create new MetaContact and LinkedAccount
-				// 1. Create MetaContact
-				metaContact := models.MetaContact{
-					DisplayName: contact.Username,
-					AvatarURL:   contact.AvatarURL,
-					CreatedAt:   time.Now(),
-					UpdatedAt:   time.Now(),
+				for _, mc := range metaToUpdate {
+					db.ContactStore.UpsertMetaContact(mc)
 				}
-				if err := db.DB.Create(&metaContact).Error; err != nil {
-					fmt.Printf("WhatsApp: Failed to create MetaContact for %s: %v\n", contact.Username, err)
-					continue
-				}
-
-				// 2. Create LinkedAccount linked to MetaContact
-				contact.MetaContactID = metaContact.ID
-				contact.CreatedAt = time.Now()
-				contact.UpdatedAt = time.Now()
-				if err := db.DB.Create(&contact).Error; err != nil {
-					fmt.Printf("WhatsApp: Failed to create LinkedAccount for %s: %v\n", contact.UserID, err)
-				} else {
-					fmt.Printf("WhatsApp: Created MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", metaContact.ID, contact.Username, contact.UserID)
+				for _, la := range laToUpdate {
+					db.ContactStore.UpsertLinkedAccount(la)
 				}
 			}
 		}
-		fmt.Printf("WhatsApp: Contacts saved successfully to database\n")
+
+		// Create new contacts individually (rare after first sync).
+		for i := range newContacts {
+			mc := models.MetaContact{
+				DisplayName: newContacts[i].Username,
+				AvatarURL:   newContacts[i].AvatarURL,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if err := db.DB.Create(&mc).Error; err != nil {
+				fmt.Printf("WhatsApp: Failed to create MetaContact for %s: %v\n", newContacts[i].Username, err)
+				continue
+			}
+			db.ContactStore.UpsertMetaContact(mc)
+			newContacts[i].MetaContactID = mc.ID
+			newContacts[i].ID = 0
+			if err := db.DB.Create(&newContacts[i]).Error; err != nil {
+				fmt.Printf("WhatsApp: Failed to create LinkedAccount for %s: %v\n", newContacts[i].UserID, err)
+				continue
+			}
+			db.ContactStore.UpsertLinkedAccount(newContacts[i])
+		}
+
+		fmt.Printf("WhatsApp: Contacts saved (%d updated, %d created)\n", updateCount, len(newContacts))
 	} else {
 		fmt.Printf("WhatsApp: WARNING - Skipping contact save (DB=%v, InstanceID=%s)\n", db.DB != nil, instanceID)
 	}
 
 	// Load avatars asynchronously in background (non-blocking)
-	// Always try to load avatars, even if some are already loading
-	// The loadAvatarsAsync function will skip accounts that are already loading
-	go func() {
-		w.loadAvatarsAsync(linkedAccounts)
-	}()
+	// Trigger initial bulk avatar load if no avatars are cached
+	// We count how many non-empty avatars we have in the current contact list
+	hasAvatars := false
+	for _, acc := range linkedAccounts {
+		if acc.AvatarURL != "" {
+			hasAvatars = true
+			break
+		}
+	}
+
+	if !hasAvatars || w.lastSyncTimestamp == nil {
+		fmt.Printf("WhatsApp: Triggering bulk avatar sync (hasAvatars=%v, firstSync=%v)\n", hasAvatars, w.lastSyncTimestamp == nil)
+		go func() {
+			// Only load top 50 avatars during initial sync
+			w.loadAvatarsAsync(linkedAccounts, 50)
+		}()
+	}
 
 	return linkedAccounts, nil
 }
@@ -474,6 +516,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			ProviderInstanceID: instanceID,
 			UserID:             jid.String(),
 			Username:           displayName,
+			IsGroup:            jid.Server == types.GroupServer,
 			AvatarURL:          "", // Will be loaded asynchronously if needed
 			Status:             "offline",
 			CreatedAt:          now,
@@ -502,6 +545,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 			ProviderInstanceID: instanceID,
 			UserID:             groupJID,
 			Username:           displayName,
+			IsGroup:            true,
 			AvatarURL:          "",
 			Status:             "offline",
 			CreatedAt:          now,
@@ -555,6 +599,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 					Protocol:  "whatsapp",
 					UserID:    groupJID,
 					Username:  displayName,
+					IsGroup:   true,
 					AvatarURL: "",
 					Status:    "offline",
 					CreatedAt: now,
@@ -683,6 +728,12 @@ func (w *WhatsAppProvider) subscribeToContactPresence() {
 				seen[userID] = true
 			}
 		}
+	}
+
+	// Limit presence subscription to top 100 most recent contacts to avoid long startup delay and API spam
+	// We'll subscribe to others on-demand when their conversation is opened.
+	if len(dmContacts) > 100 {
+		dmContacts = dmContacts[:100]
 	}
 
 	fmt.Printf("WhatsApp: Found %d DM contacts to subscribe to presence\n", len(dmContacts))

@@ -56,7 +56,7 @@ export function NewConversationModal({
         return metaContacts
             .filter((contact) => {
                 // Filter out groups (contacts ending in @g.us)
-                const isGroup = contact.linkedAccounts.some(acc => acc.userId.endsWith("@g.us"));
+                const isGroup = (contact.linkedAccounts ?? []).some(acc => acc.userId.endsWith("@g.us"));
                 if (isGroup) return false;
 
                 const matchesSearch = contact.displayName

@@ -372,6 +372,7 @@ export namespace models {
 	    username: string;
 	    avatarUrl?: string;
 	    status: string;
+	    isGroup: boolean;
 	    lastSeen?: time.Time;
 	    extra?: string;
 	    conversationId?: string;
@@ -392,6 +393,7 @@ export namespace models {
 	        this.username = source["username"];
 	        this.avatarUrl = source["avatarUrl"];
 	        this.status = source["status"];
+	        this.isGroup = source["isGroup"];
 	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
 	        this.extra = source["extra"];
 	        this.conversationId = source["conversationId"];

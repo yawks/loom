@@ -916,16 +916,6 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		}
 	}
 
-	// Get instance ID for this provider (needed for LinkedAccount creation)
-	w.mu.RLock()
-	instanceID := ""
-	if w.config != nil {
-		if id, ok := w.config["_instance_id"].(string); ok {
-			instanceID = id
-		}
-	}
-	w.mu.RUnlock()
-
 	// Get sender avatar URL (only for messages not from me)
 	var senderAvatarURL string
 	if !isFromMe {
@@ -944,68 +934,11 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 			}
 			w.avatarLoadingMu.Unlock()
 
-			// Only load if not already loading
-			if !isLoading {
-				// If not in cache, try to load it (this will cache it for future use)
-				// We do this synchronously for messages as they arrive one by one
-				// and we want the avatar to be available immediately
-				senderAvatarURL = w.getProfilePictureURL(evt.Info.Sender)
-				// If we got an avatar, update the cache
-				if senderAvatarURL != "" {
-					w.mu.Lock()
-					if cached, exists := w.conversations[senderID]; exists {
-						cached.AvatarURL = senderAvatarURL
-						w.conversations[senderID] = cached
-					} else {
-						// Create a new entry in cache for this sender
-						w.conversations[senderID] = models.LinkedAccount{
-							Protocol:           "whatsapp",
-							ProviderInstanceID: instanceID,
-							UserID:             senderID,
-							Username:           senderName,
-							AvatarURL:          senderAvatarURL,
-							Status:             "offline",
-							CreatedAt:          timestamp,
-							UpdatedAt:          timestamp,
-						}
-					}
-					w.mu.Unlock()
-
-					// Persist avatar to database
-					if db.DB != nil {
-						var existing models.LinkedAccount
-						err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", senderID).First(&existing).Error
-						if err == nil {
-							// Update existing
-							existing.AvatarURL = senderAvatarURL
-							existing.UpdatedAt = timestamp
-							if err := db.DB.Save(&existing).Error; err != nil {
-								fmt.Printf("WhatsApp: Failed to save sender avatar to database: %v\n", err)
-							}
-						} else {
-							// Create new
-							newAccount := models.LinkedAccount{
-								Protocol:           "whatsapp",
-								ProviderInstanceID: instanceID,
-								UserID:             senderID,
-								Username:           senderName,
-								AvatarURL:          senderAvatarURL,
-								Status:             "offline",
-								CreatedAt:          timestamp,
-								UpdatedAt:          timestamp,
-							}
-							if err := db.DB.Create(&newAccount).Error; err != nil {
-								fmt.Printf("WhatsApp: Failed to create sender LinkedAccount in database: %v\n", err)
-							}
-						}
-					}
-				}
-
-				// Mark as no longer loading
-				w.avatarLoadingMu.Lock()
-				delete(w.avatarLoading, senderID)
-				w.avatarLoadingMu.Unlock()
-			}
+			// Skip synchronous avatar loading to avoid API spam and blocking
+			// Avatars will be loaded on-demand via RefreshContact or during initial sync
+			w.avatarLoadingMu.Lock()
+			delete(w.avatarLoading, senderID)
+			w.avatarLoadingMu.Unlock()
 		}
 	}
 
@@ -1536,6 +1469,7 @@ func (w *WhatsAppProvider) updateLinkedAccountName(userID, name string) {
 			ProviderInstanceID: instanceID,
 			UserID:             userID,
 			Username:           name,
+			IsGroup:            false,
 			Status:             "offline",
 			CreatedAt:          time.Now(),
 			UpdatedAt:          time.Now(),
@@ -1567,6 +1501,7 @@ func (w *WhatsAppProvider) updateLinkedAccountName(userID, name string) {
 			ProviderInstanceID: instanceID,
 			UserID:             userID,
 			Username:           name,
+			IsGroup:            false,
 			Status:             "offline",
 			CreatedAt:          time.Now(),
 			UpdatedAt:          time.Now(),
@@ -1579,16 +1514,6 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 	if len(messages) == 0 {
 		return
 	}
-
-	// Get instance ID
-	w.mu.RLock()
-	instanceID := ""
-	if w.config != nil {
-		if id, ok := w.config["_instance_id"].(string); ok {
-			instanceID = id
-		}
-	}
-	w.mu.RUnlock()
 
 	// Convert LID sender IDs to phone numbers for consistency with GetGroupParticipants
 	if isGroup {
@@ -1690,68 +1615,11 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 				}
 				w.avatarLoadingMu.Unlock()
 
-				// Only try to load if not already loading
-				if !isLoading {
-					// Try to get avatar URL (this will cache it if found)
-					msg.SenderAvatarURL = w.getProfilePictureURL(senderJID)
-
-					// Mark as no longer loading
-					w.avatarLoadingMu.Lock()
-					delete(w.avatarLoading, msg.SenderID)
-					w.avatarLoadingMu.Unlock()
-
-					// If we got an avatar, update the cache
-					if msg.SenderAvatarURL != "" {
-						w.mu.Lock()
-						if cached, exists := w.conversations[msg.SenderID]; exists {
-							cached.AvatarURL = msg.SenderAvatarURL
-							// Also update name if we have one
-							if msg.SenderName != "" && msg.SenderName != msg.SenderID {
-								cached.Username = msg.SenderName
-							}
-							w.conversations[msg.SenderID] = cached
-						} else {
-							// Create a new entry in cache for this sender
-							w.conversations[msg.SenderID] = models.LinkedAccount{
-								Protocol:           "whatsapp",
-								ProviderInstanceID: instanceID,
-								UserID:             msg.SenderID,
-								Username:           msg.SenderName,
-								AvatarURL:          msg.SenderAvatarURL,
-								Status:             "offline",
-								CreatedAt:          msg.Timestamp,
-								UpdatedAt:          msg.Timestamp,
-							}
-						}
-						w.mu.Unlock()
-
-						// Update database for 1-on-1 chats (name and avatar)
-						if !isGroup && !msg.IsFromMe && msg.SenderName != "" && msg.SenderName != msg.SenderID {
-							w.updateLinkedAccountName(msg.SenderID, msg.SenderName)
-						}
-					} else {
-						// Avatar not available - mark in cache to avoid repeated attempts
-						// Use a special marker to indicate we tried and failed
-						w.mu.Lock()
-						if cached, exists := w.conversations[msg.SenderID]; exists {
-							// Keep existing entry, just mark that we tried
-							w.conversations[msg.SenderID] = cached
-						} else {
-							// Create entry without avatar to mark that we tried
-							w.conversations[msg.SenderID] = models.LinkedAccount{
-								Protocol:           "whatsapp",
-								ProviderInstanceID: instanceID,
-								UserID:             msg.SenderID,
-								Username:           msg.SenderName,
-								AvatarURL:          "", // Empty means we tried and it's not available
-								Status:             "offline",
-								CreatedAt:          msg.Timestamp,
-								UpdatedAt:          msg.Timestamp,
-							}
-						}
-						w.mu.Unlock()
-					}
-				}
+				// Skip synchronous avatar loading to avoid API spam and blocking
+				// Avatars will be loaded on-demand via RefreshContact or during initial sync
+				w.avatarLoadingMu.Lock()
+				delete(w.avatarLoading, msg.SenderID)
+				w.avatarLoadingMu.Unlock()
 			}
 		}
 

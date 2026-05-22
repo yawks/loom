@@ -591,9 +591,16 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: Receipt event has no message IDs, skipping.\n")
 			break
 		}
-		receiptType := core.ReceiptTypeDelivery
-		if v.Type == types.ReceiptTypeRead {
+		var receiptType core.ReceiptType
+		switch v.Type {
+		case types.ReceiptTypeRead:
 			receiptType = core.ReceiptTypeRead
+		case types.ReceiptTypeReadSelf:
+			// Current user read these messages on another device — mark locally without
+			// looping a receipt back to the server.
+			receiptType = core.ReceiptTypeSelfRead
+		default:
+			receiptType = core.ReceiptTypeDelivery
 		}
 		fmt.Printf("WhatsApp: Processing receipt event for chat %s, type: %s, message IDs: %v\n", v.Chat.String(), receiptType, v.MessageIDs)
 		// Emit a ReceiptEvent for each message ID
@@ -1566,11 +1573,13 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 		w.mu.RUnlock()
 
 		// Load avatars asynchronously in background (non-blocking)
-		// Always try to load avatars, even if some are already loading
-		// The loadAvatarsAsync function will skip accounts that are already loading
-		go func() {
-			w.loadAvatarsAsync(cachedAccounts)
-		}()
+		// Only load avatars during the very first sync to avoid redundant requests
+		if w.lastSyncTimestamp == nil {
+			go func() {
+				// Only load top 50 avatars during history sync
+				w.loadAvatarsAsync(cachedAccounts, 50)
+			}()
+		}
 	}
 }
 

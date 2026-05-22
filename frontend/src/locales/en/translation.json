@@ -20,6 +20,7 @@
   "irc": "IRC",
   "settings": "Settings",
   "theme": "Theme",
+  "system_theme": "System Theme",
   "light_theme": "Light Theme",
   "dark_theme": "Dark Theme",
   "language": "Language",

@@ -12,7 +12,7 @@ interface ReceiptEvent {
   instanceId: string;
   conversationId: string;
   messageId: string;
-  receiptType: "delivery" | "read";
+  receiptType: "delivery" | "read" | "self_read";
   userId: string;
   timestamp: number;
 }
@@ -43,6 +43,9 @@ export function useMessageEvents() {
   );
   const markAsReadByProtocolId = useMessageReadStore(
     (state) => state.markAsReadByProtocolId
+  );
+  const markAsReadSilently = useMessageReadStore(
+    (state) => state.markAsReadSilently
   );
   const setLastReadTimestamp = useMessageReadStore(
     (state) => state.setLastReadTimestamp
@@ -111,7 +114,13 @@ export function useMessageEvents() {
               const existsInCache = messageId && safeData.pages.some(page =>
                 page.some(m => m.protocolMsgId === messageId)
               );
-              if (existsInCache) return safeData;
+              if (existsInCache) {
+                // The message is already in the cache but the backend may have just enriched
+                // it (e.g. a file_share RTM event adding the real attachment URL after SendFile
+                // stored a URL-less placeholder). Invalidate so the DB copy is fetched.
+                queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+                return safeData;
+              }
 
               // Handle outgoing messages replacing temp placeholders
               if (message.isFromMe) {
@@ -173,6 +182,9 @@ export function useMessageEvents() {
         const receipt: ReceiptEvent = JSON.parse(receiptJSON);
         if (receipt.receiptType === "read") {
           markAsReadByProtocolId(receipt.conversationId, receipt.messageId);
+        } else if (receipt.receiptType === "self_read") {
+          // Read on another device — mark locally without sending a receipt back.
+          markAsReadSilently(receipt.conversationId, receipt.messageId);
         }
 
         if (selectedContact) {
@@ -235,7 +247,7 @@ export function useMessageEvents() {
       isMounted = false;
       if (unsubscribeReceipt) unsubscribeReceipt();
     };
-  }, [queryClient, markAsReadByProtocolId, selectedContact]);
+  }, [queryClient, markAsReadByProtocolId, markAsReadSilently, selectedContact]);
 
   // Listen for reaction events
   useEffect(() => {
@@ -311,28 +323,11 @@ export function useMessageEvents() {
       
       try {
         const typing: TypingEvent = JSON.parse(typingJSON);
-        let resolvedConvId = typing.conversationId;
-        
-        if (typing.conversationId.includes("@lid")) {
-          const resolveLIDFn = window.go?.main?.App?.ResolveLID as ((lid: string) => Promise<string>) | undefined;
-          if (resolveLIDFn) {
-            const resolved = await resolveLIDFn(typing.conversationId);
-            if (resolved && resolved !== typing.conversationId) {
-              resolvedConvId = resolved;
-            } else if (typing.userId.includes("@s.whatsapp.net")) {
-              resolvedConvId = typing.userId;
-            } else {
-              return;
-            }
-          } else {
-            return;
-          }
-        }
         
         if (typing.isTyping) {
-          setTyping(resolvedConvId, typing.userId, typing.userName);
+          setTyping(typing.conversationId, typing.userId, typing.userName);
         } else {
-          setNotTyping(resolvedConvId, typing.userId);
+          setNotTyping(typing.conversationId, typing.userId);
         }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse typing event:", error);

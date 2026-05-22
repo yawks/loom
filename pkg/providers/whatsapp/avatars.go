@@ -180,7 +180,88 @@ func (w *WhatsAppProvider) saveAvatarFailures() {
 	}
 }
 
-func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
+func (w *WhatsAppProvider) refreshContactMetadata(contactID string) error {
+	jid, err := types.ParseJID(contactID)
+	if err != nil {
+		return err
+	}
+
+	// Rate-limit avatar refreshes to avoid API spam and high CPU
+	// Check if we refreshed this contact in the last hour
+	w.avatarRefreshMu.Lock()
+	lastRefresh, exists := w.lastAvatarRefresh[contactID]
+	if exists && time.Since(lastRefresh) < 1*time.Hour {
+		w.avatarRefreshMu.Unlock()
+		return nil
+	}
+	w.lastAvatarRefresh[contactID] = time.Now()
+	w.avatarRefreshMu.Unlock()
+
+	// For RefreshContact (called on opening conversation), we allow retrying even if it previously failed
+	// but we still want to avoid constant spamming of the WhatsApp API.
+	// However, the user explicitly said "yes" to "every single time you click a contact".
+
+	// Remove from failures to allow retry
+	w.avatarFailuresMu.Lock()
+	delete(w.avatarFailures, contactID)
+	w.avatarFailuresMu.Unlock()
+
+	go func() {
+		avatarURL := w.getProfilePictureURL(jid)
+		if avatarURL != "" {
+			// Get instance ID
+			w.mu.RLock()
+			instanceID := ""
+			if w.config != nil {
+				if id, ok := w.config["_instance_id"].(string); ok {
+					instanceID = id
+				}
+			}
+			w.mu.RUnlock()
+
+			changed := false
+			// Update cache
+			w.mu.Lock()
+			if cached, exists := w.conversations[contactID]; exists {
+				if cached.AvatarURL != avatarURL {
+					cached.AvatarURL = avatarURL
+					w.conversations[contactID] = cached
+					changed = true
+				}
+			}
+			w.mu.Unlock()
+
+			// Update DB
+			if db.DB != nil {
+				// Update LinkedAccount
+				res := db.DB.Model(&models.LinkedAccount{}).
+					Where("provider_instance_id = ? AND user_id = ? AND avatar_url != ?", instanceID, contactID, avatarURL).
+					Update("avatar_url", avatarURL)
+
+				if res.RowsAffected > 0 {
+					changed = true
+					// Also update MetaContact if it exists
+					var account models.LinkedAccount
+					if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contactID).First(&account).Error; err == nil && account.MetaContactID != 0 {
+						db.DB.Model(&models.MetaContact{}).Where("id = ?", account.MetaContactID).Update("avatar_url", avatarURL)
+					}
+				}
+			}
+
+			// Only emit event if something actually changed to avoid UI flickering and redundant refreshes
+			if changed {
+				select {
+				case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: contactID, Status: "avatar_updated"}:
+				default:
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, limit int) {
 	if w.client == nil {
 		return
 	}
@@ -189,6 +270,9 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 	accountsToLoad := make([]models.LinkedAccount, 0)
 
 	for _, acc := range accounts {
+		if limit > 0 && len(accountsToLoad) >= limit {
+			break
+		}
 		// Skip groups
 		jid, err := types.ParseJID(acc.UserID)
 		if err != nil || jid.Server == types.GroupServer {
@@ -269,9 +353,19 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 				w.avatarLoadingMu.Unlock()
 			}()
 
+			// Get instance ID
+			w.mu.RLock()
+			instanceID := ""
+			if w.config != nil {
+				if id, ok := w.config["_instance_id"].(string); ok {
+					instanceID = id
+				}
+			}
+			w.mu.RUnlock()
+
 			avatarURL := w.getProfilePictureURL(j)
 			if avatarURL != "" {
-				fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
+			// fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
 				// Update the cached conversation if it exists
 				w.mu.Lock()
 				if cached, exists := w.conversations[account.UserID]; exists {
@@ -281,13 +375,15 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 				} else {
 					// Create entry in cache
 					w.conversations[account.UserID] = models.LinkedAccount{
-						Protocol:  "whatsapp",
-						UserID:    account.UserID,
-						Username:  account.Username,
-						AvatarURL: avatarURL,
-						Status:    account.Status,
-						CreatedAt: account.CreatedAt,
-						UpdatedAt: time.Now(),
+						Protocol:           "whatsapp",
+						ProviderInstanceID: instanceID,
+						UserID:             account.UserID,
+						Username:           account.Username,
+						IsGroup:            false,
+						AvatarURL:          avatarURL,
+						Status:             account.Status,
+						CreatedAt:          account.CreatedAt,
+						UpdatedAt:          time.Now(),
 					}
 					fmt.Printf("WhatsApp: Created cached conversation entry for %s\n", account.UserID)
 				}
@@ -307,13 +403,15 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 					} else {
 						// Create new
 						newAccount := models.LinkedAccount{
-							Protocol:  "whatsapp",
-							UserID:    account.UserID,
-							Username:  account.Username,
-							AvatarURL: avatarURL,
-							Status:    account.Status,
-							CreatedAt: account.CreatedAt,
-							UpdatedAt: time.Now(),
+							Protocol:           "whatsapp",
+							ProviderInstanceID: instanceID,
+							UserID:             account.UserID,
+							Username:           account.Username,
+							IsGroup:            false,
+							AvatarURL:          avatarURL,
+							Status:             account.Status,
+							CreatedAt:          account.CreatedAt,
+							UpdatedAt:          time.Now(),
 						}
 						if err := db.DB.Create(&newAccount).Error; err != nil {
 							fmt.Printf("WhatsApp: Failed to create LinkedAccount in database for %s: %v\n", account.UserID, err)
@@ -329,7 +427,7 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount) {
 					fmt.Printf("WhatsApp: Failed to emit avatar_updated event (channel full)\n")
 				}
 			} else {
-				fmt.Printf("WhatsApp: No avatar available for %s\n", account.UserID)
+				// fmt.Printf("WhatsApp: No avatar available for %s\n", account.UserID)
 			}
 
 			// Update progress

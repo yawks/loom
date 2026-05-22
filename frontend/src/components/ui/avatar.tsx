@@ -18,16 +18,43 @@ const Avatar = React.forwardRef<
 ))
 Avatar.displayName = AvatarPrimitive.Root.displayName
 
+import { GetAvatar } from "../../wailsjs/go/main/App";
+
 const AvatarImage = React.forwardRef<
   React.ElementRef<typeof AvatarPrimitive.Image>,
   React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Image>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Image
-    ref={ref}
-    className={cn("aspect-square h-full w-full", className)}
-    {...props}
-  />
-))
+>(({ className, src, ...props }, ref) => {
+  const [avatarSrc, setAvatarSrc] = React.useState<string | undefined>(undefined);
+
+  React.useEffect(() => {
+    if (!src) {
+      setAvatarSrc(undefined);
+      return;
+    }
+
+    if (src.startsWith("data:") || src.startsWith("http")) {
+      setAvatarSrc(src);
+      return;
+    }
+
+    // It's a local path, fetch base64 on-demand
+    GetAvatar(src).then((base64) => {
+      setAvatarSrc(base64);
+    }).catch((err) => {
+      console.error("Failed to load avatar from path:", src, err);
+      setAvatarSrc(undefined);
+    });
+  }, [src]);
+
+  return (
+    <AvatarPrimitive.Image
+      ref={ref}
+      className={cn("aspect-square h-full w-full", className)}
+      src={avatarSrc}
+      {...props}
+    />
+  );
+})
 AvatarImage.displayName = AvatarPrimitive.Image.displayName
 
 const AvatarFallback = React.forwardRef<

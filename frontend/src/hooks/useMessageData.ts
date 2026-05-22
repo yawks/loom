@@ -1,0 +1,209 @@
+import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames } from "../../wailsjs/go/main/App";
+import { useEffect, useMemo, useState } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+
+import { getMessageDomId } from "@/lib/messageUtils";
+import { models } from "../../wailsjs/go/models";
+import { timeToDate } from "@/lib/utils";
+import { useMessageReadStore } from "@/lib/messageReadStore";
+
+const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
+  try {
+    const result = beforeTimestamp
+      ? await GetMessagesForConversationBefore(conversationID, beforeTimestamp)
+      : await GetMessagesForConversation(conversationID);
+    return Array.isArray(result) ? result : [];
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return [];
+  }
+};
+
+export function useMessageData(conversationId: string, isGroupFromProvider: boolean) {
+  const queryClient = useQueryClient();
+  const syncConversation = useMessageReadStore((state) => state.syncConversation);
+  const cleanupObsoleteMessages = useMessageReadStore((state) => state.cleanupObsoleteMessages);
+  const readByConversation = useMessageReadStore((state) => state.readByConversation);
+  const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
+
+  const conversationReadState = useMemo(
+    () => readByConversation[conversationId] ?? {},
+    [readByConversation, conversationId]
+  );
+
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isFetching } =
+    useInfiniteQuery<models.Message[], Error>({
+      queryKey: ["messages", conversationId],
+      queryFn: ({ pageParam }) => {
+        const beforeTimestamp = pageParam ? new Date(pageParam as string) : undefined;
+        return fetchMessages(conversationId, beforeTimestamp);
+      },
+      enabled: !!conversationId,
+      initialData: { pages: [], pageParams: [] },
+      placeholderData: (previousData) => {
+        if (previousData?.pages && Array.isArray(previousData.pages)) return previousData;
+        return { pages: [], pageParams: [] };
+      },
+      structuralSharing: (oldData, newData) => {
+        if (
+          !newData ||
+          typeof newData !== "object" ||
+          !("pages" in newData) ||
+          !Array.isArray((newData as { pages: unknown }).pages)
+        ) {
+          return oldData || { pages: [], pageParams: [] };
+        }
+        return newData;
+      },
+      getNextPageParam: (lastPage, allPages) => {
+        if (!lastPage || !Array.isArray(lastPage) || lastPage.length === 0) return undefined;
+        if (!allPages || !Array.isArray(allPages)) return undefined;
+
+        const allMessages = allPages.flat();
+        if (allMessages.length === 0) return undefined;
+
+        const oldestMessage = allMessages.reduce((oldest, msg) => {
+          const msgTime = timeToDate(msg.timestamp);
+          const oldestTime = timeToDate(oldest.timestamp);
+          return msgTime < oldestTime ? msg : oldest;
+        });
+
+        if (lastPage.length < 50) return undefined;
+        return timeToDate(oldestMessage.timestamp).toISOString();
+      },
+      initialPageParam: undefined,
+    });
+
+  const dataKey = useMemo(() => {
+    if (!data?.pages) return "";
+    return data.pages
+      .filter((page) => Array.isArray(page))
+      .flat()
+      .map((m: models.Message) => m.protocolMsgId)
+      .join(",");
+  }, [data]);
+
+  const messages = useMemo(() => {
+    if (!data?.pages || !Array.isArray(data.pages)) return [];
+    const flat = data.pages.filter((page) => Array.isArray(page)).flat();
+    const seen = new Set<string>();
+    return flat.filter((msg) => {
+      const id = msg.protocolMsgId;
+      if (id && seen.has(id)) return false;
+      if (id) seen.add(id);
+      return true;
+    });
+  }, [dataKey, data]);
+
+  const messagesKey = useMemo(() => messages.map((m) => m.protocolMsgId).join(","), [messages]);
+
+  const isGroupConversation = useMemo(() => {
+    if (isGroupFromProvider) return true;
+    if (messages.length > 0) {
+      const uniqueSenders = new Set(messages.map((m) => m.senderId));
+      return uniqueSenders.size > 2;
+    }
+    return false;
+  }, [isGroupFromProvider, messages]);
+
+  const { mainMessages, threadsByParent } = useMemo(() => {
+    const main: models.Message[] = [];
+    const threads: Record<string, models.Message[]> = {};
+
+    messages.forEach((msg) => {
+      const hasBody = msg.body && msg.body.trim() !== "";
+      const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
+      const isCallMessage = msg.callType && msg.callType.trim() !== "";
+      if (!hasBody && !hasAttachments && !isCallMessage) return;
+
+      const isThreadReply = msg.threadId && msg.threadId !== msg.protocolMsgId;
+
+      if (!msg.threadId || msg.threadId === msg.protocolMsgId) {
+        main.push(msg);
+      } else if (isThreadReply) {
+        if (!threads[msg.threadId]) threads[msg.threadId] = [];
+        threads[msg.threadId].push(msg);
+      }
+    });
+
+    const sortedMain = [...main].sort(
+      (a, b) => timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
+    );
+
+    return { mainMessages: sortedMain, threadsByParent: threads };
+  }, [messages, messagesKey]);
+
+  const currentUserId = useMemo(() => {
+    for (const msg of messages) {
+      if (msg.isFromMe && msg.senderId) return msg.senderId;
+    }
+    return undefined;
+  }, [messages]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    const loadParticipantNames = async () => {
+      try {
+        const userIds = new Set<string>();
+        messages.forEach((msg) => {
+          if (msg.senderId) userIds.add(msg.senderId);
+          if (msg.reactions) msg.reactions.forEach((r) => userIds.add(r.userId));
+        });
+        if (userIds.size === 0) return;
+
+        const normalizedIds = Array.from(userIds);
+        const names = await GetParticipantNames(normalizedIds);
+        const namesMap = new Map<string, string>();
+
+        Array.from(userIds).forEach((originalId, index) => {
+          const normalizedId = normalizedIds[index];
+          const name = names[normalizedId];
+          if (name) {
+            namesMap.set(originalId, name);
+            namesMap.set(normalizedId, name);
+          }
+        });
+
+        messages.forEach((msg) => {
+          if (msg.senderId && msg.senderName?.trim()) namesMap.set(msg.senderId, msg.senderName);
+        });
+
+        setParticipantNames(namesMap);
+      } catch (error) {
+        console.error("Failed to load participant names:", error);
+      }
+    };
+    loadParticipantNames();
+  }, [conversationId, messages]);
+
+  useEffect(() => {
+    if (!conversationId || messages.length === 0) return;
+    syncConversation(conversationId, messages);
+    const allMessageIds = new Set(messages.map((msg) => getMessageDomId(msg)));
+    cleanupObsoleteMessages(conversationId, allMessageIds);
+  }, [conversationId, messages, syncConversation, cleanupObsoleteMessages]);
+
+  useEffect(() => {
+    if (messages.length > 0 && !isLoading) {
+      queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+      queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+      queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
+    }
+  }, [messages.length, isLoading, queryClient]);
+
+  return {
+    messages,
+    mainMessages,
+    threadsByParent,
+    isGroupConversation,
+    currentUserId,
+    participantNames,
+    conversationReadState,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isFetching,
+    data,
+  };
+}

@@ -254,6 +254,17 @@ func (pm *ProviderManager) GetActiveInstanceID() string {
 	return pm.activeInstanceID
 }
 
+// GetAllInstanceIDs returns the IDs of every registered provider instance.
+func (pm *ProviderManager) GetAllInstanceIDs() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	ids := make([]string, 0, len(pm.providers))
+	for id := range pm.providers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // GetActiveProvider returns the currently active provider instance.
 func (pm *ProviderManager) GetActiveProvider() (Provider, error) {
 	pm.mu.RLock()

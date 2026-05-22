@@ -13,6 +13,12 @@ import { useEffect, useMemo, useState } from "react";
 import { GetAttachmentData } from "../../wailsjs/go/main/App";
 import { VoiceMessage } from "./VoiceMessage";
 
+// Module-level caches — survive Virtuoso unmount/remount cycles so images don't
+// flicker back to the placeholder when the user scrolls away and returns.
+const _attachmentDataCache = new Map<string, string>();
+const _attachmentFailedUrls = new Set<string>();
+const _attachmentLoadingUrls = new Set<string>();
+
 interface Attachment {
   type: string;
   url: string;
@@ -74,10 +80,9 @@ export function MessageAttachments({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [imageDataUrls, setImageDataUrls] = useState<Map<string, string>>(new Map());
-  const [audioDataUrls, setAudioDataUrls] = useState<Map<string, string>>(new Map());
-  // Track which URLs we're currently loading to avoid duplicate requests
-  const [loadingUrls, setLoadingUrls] = useState<Set<string>>(new Set());
+  // Increment to force a re-render when the module-level cache is updated.
+  const [, setCacheVersion] = useState(0);
+  const bumpCache = () => setCacheVersion((v) => v + 1);
 
   // Parse and deduplicate attachments using useMemo to avoid re-parsing on every render
   const parsedAttachments = useMemo(() => {
@@ -124,85 +129,45 @@ export function MessageAttachments({
     return null;
   }
   
-  // Load image and audio data URLs
+  // Load image and audio data URLs.
+  // Uses module-level caches so data survives Virtuoso unmount/remount cycles.
   useEffect(() => {
-    if (parsedAttachments.length === 0) {
-      return;
-    }
-    
+    if (parsedAttachments.length === 0) return;
+
     const urlsToLoad: string[] = [];
-    
+
     for (const attachment of parsedAttachments) {
       if (attachment.type === "image" || attachment.type === "video") {
         const url = attachment.thumbnail || attachment.url;
-        if (url && !imageDataUrls.has(url) && !loadingUrls.has(url)) {
+        if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
           urlsToLoad.push(url);
         }
       } else if (attachment.type === "audio" || attachment.type === "voice") {
         const url = attachment.url;
-        if (url && !audioDataUrls.has(url) && !loadingUrls.has(url)) {
+        if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
           urlsToLoad.push(url);
         }
       }
     }
-    
-    if (urlsToLoad.length === 0) {
-      return;
-    }
-    
-    // Mark URLs as loading
-    setLoadingUrls((prev) => {
-      const updated = new Set(prev);
-      urlsToLoad.forEach((url) => updated.add(url));
-      return updated;
-    });
-    
-    // Load all URLs (fire and forget, but track loading state)
+
+    if (urlsToLoad.length === 0) return;
+
     urlsToLoad.forEach((url) => {
-      // Determine if it's an image/video or audio based on the attachment
-      const attachment = parsedAttachments.find(
-        (a) => (a.thumbnail || a.url) === url || a.url === url
-      );
-      
+      _attachmentLoadingUrls.add(url);
       GetAttachmentData(url)
         .then((dataUrl) => {
-          if (attachment?.type === "image" || attachment?.type === "video") {
-            setImageDataUrls((prev) => {
-              if (!prev.has(url)) {
-                const updated = new Map(prev);
-                updated.set(url, dataUrl);
-                return updated;
-              }
-              return prev;
-            });
-          } else if (attachment?.type === "audio" || attachment?.type === "voice") {
-            setAudioDataUrls((prev) => {
-              if (!prev.has(url)) {
-                const updated = new Map(prev);
-                updated.set(url, dataUrl);
-                return updated;
-              }
-              return prev;
-            });
-          }
+          _attachmentDataCache.set(url, dataUrl);
+          bumpCache();
         })
         .catch((error) => {
           console.error(`Failed to load attachment ${url}:`, error);
+          _attachmentFailedUrls.add(url);
+          bumpCache();
         })
         .finally(() => {
-          // Remove from loading set
-          setLoadingUrls((prev) => {
-            const updated = new Set(prev);
-            updated.delete(url);
-            return updated;
-          });
+          _attachmentLoadingUrls.delete(url);
         });
     });
-    
-    // Cleanup function to cancel loading if component unmounts or dependencies change
-    return () => {
-      // URLs will be cleaned up in the finally blocks
-    };
     // Only depend on parsedAttachments
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedAttachments]);
@@ -224,16 +189,16 @@ export function MessageAttachments({
   const handleImageClick = async (attachment: Attachment) => {
     if (attachment.type === "image" && attachment.url) {
       const url = attachment.url;
-      const cachedDataUrl = imageDataUrls.get(url);
-      if (cachedDataUrl) {
-        setSelectedImage(cachedDataUrl);
+      // Prefer the full-res URL; fall back to the already-loaded thumbnail.
+      const cached = _attachmentDataCache.get(url) ?? _attachmentDataCache.get(attachment.thumbnail ?? "");
+      if (cached) {
+        setSelectedImage(cached);
         return;
       }
-
       try {
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
-          setImageDataUrls((prev) => new Map(prev).set(url, dataUrl));
+          _attachmentDataCache.set(url, dataUrl);
           setSelectedImage(dataUrl);
         }
       } catch (error) {
@@ -302,7 +267,9 @@ export function MessageAttachments({
           const isAudio = attachment.type === "audio";
           const isPdf = attachment.mimeType === "application/pdf";
           const thumbnail = attachment.thumbnail || attachment.url;
-          const audioUrl = audioDataUrls.get(attachment.url);
+          const audioUrl = _attachmentDataCache.get(attachment.url);
+          const imageDataUrl = _attachmentDataCache.get(thumbnail);
+          const imageFailed = _attachmentFailedUrls.has(thumbnail);
 
           return (
             <div
@@ -316,22 +283,29 @@ export function MessageAttachments({
                   className="relative cursor-pointer rounded-lg overflow-hidden max-w-xs"
                   onClick={() => handleImageClick(attachment)}
                 >
-                  {thumbnail && imageDataUrls.get(thumbnail) ? (
+                  {thumbnail && imageDataUrl ? (
                     <img
-                      src={imageDataUrls.get(thumbnail)}
+                      src={imageDataUrl}
                       alt={attachment.fileName}
                       className="max-w-full h-auto rounded-lg"
                       style={{ maxHeight: "300px" }}
                     />
                   ) : (
-                    <div className="w-48 h-48 bg-muted flex items-center justify-center rounded-lg">
+                    <div className="w-48 h-48 bg-muted flex flex-col items-center justify-center rounded-lg gap-1">
                       <ImageIcon className="h-12 w-12 text-muted-foreground" />
+                      {imageFailed && (
+                        <span className="text-xs text-muted-foreground">{attachment.fileName}</span>
+                      )}
                     </div>
                   )}
-                  {hoveredIndex === index && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-lg">
-                      <Download className="h-8 w-8 text-white" />
-                    </div>
+                  {hoveredIndex === index && imageDataUrl && (
+                    <button
+                      className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
+                      title="Télécharger"
+                    >
+                      <Download className="h-4 w-4 text-white" />
+                    </button>
                   )}
                 </div>
               ) : isAudio ? (

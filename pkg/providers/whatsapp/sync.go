@@ -109,37 +109,10 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 	w.log("WhatsApp: SyncHistory called for messages since %s\n", since.Format("2006-01-02 15:04:05"))
 
-	// WhatsApp automatically syncs history when connected via HistorySync events
-	// We need to force a refresh of contacts to get the latest conversations
-	// The actual message history sync happens automatically through whatsmeow's event system
-
-	// Trigger a refresh of contacts in a goroutine to avoid blocking
-	go func() {
-		// Wait a bit for whatsmeow to process any pending sync events
-		time.Sleep(2 * time.Second)
-
-		w.emitSyncStatus(core.SyncStatusFetchingContacts, "Refreshing conversations...", 90)
-
-		contacts, err := w.GetContacts()
-		if err != nil {
-			w.log("WhatsApp: Failed to refresh contacts during sync: %v\n", err)
-			w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
-			return
-		}
-
-		w.log("WhatsApp: Refreshed %d conversations during sync\n", len(contacts))
-
-		// Emit contact refresh event
-		select {
-		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "sync_complete"}:
-		default:
-		}
-
-		// Emit completed status - this is the final event for manual sync
-		w.log("WhatsApp: Emitting completed sync status for manual sync with %d conversations\n", len(contacts))
-		w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
-		w.log("WhatsApp: Completed sync status emitted for manual sync\n")
-	}()
+	// WhatsApp syncs history automatically via HistorySync events delivered by whatsmeow.
+	// OfflineSyncCompleted (or the 30s fallback in the Connected handler) calls GetContacts
+	// and emits SyncStatusCompleted once whatsmeow has finished delivering all events.
+	// No extra goroutine is needed here — it would only cause a redundant GetContacts call.
 
 	return nil
 }
