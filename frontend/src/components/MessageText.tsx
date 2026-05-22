@@ -34,7 +34,7 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
     },
     strong: ({ ...props }) => <strong className="font-bold" {...props} />,
     em: ({ ...props }) => <em className="italic" {...props} />,
-    pre: ({ children }) => <CodeBlock isFromMe={isFromMe}>{children}</CodeBlock>,
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
     code: ({ className, children, ...props }) => {
       const isBlock = className?.includes("hljs");
       if (isBlock) return <code className={className} {...props}>{children}</code>;

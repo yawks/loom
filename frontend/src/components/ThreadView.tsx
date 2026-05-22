@@ -95,9 +95,9 @@ export function ThreadView() {
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col">
+    <div className="absolute inset-0 flex flex-col" style={{ fontFamily: '"Inter Variable", Arial, Helvetica, sans-serif' }}>
       <div className="p-4 border-b flex justify-between items-center shrink-0">
-        <h3 className="text-md font-semibold">Thread</h3>
+        <h3 className="font-semibold" style={{ fontSize: '0.9375rem' }}>Thread</h3>
         <Button
           variant="ghost"
           size="icon"
@@ -136,7 +136,7 @@ export function ThreadView() {
                     </button>
                   )}
                 <div
-                  className={`rounded-lg p-2 text-sm text-left ${
+                  className={`rounded-lg p-2 text-left ${
                     message.isFromMe
                       ? "bg-blue-600 text-white"
                       : "bg-muted text-foreground"
@@ -171,7 +171,7 @@ export function ThreadView() {
             })}
           </div>
         ) : (
-          <div className="space-y-1 text-sm">
+          <div className="space-y-1">
             {sortedThreadMessages.map((message, index) => {
               const prevMessage = index > 0 ? sortedThreadMessages[index - 1] : null;
               const timestamp = timeToDate(message.timestamp);

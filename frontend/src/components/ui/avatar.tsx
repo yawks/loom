@@ -18,7 +18,7 @@ const Avatar = React.forwardRef<
 ))
 Avatar.displayName = AvatarPrimitive.Root.displayName
 
-import { GetAvatar } from "../../wailsjs/go/main/App";
+import { GetAvatar } from "../../../wailsjs/go/main/App";
 
 const AvatarImage = React.forwardRef<
   React.ElementRef<typeof AvatarPrimitive.Image>,
@@ -38,9 +38,9 @@ const AvatarImage = React.forwardRef<
     }
 
     // It's a local path, fetch base64 on-demand
-    GetAvatar(src).then((base64) => {
+    GetAvatar(src).then((base64: string) => {
       setAvatarSrc(base64);
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       console.error("Failed to load avatar from path:", src, err);
       setAvatarSrc(undefined);
     });

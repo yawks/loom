@@ -34,6 +34,7 @@ export function MessageThreadPreview({
   return (
     <button
       onClick={onThreadClick}
+      style={{ fontFamily: '"Inter Variable", Arial, Helvetica, sans-serif', fontSize: '0.875rem' }}
       className={`flex items-center gap-2 p-2 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-left max-w-[80%] ${className ?? ""}`}
     >
       <div
