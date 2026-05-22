@@ -144,10 +144,13 @@ type ReceiptType string
 const (
 	// ReceiptTypeDelivery indicates a message was delivered.
 	ReceiptTypeDelivery ReceiptType = "delivery"
-	// ReceiptTypeRead indicates a message was read.
+	// ReceiptTypeRead indicates a message was read by a remote participant.
 	ReceiptTypeRead ReceiptType = "read"
 	// ReceiptTypePlayed indicates a voice message was played.
 	ReceiptTypePlayed ReceiptType = "played"
+	// ReceiptTypeSelfRead indicates the current user read the message on another device.
+	// The frontend must mark it as read locally without sending a receipt back to the server.
+	ReceiptTypeSelfRead ReceiptType = "self_read"
 )
 
 // ReceiptEvent represents a delivery or read receipt for a message.

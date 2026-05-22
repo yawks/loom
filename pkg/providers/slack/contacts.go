@@ -243,11 +243,15 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		p.log("SlackProvider.GetContacts: WARNING - failed to get channels: %v\n", err)
 	}
 
-	// Create a map of DM UserID -> LastRead for efficient lookup
+	// Create maps of DM UserID -> LastRead and LatestTS for efficient lookup
 	userLastRead := make(map[string]string)
+	userLatestTS := make(map[string]string)
 	for _, ch := range allChannels {
 		if ch.IsIM && ch.User != "" {
 			userLastRead[ch.User] = ch.LastRead
+			if ch.Latest != nil && ch.Latest.Timestamp != "" {
+				userLatestTS[ch.User] = ch.Latest.Timestamp
+			}
 		}
 	}
 
@@ -287,6 +291,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 				contacts = append(contacts, models.LinkedAccount{
 					UserID:    user.ID,
 					Username:  getUserDisplayName(&user),
+					IsGroup:   false,
 					AvatarURL: user.Profile.Image48,
 					Status:    "offline",
 					Protocol:  "slack",
@@ -348,9 +353,12 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 				extraData["statusText"] = statusText
 			}
 
-			// Add LastRead if available from IM channel check
+			// Add LastRead and LatestTS if available from IM channel check
 			if lastRead, ok := userLastRead[user.ID]; ok && lastRead != "" {
 				extraData["last_read"] = lastRead
+			}
+			if latestTS, ok := userLatestTS[user.ID]; ok && latestTS != "" {
+				extraData["latest_ts"] = latestTS
 			}
 
 			// Use RealName if available, fallback to DisplayName, then Name
@@ -387,6 +395,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			contacts = append(contacts, models.LinkedAccount{
 				UserID:    user.ID,
 				Username:  displayName, // Use display name instead of username
+				IsGroup:   false, // Individual user
 				AvatarURL: avatarURL,
 				Status:    status,
 				Protocol:  "slack",
@@ -401,7 +410,8 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	var mpimChannels []slack.Channel // Store MPIMs for async processing
 	for _, channel := range allChannels {
 		// Skip IMs (handled via users) and channels we left
-		if channel.IsIM || !channel.IsMember {
+		// Strictly hide archived channels as requested
+		if channel.IsIM || !channel.IsMember || channel.IsArchived {
 			filteredCount++
 			continue
 		}
@@ -411,14 +421,40 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 		// For mpim, use temporary name
 		if channel.IsMpIM {
+			// Optimization: Hide MPIMs with 0 members and no history as requested
+			// channel.NumMembers is only available if specifically requested or via conversations.info
+			// but we can check if we have any members in the list (if available) or wait for async resolution.
+			// Since we want to avoid "useless things", we'll let async process them and hide them later if empty.
+			// BUT the user said "Group chat" grayed out are the problem.
+
+			// If we know it's empty, skip it.
+			if channel.NumMembers == 0 {
+				// Verify if we have messages in DB for this channel
+				hasHistory := false
+				if db.DB != nil {
+					var count int64
+					db.DB.Model(&models.Message{}).Where("protocol_conv_id = ?", channel.ID).Count(&count)
+					hasHistory = count > 0
+				}
+
+				if !hasHistory {
+					p.log("SlackProvider.GetContacts: Skipping empty MPIM %s (%s)\n", channel.ID, channel.Name)
+					filteredCount++
+					continue
+				}
+			}
+
 			mpimChannels = append(mpimChannels, channel)
 			displayName = "Group Chat"
 		}
 
-		// Prepare extra data with LastRead
+		// Prepare extra data with LastRead and Latest timestamp
 		extraData := make(map[string]interface{})
 		if channel.LastRead != "" {
 			extraData["last_read"] = channel.LastRead
+		}
+		if channel.Latest != nil && channel.Latest.Timestamp != "" {
+			extraData["latest_ts"] = channel.Latest.Timestamp
 		}
 		extraJSON := ""
 		if len(extraData) > 0 {
@@ -431,6 +467,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		contacts = append(contacts, models.LinkedAccount{
 			UserID:   channel.ID,
 			Username: displayName,
+			IsGroup:  true,
 			Status:   "offline", // Channels don't have online status
 			Protocol: "slack",
 			Extra:    extraJSON,
@@ -452,12 +489,13 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	return contacts, nil
 }
 
-// updateMPIMNamesAsync processes MPIM channels asynchronously and updates their names in the database
-// This allows other conversations to be displayed immediately while MPIM names are fetched progressively
+// updateMPIMNamesAsync processes MPIM channels asynchronously and updates their names in the database.
+// Phase 1: resolve display names for all MPIMs (slug-resolved = instant; API-resolved = rate-limited).
+// Phase 2: commit slug-resolved names in a single DB transaction instead of N individual writes.
+// Phase 3: update API-resolved ones individually (already rate-limited in Phase 1).
 func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users []slack.User) {
 	p.log("SlackProvider.updateMPIMNamesAsync: Processing %d MPIMs asynchronously\n", len(mpimChannels))
 
-	// Get instance ID for database updates
 	p.mu.RLock()
 	instanceID := ""
 	if p.config != nil {
@@ -472,17 +510,12 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		return
 	}
 
-	// Get current user ID to exclude self from participant names
 	currentUserID := ""
 	if authTest, err := p.client.AuthTest(); err == nil && authTest != nil {
 		currentUserID = authTest.UserID
 	}
 
-	// Slug Cache: optimize by parsing MPIM names
-	// Map "slug" (username handle) -> "Real Name", and userID -> "Real Name"
 	slugCache := make(map[string]string)
-
-	// Populate slug cache from initial users list
 	for _, u := range users {
 		name := u.RealName
 		if name == "" {
@@ -494,10 +527,16 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		slugCache[u.ID] = name
 	}
 
-	// Process each MPIM one by one with rate limiting
-	processedCount := 0
+	type mpimResult struct {
+		channel     slack.Channel
+		displayName string
+	}
+
+	slugResolved := make([]mpimResult, 0, len(mpimChannels))
+	apiResolved := make([]mpimResult, 0)
+
+	// Phase 1: resolve display names.
 	for _, channel := range mpimChannels {
-		// Check if we should stop
 		select {
 		case <-p.stopChan:
 			p.log("SlackProvider.updateMPIMNamesAsync: Stop signal received, aborting\n")
@@ -505,14 +544,11 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		default:
 		}
 
-		// Optimization: Try to resolve names from MPIM title (slugs) first
-		// Typical format: "mpdm-user1--user2--user3-1" (includes all participants incl. self)
 		var participantNames []string
 		resolvedFromSlugs := false
 
 		if strings.HasPrefix(channel.Name, "mpdm-") {
 			content := strings.TrimPrefix(channel.Name, "mpdm-")
-			// Remove trailing number suffix (e.g. "-1")
 			if lastDash := strings.LastIndex(content, "-"); lastDash != -1 {
 				if _, err := strconv.Atoi(content[lastDash+1:]); err == nil {
 					content = content[:lastDash]
@@ -526,7 +562,6 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 
 				for _, slug := range slugs {
 					if name, ok := slugCache[slug]; ok {
-						// Skip if this slug resolves to the current user
 						if currentUserID != "" && slugCache[currentUserID] == name {
 							continue
 						}
@@ -545,7 +580,6 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		}
 
 		if !resolvedFromSlugs {
-			// GetConversations does not return Members; fetch them explicitly
 			memberIDs, _, err := p.client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
 				ChannelID: channel.ID,
 			})
@@ -566,7 +600,6 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 				}
 			}
 
-			// Fetch names for any members not in cache
 			for _, userID := range missingUserIDs {
 				user, err := p.client.GetUserInfo(userID)
 				if err != nil {
@@ -586,68 +619,105 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 			}
 		}
 
-		// Sort names for consistency
 		displayName := "Group Chat"
 		if len(participantNames) > 0 {
-			displayName = strings.Join(participantNames, ", ")
+			const maxNames = 5
+			if len(participantNames) > maxNames {
+				extra := len(participantNames) - maxNames
+				displayName = strings.Join(participantNames[:maxNames], ", ") + fmt.Sprintf(" +%d", extra)
+			} else {
+				displayName = strings.Join(participantNames, ", ")
+			}
 		} else if channel.Name != "" {
 			displayName = channel.Name
 		}
 
-		// DEBUG: Log the MPIM name analysis as requested
 		p.log("SlackProvider.updateMPIMNamesAsync: [MPIM-ANALYSIS] ID=%s, Name='%s', Members=%d, ResolvedNames=[%s], FinalDisplayName='%s', FromSlugs=%v\n",
 			channel.ID, channel.Name, len(channel.Members), strings.Join(participantNames, ", "), displayName, resolvedFromSlugs)
 
-		// Update the LinkedAccount in the database
-		if err := p.updateLinkedAccountName(instanceID, channel.ID, displayName); err != nil {
-			p.log("SlackProvider.updateMPIMNamesAsync: Failed to update MPIM %s name: %v\n", channel.ID, err)
+		result := mpimResult{channel: channel, displayName: displayName}
+		if resolvedFromSlugs {
+			slugResolved = append(slugResolved, result)
 		} else {
-			p.log("SlackProvider.updateMPIMNamesAsync: Updated MPIM %s name to: %s\n", channel.ID, displayName)
+			apiResolved = append(apiResolved, result)
+			// Rate-limit between API-resolved MPIMs (already paid the API cost above).
+			time.Sleep(1200 * time.Millisecond)
 		}
+	}
 
-		processedCount++
+	// Phase 2: batch-commit all slug-resolved MPIMs in a single transaction.
+	now := time.Now()
+	if len(slugResolved) > 0 {
+		storeUpdates := make([]models.LinkedAccount, 0, len(slugResolved))
+		needCreate := make([]mpimResult, 0)
 
-		// Update MPIM count
-		p.mpimCountMu.Lock()
-		remaining := p.mpimCount - processedCount
-		if remaining < 0 {
-			remaining = 0
-		}
-		p.mpimCount = remaining
-		p.mpimCountMu.Unlock()
+		tx := db.DB.Begin()
+		if tx.Error != nil {
+			p.log("SlackProvider.updateMPIMNamesAsync: Failed to begin transaction: %v\n", tx.Error)
+			// Fall back to individual updates.
+			for _, r := range slugResolved {
+				if err := p.updateLinkedAccountName(instanceID, r.channel.ID, r.displayName); err != nil {
+					p.log("SlackProvider.updateMPIMNamesAsync: Failed to update MPIM %s: %v\n", r.channel.ID, err)
+				}
+			}
+		} else {
+			for _, r := range slugResolved {
+				if existing, found := db.ContactStore.FindByProviderUser(instanceID, r.channel.ID); found {
+					existing.Username = r.displayName
+					existing.UpdatedAt = now
+					tx.Model(&models.LinkedAccount{}).
+						Where("provider_instance_id = ? AND user_id = ?", instanceID, r.channel.ID).
+						Updates(map[string]interface{}{"username": r.displayName, "updated_at": now})
+					storeUpdates = append(storeUpdates, existing)
+				} else {
+					needCreate = append(needCreate, r)
+				}
+			}
 
-		// Emit contacts-refresh event to update frontend (but only every 5 MPIMs to reduce load)
-		// Or emit sync status update if we're near the end
-		if remaining == 0 || processedCount%5 == 0 {
-			select {
-			case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(), UserID: "refresh", Status: "mpim_updated"}:
-				// Event sent successfully
-			default:
-				// Channel full, skip
+			if err := tx.Commit().Error; err != nil {
+				p.log("SlackProvider.updateMPIMNamesAsync: Failed to commit batch transaction: %v — falling back\n", err)
+				tx.Rollback()
+				for _, r := range slugResolved {
+					if err2 := p.updateLinkedAccountName(instanceID, r.channel.ID, r.displayName); err2 != nil {
+						p.log("SlackProvider.updateMPIMNamesAsync: Failed to update MPIM %s: %v\n", r.channel.ID, err2)
+					}
+				}
+			} else {
+				p.log("SlackProvider.updateMPIMNamesAsync: Batch-committed %d slug-resolved MPIMs\n", len(storeUpdates))
+				for _, la := range storeUpdates {
+					db.ContactStore.UpsertLinkedAccount(la)
+				}
+				// Slug-resolved MPIMs not yet in the store need individual creation (rare).
+				for _, r := range needCreate {
+					if err2 := p.updateLinkedAccountName(instanceID, r.channel.ID, r.displayName); err2 != nil {
+						p.log("SlackProvider.updateMPIMNamesAsync: Failed to create MPIM %s: %v\n", r.channel.ID, err2)
+					}
+				}
 			}
 		}
+	}
 
-		// Add delay between MPIM requests to avoid rate limits
-		// Only delay if we actually hit the API (i.e. NOT resolved from slugs)
-		if !resolvedFromSlugs {
-			time.Sleep(1200 * time.Millisecond)
-		} else {
-			// Minimal delay even for cache hits to yield CPU
-			time.Sleep(10 * time.Millisecond)
+	// Phase 3: update API-resolved MPIMs individually (already rate-limited in Phase 1).
+	for _, r := range apiResolved {
+		if err := p.updateLinkedAccountName(instanceID, r.channel.ID, r.displayName); err != nil {
+			p.log("SlackProvider.updateMPIMNamesAsync: Failed to update MPIM %s: %v\n", r.channel.ID, err)
 		}
 	}
 
-	p.log("SlackProvider.updateMPIMNamesAsync: Completed processing %d MPIMs\n", len(mpimChannels))
+	p.log("SlackProvider.updateMPIMNamesAsync: Completed %d MPIMs (%d slug-batch, %d api)\n",
+		len(mpimChannels), len(slugResolved), len(apiResolved))
 
-	// Signal that MPIM processing is complete
+	// Single contact-refresh event and completion signal.
 	select {
-	case p.mpimProcessingChan <- struct{}{}:
-		// Signal sent
+	case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(), UserID: "refresh", Status: "mpim_updated"}:
 	default:
-		// Channel full, skip
 	}
 
-	// Clear MPIM count
+	select {
+	case p.mpimProcessingChan <- struct{}{}:
+	default:
+	}
+
 	p.mpimCountMu.Lock()
 	p.mpimCount = 0
 	p.mpimCountMu.Unlock()
@@ -659,49 +729,48 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 		return fmt.Errorf("invalid parameters for updateLinkedAccountName")
 	}
 
-	// First, try to find existing LinkedAccount
-	var account models.LinkedAccount
-	err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).First(&account).Error
+	now := time.Now()
 
-	if err == nil {
-		// Record exists, update LinkedAccount username (this is the source of truth)
-		account.Username = username
-		account.UpdatedAt = time.Now()
-		if err := db.DB.Save(&account).Error; err != nil {
+	// Fast path: record already in the in-memory store — update DB then store.
+	if existing, found := db.ContactStore.FindByProviderUser(instanceID, userID); found {
+		existing.Username = username
+		existing.UpdatedAt = now
+		if err := db.DB.Model(&models.LinkedAccount{}).
+			Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).
+			Updates(map[string]interface{}{"username": username, "updated_at": now}).Error; err != nil {
 			return fmt.Errorf("failed to update LinkedAccount name: %w", err)
 		}
-	} else {
-		// Record does not exist, create it (and corresponding MetaContact)
-
-		// 1. Create MetaContact first
-		metaContact := models.MetaContact{
-			DisplayName: username,
-			AvatarURL:   "", // No avatar for MPIM usually
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-		if err := db.DB.Create(&metaContact).Error; err != nil {
-			return fmt.Errorf("failed to create MetaContact: %w", err)
-		}
-
-		// 2. Create LinkedAccount linked to MetaContact
-		account := models.LinkedAccount{
-			MetaContactID:      metaContact.ID,
-			ProviderInstanceID: instanceID,
-			UserID:             userID,
-			Username:           username,
-			Status:             "offline", // Default status
-			Protocol:           "slack",
-			CreatedAt:          time.Now(),
-			UpdatedAt:          time.Now(),
-		}
-		if err := db.DB.Create(&account).Error; err != nil {
-			return fmt.Errorf("failed to create LinkedAccount: %w", err)
-		}
-
-		p.log("SlackProvider: Created new MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", metaContact.ID, username, userID)
+		db.ContactStore.UpsertLinkedAccount(existing)
+		return nil
 	}
 
+	// Record does not exist — create MetaContact + LinkedAccount and add both to the store.
+	mc := models.MetaContact{
+		DisplayName: username,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := db.DB.Create(&mc).Error; err != nil {
+		return fmt.Errorf("failed to create MetaContact: %w", err)
+	}
+	db.ContactStore.UpsertMetaContact(mc)
+
+	account := models.LinkedAccount{
+		MetaContactID:      mc.ID,
+		ProviderInstanceID: instanceID,
+		UserID:             userID,
+		Username:           username,
+		IsGroup:            true,
+		Status:             "offline",
+		Protocol:           "slack",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	if err := db.DB.Create(&account).Error; err != nil {
+		return fmt.Errorf("failed to create LinkedAccount: %w", err)
+	}
+	db.ContactStore.UpsertLinkedAccount(account)
+	p.log("SlackProvider: Created new MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", mc.ID, username, userID)
 	return nil
 }
 
@@ -853,6 +922,7 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 	if err := db.DB.Create(&conversation).Error; err != nil {
 		return 0, fmt.Errorf("failed to create conversation: %w", err)
 	}
+	db.ContactStore.UpsertConversation(conversation.LinkedAccountID, conversation.ProtocolConvID)
 
 	p.log("SlackProvider.ensureConversation: Created conversation %d for ProtocolConvID %s\n", conversation.ID, protocolConvID)
 	return conversation.ID, nil

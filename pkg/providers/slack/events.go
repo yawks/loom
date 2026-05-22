@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
+	"gorm.io/gorm"
 )
 
 // StreamEvents returns a channel that emits provider events (messages, reactions, etc.).
@@ -392,53 +393,76 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	}
 	p.mu.RUnlock()
 
-	// Save contacts to database if DB is initialized and we have an instance ID
+	// Save contacts to database and keep the in-memory store in sync.
 	if db.DB != nil && instanceID != "" {
 		p.log("SlackProvider.SyncHistory: Saving %d contacts to database\n", len(contacts))
-		for _, contact := range contacts {
-			// Ensure ProviderInstanceID is set
-			contact.ProviderInstanceID = instanceID
 
-			// We use a custom upsert logic here to preserve existing data if needed,
-			// or just overwrite with latest from Slack (which is safe as GetContacts is authoritative)
-			// However, we must be careful not to overwrite custom aliases if we supported them via a different table (ContactAlias).
-			// LinkedAccount is pure provider data, so we can overwrite.
+		// Use the in-memory store instead of a SELECT to find existing accounts.
+		existingByUserID := make(map[string]models.LinkedAccount)
+		for _, la := range db.ContactStore.FindByProvider(instanceID) {
+			existingByUserID[la.UserID] = la
+		}
 
-			var existing models.LinkedAccount
-			// We check for existence, ignoring "record not found" error as it's expected for new contacts
-			// Also ignore error if not found, we'll handle create case
-			err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, contact.UserID).First(&existing).Error
+		now := time.Now()
+		var toUpdate []models.LinkedAccount
+		var newContacts []models.LinkedAccount
 
-			if err == nil {
-				// Update existing
-				contact.ID = existing.ID                       // Keep the DB ID
-				contact.MetaContactID = existing.MetaContactID // Keep association
-				contact.CreatedAt = existing.CreatedAt
-				contact.UpdatedAt = time.Now()
-				db.DB.Save(&contact)
+		for i := range contacts {
+			contacts[i].ProviderInstanceID = instanceID
+			if existing, found := existingByUserID[contacts[i].UserID]; found {
+				contacts[i].ID = existing.ID
+				contacts[i].MetaContactID = existing.MetaContactID
+				contacts[i].CreatedAt = existing.CreatedAt
+				contacts[i].UpdatedAt = now
+				toUpdate = append(toUpdate, contacts[i])
 			} else {
-				// Record does not exist, create new MetaContact and LinkedAccount
-
-				// 1. Create MetaContact
-				metaContact := models.MetaContact{
-					DisplayName: contact.Username,
-					AvatarURL:   contact.AvatarURL,
-					CreatedAt:   time.Now(),
-					UpdatedAt:   time.Now(),
-				}
-				if err := db.DB.Create(&metaContact).Error; err != nil {
-					p.log("SlackProvider.SyncHistory: Failed to create MetaContact for %s: %v\n", contact.Username, err)
-					continue
-				}
-
-				// 2. Create LinkedAccount linked to MetaContact
-				contact.MetaContactID = metaContact.ID
-				contact.CreatedAt = time.Now()
-				contact.UpdatedAt = time.Now()
-				db.DB.Create(&contact)
+				contacts[i].CreatedAt = now
+				contacts[i].UpdatedAt = now
+				newContacts = append(newContacts, contacts[i])
 			}
 		}
-		p.log("SlackProvider.SyncHistory: Contacts saved successfully\n")
+
+		// Batch all updates in a single transaction, then sync the store.
+		if len(toUpdate) > 0 {
+			if err := db.DB.Transaction(func(tx *gorm.DB) error {
+				for i := range toUpdate {
+					if err := tx.Save(&toUpdate[i]).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				p.log("SlackProvider.SyncHistory: Failed to batch-update contacts: %v\n", err)
+			} else {
+				for _, la := range toUpdate {
+					db.ContactStore.UpsertLinkedAccount(la)
+				}
+			}
+		}
+
+		// Create new contacts individually (rare after first sync) — each needs a MetaContact first.
+		for i := range newContacts {
+			mc := models.MetaContact{
+				DisplayName: newContacts[i].Username,
+				AvatarURL:   newContacts[i].AvatarURL,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if err := db.DB.Create(&mc).Error; err != nil {
+				p.log("SlackProvider.SyncHistory: Failed to create MetaContact for %s: %v\n", newContacts[i].Username, err)
+				continue
+			}
+			db.ContactStore.UpsertMetaContact(mc)
+			newContacts[i].MetaContactID = mc.ID
+			newContacts[i].ID = 0
+			if err := db.DB.Create(&newContacts[i]).Error; err != nil {
+				p.log("SlackProvider.SyncHistory: Failed to create LinkedAccount for %s: %v\n", newContacts[i].UserID, err)
+				continue
+			}
+			db.ContactStore.UpsertLinkedAccount(newContacts[i])
+		}
+
+		p.log("SlackProvider.SyncHistory: Contacts saved (%d updated, %d created)\n", len(toUpdate), len(newContacts))
 	} else {
 		p.log("SlackProvider.SyncHistory: WARNING - Skipping contact save (DB=%v, InstanceID=%s)\n", db.DB != nil, instanceID)
 	}
@@ -452,13 +476,14 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 		p.log("SlackProvider.SyncHistory: Failed to emit contacts-refresh event (channel full)\n")
 	}
 
-	// Fetch and emit last_read timestamp for each conversation
-	// OPTIMIZATION: Use metadata from Extra field instead of calling API for each contact
+	// Fetch and emit last_read timestamp for each conversation.
+	// Also build maps for incrementalSyncExistingConversations to avoid per-conversation API calls.
 	p.log("SlackProvider.SyncHistory: Emitting last_read timestamps from cached metadata\n")
+	contactLastRead := make(map[string]string, len(contacts))
+	contactLatestTS := make(map[string]string, len(contacts))
 	for _, contact := range contacts {
 		conversationID := contact.UserID
 
-		// Parse Extra field to get last_read
 		if contact.Extra == "" {
 			continue
 		}
@@ -469,6 +494,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 		}
 
 		if lastRead, ok := extra["last_read"].(string); ok && lastRead != "" {
+			contactLastRead[conversationID] = lastRead
 			select {
 			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
 				ConversationID: conversationID,
@@ -476,6 +502,9 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 			}:
 			default:
 			}
+		}
+		if latestTS, ok := extra["latest_ts"].(string); ok && latestTS != "" {
+			contactLatestTS[conversationID] = latestTS
 		}
 	}
 
@@ -533,7 +562,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// Run incremental sync to catch any messages missed in conversations already in the DB.
 	// incrementalSyncExistingConversations emits its own final "completed" status.
 	p.log("SlackProvider.SyncHistory: Starting incremental sync for existing conversations\n")
-	p.incrementalSyncExistingConversations()
+	p.incrementalSyncExistingConversations(contactLatestTS, contactLastRead)
 
 	p.log("SlackProvider.SyncHistory: Sync fully completed\n")
 	return nil

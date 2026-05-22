@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { core, models } from "../../wailsjs/go/models";
 
+export type Theme = "light" | "dark" | "system";
+
 interface AppState {
   selectedContact: models.MetaContact | null;
   setSelectedContact: (contact: models.MetaContact | null, skipHistory?: boolean) => void;
@@ -12,8 +14,8 @@ interface AppState {
   setShowConversationDetails: (show: boolean) => void;
   messageLayout: "bubble" | "irc";
   setMessageLayout: (layout: "bubble" | "irc") => void;
-  theme: "light" | "dark";
-  setTheme: (theme: "light" | "dark") => void;
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
   language: "en" | "fr";
   setLanguage: (language: "en" | "fr") => void;
   fontSize: number;
@@ -86,7 +88,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ messageLayout: layout });
     saveToStorage("messageLayout", layout);
   },
-  theme: loadFromStorage<"light" | "dark">("theme", "dark"),
+  theme: loadFromStorage<Theme>("theme", "system"),
   setTheme: (theme) => {
     set({ theme });
     saveToStorage("theme", theme);

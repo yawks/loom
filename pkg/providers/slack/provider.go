@@ -6,6 +6,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/logging"
 	"Loom/pkg/models"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -215,7 +217,11 @@ func (p *SlackProvider) IsAuthenticated() bool {
 }
 
 // incrementalSyncExistingConversations syncs new messages for conversations that already have message history
-func (p *SlackProvider) incrementalSyncExistingConversations() {
+// incrementalSyncExistingConversations fetches new messages for conversations already in the DB.
+// contactLatestTS maps convID -> Slack's latest message timestamp (from GetConversations API).
+// contactLastRead maps convID -> Slack's last_read timestamp.
+// Both maps are used to skip channels with no new messages and avoid redundant API calls.
+func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, contactLastRead map[string]string) {
 	if db.DB == nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
 		return
@@ -307,6 +313,19 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 	// Emit sync status
 	p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Checking %d conversations for new messages...", len(conversations)), 0)
 
+	// Batch orphan check: one query for all conversations instead of N queries.
+	orphanSet := make(map[string]bool)
+	if db.DB != nil {
+		var orphanIDs []string
+		db.DB.Model(&models.Message{}).
+			Where("conversation_id = 0").
+			Distinct("protocol_conv_id").
+			Pluck("protocol_conv_id", &orphanIDs)
+		for _, id := range orphanIDs {
+			orphanSet[id] = true
+		}
+	}
+
 	successCount := 0
 	totalNewMessages := 0
 	newConversationsCreated := 0
@@ -319,46 +338,47 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			continue
 		}
 
+		// Skip conversations where Slack confirms no new messages since our last stored one.
+		// contactLatestTS holds the timestamp of the most recent message in the channel
+		// as returned by GetConversations — no API call needed to know there's nothing new.
+		if slackLatestStr, ok := contactLatestTS[conv.ProtocolConvID]; ok && slackLatestStr != "" {
+			slackLatestF, err := strconv.ParseFloat(slackLatestStr, 64)
+			dbLatestF := float64(conv.LastTimestamp.UnixNano()) / 1e9
+			if err == nil && slackLatestF <= dbLatestF {
+				p.log("SlackProvider.incrementalSyncExistingConversations: Skipping %s (slack_latest=%s <= db_latest=%f)\n",
+					conv.ProtocolConvID, slackLatestStr, dbLatestF)
+				continue
+			}
+		}
+
 		progress := int((float64(i+1) / float64(len(conversations))) * 100)
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
 
 		// Fix orphaned messages saved by pollGlobalUpdates (ConversationID=0).
-		// Only call ensureConversation when such messages exist to avoid side-effects on
-		// well-configured conversations. Normalize DM channel IDs (D→U) first so we
-		// reuse the existing Conversation record instead of creating a duplicate.
-		if db.DB != nil {
-			var orphanCount int64
-			db.DB.Model(&models.Message{}).
-				Where("protocol_conv_id = ? AND conversation_id = 0", conv.ProtocolConvID).
-				Count(&orphanCount)
-			if orphanCount > 0 {
-				normalizedConvID := p.normalizeDMConversationID(conv.ProtocolConvID)
-				convDBID, ensureErr := p.ensureConversation(normalizedConvID)
-				if ensureErr != nil {
-					p.log("SlackProvider.incrementalSyncExistingConversations: Failed to ensure conversation for %s (normalized: %s): %v\n",
-						conv.ProtocolConvID, normalizedConvID, ensureErr)
-				} else if convDBID > 0 {
-					result := db.DB.Model(&models.Message{}).
-						Where("protocol_conv_id = ? AND conversation_id = 0", conv.ProtocolConvID).
-						Update("conversation_id", convDBID)
-					if result.RowsAffected > 0 {
-						p.log("SlackProvider.incrementalSyncExistingConversations: Fixed %d orphaned messages for %s → conv %d\n",
-							result.RowsAffected, conv.ProtocolConvID, convDBID)
-						newConversationsCreated++
-					}
+		// Uses the pre-fetched orphanSet to avoid per-conversation SQL queries.
+		if orphanSet[conv.ProtocolConvID] && db.DB != nil {
+			normalizedConvID := p.normalizeDMConversationID(conv.ProtocolConvID)
+			convDBID, ensureErr := p.ensureConversation(normalizedConvID)
+			if ensureErr != nil {
+				p.log("SlackProvider.incrementalSyncExistingConversations: Failed to ensure conversation for %s (normalized: %s): %v\n",
+					conv.ProtocolConvID, normalizedConvID, ensureErr)
+			} else if convDBID > 0 {
+				result := db.DB.Model(&models.Message{}).
+					Where("protocol_conv_id = ? AND conversation_id = 0", conv.ProtocolConvID).
+					Update("conversation_id", convDBID)
+				if result.RowsAffected > 0 {
+					p.log("SlackProvider.incrementalSyncExistingConversations: Fixed %d orphaned messages for %s → conv %d\n",
+						result.RowsAffected, conv.ProtocolConvID, convDBID)
+					newConversationsCreated++
 				}
 			}
 		}
 
-		// Fetch new messages since last timestamp
-		// Use the exact last timestamp - GetConversationHistory will handle exclusion
-		// We want messages strictly after the last one we have
 		sinceTimestamp := conv.LastTimestamp
 
 		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s, looking for messages after)\n",
 			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
 
-		// Use a large limit to get all new messages
 		newMessages, err := p.GetConversationHistory(conv.ProtocolConvID, 1000, nil, &sinceTimestamp)
 		if err != nil {
 			p.log("SlackProvider.incrementalSyncExistingConversations: Failed to sync %s: %v\n", conv.ProtocolConvID, err)
@@ -370,15 +390,11 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 			successCount++
 			totalNewMessages += len(newMessages)
 
-			// Log first and last message timestamps for debugging
-			if len(newMessages) > 0 {
-				firstMsg := newMessages[0]
-				lastMsg := newMessages[len(newMessages)-1]
-				p.log("SlackProvider.incrementalSyncExistingConversations: New messages range from %s to %s\n",
-					firstMsg.Timestamp.Format(time.RFC3339), lastMsg.Timestamp.Format(time.RFC3339))
-			}
+			firstMsg := newMessages[0]
+			lastMsg := newMessages[len(newMessages)-1]
+			p.log("SlackProvider.incrementalSyncExistingConversations: New messages range from %s to %s\n",
+				firstMsg.Timestamp.Format(time.RFC3339), lastMsg.Timestamp.Format(time.RFC3339))
 
-			// Emit new message events for each message so the UI updates
 			for _, msg := range newMessages {
 				select {
 				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(),
@@ -389,45 +405,29 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 				}
 			}
 		} else {
-			p.log("SlackProvider.incrementalSyncExistingConversations: No new messages found for %s (last timestamp: %s)\n",
-				conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
+			p.log("SlackProvider.incrementalSyncExistingConversations: No new main messages for %s — checking thread replies\n",
+				conv.ProtocolConvID)
+			// GetConversationHistory only returns main messages, not thread replies.
+			// When Slack says a conversation has newer activity but no new main messages exist,
+			// the gap must be new thread replies. Sync them so ordering stays accurate.
+			newReplies := p.refreshThreadReplies(conv.ProtocolConvID)
+			if newReplies > 0 {
+				totalNewMessages += newReplies
+				successCount++
+			}
 		}
 
-		// Fetch and emit last_read timestamp from Slack API to mark messages as read
-		// This ensures messages that were read in another client are marked as read here too
-		p.mu.RLock()
-		client := p.client
-		p.mu.RUnlock()
-
-		if client != nil {
-			// Determine actual channel ID (handle DM normalization)
-			actualChannelID := conv.ProtocolConvID
-			if len(conv.ProtocolConvID) > 0 && conv.ProtocolConvID[0] == 'U' {
-				// User ID, need to get channel ID
-				channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-					Users: []string{conv.ProtocolConvID},
-				})
-				if err == nil && channel != nil && channel.ID != "" {
-					actualChannelID = channel.ID
-				}
-			}
-
-			// Get conversation info to retrieve LastRead timestamp
-			convInfo, err := client.GetConversationInfo(&slack.GetConversationInfoInput{
-				ChannelID: actualChannelID,
-			})
-			if err == nil && convInfo != nil && convInfo.LastRead != "" {
-				// Emit read status event so frontend marks messages as read
-				select {
-				case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
-					ConversationID: conv.ProtocolConvID,
-					LastReadTS:     convInfo.LastRead,
-				}:
-					p.log("SlackProvider.incrementalSyncExistingConversations: Emitted last_read=%s for %s\n",
-						convInfo.LastRead, conv.ProtocolConvID)
-				default:
-					p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping read status event\n")
-				}
+		// Emit last_read from the contacts map — no GetConversationInfo API call needed.
+		if lastRead, ok := contactLastRead[conv.ProtocolConvID]; ok && lastRead != "" {
+			select {
+			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
+				ConversationID: conv.ProtocolConvID,
+				LastReadTS:     lastRead,
+			}:
+				p.log("SlackProvider.incrementalSyncExistingConversations: Emitted last_read=%s for %s\n",
+					lastRead, conv.ProtocolConvID)
+			default:
+				p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping read status event\n")
 			}
 		}
 
@@ -461,6 +461,84 @@ func (p *SlackProvider) incrementalSyncExistingConversations() {
 
 	// Clear status
 	p.emitSyncStatus(core.SyncStatusCompleted, "", -1)
+}
+
+// refreshThreadReplies fetches new replies for the most recent parent messages in a
+// conversation and stores them. Called when the incremental sync found no new main
+// messages but Slack reports newer channel activity (i.e. the gap is thread replies).
+// Returns the number of new reply messages stored.
+func (p *SlackProvider) refreshThreadReplies(convID string) int {
+	if db.DB == nil {
+		return 0
+	}
+
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return 0
+	}
+
+	// Collect the most recent parent messages (non-thread-reply) from the last 14 days.
+	var parentRows []struct {
+		ProtocolMsgID string
+		MaxReplyTS    *time.Time
+	}
+	cutoff := time.Now().AddDate(0, 0, -14)
+	db.DB.Raw(`
+		SELECT m.protocol_msg_id,
+		       MAX(r.timestamp) AS max_reply_ts
+		FROM messages m
+		LEFT JOIN messages r
+		       ON r.protocol_conv_id = m.protocol_conv_id
+		      AND r.thread_id        = m.protocol_msg_id
+		      AND r.protocol_msg_id != m.protocol_msg_id
+		WHERE m.protocol_conv_id = ?
+		  AND (m.thread_id IS NULL OR m.thread_id = '' OR m.thread_id = m.protocol_msg_id)
+		  AND m.timestamp >= ?
+		GROUP BY m.protocol_msg_id
+		ORDER BY m.timestamp DESC
+		LIMIT 10
+	`, convID, cutoff).Scan(&parentRows)
+
+	if len(parentRows) == 0 {
+		return 0
+	}
+
+	// Resolve the actual Slack channel ID (U-prefix DMs need the D-prefix channel).
+	actualChannelID := convID
+	if len(convID) > 0 && convID[0] == 'U' {
+		ch, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{convID},
+		})
+		if err != nil || ch == nil || ch.ID == "" {
+			p.log("SlackProvider.refreshThreadReplies: failed to open DM for %s: %v\n", convID, err)
+			return 0
+		}
+		actualChannelID = ch.ID
+	}
+
+	var allReplies []models.Message
+	for _, row := range parentRows {
+		var oldest time.Time
+		if row.MaxReplyTS != nil {
+			oldest = *row.MaxReplyTS
+		}
+		replies, err := p.getThreadReplies(actualChannelID, row.ProtocolMsgID, oldest)
+		if err != nil {
+			p.log("SlackProvider.refreshThreadReplies: failed to get replies for thread %s: %v\n", row.ProtocolMsgID, err)
+			continue
+		}
+		allReplies = append(allReplies, replies...)
+	}
+
+	if len(allReplies) == 0 {
+		return 0
+	}
+
+	stored := p.storeMessagesForConversation(convID, allReplies)
+	p.log("SlackProvider.refreshThreadReplies: stored %d new thread replies for %s\n", stored, convID)
+	return stored
 }
 
 // Connect establishes the connection with the remote service.
@@ -711,6 +789,9 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 		data, err := os.ReadFile(cachePath)
 		if err != nil {
 			// Cache file exists but can't be read, fall through to download
+		} else if bytes.HasPrefix(data, []byte("<!")) || bytes.HasPrefix(data, []byte("<html")) {
+			// Stale HTML error page from a previous failed download — evict and re-download.
+			_ = os.Remove(cachePath)
 		} else {
 			// Determine MIME type from file extension
 			mimeType := "application/octet-stream"
@@ -778,6 +859,13 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 		return "", fmt.Errorf("failed to download file: status %d", resp.StatusCode)
 	}
 
+	// Reject HTML responses — Slack returns an HTML login/error page (with HTTP 200)
+	// when the token is expired or the URL is unauthorized.
+	contentType := resp.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "text/html") {
+		return "", fmt.Errorf("slack returned HTML instead of file data (token may be expired): %s", fileURL)
+	}
+
 	// Read file content
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -791,7 +879,7 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 	}
 
 	// Determine MIME type from Content-Type header or file extension
-	mimeType := resp.Header.Get("Content-Type")
+	mimeType := contentType
 	if mimeType == "" {
 		// Fallback to extension-based detection
 		switch ext {
@@ -1124,6 +1212,12 @@ func (p *SlackProvider) GetCustomEmojis() (map[string]string, error) {
 
 func (p *SlackProvider) GetAuthQRCode() (string, error) {
 	return "", fmt.Errorf("Slack does not support QR code authentication")
+}
+
+func (p *SlackProvider) RefreshContact(contactID string) error {
+	// For Slack, we can just resolve the user name again which updates the cache
+	p.ResolveUserNames([]string{contactID})
+	return nil
 }
 
 func (p *SlackProvider) getInstanceId() string {

@@ -53,6 +53,8 @@ type WhatsAppProvider struct {
 	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
 	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
 	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
+	lastAvatarRefresh    map[string]time.Time            // Map of contactID to last refresh time
+	avatarRefreshMu      sync.Mutex                      // Mutex for lastAvatarRefresh map
 	logger               *logging.ProviderLogger         // Logger for this provider instance
 }
 
@@ -121,6 +123,7 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		avatarLoading:        make(map[string]bool),
 		avatarFailures:       make(map[string]bool),
 		lidToJIDMap:          make(map[string]string),
+		lastAvatarRefresh:    make(map[string]time.Time),
 	}
 }
 
@@ -185,8 +188,8 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	dbConnStr := fmt.Sprintf("file:%s?_foreign_keys=on", dbPath)
 	w.log("WhatsAppProvider.Init: Database connection string created\n")
 
-	// Initialize database logger
-	dbLog := waLog.Stdout("Database", "DEBUG", false)
+	// Initialize database logger - reduced verbosity to WARN to save CPU
+	dbLog := waLog.Stdout("Database", "WARN", false)
 	w.log("WhatsAppProvider.Init: Database logger initialized\n")
 
 	// Create container
@@ -209,8 +212,8 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	w.deviceStore = deviceStore
 	w.log("WhatsAppProvider.Init: Device store retrieved successfully\n")
 
-	// Initialize client logger
-	clientLog := waLog.Stdout("Client", "DEBUG", false)
+	// Initialize client logger - reduced verbosity to WARN to save CPU
+	clientLog := waLog.Stdout("Client", "WARN", false)
 	w.log("WhatsAppProvider.Init: Client logger initialized\n")
 
 	// Set custom OS info for WhatsApp registration
@@ -666,6 +669,11 @@ func (w *WhatsAppProvider) GetCustomEmojis() (map[string]string, error) {
 
 func (w *WhatsAppProvider) GetAuthQRCode() (string, error) {
 	return w.GetQRCode()
+}
+
+func (w *WhatsAppProvider) RefreshContact(contactID string) error {
+	// Implementation in avatars.go
+	return w.refreshContactMetadata(contactID)
 }
 
 func (w *WhatsAppProvider) getInstanceId() string {

@@ -41,7 +41,7 @@ export function Emoji({
 
     // Extract emoji name (remove colons)
     const emojiName = cleanedEmoji.replace(/^:|:$/g, "");    
-
+    
     // Skip skin-tone modifiers
     if (/^skin-tone-[2-6]$/.test(emojiName)) {
       setLoading(false);

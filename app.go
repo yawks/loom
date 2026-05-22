@@ -32,15 +32,57 @@ type pendingSyncInfo struct {
 	since      time.Time
 }
 
+// metaContactsCache is a short-lived cache for GetMetaContacts results.
+// Avatar updates and MPIM renames fire dozens of contacts-refresh events per second;
+// without a cache each event would run a full DB scan. 2-second TTL is long enough to
+// collapse bursts but short enough that users see fresh data within a few seconds.
+type metaContactsCache struct {
+	data      []models.MetaContact
+	expiresAt time.Time
+	mu        sync.RWMutex
+}
+
+// queryCache is a generic short-lived cache for expensive DB read results.
+// The frontend fires GetAllLastMessages, GetAllLastMessageTimestamps and
+// GetAllMessageCounts simultaneously on every React mount; a 5-second TTL
+// collapses startup bursts into a single DB hit per query type.
+type queryCache[T any] struct {
+	mu        sync.RWMutex
+	data      T
+	expiresAt time.Time
+}
+
 // App struct
 type App struct {
-	ctx             context.Context
-	provider        core.Provider // Active provider (for UI actions)
-	providerManager *core.ProviderManager
-	eventCancels    map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
-	systemTray      *menu.Menu
-	pendingSyncs    []pendingSyncInfo // syncs deferred until domReady
-	mu              sync.RWMutex
+	ctx              context.Context
+	provider         core.Provider // Active provider (for UI actions)
+	providerManager  *core.ProviderManager
+	eventCancels     map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
+	systemTray       *menu.Menu
+	pendingSyncs     []pendingSyncInfo // syncs deferred until domReady
+	metaContactsCache metaContactsCache
+	mu               sync.RWMutex
+
+	// Short-lived server-side caches for expensive full-table-scan queries.
+	// The frontend has 30s staleTime but mounts multiple components simultaneously
+	// at startup, producing a burst of identical queries on the same DB connection.
+	// A 5s TTL collapses each burst into a single DB hit.
+	lastMessagesCache   queryCache[map[string]models.Message]
+	lastTimestampsCache queryCache[map[string]int64]
+	messageCountsCache  queryCache[map[string]int]
+
+	// contactsRefreshTimer debounces contacts-refresh emissions to the frontend.
+	// Avatar updates fire one event per avatar; without debouncing that's hundreds
+	// of full DB reloads per startup.
+	contactsRefreshTimer *time.Timer
+	contactsRefreshMu    sync.Mutex
+
+	// syncingProviders tracks which provider instances are currently syncing.
+	// A SyncStatusCompleted event from one provider is suppressed until all
+	// active providers have finished, preventing "sync complete" from appearing
+	// while another provider is still fetching history.
+	syncingProviders   map[string]bool
+	syncingProvidersMu sync.Mutex
 }
 
 // NewApp creates a new App application struct
@@ -113,6 +155,7 @@ func cleanupDuplicateDMConversations() {
 
 		// Remove the duplicate D... Conversation record
 		db.DB.Delete(&dConv)
+		db.ContactStore.SetConversation(dConv.LinkedAccountID, uConv.ProtocolConvID)
 
 		log.Printf("[cleanupDuplicateDMConversations] Migrated messages from %s → %s and deleted duplicate conversation\n",
 			dConv.ProtocolConvID, uConv.ProtocolConvID)
@@ -195,6 +238,7 @@ func createMissingConversations() {
 			fmt.Printf("[createMissingConversations] Failed to create conversation for %s: %v\n", protocolConvID, err)
 			continue
 		}
+		db.ContactStore.UpsertConversation(conversation.LinkedAccountID, conversation.ProtocolConvID)
 
 		// Update all messages for this conversation to use the new ConversationID
 		db.DB.Model(&models.Message{}).
@@ -212,6 +256,24 @@ func (a *App) getActiveProvider() core.Provider {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.provider
+}
+
+// getProviderForConversation returns the provider that owns the given conversation ID.
+// It looks up the conversation's LinkedAccount in the DB to find the correct provider
+// instance, falling back to the active provider when the conversation isn't in the DB yet.
+func (a *App) getProviderForConversation(conversationID string) core.Provider {
+	if db.DB != nil && conversationID != "" {
+		var conv models.Conversation
+		if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conv).Error; err == nil {
+			var la models.LinkedAccount
+			if err := db.DB.Where("id = ?", conv.LinkedAccountID).First(&la).Error; err == nil && la.ProviderInstanceID != "" {
+				if p, err := a.providerManager.GetProvider(la.ProviderInstanceID); err == nil {
+					return p
+				}
+			}
+		}
+	}
+	return a.getActiveProvider()
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -471,9 +533,7 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				// Add instanceID to event if needed or handle it here
 				switch e := event.(type) {
 				case core.MessageEvent:
-					if e.Message.SenderAvatarURL != "" {
-						e.Message.SenderAvatarURL = a.GetAvatar(e.Message.SenderAvatarURL)
-					}
+					a.invalidateMessageCaches()
 					msgJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
@@ -509,12 +569,13 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
 					}
 				case core.ContactStatusEvent:
+					if e.Status == "avatar_updated" || (e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received" || e.Status == "mpim_updated" || e.Status == "new_conversations_discovered")) {
+						a.emitContactsRefresh()
+					}
+
 					statusJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
-						if e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received" || e.Status == "mpim_updated") {
-							runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
-						}
 					}
 				case core.PresenceEvent:
 					presenceJSON, _ := json.Marshal(e)
@@ -537,10 +598,7 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "retry-receipt", string(retryReceiptJSON))
 					}
 				case core.SyncStatusEvent:
-					syncStatusJSON, _ := json.Marshal(e)
-					if a.ctx != nil {
-						runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
-					}
+					a.emitSyncStatusCoordinated(e)
 				case core.ConversationReadStatusEvent:
 					readStatusJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
@@ -552,13 +610,63 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 	}()
 }
 
+// emitSyncStatusCoordinated forwards a SyncStatusEvent to the frontend, but
+// suppresses per-provider "completed" events until all active providers have
+// finished. This prevents "sync complete" from appearing in the footer while
+// a second provider is still fetching history.
+func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
+	if a.ctx == nil {
+		return
+	}
+
+	a.syncingProvidersMu.Lock()
+	if a.syncingProviders == nil {
+		a.syncingProviders = make(map[string]bool)
+	}
+
+	switch e.Status {
+	case core.SyncStatusFetchingHistory, core.SyncStatusFetchingContacts, core.SyncStatusFetchingAvatars:
+		a.syncingProviders[e.InstanceID] = true
+		a.syncingProvidersMu.Unlock()
+
+	case core.SyncStatusCompleted:
+		delete(a.syncingProviders, e.InstanceID)
+		stillSyncing := len(a.syncingProviders) > 0
+		a.syncingProvidersMu.Unlock()
+
+		if stillSyncing {
+			// At least one other provider is still active — swallow this event.
+			// The frontend will receive "completed" once the last provider finishes.
+			return
+		}
+
+	case core.SyncStatusError:
+		delete(a.syncingProviders, e.InstanceID)
+		a.syncingProvidersMu.Unlock()
+
+	default:
+		a.syncingProvidersMu.Unlock()
+	}
+
+	syncStatusJSON, _ := json.Marshal(e)
+	runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+}
+
 // GetAvatar retrieves an avatar file and returns a base64 data URL
 func (a *App) GetAvatar(path string) string {
+	if path == "" {
+		return ""
+	}
 	if strings.HasPrefix(path, "data:") || strings.HasPrefix(path, "http") {
 		return path
 	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// Don't log if path is obviously invalid or empty
+		if len(path) > 0 && !strings.Contains(path, " ") {
+			fmt.Printf("[App.GetAvatar] Error reading file at %s: %v\n", path, err)
+		}
 		return ""
 	}
 	mimeType := "image/jpeg"
@@ -720,61 +828,79 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 		return []models.MetaContact{}, nil
 	}
 
-	// Single query to fetch MetaContacts with LinkedAccounts and their ConversationIDs
-	// Using Joins and Preload optimization to avoid N+1 and slow scans
-	var metaContacts []models.MetaContact
-
-	// Preload LinkedAccounts as before
-	err := db.DB.Preload("LinkedAccounts").Find(&metaContacts).Error
-	if err != nil {
-		return metaContacts, err
+	// Return cached result if still fresh. Avatar updates and MPIM renames can fire
+	// hundreds of contacts-refresh events per startup; the cache collapses them.
+	a.metaContactsCache.mu.RLock()
+	if time.Now().Before(a.metaContactsCache.expiresAt) && a.metaContactsCache.data != nil {
+		cached := a.metaContactsCache.data
+		a.metaContactsCache.mu.RUnlock()
+		return cached, nil
 	}
+	a.metaContactsCache.mu.RUnlock()
 
-	// Efficiently fetch all ConversationIDs for all LinkedAccounts in one go
-	// We use a join with conversations to map linked_account_id to protocol_conv_id
-	type laConvMapping struct {
-		LinkedAccountID uint
-		ProtocolConvID  string
-	}
-	var mappings []laConvMapping
+	// Load contacts from the in-memory store — zero DB queries.
+	metaContacts := db.ContactStore.GetAll()
 
-	// Collect all linked account IDs
-	var laIDs []uint
-	for _, mc := range metaContacts {
-		for _, la := range mc.LinkedAccounts {
-			laIDs = append(laIDs, la.ID)
-		}
-	}
-
-	if len(laIDs) > 0 {
-		// Single query to get all mappings, ordered by ID for determinism
-		db.DB.Table("conversations").
-			Select("linked_account_id, protocol_conv_id").
-			Where("linked_account_id IN ?", laIDs).
-			Order("id ASC").
-			Scan(&mappings)
-
-		// Create mapping for fast lookup
-		mappingMap := make(map[uint]string)
-		for _, m := range mappings {
-			// If there are multiple conversations for one linked account, keep the first one
-			if _, exists := mappingMap[m.LinkedAccountID]; !exists {
-				mappingMap[m.LinkedAccountID] = m.ProtocolConvID
-			}
-		}
-
-		// Apply mappings to metaContacts
-		for i := range metaContacts {
-			for j := range metaContacts[i].LinkedAccounts {
-				la := &metaContacts[i].LinkedAccounts[j]
-				if convID, ok := mappingMap[la.ID]; ok {
-					la.ConversationID = convID
-				}
+	// Apply conversation IDs from the in-memory store — O(1), no DB query needed.
+	// Avatars are NOT converted to base64 here; the frontend loads them on-demand via GetAvatar.
+	for i := range metaContacts {
+		for j := range metaContacts[i].LinkedAccounts {
+			la := &metaContacts[i].LinkedAccounts[j]
+			if convID := db.ContactStore.GetConversation(la.ID); convID != "" {
+				la.ConversationID = convID
 			}
 		}
 	}
+
+	// Store in cache for 2 seconds.
+	a.metaContactsCache.mu.Lock()
+	a.metaContactsCache.data = metaContacts
+	a.metaContactsCache.expiresAt = time.Now().Add(2 * time.Second)
+	a.metaContactsCache.mu.Unlock()
 
 	return metaContacts, nil
+}
+
+// invalidateMessageCaches clears the three short-lived message caches so the next
+// call to GetAllLastMessages / GetAllLastMessageTimestamps / GetAllMessageCounts
+// hits the DB. Called whenever a new message is saved.
+func (a *App) invalidateMessageCaches() {
+	now := time.Time{} // zero = expired
+	a.lastMessagesCache.mu.Lock()
+	a.lastMessagesCache.expiresAt = now
+	a.lastMessagesCache.mu.Unlock()
+
+	a.lastTimestampsCache.mu.Lock()
+	a.lastTimestampsCache.expiresAt = now
+	a.lastTimestampsCache.mu.Unlock()
+
+	a.messageCountsCache.mu.Lock()
+	a.messageCountsCache.expiresAt = now
+	a.messageCountsCache.mu.Unlock()
+}
+
+// invalidateMetaContactsCache clears the GetMetaContacts cache so the next call hits the DB.
+func (a *App) invalidateMetaContactsCache() {
+	a.metaContactsCache.mu.Lock()
+	a.metaContactsCache.expiresAt = time.Time{}
+	a.metaContactsCache.mu.Unlock()
+}
+
+// emitContactsRefresh debounces contacts-refresh emissions to the frontend.
+// Multiple rapid-fire events (avatar updates, MPIM renames) are collapsed into
+// a single emission after a 500ms quiet period.
+func (a *App) emitContactsRefresh() {
+	a.contactsRefreshMu.Lock()
+	defer a.contactsRefreshMu.Unlock()
+	if a.contactsRefreshTimer != nil {
+		a.contactsRefreshTimer.Stop()
+	}
+	a.contactsRefreshTimer = time.AfterFunc(500*time.Millisecond, func() {
+		a.invalidateMetaContactsCache()
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
+		}
+	})
 }
 
 // enrichMessagesWithSenderNames enriches messages with sender names from LinkedAccount table
@@ -783,95 +909,122 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		return
 	}
 
-	// Collect unique sender IDs
-	senderIDs := make(map[string]bool)
+	// 1. Get ConversationID -> ProviderInstanceID mapping
+	convIDs := make([]uint, 0)
+	seenConvIDs := make(map[uint]bool)
 	for _, msg := range messages {
-		if msg.SenderID != "" {
-			senderIDs[msg.SenderID] = true
+		if msg.ConversationID != 0 && !seenConvIDs[msg.ConversationID] {
+			convIDs = append(convIDs, msg.ConversationID)
+			seenConvIDs[msg.ConversationID] = true
 		}
 	}
 
-	if len(senderIDs) == 0 {
-		return
+	convToInstance := make(map[uint]string)
+	if len(convIDs) > 0 {
+		var results []struct {
+			ID                 uint
+			ProviderInstanceID string
+		}
+		// Query conversations joined with linked_accounts to get the instance ID for each conversation
+		db.DB.Table("conversations").
+			Select("conversations.id, linked_accounts.provider_instance_id").
+			Joins("join linked_accounts on conversations.linked_account_id = linked_accounts.id").
+			Where("conversations.id IN ?", convIDs).
+			Scan(&results)
+
+		for _, res := range results {
+			convToInstance[res.ID] = res.ProviderInstanceID
+		}
 	}
 
-	// Get instance ID from active provider
-	instanceID := ""
-	if a.getActiveProvider() != nil {
-		if config := a.getActiveProvider().GetConfig(); config != nil {
-			if id, ok := config["_instance_id"].(string); ok {
-				instanceID = id
+	// 2. Group SenderIDs by InstanceID
+	instanceToSenderIDs := make(map[string]map[string]bool)
+	for _, msg := range messages {
+		instID := convToInstance[msg.ConversationID]
+		if instID == "" {
+			// Fallback: If we can't find the instance from the conversation (e.g. new message not yet stored),
+			// check if we have an active provider as a last resort fallback.
+			if a.getActiveProvider() != nil {
+				if config := a.getActiveProvider().GetConfig(); config != nil {
+					if id, ok := config["_instance_id"].(string); ok {
+						instID = id
+						convToInstance[msg.ConversationID] = instID
+					}
+				}
+			}
+		}
+
+		if instID != "" && msg.SenderID != "" {
+			if _, ok := instanceToSenderIDs[instID]; !ok {
+				instanceToSenderIDs[instID] = make(map[string]bool)
+			}
+			instanceToSenderIDs[instID][msg.SenderID] = true
+		}
+	}
+
+	// 3. Query LinkedAccounts for each instance to get names and avatars
+	nameMap := make(map[string]map[string]string)   // instanceID -> userID -> name
+	avatarMap := make(map[string]map[string]string) // instanceID -> userID -> avatar
+
+	for instID, senderIDs := range instanceToSenderIDs {
+		userIDList := make([]string, 0, len(senderIDs))
+		for userID := range senderIDs {
+			userIDList = append(userIDList, userID)
+		}
+
+		var accounts []models.LinkedAccount
+		err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instID, userIDList).
+			Find(&accounts).Error
+		if err != nil {
+			fmt.Printf("enrichMessagesWithSenderNames: Failed to query LinkedAccount for instance %s: %v\n", instID, err)
+			continue
+		}
+
+		nameMap[instID] = make(map[string]string)
+		avatarMap[instID] = make(map[string]string)
+		for _, account := range accounts {
+			if account.Username != "" && account.Username != account.UserID {
+				nameMap[instID][account.UserID] = account.Username
+			}
+			if account.AvatarURL != "" {
+				avatarMap[instID][account.UserID] = account.AvatarURL
 			}
 		}
 	}
 
-	if instanceID == "" {
-		fmt.Printf("enrichMessagesWithSenderNames: WARNING - No instance ID found\n")
-		return
-	}
-
-	// Query LinkedAccount for all sender IDs at once
-	userIDList := make([]string, 0, len(senderIDs))
-	for userID := range senderIDs {
-		userIDList = append(userIDList, userID)
-	}
-
-	var linkedAccounts []models.LinkedAccount
-	err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instanceID, userIDList).
-		Find(&linkedAccounts).Error
-	if err != nil {
-		fmt.Printf("enrichMessagesWithSenderNames: Failed to query LinkedAccount: %v\n", err)
-		return
-	}
-
-	fmt.Printf("enrichMessagesWithSenderNames: Found %d LinkedAccounts for %d sender IDs (instance: %s)\n",
-		len(linkedAccounts), len(userIDList), instanceID)
-
-	// Build maps of userID -> username and userID -> avatar
-	nameMap := make(map[string]string)
-	avatarMap := make(map[string]string)
-	for _, account := range linkedAccounts {
-		if account.Username != "" && account.Username != account.UserID {
-			nameMap[account.UserID] = account.Username
-			fmt.Printf("enrichMessagesWithSenderNames: Mapped %s -> %s\n", account.UserID, account.Username)
-		} else {
-			fmt.Printf("enrichMessagesWithSenderNames: WARNING - LinkedAccount for %s has no valid username (Username='%s')\n",
-				account.UserID, account.Username)
-		}
-
-		// Also map avatar URL if available
-		if account.AvatarURL != "" {
-			avatarMap[account.UserID] = account.AvatarURL
-		}
-	}
-
-	// Enrich messages with names and avatars
+	// 4. Enrich messages with names and avatars
 	enrichedCount := 0
 	notFoundCount := 0
 	for i := range messages {
 		msg := &messages[i]
+		instID := convToInstance[msg.ConversationID]
+		if instID == "" {
+			continue
+		}
+
 		if msg.SenderID != "" {
-			// Enrich name if missing
-			if msg.SenderName == "" {
-				if name, ok := nameMap[msg.SenderID]; ok {
+			// Enrich name if missing OR if it currently contains the ID (fix for previously bad persisted data)
+			if msg.SenderName == "" || msg.SenderName == msg.SenderID {
+				if name, ok := nameMap[instID][msg.SenderID]; ok {
 					msg.SenderName = name
 					enrichedCount++
 				} else {
 					notFoundCount++
-					fmt.Printf("enrichMessagesWithSenderNames: WARNING - No name found for sender %s\n", msg.SenderID)
 				}
 			}
 
 			// Enrich avatar if missing
 			if msg.SenderAvatarURL == "" {
-				if avatar, ok := avatarMap[msg.SenderID]; ok {
+				if avatar, ok := avatarMap[instID][msg.SenderID]; ok && avatar != "" {
 					msg.SenderAvatarURL = avatar
 				}
 			}
 		}
 	}
 
-	fmt.Printf("enrichMessagesWithSenderNames: Enriched %d messages, %d names not found\n", enrichedCount, notFoundCount)
+	if enrichedCount > 0 || notFoundCount > 0 {
+		fmt.Printf("enrichMessagesWithSenderNames: Enriched %d messages, %d names still not found\n", enrichedCount, notFoundCount)
+	}
 }
 
 // GetMessagesForConversation - Renamed from GetMessages to match frontend expected name
@@ -908,6 +1061,15 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 
 	// Enrich messages with sender names from LinkedAccount
 	a.enrichMessagesWithSenderNames(messages)
+
+	// Trigger contact refresh in background when opening conversation
+	if provider := a.getActiveProvider(); provider != nil {
+		go func() {
+			if err := provider.RefreshContact(conversationID); err != nil {
+				fmt.Printf("App.GetMessagesForConversation: failed to refresh contact %s: %v\n", conversationID, err)
+			}
+		}()
+	}
 
 	return messages, err
 }
@@ -989,22 +1151,20 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 	return messages, err
 }
 func (a *App) SendMessage(conversationID string, content string) (*models.Message, error) {
-	if a.getActiveProvider() == nil {
-		return nil, fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-
-	// Call provider to send message
-	return a.getActiveProvider().SendMessage(conversationID, content, nil, nil)
+	return provider.SendMessage(conversationID, content, nil, nil)
 }
 
 // SendReply sends a reply to a message
 func (a *App) SendReply(conversationID string, content string, quotedMessageID string) (*models.Message, error) {
-	if a.getActiveProvider() == nil {
-		return nil, fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-
-	// Call provider to send reply
-	return a.getActiveProvider().SendMessage(conversationID, content, nil, &quotedMessageID)
+	return provider.SendMessage(conversationID, content, nil, &quotedMessageID)
 }
 
 func (a *App) SendFile(conversationID string, base64Data string, filename string, mimeType string) error {
@@ -1040,7 +1200,11 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 		MimeType: mimeType,
 	}
 
-	_, err = a.getActiveProvider().SendFile(conversationID, attachment, nil)
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	_, err = provider.SendFile(conversationID, attachment, nil)
 	return err
 }
 
@@ -1113,32 +1277,36 @@ func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 }
 
 func (a *App) AddReaction(conversationID, messageID, emoji string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return a.getActiveProvider().AddReaction(conversationID, messageID, emoji)
+	return provider.AddReaction(conversationID, messageID, emoji)
 }
 
 func (a *App) RemoveReaction(conversationID, messageID, emoji string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return a.getActiveProvider().RemoveReaction(conversationID, messageID, emoji)
+	return provider.RemoveReaction(conversationID, messageID, emoji)
 }
 
 func (a *App) EditMessage(conversationID, messageID, newText string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	_, err := a.getActiveProvider().EditMessage(conversationID, messageID, newText)
+	_, err := provider.EditMessage(conversationID, messageID, newText)
 	return err
 }
 
 func (a *App) DeleteMessage(conversationID, messageID string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	if err := a.getActiveProvider().DeleteMessage(conversationID, messageID); err != nil {
+	if err := provider.DeleteMessage(conversationID, messageID); err != nil {
 		return err
 	}
 	// Remove from local DB
@@ -1158,10 +1326,11 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 }
 
 func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return a.getActiveProvider().MarkMessageAsRead(conversationID, messageID)
+	return provider.MarkMessageAsRead(conversationID, messageID)
 }
 
 func (a *App) MarkConversationAsRead(conversationID string) error {
@@ -1334,7 +1503,14 @@ func (a *App) GetAllMessageCounts() (map[string]int, error) {
 		return map[string]int{}, nil
 	}
 
-	// Single query to get message counts per conversation
+	a.messageCountsCache.mu.RLock()
+	if time.Now().Before(a.messageCountsCache.expiresAt) {
+		cached := a.messageCountsCache.data
+		a.messageCountsCache.mu.RUnlock()
+		return cached, nil
+	}
+	a.messageCountsCache.mu.RUnlock()
+
 	type Result struct {
 		ProtocolConvID string
 		Count          int64
@@ -1350,10 +1526,15 @@ func (a *App) GetAllMessageCounts() (map[string]int, error) {
 		return map[string]int{}, err
 	}
 
-	result := make(map[string]int)
+	result := make(map[string]int, len(results))
 	for _, r := range results {
 		result[r.ProtocolConvID] = int(r.Count)
 	}
+
+	a.messageCountsCache.mu.Lock()
+	a.messageCountsCache.data = result
+	a.messageCountsCache.expiresAt = time.Now().Add(5 * time.Second)
+	a.messageCountsCache.mu.Unlock()
 
 	return result, nil
 }
@@ -1378,8 +1559,14 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 		return map[string]models.Message{}, nil
 	}
 
-	// Use a window function to get the latest message for each conversation in a single query
-	// This is MUCH faster than N+1 queries
+	a.lastMessagesCache.mu.RLock()
+	if time.Now().Before(a.lastMessagesCache.expiresAt) {
+		cached := a.lastMessagesCache.data
+		a.lastMessagesCache.mu.RUnlock()
+		return cached, nil
+	}
+	a.lastMessagesCache.mu.RUnlock()
+
 	var messages []models.Message
 	err := db.DB.Raw(`
 		SELECT * FROM (
@@ -1394,10 +1581,15 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 		return map[string]models.Message{}, err
 	}
 
-	result := make(map[string]models.Message)
+	result := make(map[string]models.Message, len(messages))
 	for _, msg := range messages {
 		result[msg.ProtocolConvID] = msg
 	}
+
+	a.lastMessagesCache.mu.Lock()
+	a.lastMessagesCache.data = result
+	a.lastMessagesCache.expiresAt = time.Now().Add(5 * time.Second)
+	a.lastMessagesCache.mu.Unlock()
 
 	return result, nil
 }
@@ -1407,17 +1599,16 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		return map[string]int64{}, nil
 	}
 
-	result := make(map[string]int64)
-	var err error
-
-	// Single query: latest message timestamp per conversation
-	type convMaxTime struct {
-		ProtocolConvID string
-		MaxTime        interface{}
+	a.lastTimestampsCache.mu.RLock()
+	if time.Now().Before(a.lastTimestampsCache.expiresAt) {
+		cached := a.lastTimestampsCache.data
+		a.lastTimestampsCache.mu.RUnlock()
+		return cached, nil
 	}
+	a.lastTimestampsCache.mu.RUnlock()
 
-	// Single query: latest message timestamp per conversation
-	// We use manual row scanning to avoid aggregate scan errors in SQLite
+	result := make(map[string]int64)
+
 	rows, err := db.DB.Model(&models.Message{}).
 		Select("protocol_conv_id, MAX(timestamp) as max_time").
 		Group("protocol_conv_id").
@@ -1440,9 +1631,6 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		}
 	}
 
-	// Single query: latest reaction timestamp per conversation
-	// Optimized: Use a faster join or skip if it's too slow.
-	// For now, let's keep it but ensure indices are used and handle time parsing.
 	reactionRows, err := db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
 		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
@@ -1462,6 +1650,11 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 			}
 		}
 	}
+
+	a.lastTimestampsCache.mu.Lock()
+	a.lastTimestampsCache.data = result
+	a.lastTimestampsCache.expiresAt = time.Now().Add(5 * time.Second)
+	a.lastTimestampsCache.mu.Unlock()
 
 	fmt.Printf("[GetAllLastMessageTimestamps] Returning %d total conversations with timestamps\n", len(result))
 	return result, nil
@@ -1534,29 +1727,36 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 
 // GetAttachmentData reads local file or downloads remote URL and returns base64 data URL
 func (a *App) GetAttachmentData(path string) (string, error) {
-	// Check if it's a Slack URL that needs authentication
+	// Slack files require authentication — only a Slack provider can fetch them.
+	// We iterate ALL registered providers (not just the active one) because the user may be
+	// viewing a WhatsApp conversation while requesting a Slack file attachment.
 	if strings.Contains(path, "slack.com") {
-		// Get the active provider (assuming it's Slack for now)
-		provider, err := a.providerManager.GetActiveProvider()
-		if err == nil {
-			if slackProvider, ok := provider.(*slack.SlackProvider); ok {
-				// Try to get file data using Slack provider (with authentication)
-				data, err := slackProvider.GetFileData(path)
-				if err == nil && data != "" {
-					// Successfully got data from Slack provider
-					return data, nil
-				}
-				fmt.Printf("[GetAttachmentData] Slack provider failed: %v\n", err)
+		var lastErr error
+		for _, instanceID := range a.providerManager.GetAllInstanceIDs() {
+			p, err := a.providerManager.GetProvider(instanceID)
+			if err != nil {
+				continue
 			}
+			slackProvider, ok := p.(*slack.SlackProvider)
+			if !ok {
+				continue
+			}
+			data, err := slackProvider.GetFileData(path)
+			if err == nil && data != "" {
+				return data, nil
+			}
+			lastErr = err
 		}
-		// If Slack provider failed or not active, fall back to direct HTTP request
-		fmt.Printf("[GetAttachmentData] Falling back to direct HTTP request for %s\n", path)
+		if lastErr != nil {
+			return "", fmt.Errorf("slack file unavailable: %w", lastErr)
+		}
+		return "", fmt.Errorf("no slack provider available for %s", path)
 	}
 
 	// Check if it's a URL (starts with http/https)
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		// Download remote file
-		resp, err := http.Get(path)
+		resp, err := http.Get(path) // #nosec G107 — URL comes from trusted provider data
 		if err != nil {
 			return "", fmt.Errorf("failed to download %s: %w", path, err)
 		}
@@ -1566,13 +1766,18 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 			return "", fmt.Errorf("failed to download %s: HTTP %d", path, resp.StatusCode)
 		}
 
+		// Reject HTML — the server returned an error page instead of the file.
+		mimeType := resp.Header.Get("Content-Type")
+		if strings.HasPrefix(mimeType, "text/html") {
+			return "", fmt.Errorf("server returned HTML instead of file data for %s", path)
+		}
+
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return "", fmt.Errorf("failed to read response body: %w", err)
 		}
 
 		encoded := base64.StdEncoding.EncodeToString(data)
-		mimeType := resp.Header.Get("Content-Type")
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}

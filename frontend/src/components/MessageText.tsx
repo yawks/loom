@@ -1,14 +1,57 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import React, { type ReactElement, useMemo, memo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
 import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { transformUrls, escapeLeadingDashes, fixCodeBlocks } from "../lib/utils";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
+
+function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean): Components {
+  return {
+    a: ({ href, children, ...props }) => {
+      if (preview) return <span {...props}>{children}</span>;
+      return (
+        <a
+          {...props}
+          href={href}
+          onClick={(e) => {
+            e.preventDefault();
+            if (href) BrowserOpenURL(href);
+          }}
+          className={cn(
+            "cursor-pointer hover:underline",
+            "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+          )}
+        >
+          {children}
+        </a>
+      );
+    },
+    strong: ({ ...props }) => <strong className="font-bold" {...props} />,
+    em: ({ ...props }) => <em className="italic" {...props} />,
+    pre: ({ children }) => <CodeBlock isFromMe={isFromMe}>{children}</CodeBlock>,
+    code: ({ className, children, ...props }) => {
+      const isBlock = className?.includes("hljs");
+      if (isBlock) return <code className={className} {...props}>{children}</code>;
+      return (
+        <code
+          className={cn("px-1 py-0.5 rounded text-sm font-mono", isFromMe ? "bg-white/20" : "bg-muted")}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    },
+    p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
+    br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
+    div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
+  };
+}
 
 interface MessageTextProps {
   text: string; // Message text that may contain emojis (e.g., ":calendar:")
@@ -101,47 +144,27 @@ export const MessageText = memo(function MessageText({
     return parts.length === 0 ? textWithoutSkinTones : parts;
   }, [text, providerInstanceId, emojiSize, preview]);
 
+  const blockComponents = useMemo(
+    () => buildComponents(isFromMe, preview, false),
+    [isFromMe, preview]
+  );
+  const inlineComponents = useMemo(
+    () => buildComponents(isFromMe, preview, true),
+    [isFromMe, preview]
+  );
+
+  const remarkPlugins = useMemo(
+    () => (preview ? [remarkGfm] : [remarkGfm, remarkBreaks]),
+    [preview]
+  );
+
   if (!parsedContent) return null;
 
   const renderMarkdown = (content: string, isInline = false) => (
     <ReactMarkdown
-      remarkPlugins={preview ? [remarkGfm] : [remarkGfm, remarkBreaks]}
-      components={{
-        a: ({ href, children, ...props }) => {
-          if (preview) return <span {...props}>{children}</span>;
-          return (
-            <a
-              {...props}
-              href={href}
-              onClick={(e) => {
-                e.preventDefault();
-                if (href) BrowserOpenURL(href);
-              }}
-              className={cn(
-                "cursor-pointer hover:underline",
-                isFromMe
-                  ? "text-blue-100 hover:text-white"
-                  : "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
-              )}
-            >
-              {children}
-            </a>
-          );
-        },
-        strong: ({ ...props }) => <strong className="font-bold" {...props} />,
-        em: ({ ...props }) => <em className="italic" {...props} />,
-        code: ({ className, children, ...props }) => {
-          const isCodeInline = !className?.includes("language-");
-          return (
-            <CodeBlock className={className} inline={isCodeInline} isFromMe={isFromMe} {...props}>
-              {String(children).replace(/\n$/, "")}
-            </CodeBlock>
-          );
-        },
-        p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
-        br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
-        div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
-      }}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={[[rehypeHighlight, { detect: true }]]}
+      components={isInline ? inlineComponents : blockComponents}
     >
       {content}
     </ReactMarkdown>
