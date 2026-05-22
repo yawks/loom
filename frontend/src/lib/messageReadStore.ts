@@ -50,7 +50,11 @@ interface MessageReadStore {
   syncConversation: (conversationId: ConversationId, messages: models.Message[]) => void;
   setLastReadTimestamp: (conversationId: ConversationId, lastReadTS: string) => void;
   markAsRead: (conversationId: ConversationId, messageId: MessageId) => void;
+  markMultipleAsRead: (conversationId: ConversationId, messageIds: MessageId[]) => void;
   markAsReadByProtocolId: (conversationId: ConversationId, protocolMsgId: string) => void;
+  /** Mark a message as read locally without sending a receipt back to the server.
+   *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
+  markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
@@ -137,6 +141,21 @@ const persistState = (state: ReadStateByConversation) => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (error) {
     console.warn("Failed to persist message read state:", error);
+  }
+};
+
+// Debounced persistence: avoid blocking the main thread with localStorage writes during scroll.
+// markAsRead is called on every IntersectionObserver entry; batching writes prevents jank.
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+let _latestState: ReadStateByConversation | null = null;
+const persistStateDebounced = (state: ReadStateByConversation) => {
+  _latestState = state;
+  if (_persistTimer === null) {
+    _persistTimer = setTimeout(() => {
+      if (_latestState !== null) persistState(_latestState);
+      _latestState = null;
+      _persistTimer = null;
+    }, 500);
   }
 };
 
@@ -300,7 +319,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
     });
   },
   markAsRead: (conversationId, messageId) => {
-    if (!conversationId || !messageId) {
+    if (!conversationId || !messageId || messageId.startsWith("temp-")) {
       return;
     }
     set((state) => {
@@ -316,17 +335,35 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         ...state.readByConversation,
         [conversationId]: updatedConversation,
       };
-      persistState(updatedMap);
-      
-      // Send read receipt to server (messageId is protocolMsgId)
-      markMessageAsReadOnServer(conversationId, messageId)
-        .then(() => {
-          console.log(`messageReadStore: Successfully sent read receipt for message ${messageId}`);
-        })
-        .catch((error) => {
-          console.error(`messageReadStore: Failed to send read receipt for message ${messageId}:`, error);
+      persistStateDebounced(updatedMap);
+
+      markMessageAsReadOnServer(conversationId, messageId).catch((error) => {
+        console.error(`messageReadStore: Failed to send read receipt for message ${messageId}:`, error);
+      });
+
+      return { readByConversation: updatedMap };
+    });
+  },
+  markMultipleAsRead: (conversationId, messageIds) => {
+    if (!conversationId || messageIds.length === 0) return;
+    set((state) => {
+      const conversationState = state.readByConversation[conversationId];
+      if (!conversationState) return state;
+
+      const toMark = messageIds.filter((id) => conversationState[id] !== true && !id.startsWith("temp-"));
+      if (toMark.length === 0) return state;
+
+      const updatedConversation = { ...conversationState };
+      toMark.forEach((id) => { updatedConversation[id] = true; });
+      const updatedMap = { ...state.readByConversation, [conversationId]: updatedConversation };
+      persistStateDebounced(updatedMap);
+
+      toMark.forEach((id) => {
+        markMessageAsReadOnServer(conversationId, id).catch((error) => {
+          console.error(`messageReadStore: Failed to send read receipt for message ${id}:`, error);
         });
-      
+      });
+
       return { readByConversation: updatedMap };
     });
   },
@@ -458,6 +495,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       
       console.log(`messageReadStore: Updated lastReadTS for ${conversationId}: ${lastReadTS} (${lastReadDate.toISOString()}), ${unreadCount} unread messages`);
       
+      return { readByConversation: updatedMap };
+    });
+  },
+  markAsReadSilently: (conversationId, messageId) => {
+    if (!conversationId || !messageId) return;
+    set((state) => {
+      const conversationState = state.readByConversation[conversationId];
+      if (!conversationState || conversationState[messageId] === true) return state;
+      const updatedConversation = { ...conversationState, [messageId]: true };
+      const updatedMap = { ...state.readByConversation, [conversationId]: updatedConversation };
+      persistStateDebounced(updatedMap);
       return { readByConversation: updatedMap };
     });
   },

@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -50,6 +51,43 @@ func (p *SlackProvider) startRTM() {
 			case *slack.ReactionRemovedEvent:
 				p.handleRTMReactionRemovedEvent(ev)
 
+			case *slack.ChannelMarkedEvent:
+				// Another device (or the web app) marked this channel as read.
+				if ev.Channel != "" && ev.Timestamp != "" {
+					select {
+					case p.eventChan <- core.ConversationReadStatusEvent{
+						InstanceID:     p.getInstanceId(),
+						ConversationID: ev.Channel,
+						LastReadTS:     ev.Timestamp,
+					}:
+					default:
+					}
+				}
+
+			case *slack.GroupMarkedEvent:
+				if ev.Channel != "" && ev.Timestamp != "" {
+					select {
+					case p.eventChan <- core.ConversationReadStatusEvent{
+						InstanceID:     p.getInstanceId(),
+						ConversationID: ev.Channel,
+						LastReadTS:     ev.Timestamp,
+					}:
+					default:
+					}
+				}
+
+			case *slack.IMMarkedEvent:
+				if ev.Channel != "" && ev.Timestamp != "" {
+					select {
+					case p.eventChan <- core.ConversationReadStatusEvent{
+						InstanceID:     p.getInstanceId(),
+						ConversationID: ev.Channel,
+						LastReadTS:     ev.Timestamp,
+					}:
+					default:
+					}
+				}
+
 			case *slack.FileChangeEvent, *slack.FileCreatedEvent, *slack.FileDeletedEvent,
 				*slack.FilePublicEvent, *slack.FileSharedEvent, *slack.LatencyReport:
 				// Known events we can safely ignore without spamming logs
@@ -63,7 +101,14 @@ func (p *SlackProvider) startRTM() {
 				return
 
 			case *slack.UnmarshallingErrorEvent:
-				p.log("SlackProvider.startRTM: Unmarshalling Error: %v\n", ev.Error())
+				// The slack-go library emits this for any RTM event type it doesn't
+				// have a struct for (e.g. "badge_counts_updated"). These are harmless;
+				// log at debug level so they don't pollute the error stream.
+				if strings.Contains(ev.Error(), "unmapped event") {
+					p.log("SlackProvider.startRTM: skipping unknown RTM event: %v\n", ev.Error())
+				} else {
+					p.log("SlackProvider.startRTM: Unmarshalling Error: %v\n", ev.Error())
+				}
 
 			case *slack.DisconnectedEvent:
 				p.log("SlackProvider.startRTM: Disconnected, Intentional: %v, Cause: %v\n", ev.Intentional, ev.Cause)
@@ -87,16 +132,6 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 
 	p.log("SlackProvider: received RTM message from %s in channel %s: %s\n", ev.User, ev.Channel, ev.Text)
 
-	// Check if this conversation already has messages in DB (to decide if we need an initial sync)
-	var existingCount int64
-	if db.DB != nil {
-		if err := db.DB.Model(&models.Message{}).
-			Where("protocol_conv_id = ?", ev.Channel).
-			Count(&existingCount).Error; err != nil {
-			p.log("SlackProvider: failed counting existing messages for %s: %v\n", ev.Channel, err)
-		}
-	}
-
 	timestamp := time.Now()
 	// event.Timestamp is string "123456.789", parse if needed
 	if floatTS, err := strconv.ParseFloat(ev.Timestamp, 64); err == nil {
@@ -106,10 +141,28 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	// Resolve sender name and avatar
 	senderName, senderAvatarURL := p.resolveUserInfo(ev.User)
 
-	// Ensure the conversation/contact exists in DB so it shows up in Recent/All lists
+	// Ensure the conversation/contact exists in DB so it shows up in Recent/All lists.
+	// This also populates the DM channel cache, so the subsequent normalizeDMConversationID
+	// call is a fast cache hit with no additional API call.
 	displayName := p.resolveConversationName(ev.Channel, senderName)
 	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
 		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
+	}
+
+	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
+	// Messages are stored under the normalized ID, so the event key must match to keep
+	// the frontend's optimistic sort-order update in sync with the DB.
+	normalizedConvID := p.normalizeDMConversationID(ev.Channel)
+
+	// Check if this conversation already has messages in DB (to decide if we need an initial sync).
+	// Must use the normalized ID because that is what storeMessagesForConversation persists.
+	var existingCount int64
+	if db.DB != nil {
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ?", normalizedConvID).
+			Count(&existingCount).Error; err != nil {
+			p.log("SlackProvider: failed counting existing messages for %s: %v\n", normalizedConvID, err)
+		}
 	}
 
 	// Determine if from me
@@ -144,9 +197,25 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		}
 	}
 
+	// Build attachments from files attached to this RTM event (file_share subtype).
+	attachmentsJSON := "[]"
+	if len(ev.Files) > 0 {
+		var atts []models.Attachment
+		for _, f := range ev.Files {
+			if att, ok := attachmentFromSlackFile(f); ok {
+				atts = append(atts, att)
+			}
+		}
+		if len(atts) > 0 {
+			if data, err := json.Marshal(atts); err == nil {
+				attachmentsJSON = string(data)
+			}
+		}
+	}
+
 	// Basic message construction
 	msg := models.Message{
-		ProtocolConvID:  ev.Channel,
+		ProtocolConvID:  normalizedConvID,
 		ProtocolMsgID:   ev.Timestamp, // Slack uses timestamp as ID
 		SenderID:        ev.User,
 		SenderName:      senderName,
@@ -154,7 +223,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		Body:            p.preprocessMessageBody(ev.Text),
 		Timestamp:       timestamp,
 		IsFromMe:        isFromMe,
-		Attachments:     "[]", // Handle attachments if any
+		Attachments:     attachmentsJSON,
 		CallType:        callType,
 	}
 
@@ -165,12 +234,12 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 
 	// Persist immediately so unread counts & sorting work
 	if db.DB != nil {
-		p.storeMessagesForConversation(ev.Channel, []models.Message{msg})
+		p.storeMessagesForConversation(normalizedConvID, []models.Message{msg})
 	}
 
 	// If this is the first time we see this conversation, trigger a history sync in background
 	if existingCount == 0 {
-		go p.syncConversationHistory(ev.Channel)
+		go p.syncConversationHistory(normalizedConvID)
 
 		// Emit a lightweight refresh signal so the UI reloads contact lists
 		select {

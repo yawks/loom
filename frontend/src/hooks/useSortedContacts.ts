@@ -20,9 +20,10 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
   const contactsWithAliases = useMemo(() => {
     return metaContacts.map((contact) => {
-      const alias = contact.linkedAccounts.find((acc) => aliases[acc.userId]);
+      const accounts = contact.linkedAccounts ?? [];
+      const alias = accounts.find((acc) => aliases[acc.userId]);
       const displayName = alias ? aliases[alias.userId] : contact.displayName;
-      return Object.assign({}, contact, { displayName });
+      return Object.assign({}, contact, { displayName, linkedAccounts: accounts });
     }) as models.MetaContact[];
   }, [aliases, metaContacts]);
 
@@ -99,12 +100,16 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     // Helper function to get the timestamp for sorting
     const getContactTime = (contact: models.MetaContact): number => {
       let maxTime = 0;
-      for (const acc of contact.linkedAccounts) {
-        const id = acc.conversationId ?? acc.userId;
-        if (id && lastMessageDates[id]) {
-          const time = lastMessageDates[id].getTime();
-          if (time > maxTime) {
-            maxTime = time;
+      for (const acc of (contact.linkedAccounts ?? [])) {
+        // Try both conversationId and userId — they can differ (e.g. Slack DM channel D-prefix
+        // vs normalized U-prefix), and we want the best match in lastMessageDates.
+        const idsToCheck: string[] = [];
+        if (acc.conversationId) idsToCheck.push(acc.conversationId);
+        if (acc.userId && acc.userId !== acc.conversationId) idsToCheck.push(acc.userId);
+        for (const id of idsToCheck) {
+          if (lastMessageDates[id]) {
+            const time = lastMessageDates[id].getTime();
+            if (time > maxTime) maxTime = time;
           }
         }
       }

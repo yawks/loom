@@ -46,10 +46,7 @@ export function transformUrls(text: string): string {
  */
 export function escapeLeadingDashes(text: string): string {
   if (!text) return text;
-  
-  // Replace dashes at the start of lines with escaped dashes
-  // This prevents Markdown from interpreting them as list items
-  return text.replace(/^-/gm, '\\-');
+  return text.replace(/^-/gm, String.raw`\-`);
 }
 
 /**
@@ -61,26 +58,38 @@ export function fixCodeBlocks(text: string): string {
   
   let fixed = text;
   
-  // Step 1: Fix opening ``` followed by invalid characters (like ```/** or ```*)
-  // Replace ```X where X is not a valid language identifier with just ```
-  // Valid language identifiers are alphanumeric (javascript, python, etc.)
-  // Invalid ones start with special chars like /, *, etc.
-  fixed = fixed.replace(/```([^\w\s\r\n][^\r\n]*)/g, (_match, invalidPart) => {
-    // Return ``` alone on a line, then the invalid part becomes part of the code
-    return '```\n' + invalidPart;
-  });
-  
-  // Step 2: Ensure closing ``` are alone on their line
-  // If there's text before the closing ```, add a newline
+  // Languages that highlight.js recognises as valid fence identifiers.
+  const KNOWN_LANGS = new Set([
+    'bash', 'c', 'clojure', 'cpp', 'cs', 'css', 'dart', 'dockerfile',
+    'elixir', 'erlang', 'go', 'graphql', 'groovy', 'haskell', 'html',
+    'java', 'javascript', 'js', 'json', 'jsx', 'julia', 'kotlin', 'kt',
+    'lua', 'makefile', 'markdown', 'matlab', 'md', 'nginx', 'objc',
+    'objectivec', 'perl', 'php', 'plain', 'py', 'python', 'r', 'rb',
+    'ruby', 'rust', 'sass', 'scala', 'scss', 'sh', 'shell', 'sql',
+    'svelte', 'swift', 'text', 'ts', 'tsx', 'typescript', 'vue',
+    'xml', 'yaml', 'yml', 'zsh',
+  ]);
+
+  // Step 1: ``` followed immediately by a non-word char → insert newline.
+  fixed = fixed.replace(/```([^\w\s][^\r\n]*)/g, (_match, rest) => '```\n' + rest);
+
+  // Step 2: Ensure closing ``` are alone on their line.
   fixed = fixed.replace(/([^\n])```(\s|$)/g, '$1\n```$2');
-  
-  // Step 3: Ensure opening ``` are alone on their line  
-  // If there's text after the language identifier (or after ``` if no language), ensure newline
-  // Match ``` followed by optional word (language) and then non-whitespace on the same line
-  fixed = fixed.replace(/```(\w+)?([^\s\r\n])/g, (_match, lang, nextChar) => {
-    const language = lang || '';
-    return '```' + language + '\n' + nextChar;
+
+  // Step 3A: ```LANG immediately followed by punctuation (e.g. ```js// comment).
+  // [^\w\s] excludes word chars so (\w+) captures the full word without backtracking.
+  fixed = fixed.replace(/```(\w+)([^\w\s])/g, (_match, lang, nextChar) => {
+    return '```' + lang + '\n' + nextChar;
   });
-  
+
+  // Step 3B: ``` or ```WORD followed by spaces then code on the same line.
+  // If WORD is not a known language (e.g. "function", "var"), treat it as code content.
+  fixed = fixed.replace(/```(\w*)[ \t]+(\S)/g, (_match, lang, nextChar) => {
+    if (lang && !KNOWN_LANGS.has(lang.toLowerCase())) {
+      return '```\n' + lang + ' ' + nextChar;
+    }
+    return '```' + lang + '\n' + nextChar;
+  });
+
   return fixed;
 }

@@ -27,22 +27,37 @@ func InitDatabase() error {
 		return fmt.Errorf("could not create db directory: %w", err)
 	}
 
-	// Configure SQLite with timeout and WAL mode for better concurrency
-	// WAL mode allows multiple readers and one writer simultaneously
-	// Timeout prevents indefinite blocking when database is locked
-	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000&_journal_mode=WAL"), &gorm.Config{})
+	// Configure SQLite with WAL mode and a long busy timeout.
+	// cache=shared keeps a single shared page cache across the connection pool.
+	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=30000&_journal_mode=WAL&cache=shared"), &gorm.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Enable WAL mode explicitly (in case the connection string didn't work)
+	// WAL mode allows concurrent readers + 1 writer.  Three open connections let
+	// the frontend's read queries (GetAllLastMessages, GetAllLastMessageTimestamps,
+	// GetAllMessageCounts) run in parallel with provider write goroutines without
+	// serialising behind each other.  busy_timeout=30000 handles write-write
+	// contention gracefully.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get sql.DB: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(3)
+	sqlDB.SetMaxIdleConns(2)
+
+	// Enable WAL mode and tune pragmas.
 	if err := db.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
 		fmt.Printf("Warning: Failed to enable WAL mode: %v\n", err)
 	}
-
-	// Set busy timeout to 5 seconds (5000ms)
-	if err := db.Exec("PRAGMA busy_timeout=5000").Error; err != nil {
+	if err := db.Exec("PRAGMA synchronous=NORMAL").Error; err != nil {
+		fmt.Printf("Warning: Failed to set synchronous=NORMAL: %v\n", err)
+	}
+	if err := db.Exec("PRAGMA busy_timeout=30000").Error; err != nil {
 		fmt.Printf("Warning: Failed to set busy timeout: %v\n", err)
+	}
+	if err := db.Exec("PRAGMA cache_size=-32000").Error; err != nil { // 32 MB page cache
+		fmt.Printf("Warning: Failed to set cache_size: %v\n", err)
 	}
 
 	// Auto-migrate schemas
@@ -83,6 +98,11 @@ func InitDatabase() error {
 
 	DB = db
 	fmt.Println("Database connection successful and schema migrated.")
+
+	if err := ContactStore.Load(); err != nil {
+		fmt.Printf("Warning: Failed to load contact store: %v\n", err)
+	}
+
 	return nil
 }
 

@@ -506,8 +506,9 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	return messages, nil
 }
 
-// getThreadReplies retrieves all messages in a thread
-func (p *SlackProvider) getThreadReplies(channelID string, threadTS string) ([]models.Message, error) {
+// getThreadReplies retrieves all messages in a thread.
+// Pass an optional oldest time to fetch only replies strictly after that timestamp.
+func (p *SlackProvider) getThreadReplies(channelID string, threadTS string, oldest ...time.Time) ([]models.Message, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -522,6 +523,12 @@ func (p *SlackProvider) getThreadReplies(channelID string, threadTS string) ([]m
 		params := &slack.GetConversationRepliesParameters{
 			ChannelID: channelID,
 			Timestamp: threadTS,
+		}
+		if len(oldest) > 0 && !oldest[0].IsZero() {
+			// Add 1ms so we get only replies strictly after the last stored reply
+			sinceTS := oldest[0].Add(time.Millisecond)
+			params.Oldest = fmt.Sprintf("%.6f", float64(sinceTS.Unix())+float64(sinceTS.Nanosecond())/1e9)
+			params.Inclusive = false
 		}
 		if cursor != "" {
 			params.Cursor = cursor
@@ -652,6 +659,10 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 				if msg.CallType == "" && existingMsg.CallType != "" {
 					msg.CallType = existingMsg.CallType
 				}
+				// Preserve body if the new event carries none (e.g. RTM file_share has empty text)
+				if msg.Body == "" && existingMsg.Body != "" {
+					msg.Body = existingMsg.Body
+				}
 				updateMessages = append(updateMessages, msg)
 				p.log("SlackProvider.storeMessagesForConversation: Will update message %s (existing attachments length: %d, new: %d)\n", msg.ProtocolMsgID, len(existingMsg.Attachments), len(msg.Attachments))
 			} else {
@@ -693,7 +704,53 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 	return len(messages)
 }
 
-// mergeAttachments combines existing and new attachments, removing duplicates by URL
+// attachmentFromSlackFile converts a slack.File into a models.Attachment.
+// Used both by SendFile (after polling) and handleRTMMessageEvent (file_share events).
+func attachmentFromSlackFile(f slack.File) (models.Attachment, bool) {
+	if f.URLPrivate == "" {
+		return models.Attachment{}, false
+	}
+	attachmentType := "document"
+	switch {
+	case strings.HasPrefix(f.Mimetype, "image/"):
+		attachmentType = "image"
+	case strings.HasPrefix(f.Mimetype, "video/"):
+		attachmentType = "video"
+	case strings.HasPrefix(f.Mimetype, "audio/"):
+		if f.Size < 5*1024*1024 {
+			attachmentType = "voice"
+		} else {
+			attachmentType = "audio"
+		}
+	case f.Mimetype == "application/pdf":
+		attachmentType = "document"
+	}
+
+	thumbnail := ""
+	if attachmentType == "image" || attachmentType == "video" {
+		switch {
+		case f.Thumb480 != "":
+			thumbnail = f.Thumb480
+		case f.Thumb360 != "":
+			thumbnail = f.Thumb360
+		case f.Thumb160 != "":
+			thumbnail = f.Thumb160
+		}
+	}
+
+	return models.Attachment{
+		Type:      attachmentType,
+		URL:       f.URLPrivate,
+		Thumbnail: thumbnail,
+		FileName:  f.Name,
+		FileSize:  int64(f.Size),
+		MimeType:  f.Mimetype,
+	}, true
+}
+
+// mergeAttachments combines existing and new attachments, removing duplicates by URL.
+// If all existing attachments are placeholders (empty URL) and the new ones have real
+// URLs, the new list replaces the old one rather than being appended.
 func (p *SlackProvider) mergeAttachments(existingJSON, newJSON string) string {
 	if existingJSON == "" {
 		return newJSON
@@ -704,31 +761,47 @@ func (p *SlackProvider) mergeAttachments(existingJSON, newJSON string) string {
 
 	var existingAttachments, newAttachments []models.Attachment
 
-	// Parse existing attachments
 	if err := json.Unmarshal([]byte(existingJSON), &existingAttachments); err != nil {
 		p.log("SlackProvider.mergeAttachments: Failed to parse existing attachments: %v\n", err)
-		return newJSON // Return new if existing can't be parsed
+		return newJSON
 	}
-
-	// Parse new attachments
 	if err := json.Unmarshal([]byte(newJSON), &newAttachments); err != nil {
 		p.log("SlackProvider.mergeAttachments: Failed to parse new attachments: %v\n", err)
-		return existingJSON // Return existing if new can't be parsed
+		return existingJSON
 	}
 
-	// Create a map to track seen URLs
-	seenURLs := make(map[string]bool)
-	mergedAttachments := make([]models.Attachment, 0)
+	// If existing entries are all URL-less placeholders (e.g. from SendFile before the RTM
+	// event arrives) and the new entries carry real URLs, replace rather than append.
+	allExistingEmpty := len(existingAttachments) > 0
+	for _, a := range existingAttachments {
+		if a.URL != "" {
+			allExistingEmpty = false
+			break
+		}
+	}
+	anyNewHasURL := false
+	for _, a := range newAttachments {
+		if a.URL != "" {
+			anyNewHasURL = true
+			break
+		}
+	}
+	if allExistingEmpty && anyNewHasURL {
+		merged, err := json.Marshal(newAttachments)
+		if err == nil {
+			return string(merged)
+		}
+	}
 
-	// Add existing attachments first
+	// Normal dedup-by-URL merge.
+	seenURLs := make(map[string]bool)
+	mergedAttachments := make([]models.Attachment, 0, len(existingAttachments)+len(newAttachments))
 	for _, att := range existingAttachments {
 		if !seenURLs[att.URL] {
 			seenURLs[att.URL] = true
 			mergedAttachments = append(mergedAttachments, att)
 		}
 	}
-
-	// Add new attachments, skipping duplicates
 	for _, att := range newAttachments {
 		if !seenURLs[att.URL] {
 			seenURLs[att.URL] = true
@@ -736,7 +809,6 @@ func (p *SlackProvider) mergeAttachments(existingJSON, newJSON string) string {
 		}
 	}
 
-	// Serialize back to JSON
 	mergedJSON, err := json.Marshal(mergedAttachments)
 	if err == nil {
 		p.log("SlackProvider.mergeAttachments: Merged %d existing + %d new = %d unique attachments\n",
@@ -744,7 +816,7 @@ func (p *SlackProvider) mergeAttachments(existingJSON, newJSON string) string {
 		return string(mergedJSON)
 	}
 	p.log("SlackProvider.mergeAttachments: Failed to serialize merged attachments: %v\n", err)
-	return existingJSON // Fallback to existing
+	return existingJSON
 }
 
 // GetThreads loads all messages in a discussion thread.
@@ -886,13 +958,8 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	senderName, senderAvatarURL := p.resolveUserInfo(msg.User)
 
 	// Check if message is from me (compare with authenticated user)
-	isFromMe := false
-	if p.client != nil {
-		authTest, err := p.client.AuthTest()
-		if err == nil && authTest != nil && authTest.UserID == msg.User {
-			isFromMe = true
-		}
-	}
+	// p.selfUserID is populated at startup and read-safe here since callers hold p.mu.RLock.
+	isFromMe := p.selfUserID != "" && msg.User == p.selfUserID
 
 	// Convert Slack reactions to our Reaction model
 	reactions := make([]models.Reaction, 0)
