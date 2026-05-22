@@ -5,10 +5,9 @@ const MAX_HEIGHT_PX = 480;
 
 interface CodeBlockProps {
   children: React.ReactNode;
-  isFromMe?: boolean;
 }
 
-export const CodeBlock = memo(function CodeBlock({ children, isFromMe }: CodeBlockProps) {
+export const CodeBlock = memo(function CodeBlock({ children }: CodeBlockProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [isTall, setIsTall] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
