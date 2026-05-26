@@ -18,7 +18,9 @@ interface ChatInputProps {
   replyingToMessage?: models.Message | null;
   onCancelReply?: () => void;
   onNavigateToEdit?: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
-  threadId?: string; // If set, messages will be sent as thread replies
+  threadId?: string;
+  currentUserName?: string;
+  currentUserAvatarUrl?: string;
 }
 
 const normalizeClipboardPath = (rawValue: string | null): string | null => {
@@ -78,7 +80,7 @@ interface CustomEmoji {
   imgUrl: string;
 }
 
-export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId }: ChatInputProps) {
+export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl }: ChatInputProps) {
   const { t } = useTranslation();
   const [message, setMessage] = useState("");
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
@@ -125,8 +127,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         return { tempId, conversationId, isThreadMessage: true };
       }
       
-      // Get current user info from existing messages to properly display avatar and name
-      let currentUserInfo: { senderId?: string; senderName?: string; senderAvatarUrl?: string } = {};
+      // Get current user info from existing messages, fall back to props passed from MessageList
+      let currentUserInfo: { senderId?: string; senderName?: string; senderAvatarUrl?: string } = {
+        senderName: currentUserName,
+        senderAvatarUrl: currentUserAvatarUrl,
+      };
       const existingData = queryClient.getQueryData<InfiniteData<models.Message[]>>(["messages", conversationId]);
       if (existingData?.pages) {
         for (const page of existingData.pages) {
@@ -134,8 +139,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             if (msg.isFromMe && msg.senderId) {
               currentUserInfo = {
                 senderId: msg.senderId,
-                senderName: msg.senderName,
-                senderAvatarUrl: msg.senderAvatarUrl,
+                senderName: msg.senderName || currentUserName,
+                senderAvatarUrl: msg.senderAvatarUrl || currentUserAvatarUrl,
               };
               break;
             }
@@ -143,7 +148,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           if (currentUserInfo.senderId) break;
         }
       }
-      
+
       const optimisticMessage: any = {
         protocolMsgId: tempId,
         protocolConvId: conversationId,
@@ -153,7 +158,6 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         isPending: true,
         sendFailed: false,
         quotedMessageId: quotedMessageId,
-        // Include user info for proper avatar and name display
         senderId: currentUserInfo.senderId,
         senderName: currentUserInfo.senderName,
         senderAvatarUrl: currentUserInfo.senderAvatarUrl,
@@ -326,7 +330,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
       try {
         await sendMessageMutation.mutateAsync({
-          conversationId: selectedContact.linkedAccounts[0].userId,
+          conversationId: selectedContact.linkedAccounts[0].conversationId || selectedContact.linkedAccounts[0].userId,
           text,
           quotedMessageId,
         });

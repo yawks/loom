@@ -213,6 +213,7 @@ export namespace models {
 	    callParticipants?: string;
 	    callOutcome?: string;
 	    callIsVideo: boolean;
+	    callUrl?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -250,6 +251,7 @@ export namespace models {
 	        this.callParticipants = source["callParticipants"];
 	        this.callOutcome = source["callOutcome"];
 	        this.callIsVideo = source["callIsVideo"];
+	        this.callUrl = source["callUrl"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

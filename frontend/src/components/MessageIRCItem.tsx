@@ -312,6 +312,7 @@ export function MessageIRCItem({
                 onDelete={() => handlers.onDeleteClick(message)}
                 onReply={() => handlers.onReplyClick(message)}
                 onReact={(emoji) => handlers.onReaction(message, emoji)}
+                onStartThread={() => handlers.onThreadClick(message.protocolMsgId)}
                 currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}
                 messageId={messageId}
                 openActionsMessageId={openActionsMessageId}

@@ -1,4 +1,4 @@
-import { Edit, MoreVertical, Reply, Trash2 } from "lucide-react";
+import { Edit, MessageSquare, MoreVertical, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -19,6 +19,7 @@ interface MessageActionsProps {
   onDelete: () => void;
   onReply?: () => void;
   onReact?: (emoji: string) => void;
+  onStartThread?: () => void;
   currentReactions?: string[];
   className?: string;
   messageId?: string;
@@ -34,6 +35,7 @@ export function MessageActions({
   onDelete,
   onReply,
   onReact,
+  onStartThread,
   currentReactions = [],
   className,
   messageId,
@@ -46,6 +48,7 @@ export function MessageActions({
   const [internalOpen, setInternalOpen] = useState(false);
 
   const supportsReactions = instanceId ? capabilities[instanceId]?.supportsReactions ?? true : true;
+  const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true;
 
   // Only allow popover to be open if this message is being hovered
   const canBeOpen = !messageId || openActionsMessageId === messageId;
@@ -82,6 +85,20 @@ export function MessageActions({
           title={t("reply_to_message")}
         >
           <Reply className="h-4 w-4" />
+        </Button>
+      )}
+      {onStartThread && supportsThreads && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 hover:bg-muted"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStartThread();
+          }}
+          title={t("start_thread")}
+        >
+          <MessageSquare className="h-4 w-4" />
         </Button>
       )}
       {onReact && supportsReactions && (

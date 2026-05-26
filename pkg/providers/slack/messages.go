@@ -16,6 +16,10 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// huddleURLRegex extracts a huddle join URL from a raw Slack message text.
+// Slack encodes URLs as <https://...|label>, so we match the URL part only.
+var huddleURLRegex = regexp.MustCompile(`<(https://[^|>]*slack\.com/huddle[^|>]*)[|>]`)
+
 // SendMessage sends a text message to a given conversation.
 func (p *SlackProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	// Normalize conversation ID early to ensure consistency
@@ -1122,6 +1126,13 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		}
 	}
 
+	// Extract huddle join URL from the raw text before any preprocessing.
+	// Slack encodes the URL as <https://...slack.com/huddle/...|label>.
+	callUrl := ""
+	if m := huddleURLRegex.FindStringSubmatch(msg.Text); len(m) >= 2 {
+		callUrl = m[1]
+	}
+
 	// Check if this is a huddle-related message
 	// Slack huddles are typically indicated by system messages with specific text patterns
 	// or by checking if the message subtype indicates a huddle
@@ -1182,6 +1193,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		Reactions:       reactions,
 		Attachments:     attachmentsJSON,
 		CallType:        callType,
+		CallUrl:         callUrl,
 	}
 }
 

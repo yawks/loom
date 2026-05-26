@@ -36,8 +36,8 @@ type ProviderEvent interface {
 
 // MessageEvent represents a new message event (text or file).
 type MessageEvent struct {
-	InstanceID string
-	Message    models.Message
+	InstanceID string         `json:"instanceId"`
+	Message    models.Message `json:"message"`
 }
 
 // Type returns the event type for MessageEvent.

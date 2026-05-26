@@ -1,8 +1,9 @@
-import { Clock, Phone, Video, VideoOff, X } from "lucide-react";
+import { Clock, ExternalLink, Phone, Video, VideoOff, X } from "lucide-react";
 
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 
 // Custom icon component for missed calls: Phone with X overlay
 const PhoneWithX = ({ className }: { className?: string }) => (
@@ -170,13 +171,21 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   const hasSummary = message.callDurationSecs != null || message.callOutcome || participants.length > 0;
 
   if (layout === "bubble") {
-    // Bubble layout: centered, visually distinct bubble
     return (
       <div className="flex justify-center my-2">
         <div className="flex flex-col items-center gap-1 px-4 py-2 rounded-full bg-muted/50 border border-border/50 text-muted-foreground text-sm">
           <div className="flex items-center gap-2">
             <Icon className="h-4 w-4" />
             <span>{callInfo.text}</span>
+            {message.callUrl && (
+              <button
+                onClick={() => BrowserOpenURL(message.callUrl!)}
+                className="flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t("call.join")}
+              </button>
+            )}
           </div>
           {hasSummary && (
             <div className="flex items-center gap-3 text-xs opacity-80">
@@ -201,6 +210,15 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         <div className="flex items-center gap-2">
           <Icon className="h-3 w-3" />
           <span className="text-muted-foreground/80">*** {callInfo.text}</span>
+          {message.callUrl && (
+            <button
+              onClick={() => BrowserOpenURL(message.callUrl!)}
+              className="flex items-center gap-1 not-italic text-primary hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {t("call.join")}
+            </button>
+          )}
         </div>
         {hasSummary && (
           <div className="flex items-center gap-3 ml-5 text-muted-foreground/70">

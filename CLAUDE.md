@@ -100,6 +100,20 @@ Now uses `getColorFromString` and `getSenderDisplayName` from `@/lib/messageUtil
 - Optimistic React Query cache updates follow the pattern: immediate `queryClient.setQueryData` → API call → rollback on error
 - `getMessageDomId` is the source of truth for message DOM IDs (used everywhere for scrolling, read marking, etc.)
 
+### CSS class naming
+
+Every component's root element and significant children must carry an explicit semantic class name alongside Tailwind utilities. Use BEM-style kebab-case: `block__element` (no modifier layer needed unless the variant is not already expressed by a Tailwind class).
+
+```tsx
+// Root element → block name matching the component name
+<div className="provider-filter-bar flex flex-col ...">
+  // Named children → block__element
+  <Button className="provider-filter-bar__all-button h-10 w-10 ...">
+  <span className="provider-filter-bar__unread-badge absolute ...">
+```
+
+Rule: if you can't describe what an element is without reading the Tailwind classes, it needs a named class.
+
 ---
 
 ## Go provider architecture
