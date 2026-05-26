@@ -7,6 +7,7 @@ import (
 	"sync"
 	"Loom/pkg/models"
 	"Loom/pkg/providers"
+	"Loom/pkg/providers/googlechat"
 	"Loom/pkg/providers/slack"
 	"context"
 	"encoding/base64"
@@ -339,6 +340,30 @@ func (a *App) startup(ctx context.Context) {
 		},
 	}, func() core.Provider {
 		return providers.NewSlackProvider()
+	})
+
+	a.providerManager.RegisterProvider("googlechat", core.ProviderInfo{
+		ID:          "googlechat",
+		Name:        "Google Chat",
+		Description: "Google Chat messaging via the official REST API (OAuth2)",
+		ConfigSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"client_id": map[string]interface{}{
+					"type":        "string",
+					"title":       "OAuth2 Client ID",
+					"description": "OAuth2 Client ID from Google Cloud Console (Desktop app type)",
+				},
+				"client_secret": map[string]interface{}{
+					"type":        "string",
+					"title":       "OAuth2 Client Secret",
+					"description": "OAuth2 Client Secret from Google Cloud Console",
+				},
+			},
+			"required": []string{"client_id", "client_secret"},
+		},
+	}, func() core.Provider {
+		return providers.NewGoogleChatProvider()
 	})
 
 	// Load and restore providers
@@ -1751,6 +1776,31 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 			return "", fmt.Errorf("slack file unavailable: %w", lastErr)
 		}
 		return "", fmt.Errorf("no slack provider available for %s", path)
+	}
+
+	// Google Chat attachment URLs require OAuth2 authentication.
+	// downloadUri uses chat.google.com (web UI), API URLs use chat.googleapis.com.
+	if strings.Contains(path, "chat.google.com") || strings.Contains(path, "chat.googleapis.com") {
+		var lastErr error
+		for _, instanceID := range a.providerManager.GetAllInstanceIDs() {
+			p, err := a.providerManager.GetProvider(instanceID)
+			if err != nil {
+				continue
+			}
+			gcProvider, ok := p.(*googlechat.GoogleChatProvider)
+			if !ok {
+				continue
+			}
+			data, err := gcProvider.GetFileData(path)
+			if err == nil && data != "" {
+				return data, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return "", fmt.Errorf("googlechat file unavailable: %w", lastErr)
+		}
+		return "", fmt.Errorf("no googlechat provider available for %s", path)
 	}
 
 	// Check if it's a URL (starts with http/https)

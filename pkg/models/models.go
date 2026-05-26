@@ -93,7 +93,8 @@ type Message struct {
 	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
 	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
 	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
-	CallIsVideo      bool             `json:"callIsVideo"`                                                                          // Whether the call was a video call (from CallLogMessage)
+	CallIsVideo      bool             `json:"callIsVideo"`                                     // Whether the call was a video call (from CallLogMessage)
+	CallUrl          string           `json:"callUrl,omitempty"`                               // URL to join or view the call in a browser (provider-specific)
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 

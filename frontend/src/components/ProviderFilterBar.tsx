@@ -8,6 +8,7 @@ import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
 
 // Color variations for multiple instances of the same provider
@@ -25,6 +26,28 @@ export function ProviderFilterBar() {
   const [configuredProviders, setConfiguredProviders] = useState<core.ProviderInfo[]>([]);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const setSelectedProviderFilter = useAppStore((state) => state.setSelectedProviderFilter);
+  const metaContacts = useAppStore((state) => state.metaContacts);
+  const readStateByConversation = useMessageReadStore((state) => state.readByConversation);
+
+  // Unread count per providerInstanceId
+  const unreadByInstance = useMemo(() => {
+    const counts: Record<string, number> = {};
+    metaContacts.forEach((contact) => {
+      const account = contact.linkedAccounts[0];
+      if (!account) return;
+      const conversationId = account.conversationId ?? account.userId;
+      if (!conversationId) return;
+      const conversationState = readStateByConversation[conversationId];
+      if (!conversationState) return;
+      const unread = Object.entries(conversationState).filter(
+        ([key, isRead]) => !key.startsWith("_") && !isRead
+      ).length;
+      if (unread > 0) {
+        counts[account.providerInstanceId] = (counts[account.providerInstanceId] ?? 0) + unread;
+      }
+    });
+    return counts;
+  }, [metaContacts, readStateByConversation]);
 
   const loadProviders = async () => {
     try {
@@ -97,20 +120,27 @@ export function ProviderFilterBar() {
     return null;
   }
 
+  const totalUnread = Object.values(unreadByInstance).reduce((sum, n) => sum + n, 0);
+
   return (
-    <div className="flex flex-col items-center gap-2 p-2 border-r bg-muted/30">
+    <div className="provider-filter-bar flex flex-col items-center gap-2 p-2 border-r bg-muted/30">
       {/* All button */}
       <Button
-        variant={selectedProviderFilter === null ? "default" : "ghost"}
+        variant="ghost"
         size="icon"
         className={cn(
-          "h-10 w-10",
-          selectedProviderFilter === null && "bg-primary text-primary-foreground"
+          "provider-filter-bar__all-button h-10 w-10 relative",
+          selectedProviderFilter === null && "bg-primary/15 text-primary ring-1 ring-primary/40"
         )}
         onClick={() => setSelectedProviderFilter(null)}
         title={t("all") || "All"}
       >
         <Layers className="h-5 w-5" />
+        {totalUnread > 0 && selectedProviderFilter !== null && (
+          <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
+            {totalUnread > 99 ? "99+" : totalUnread}
+          </span>
+        )}
       </Button>
 
       {/* Provider buttons */}
@@ -119,25 +149,31 @@ export function ProviderFilterBar() {
         const isSelected = selectedProviderFilter === instanceId;
         const colorVariation = getColorVariation(provider);
         const displayName = provider.instanceName || provider.name;
+        const unreadCount = unreadByInstance[instanceId] ?? 0;
 
         return (
           <Button
             key={instanceId}
-            variant={isSelected ? "default" : "ghost"}
+            variant="ghost"
             size="icon"
             className={cn(
-              "h-10 w-10 relative",
-              isSelected && "bg-primary text-primary-foreground"
+              "provider-filter-bar__provider-button h-10 w-10 relative",
+              isSelected && "bg-primary/15 text-primary ring-1 ring-primary/40"
             )}
             onClick={() => setSelectedProviderFilter(instanceId)}
             title={displayName}
           >
             <div
-              className="h-5 w-5"
+              className="provider-filter-bar__provider-icon h-5 w-5"
               style={colorVariation || undefined}
             >
               <ProtocolIcon protocol={provider.id} size={20} />
             </div>
+            {unreadCount > 0 && (
+              <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
           </Button>
         );
       })}

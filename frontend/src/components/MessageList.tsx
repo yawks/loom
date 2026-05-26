@@ -62,6 +62,7 @@ export function MessageList({
   // State
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const atBottomRef = useRef(true);
+  const prevMainMessagesLengthRef = useRef(0);
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
@@ -89,6 +90,21 @@ export function MessageList({
     isFetching,
     data,
   } = useMessageData(conversationId, isGroupFromProvider);
+
+  const currentUserName = useMemo(() => {
+    if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);
+    for (const msg of messages) {
+      if (msg.isFromMe && msg.senderName) return msg.senderName;
+    }
+    return undefined;
+  }, [currentUserId, participantNames, messages]);
+
+  const currentUserAvatarUrl = useMemo(() => {
+    for (const msg of messages) {
+      if (msg.isFromMe && msg.senderAvatarUrl) return msg.senderAvatarUrl;
+    }
+    return undefined;
+  }, [messages]);
 
   const {
     isDragging,
@@ -137,6 +153,18 @@ export function MessageList({
   useEffect(() => { setRevealedDeletedMessages(new Set()); }, [conversationId]);
   useEffect(() => { setSeparatorDismissed(false); }, [conversationId]);
   useEffect(() => { focusStateRef.current = hasWindowFocus; }, [hasWindowFocus]);
+
+  // Scroll to bottom when our own optimistic message appears
+  useEffect(() => {
+    const prevLen = prevMainMessagesLengthRef.current;
+    prevMainMessagesLengthRef.current = mainMessages.length;
+    if (mainMessages.length > prevLen && mainMessages.length > 0) {
+      const lastMsg = mainMessages.at(-1) as unknown as Record<string, unknown>;
+      if (lastMsg?.isPending === true) {
+        virtuosoRef.current?.scrollToIndex({ index: mainMessages.length - 1, behavior: "smooth" });
+      }
+    }
+  }, [mainMessages]);
 
   useEffect(() => {
     const handleFocus = () => setHasWindowFocus(true);
@@ -397,7 +425,7 @@ export function MessageList({
                 </div>
               ) : null,
               Footer: () => <div className="h-4" />,
-              Item: (props) => <div {...props} style={{ ...props.style, overflowX: "hidden", paddingLeft: "1rem", paddingRight: "1rem" }} />,
+              Item: (props) => <div {...props} style={{ ...props.style, overflowX: "clip", paddingLeft: "1rem", paddingRight: "1rem" }} />,
             }}
             itemContent={(index, message) => {
               if (messageLayout === "bubble") {
@@ -434,6 +462,8 @@ export function MessageList({
             replyingToMessage={replyingToMessage}
             onCancelReply={() => setReplyingToMessage(null)}
             onNavigateToEdit={handleNavigateToEdit}
+            currentUserName={currentUserName}
+            currentUserAvatarUrl={currentUserAvatarUrl}
           />
         </div>
         <FileUploadModal

@@ -55,8 +55,8 @@ export function getSenderDisplayName(
   isFromMe: boolean,
   t: (key: string) => string
 ): string {
-  if (isFromMe) return t("you") || "You";
   if (senderName && senderName.trim() && senderName !== senderId) return senderName;
+  if (isFromMe) return t("you") || "You";
 
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {

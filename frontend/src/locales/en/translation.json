@@ -172,6 +172,7 @@
   "typing_indicator_title": "Someone is typing",
   "admin": "Admin",
   "reply_to_message": "Reply to message",
+  "start_thread": "Start a thread",
   "replying_to": "Replying to",
   "cancel_reply": "Cancel reply",
   "sync": {
@@ -197,7 +198,8 @@
     "failed": "Call failed",
     "rejected": "Call rejected",
     "participants": "{{count}} participants",
-    "activeCall": "Active call"
+    "activeCall": "Active call",
+    "join": "Join"
   },
   "new_conversation": "New Conversation",
   "conversation_title": "Conversation Title",

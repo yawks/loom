@@ -10,6 +10,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 import type { core } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
@@ -78,7 +79,7 @@ export function ProviderConfigForm({
   });
 
   const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const { toasts, showToast, closeToast } = useToast();
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
   const [qrCode, setQrCode] = useState("");
   const [isPollingQR, setIsPollingQR] = useState(false);
@@ -112,35 +113,38 @@ export function ProviderConfigForm({
     setValues((prev) => ({ ...prev, [key]: value }));
   };
 
+  // Providers with a dedicated connection flow in this form (they handle connect themselves).
+  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack";
+
   const handleSave = useCallback(async () => {
     setIsSaving(true);
-    setSaveMessage(null);
     try {
-      // Filter out empty values - only save fields that have been filled
       const filteredValues: Record<string, string> = {};
       for (const [key, value] of Object.entries(values)) {
         if (value && value.trim() !== "") {
           filteredValues[key] = value;
         }
       }
-      
-      // Use existing instanceID if available (from provider only)
-      // Don't use currentInstanceID as fallback - let backend generate proper format
       const existingInstanceID = provider.instanceId || "";
-      
-      // For Slack, we need to save without connecting to avoid blocking
-      // Use CreateProviderWithOptions with skipConnect=true
       const instanceID = await CreateProviderWithOptions(provider.id, filteredValues, instanceName, existingInstanceID, true);
-      setCurrentInstanceID(instanceID); // Store the instanceID for QR code fetching
-      await onRefresh();
-      setSaveMessage(t("configuration_saved"));
+      setCurrentInstanceID(instanceID);
+
+      if (hasOwnConnectFlow) {
+        await onRefresh();
+        showToast(t("configuration_saved"), "success");
+      } else {
+        await ConnectProvider(instanceID);
+        await onRefresh();
+        if (onClose) onClose();
+        SyncProvider(instanceID).catch((err) => console.error("Failed to sync provider:", err));
+      }
     } catch (error) {
       console.error("Failed to save provider config:", error);
-      setSaveMessage(t("configuration_save_error"));
+      showToast(t("configuration_save_error"), "error");
     } finally {
       setIsSaving(false);
     }
-  }, [provider.id, provider.instanceId, currentInstanceID, values, instanceName, mode, onRefresh, t]);
+  }, [provider.id, provider.instanceId, currentInstanceID, values, instanceName, hasOwnConnectFlow, onRefresh, onClose, t, showToast]);
 
   const fetchQRCode = useCallback(async () => {
     try {
@@ -274,9 +278,6 @@ export function ProviderConfigForm({
                 )}
               </div>
             ))}
-            {saveMessage && (
-              <p className="text-sm text-muted-foreground">{saveMessage}</p>
-            )}
           </CardContent>
           <CardFooter className="flex gap-2 justify-end">
             <Button onClick={handleSave} disabled={isSaving}>
@@ -347,7 +348,6 @@ export function ProviderConfigForm({
               onClick={async () => {
                 // Disable button immediately to prevent double-clicks
                 setIsSaving(true);
-                setSaveMessage(null);
                 
                 try {
                   // Filter out empty values - only save fields that have been filled
@@ -387,9 +387,8 @@ export function ProviderConfigForm({
                   });
                 } catch (error) {
                   console.error("Failed to connect and sync:", error);
-                  setSaveMessage(t("configuration_save_error"));
-                  setIsSaving(false); // Re-enable button on error
-                  // Don't close modal on error so user can see the error message
+                  showToast(t("configuration_save_error"), "error");
+                  setIsSaving(false);
                 }
               }}
               disabled={isSaving}
@@ -397,12 +396,10 @@ export function ProviderConfigForm({
             >
               {isSaving ? t("connecting") : t("connect")}
             </Button>
-            {saveMessage && (
-              <p className="text-sm text-destructive">{saveMessage}</p>
-            )}
           </CardContent>
         </Card>
       )}
+      <ToastContainer toasts={toasts} onClose={closeToast} />
     </div>
   );
 }

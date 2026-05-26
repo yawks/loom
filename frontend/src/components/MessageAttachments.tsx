@@ -98,7 +98,7 @@ export function MessageAttachments({
       return [];
     }
 
-    console.log(`[MessageAttachments] Parsed ${parsed.length} attachments from JSON (messageID: ${messageID})`);
+    console.log(`[MessageAttachments] Parsed ${parsed.length} attachments from JSON (messageID: ${messageID})`, parsed.map(a => ({ type: a.type, url: a.url, fileName: a.fileName })));
 
     if (parsed.length === 0) {
       return [];

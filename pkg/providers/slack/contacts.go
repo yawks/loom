@@ -190,6 +190,12 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	fmt.Printf("SlackProvider.GetContacts: START\n")
 	p.mu.RLock()
 	client := p.client
+	instanceID := ""
+	if p.config != nil {
+		if id, ok := p.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
 	p.mu.RUnlock()
 
 	if client == nil {
@@ -446,6 +452,14 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 			mpimChannels = append(mpimChannels, channel)
 			displayName = "Group Chat"
+			if instanceID != "" {
+				if existing, found := db.ContactStore.FindByProviderUser(instanceID, channel.ID); found &&
+					existing.Username != "" &&
+					existing.Username != "Group Chat" &&
+					!strings.HasPrefix(existing.Username, "mpdm-") {
+					displayName = existing.Username
+				}
+			}
 		}
 
 		// Prepare extra data with LastRead and Latest timestamp
