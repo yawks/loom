@@ -11,7 +11,7 @@ import { ContactList } from "./ContactList";
 import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
 import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
-import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { EventsOn, WindowToggleMaximise } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
@@ -150,7 +150,10 @@ export function ChatLayout() {
       {/* macOS title bar drag area */}
       <div
         className="h-[44px] bg-sidebar-rail shrink-0"
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        style={{ "--wails-draggable": "drag" } as React.CSSProperties}
+        onDoubleClick={(event) => {
+          if (event.target === event.currentTarget) WindowToggleMaximise();
+        }}
       />
 
       {showOnboarding ? (
