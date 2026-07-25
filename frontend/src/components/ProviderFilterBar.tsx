@@ -181,10 +181,10 @@ export function ProviderFilterBar({
             title={displayName}
           >
             <div
-              className="provider-filter-bar__provider-icon h-5 w-5"
+              className="provider-filter-bar__provider-icon h-6 w-6 flex items-center justify-center"
               style={colorVariation || undefined}
             >
-              <ProtocolIcon protocol={provider.id} size={20} />
+              <ProtocolIcon protocol={provider.id} size={24} />
             </div>
             {unreadCount > 0 && (
               <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
