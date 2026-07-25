@@ -7,6 +7,7 @@ import { SearchModal } from "@/components/SearchModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { WindowToggleMaximise } from "../../wailsjs/runtime/runtime";
 
 interface HeaderProps {
   hasProviders?: boolean;
@@ -51,11 +52,17 @@ export function Header({ hasProviders = true }: HeaderProps) {
   }, [hasProviders]);
 
   return (
-    <header className="h-16 border-b flex items-center justify-between px-4 bg-background" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+    <header
+      className="h-16 border-b flex items-center justify-between px-4 bg-background"
+      style={{ "--wails-draggable": "drag" } as React.CSSProperties}
+      onDoubleClick={(event) => {
+        if (event.target === event.currentTarget) WindowToggleMaximise();
+      }}
+    >
       <ProvidersModal open={isProvidersOpen} onOpenChange={setIsProvidersOpen} />
       <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
-      <div className="flex-1 flex justify-center" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className="flex-1 flex justify-center" style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}>
         {hasProviders && (
           <Button
             variant="outline"
@@ -74,7 +81,7 @@ export function Header({ hasProviders = true }: HeaderProps) {
           </Button>
         )}
       </div>
-      <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div className="flex items-center gap-2" style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}>
         {hasProviders && (
           <Button
             variant="ghost"
@@ -98,4 +105,3 @@ export function Header({ hasProviders = true }: HeaderProps) {
     </header>
   );
 }
-
