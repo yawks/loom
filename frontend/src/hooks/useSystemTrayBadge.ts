@@ -99,12 +99,15 @@ export function useSystemTrayBadge() {
     return total;
   }, [readStateByConversation, contacts]);
 
-  // Update system tray badge when unread count changes
+  // Update system tray badge when unread count changes — debounced to avoid
+  // hammering the macOS badge API during bulk sync (hundreds of messages arrive in burst).
   useEffect(() => {
-    updateSystemTrayBadge(totalUnreadCount).catch((error: unknown) => {
-      // Silently handle errors (e.g., if system tray is not available)
-      console.debug("Failed to update system tray badge:", error);
-    });
+    const timer = setTimeout(() => {
+      updateSystemTrayBadge(totalUnreadCount).catch((error: unknown) => {
+        console.debug("Failed to update system tray badge:", error);
+      });
+    }, 800);
+    return () => clearTimeout(timer);
   }, [totalUnreadCount]);
 }
 

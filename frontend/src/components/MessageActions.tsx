@@ -7,10 +7,10 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { useTranslation } from "react-i18next";
 import { ReactionPicker } from "./ReactionPicker";
+import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import { useTranslation } from "react-i18next";
 
 interface MessageActionsProps {
   isFromMe: boolean;
@@ -30,7 +30,6 @@ interface MessageActionsProps {
 
 export function MessageActions({
   isFromMe,
-  hasAttachments,
   onEdit,
   onDelete,
   onReply,
@@ -54,7 +53,7 @@ export function MessageActions({
   const canBeOpen = !messageId || openActionsMessageId === messageId;
   // Close popover automatically when message loses focus
   const open = internalOpen && canBeOpen;
-  
+
   // Close popover when message loses focus
   // Use a ref to track if we should close to avoid setState in effect warning
   const shouldCloseRef = useRef(false);
@@ -124,19 +123,17 @@ export function MessageActions({
           </PopoverTrigger>
           <PopoverContent className="w-40 p-1 border" align="end">
             <div className="flex flex-col">
-              {!hasAttachments && (
-                <Button
-                  variant="ghost"
-                  className="justify-start gap-2 h-9"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onEdit();
-                  }}
-                >
-                  <Edit className="h-4 w-4" />
-                  {t("edit_message")}
-                </Button>
-              )}
+              <Button
+                variant="ghost"
+                className="justify-start gap-2 h-9"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit();
+                }}
+              >
+                <Edit className="h-4 w-4" />
+                {t("edit_message")}
+              </Button>
               <Button
                 variant="ghost"
                 className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"

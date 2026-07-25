@@ -70,6 +70,8 @@
   "providers_modal_edit": "Edit",
   "providers_modal_remove": "Remove",
   "providers_modal_removing": "Removing...",
+  "providers_modal_sync": "Synchronize",
+  "providers_modal_syncing": "Synchronizing...",
   "providers_modal_available_title": "Available Providers",
   "providers_modal_available_description": "Click on a provider to configure it.",
   "providers_modal_configured_badge": "Configured",
@@ -211,5 +213,6 @@
   "creating": "Creating...",
   "all": "All",
   "no_unread_messages": "No unread messages",
-  "view_recent": "View recent messages"
+  "view_recent": "View recent messages",
+  "scroll_to_bottom": "Go to latest message"
 }

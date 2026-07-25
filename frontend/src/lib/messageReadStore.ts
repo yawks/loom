@@ -56,6 +56,7 @@ interface MessageReadStore {
    *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
+  registerBatchMessages: (messages: models.Message[]) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
 }
@@ -223,11 +224,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
 
-      // Only keep messages that exist in the current conversation
-      // This cleans up messages that were deleted, filtered out, or no longer exist
+      // Only keep messages that exist in the current conversation.
+      // Special keys (prefixed with "_", e.g. _lastReadTS) are always preserved.
       if (existingState) {
         Object.keys(existingState).forEach((messageId) => {
-          if (existingMessageIds.has(messageId)) {
+          if (messageId.startsWith("_") || existingMessageIds.has(messageId)) {
             nextState[messageId] = existingState[messageId];
           } else {
             removedCount++;
@@ -244,11 +245,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         }
 
         if (nextState[messageId] === undefined) {
-          // Call messages are always marked as read (they don't count as unread messages)
-          // They have their own badge indicator
           const isCallMessage = message.callType && message.callType.trim() !== "";
-          if (isCallMessage) {
-            nextState[messageId] = true; // Call messages are always marked as read
+          if (isCallMessage || message.isFromMe) {
+            nextState[messageId] = true;
           } else {
             // Always check lastReadTS from provider to determine read state
             // This ensures we use provider's own read markers rather than guessing
@@ -554,8 +553,6 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         isRead = !hasExisting;
       }
 
-      console.log(`messageReadStore: registerIncomingMessage - ${conversationId}:${messageId}, isRead: ${isRead} (lastReadTS: ${lastReadTS || 'none'})`);
-      
       const updatedConversation: ConversationReadState = {
         ...existingState,
         [messageId]: isRead,
@@ -564,11 +561,44 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         ...state.readByConversation,
         [conversationId]: updatedConversation,
       };
-      persistState(updatedMap);
-      const unreadCount = Object.values(updatedConversation).filter(r => !r).length;
-      console.log(`messageReadStore: Updated conversation ${conversationId}, unread count: ${unreadCount}`);
-      console.log(`messageReadStore: Conversation state:`, Object.entries(updatedConversation).slice(0, 5).map(([msgId, isRead]) => `${msgId}: ${isRead ? 'read' : 'unread'}`));
+      persistStateDebounced(updatedMap);
       return { readByConversation: updatedMap };
+    });
+  },
+  registerBatchMessages: (messages: models.Message[]) => {
+    if (messages.length === 0) return;
+    set((state) => {
+      const updatedReadByConversation = { ...state.readByConversation };
+      for (const message of messages) {
+        const conversationId = message.protocolConvId;
+        if (!conversationId) continue;
+        const messageId = getMessageIdentifier(message);
+        if (!messageId) continue;
+
+        const existingState = updatedReadByConversation[conversationId] || {};
+        if (existingState[messageId] !== undefined) continue;
+
+        const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
+        let isRead: boolean;
+        const isCallMessage = message.callType && message.callType.trim() !== "";
+        if (isCallMessage || message.isFromMe) {
+          isRead = true;
+        } else if (lastReadTS) {
+          const lastReadTimestamp = parseFloat(lastReadTS);
+          const messageDate = timeToDate(message.timestamp);
+          isRead = !isNaN(lastReadTimestamp) ? messageDate <= new Date(lastReadTimestamp * 1000) : true;
+        } else {
+          const hasExisting = Object.keys(existingState).filter(k => !k.startsWith("_")).length > 0;
+          isRead = !hasExisting;
+        }
+
+        updatedReadByConversation[conversationId] = {
+          ...existingState,
+          [messageId]: isRead,
+        };
+      }
+      persistStateDebounced(updatedReadByConversation);
+      return { readByConversation: updatedReadByConversation };
     });
   },
   clearConversation: (conversationId) => {
@@ -599,9 +629,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
       
-      // Only keep messages that are in the valid set
+      // Only keep messages that are in the valid set. Special keys (_lastReadTS etc.) are always preserved.
       Object.keys(existingState).forEach((messageId) => {
-        if (validMessageIds.has(messageId)) {
+        if (messageId.startsWith("_") || validMessageIds.has(messageId)) {
           nextState[messageId] = existingState[messageId];
         } else {
           removedCount++;

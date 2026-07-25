@@ -384,6 +384,13 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	}
 
 	// Not enough messages in database or beforeTimestamp/sinceTimestamp specified, fetch from Slack API
+
+	// Compute self name before acquiring the lock so we can detect corruption in convertMessage.
+	p.mu.RLock()
+	selfUserIDForCheck := p.selfUserID
+	p.mu.RUnlock()
+	selfNameForCheck, _ := p.resolveUserInfo(selfUserIDForCheck)
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -465,6 +472,32 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 
 	for _, msg := range history.Messages {
 		convertedMsg := p.convertMessage(msg, actualChannelID)
+
+		// Detect corruption: a non-self sender resolved to our own name via the DB cache.
+		// p.client is stable here (we hold the read lock), so we call the API directly.
+		if !convertedMsg.IsFromMe && selfNameForCheck != "" && convertedMsg.SenderName == selfNameForCheck && convertedMsg.SenderID != "" {
+			if user, err := p.client.GetUserInfo(convertedMsg.SenderID); err == nil && user != nil {
+				name := user.RealName
+				if name == "" {
+					name = user.Profile.DisplayName
+				}
+				if name == "" {
+					name = user.Name
+				}
+				if name != "" && name != convertedMsg.SenderID {
+					convertedMsg.SenderName = name
+					if user.Profile.Image512 != "" {
+						convertedMsg.SenderAvatarURL = user.Profile.Image512
+					} else if user.Profile.Image48 != "" {
+						convertedMsg.SenderAvatarURL = user.Profile.Image48
+					}
+					// Persist asynchronously to avoid recursive mutex acquisition.
+					senderID := convertedMsg.SenderID
+					go p.saveUserNameToCache(senderID, name, convertedMsg.SenderAvatarURL)
+				}
+			}
+		}
+
 		messages = append(messages, convertedMsg)
 
 		// Check if this message has a thread (has replies)
@@ -667,12 +700,14 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 				if msg.Body == "" && existingMsg.Body != "" {
 					msg.Body = existingMsg.Body
 				}
+				// Preserve ThreadID: RTM/socket echoes arrive without thread_ts, which would
+				// overwrite the correct value set by SendMessage and erase the thread association.
+				if msg.ThreadID == nil && existingMsg.ThreadID != nil {
+					msg.ThreadID = existingMsg.ThreadID
+				}
 				updateMessages = append(updateMessages, msg)
-				p.log("SlackProvider.storeMessagesForConversation: Will update message %s (existing attachments length: %d, new: %d)\n", msg.ProtocolMsgID, len(existingMsg.Attachments), len(msg.Attachments))
 			} else {
-				// New message
 				newMessages = append(newMessages, msg)
-				p.log("SlackProvider.storeMessagesForConversation: Will create new message %s (attachments length: %d)\n", msg.ProtocolMsgID, len(msg.Attachments))
 			}
 		}
 
@@ -706,6 +741,43 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 	}
 
 	return len(messages)
+}
+
+// lookbackSyncConversation fetches messages from the Slack API in the half-open window
+// (since, before) and returns only those that were absent from the local database —
+// i.e. messages that were missed during the forward-only incremental sync because they
+// were delivered to (and read by) another client before this sync ran.
+func (p *SlackProvider) lookbackSyncConversation(convID string, before, since time.Time) ([]models.Message, error) {
+	if db.DB == nil {
+		return nil, nil
+	}
+
+	// Snapshot ProtocolMsgIDs already stored for this window so we can identify newcomers.
+	normalizedID := p.normalizeDMConversationID(convID)
+	var existingIDs []string
+	db.DB.Model(&models.Message{}).
+		Where("protocol_conv_id = ? AND timestamp > ? AND timestamp < ? AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)",
+			normalizedID, since, before).
+		Pluck("protocol_msg_id", &existingIDs)
+	existingSet := make(map[string]bool, len(existingIDs))
+	for _, id := range existingIDs {
+		existingSet[id] = true
+	}
+
+	// Call the API for the window. GetConversationHistory stores any missing messages in DB.
+	allMessages, err := p.GetConversationHistory(convID, 1000, &before, &since)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return only messages that were not in the DB before this call.
+	var missed []models.Message
+	for _, msg := range allMessages {
+		if !existingSet[msg.ProtocolMsgID] {
+			missed = append(missed, msg)
+		}
+	}
+	return missed, nil
 }
 
 // attachmentFromSlackFile converts a slack.File into a models.Attachment.
@@ -1120,7 +1192,6 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		attachmentsBytes, err := json.Marshal(attachments)
 		if err == nil {
 			attachmentsJSON = string(attachmentsBytes)
-			p.log("SlackProvider.convertMessage: Serialized %d attachments to JSON (length: %d)\n", len(attachments), len(attachmentsJSON))
 		} else {
 			p.log("SlackProvider.convertMessage: Failed to marshal attachments: %v\n", err)
 		}
@@ -1403,6 +1474,45 @@ func (p *SlackProvider) getUserNameFromCache(userID string) (string, string) {
 	return "", ""
 }
 
+// fetchSenderInfoFromAPI fetches a user's display name and avatar directly from the
+// Slack API, bypassing all local caches. It persists the result to the DB cache so
+// subsequent loads are clean.
+func (p *SlackProvider) fetchSenderInfoFromAPI(userID string) (string, string) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil || userID == "" {
+		return "", ""
+	}
+
+	user, err := client.GetUserInfo(userID)
+	if err != nil || user == nil {
+		return "", ""
+	}
+
+	name := user.RealName
+	if name == "" {
+		name = user.Profile.DisplayName
+	}
+	if name == "" {
+		name = user.Name
+	}
+
+	avatar := ""
+	if user.Profile.Image512 != "" {
+		avatar = user.Profile.Image512
+	} else if user.Profile.Image48 != "" {
+		avatar = user.Profile.Image48
+	}
+
+	if name != "" && name != userID {
+		p.saveUserNameToCache(userID, name, avatar)
+	}
+
+	return name, avatar
+}
+
 func (p *SlackProvider) enrichMessagesWithSenderInfo(messages []models.Message) {
 	if len(messages) == 0 {
 		return
@@ -1416,21 +1526,38 @@ func (p *SlackProvider) enrichMessagesWithSenderInfo(messages []models.Message) 
 		return
 	}
 
+	// Resolve self name once so we can detect corrupted messages where a
+	// non-self message has been stored with the current user's name.
+	selfName, _ := p.resolveUserInfo(p.selfUserID)
+
 	for i := range messages {
 		msg := &messages[i]
 
-		// Only enrich if missing
-		if msg.SenderName != "" && msg.SenderAvatarURL != "" && msg.SenderName != msg.SenderID {
-			continue
-		}
-
-		// Only enrich if we have a SenderID
 		if msg.SenderID == "" {
 			continue
 		}
 
-		name, avatar := p.resolveUserInfo(msg.SenderID)
-		if name != "" && (msg.SenderName == "" || msg.SenderName == msg.SenderID) {
+		// Detect data corruption: message is not from us but carries our name.
+		corruptedName := !msg.IsFromMe && selfName != "" && msg.SenderName == selfName
+
+		// Skip enrichment only when the stored data looks fully correct.
+		if !corruptedName && msg.SenderName != "" && msg.SenderAvatarURL != "" && msg.SenderName != msg.SenderID {
+			continue
+		}
+
+		var name, avatar string
+		if corruptedName {
+			// Bypass DB cache: fetch directly from Slack API to get the real name.
+			name, avatar = p.fetchSenderInfoFromAPI(msg.SenderID)
+		} else {
+			name, avatar = p.resolveUserInfo(msg.SenderID)
+			// The DB cache itself may be corrupted: a non-self sender resolved to our own name.
+			if !msg.IsFromMe && selfName != "" && name == selfName {
+				name, avatar = p.fetchSenderInfoFromAPI(msg.SenderID)
+			}
+		}
+
+		if name != "" && (corruptedName || msg.SenderName == "" || msg.SenderName == msg.SenderID) {
 			msg.SenderName = name
 		}
 		if avatar != "" && msg.SenderAvatarURL == "" {

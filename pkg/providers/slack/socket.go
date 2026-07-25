@@ -106,6 +106,11 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
 		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
 	}
+	// For MPIM channels the channel name is an unresolved mpdm- slug at this point.
+	// Kick off an async resolution to replace it with participant display names.
+	if strings.Contains(strings.ToLower(displayName), "mpdm-") {
+		go p.resolveMPIMChannelAsync(ev.Channel)
+	}
 
 	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
 	normalizedConvID := p.normalizeDMConversationID(ev.Channel)
@@ -133,6 +138,13 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		}
 	}
 
+	// Build thread ID: non-empty thread_ts means this is part of a thread.
+	var socketThreadID *string
+	if ev.ThreadTimeStamp != "" {
+		ts := ev.ThreadTimeStamp
+		socketThreadID = &ts
+	}
+
 	// Basic message construction
 	msg := models.Message{
 		ProtocolConvID:  normalizedConvID,
@@ -145,6 +157,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		IsFromMe:        isFromMe,
 		Attachments:     "[]", // Handle attachments if any
 		CallType:        callType,
+		ThreadID:        socketThreadID,
 	}
 
 	// Check if this conversation already has messages in DB (to decide if we need an initial sync).

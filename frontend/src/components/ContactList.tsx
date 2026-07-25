@@ -221,13 +221,16 @@ export function ContactList() {
       const hasMatchingAccount = (contact.linkedAccounts ?? []).some(
         (account) => account.providerInstanceId === selectedProviderFilter
       );
-      if (!hasMatchingAccount) {
-        //console.log(`[ContactList] Contact ${contact.displayName} filtered out - no linkedAccount with providerInstanceId=${selectedProviderFilter}. Available:`,
-        //contact.linkedAccounts.map(acc => ({ userId: acc.userId, providerInstanceId: acc.providerInstanceId })));
-      }
       return hasMatchingAccount;
     });
-    //console.log(`[ContactList] Filtered contacts: ${filtered.length} out of ${sortedContactsBase.length} for providerInstanceId=${selectedProviderFilter}`);
+    console.log(`[FILTER DEBUG] filter=${selectedProviderFilter} → ${filtered.length}/${sortedContactsBase.length} contacts`);
+    if (filtered.length > 0) {
+      const sample = filtered.slice(0, 3).map(c => ({
+        name: c.displayName,
+        accounts: c.linkedAccounts.map(a => `${a.providerInstanceId}/${a.userId?.slice(0, 12)}`),
+      }));
+      console.log("[FILTER DEBUG] sample:", sample);
+    }
     return filtered;
   }, [sortedContactsBase, selectedProviderFilter]);
 
@@ -363,9 +366,9 @@ export function ContactList() {
 
   if (contacts.length === 0) {
     return (
-      <div className="flex flex-col h-full">
-        <div className="p-2 border-b">
-          <h2 className="text-lg font-semibold">{t("conversations")}</h2>
+      <div className="contact-list flex flex-col h-full bg-sidebar text-sidebar-foreground">
+        <div className="contact-list__header px-3 py-3 border-b border-sidebar-border">
+          <h2 className="text-sm font-semibold text-sidebar-foreground">{t("conversations")}</h2>
         </div>
         <div className="flex-1"></div>
       </div>
@@ -373,85 +376,71 @@ export function ContactList() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-2 border-b space-y-2">
+    <div className="contact-list flex flex-col h-full bg-sidebar text-sidebar-foreground">
+      <div className="contact-list__header px-3 pt-3 pb-2 border-b border-sidebar-border space-y-2">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">{t("conversations")}</h2>
+          <h2 className="text-sm font-semibold text-sidebar-foreground">{t("conversations")}</h2>
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded shrink-0 hover:bg-muted/50"
+            className="h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
             onClick={() => setIsNewConversationModalOpen(true)}
             title={t("new_conversation")}
           >
-            <MessageSquarePlus className="h-4 w-4" />
+            <MessageSquarePlus className="h-3.5 w-3.5" />
           </Button>
         </div>
-        <div className="flex gap-1 sidebar-buttons-container">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`flex-1 text-xs group relative ${
+        {/* Sort tabs — icon only */}
+        <div className="contact-list__sort-tabs flex gap-1">
+          <button
+            className={cn(
+              "contact-list__sort-tab flex-1 h-7 flex items-center justify-center rounded-md text-xs transition-colors",
               sortBy === "alphabetical"
-                ? "bg-muted/50 hover:bg-muted/70"
-                : "hover:bg-muted/30"
-            }`}
+                ? "bg-sidebar-active text-sidebar-active-foreground"
+                : "text-sidebar-muted-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            )}
             onClick={() => setSortBy("alphabetical")}
             title={t("alphabetical") || "Alphabetical"}
           >
-            <ArrowDownAZ className="h-3 w-3 sidebar-button-icon mr-1" />
-            <span className="sidebar-button-label">A-Z</span>
-            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-              {t("alphabetical") || "Alphabetical"}
-            </span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`flex-1 text-xs group relative ${
+            <ArrowDownAZ className="h-3.5 w-3.5" />
+          </button>
+          <button
+            className={cn(
+              "contact-list__sort-tab flex-1 h-7 flex items-center justify-center rounded-md text-xs transition-colors",
               sortBy === "last_message"
-                ? "bg-muted/50 hover:bg-muted/70"
-                : "hover:bg-muted/30"
-            }`}
+                ? "bg-sidebar-active text-sidebar-active-foreground"
+                : "text-sidebar-muted-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            )}
             onClick={() => setSortBy("last_message")}
             title={t("recent") || "Recent"}
           >
-            <Clock className="h-3 w-3 sidebar-button-icon mr-1" />
-            <span className="sidebar-button-label">{t("recent") || "Recent"}</span>
-            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-              {t("recent") || "Recent"}
-            </span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`flex-1 text-xs group relative ${
+            <Clock className="h-3.5 w-3.5" />
+          </button>
+          <button
+            className={cn(
+              "contact-list__sort-tab flex-1 h-7 flex items-center justify-center rounded-md text-xs transition-colors relative",
               sortBy === "unread"
-                ? "bg-muted/50 hover:bg-muted/70"
-                : "hover:bg-muted/30"
-            }`}
+                ? "bg-sidebar-active text-sidebar-active-foreground"
+                : "text-sidebar-muted-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            )}
             onClick={() => setSortBy("unread")}
             title={t("unread") || "Unread"}
           >
-            <Inbox className="h-3 w-3 sidebar-button-icon mr-1" />
-            <span className="sidebar-button-label">{t("unread") || "Unread"}</span>
+            <Inbox className="h-3.5 w-3.5" />
             {totalUnreadCount > 0 && (
-              <span className="ml-1 inline-flex min-w-[1.25rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white leading-none">
+              <span className="absolute -top-1 -right-1 h-3.5 min-w-3.5 px-0.5 rounded-full bg-blue-600 dark:bg-blue-500 text-white text-[9px] font-bold leading-3.5 text-center">
                 {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
               </span>
             )}
-            <span className="sidebar-button-tooltip absolute left-full ml-2 px-2 py-1 bg-popover text-popover-foreground text-xs rounded-md shadow-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-              {t("unread") || "Unread"}
-            </span>
-          </Button>
+          </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto scroll-area">
-        <div className="space-y-1 p-2">
+      <div className="contact-list__scroll flex-1 overflow-y-auto scroll-area">
+        <div className="space-y-0.5 py-2 px-1">
           {sortBy === "unread" && filteredContacts.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center">
-              <Inbox className="h-12 w-12 text-muted-foreground/30 mb-4" />
-              <p className="text-sm text-muted-foreground mb-4">
+              <Inbox className="h-12 w-12 text-sidebar-muted-foreground/30 mb-4" />
+              <p className="text-sm text-sidebar-muted-foreground mb-4">
                 {t("no_unread_messages") || "Pas de messages non lus"}
               </p>
               <Button
@@ -476,50 +465,32 @@ export function ContactList() {
             const messageCount = messageCountByConversation[conversationId] ?? 0;
             const isEmptyDuringSync = syncStatus === "syncing" && messageCount === 0;
 
-            // Check if contact is online (only for DM, not groups)
             const isGroup = contact.linkedAccounts[0]?.isGroup;
 
-            // Helper to check if any account in the presence map is online
             const checkPresenceMatch = () => {
-              if (isGroup) {
-                return false;
-              }
-
-              // 1. Check if any linkedAccount has status "online" (from provider metadata)
+              if (isGroup) return false;
               const statusMatch = contact.linkedAccounts.some(
                 (account) => account.status === "online"
               );
-              if (statusMatch) {
-                return true;
-              }
-
-              // 2. Check presence map for any of the linked accounts
-              const presenceMatch = contact.linkedAccounts.some(
+              if (statusMatch) return true;
+              return contact.linkedAccounts.some(
                 (account) => presenceMap[account.userId] === true
               );
-              
-              return presenceMatch;
             };
 
             const isOnline = checkPresenceMatch();
-            //console.log(`[ContactList] Final isOnline status for ${contact.displayName}: ${isOnline}`);
-
-            // Check if this contact represents the current user
-            // In DMs, we typically don't see ourselves, but check anyway
-            // We'll identify current user by checking if any linkedAccount userId appears in presence
-            // as being from "me" - but since presence doesn't track "me", we'll skip this check for now
-            // and rely on the fact that DMs don't show self-contacts
-            const isCurrentUser = false; // TODO: Implement proper current user detection if needed
+            const isCurrentUser = false;
 
             return (
               <div
                 key={contact.id}
                 className={cn(
-                  "flex items-center space-x-3 p-2 rounded-lg cursor-pointer transition-colors border border-transparent",
-                  "hover:bg-muted",
-                  isSelected && "ring-1 ring-primary/40",
+                  "contact-list__item flex items-center space-x-3 px-2 py-2 rounded-lg cursor-pointer transition-colors",
+                  isSelected
+                    ? "bg-sidebar-active text-sidebar-active-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-hover",
                   isEmptyDuringSync && "opacity-50",
-                  unreadCount > 0 && !isSelected && "bg-muted/50"
+                  !isSelected && unreadCount > 0 && "bg-sidebar-hover/60"
                 )}
                 onClick={() => setSelectedContact(contact)}
               >
@@ -560,7 +531,7 @@ export function ContactList() {
                     if (status === "meeting") {
                       return (
                     <div
-                          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
+                          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-sidebar flex items-center justify-center"
                           title={t("meeting") || "En réunion"}
                         >
                           <Calendar className="h-2 w-2 text-white" />
@@ -596,54 +567,55 @@ export function ContactList() {
                     
                     return (
                       <div
-                        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-background`}
+                        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-sidebar`}
                         title={titleText}
                     />
                     );
                   })()}
                   {isTyping && (
                     <div
-                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-background animate-pulse"
+                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-sidebar animate-pulse"
                       title={t("typing_indicator_title")}
                     />
                   )}
                 </div>
-                <div className="flex flex-col flex-1 min-w-0">
+                <div className="contact-list__item-content flex flex-col flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                  <span className={cn(
-                    "text-sm font-medium truncate",
-                    unreadCount > 0 && "font-bold text-foreground"
-                  )}>
-                    {contact.displayName}
-                  </span>
-                  <div className="ml-auto flex items-center gap-1.5">
-                    {hasActiveCallByConversation[conversationId] && (
-                      <div
-                        className="inline-flex items-center justify-center rounded-full bg-orange-600 dark:bg-orange-500 p-1.5"
-                        title={t("call.activeCall")}
-                        aria-label={t("call.activeCall")}
-                      >
-                        <Phone className="h-3 w-3 text-white" />
-                      </div>
-                    )}
-                    {unreadCount > 0 && (
-                      <span
-                        className="inline-flex min-w-[1.75rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-2 py-0.5 text-[11px] font-semibold text-white"
-                        aria-label={t("unread_badge_aria", {
-                          count: unreadCount,
-                        })}
-                      >
-                        {displayUnreadCount}
-                      </span>
-                    )}
-                  </div>
+                    <span className={cn(
+                      "contact-list__item-name text-sm truncate",
+                      unreadCount > 0 ? "font-semibold" : "font-medium"
+                    )}>
+                      {contact.displayName}
+                    </span>
+                    <div className="ml-auto flex items-center gap-1.5 shrink-0">
+                      {hasActiveCallByConversation[conversationId] && (
+                        <div
+                          className="inline-flex items-center justify-center rounded-full bg-orange-600 dark:bg-orange-500 p-1.5"
+                          title={t("call.activeCall")}
+                          aria-label={t("call.activeCall")}
+                        >
+                          <Phone className="h-3 w-3 text-white" />
+                        </div>
+                      )}
+                      {unreadCount > 0 && (
+                        <span
+                          className="contact-list__unread-badge inline-flex min-w-[1.5rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                          aria-label={t("unread_badge_aria", { count: unreadCount })}
+                        >
+                          {displayUnreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {/* Last message preview */}
                   {(() => {
                     const lastMessage = lastMessages[conversationId];
                     if (lastMessage?.body) {
                       return (
-                        <div className="text-xs text-muted-foreground mt-0.5 text-left overflow-hidden whitespace-nowrap text-ellipsis">
+                        <div className={cn(
+                          "contact-list__item-preview text-xs mt-0.5 text-left overflow-hidden whitespace-nowrap text-ellipsis",
+                          isSelected ? "opacity-75" : "text-sidebar-muted-foreground"
+                        )}>
                           <MessageText
                             text={lastMessage.body}
                             providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}

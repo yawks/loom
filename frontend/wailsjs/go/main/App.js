@@ -150,6 +150,10 @@ export function RemoveReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['RemoveReaction'](arg1, arg2, arg3);
 }
 
+export function SaveAttachmentToFile(arg1, arg2) {
+  return window['go']['main']['App']['SaveAttachmentToFile'](arg1, arg2);
+}
+
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }

@@ -563,6 +563,12 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
 					}
+				case core.MessageBatchEvent:
+					a.invalidateMessageCaches()
+					batchJSON, _ := json.Marshal(e)
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "new-messages-batch", string(batchJSON))
+					}
 				case core.ReactionEvent:
 					// Basic DB saving/removing for reactions
 					if db.DB != nil {
@@ -922,6 +928,7 @@ func (a *App) emitContactsRefresh() {
 	}
 	a.contactsRefreshTimer = time.AfterFunc(500*time.Millisecond, func() {
 		a.invalidateMetaContactsCache()
+		a.invalidateMessageCaches()
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
 		}
@@ -1069,18 +1076,17 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 		return []models.Message{}, err
 	}
 
-	// If no messages found in DB, try to fetch from provider
-	// This handles the case where we just synced the conversation list but haven't synced messages yet
-	if len(messages) == 0 && a.getActiveProvider() != nil {
-		// We use a limit of 50 to match the DB query
-		fetchedMessages, err := a.getActiveProvider().GetConversationHistory(conversationID, 50, nil, nil)
-		if err == nil && len(fetchedMessages) > 0 {
-			return fetchedMessages, nil
-		}
-		// If fetch fails or returns empty, just return the empty list from DB
-		// (logging the error might be noisy if it's just a wrong provider or permission issue)
-		if err != nil {
-			fmt.Printf("GetMessagesForConversation: failed to fetch history from provider: %v\n", err)
+	// If no messages found in DB, try to fetch from the correct provider for this conversation.
+	if len(messages) == 0 {
+		if provider := a.getProviderForConversation(conversationID); provider != nil {
+			fetchedMessages, err := provider.GetConversationHistory(conversationID, 50, nil, nil)
+			if err == nil && len(fetchedMessages) > 0 {
+				a.enrichMessagesWithSenderNames(fetchedMessages)
+				return fetchedMessages, nil
+			}
+			if err != nil {
+				fmt.Printf("GetMessagesForConversation: failed to fetch history from provider: %v\n", err)
+			}
 		}
 	}
 
@@ -1271,11 +1277,14 @@ func (a *App) ConnectProvider(instanceID string) error {
 }
 
 func (a *App) RemoveProvider(instanceID string) error {
-	// Minimal impl
 	if a.providerManager == nil {
 		return fmt.Errorf("no pm")
 	}
-	return a.providerManager.RemoveProvider(instanceID)
+	if err := a.providerManager.RemoveProvider(instanceID); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
 }
 
 // Additional missing methods found in logs
@@ -1593,13 +1602,16 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 	a.lastMessagesCache.mu.RUnlock()
 
 	var messages []models.Message
+	// ROW_NUMBER() window function does a single pass over the partial index
+	// (protocol_conv_id, timestamp DESC WHERE deleted_at IS NULL), avoiding the
+	// double-scan of the previous self-join. GORM silently ignores the rn column.
 	err := db.DB.Raw(`
 		SELECT * FROM (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC) as rn
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC) AS rn
 			FROM messages
 			WHERE deleted_at IS NULL
 		) WHERE rn = 1
-	`).Preload("Reactions").Find(&messages).Error
+	`).Find(&messages).Error
 
 	if err != nil {
 		fmt.Printf("[GetAllLastMessages] Error: %v\n", err)
@@ -1854,6 +1866,47 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
+}
+
+// SaveAttachmentToFile fetches an attachment and saves it to a user-chosen location via native dialog.
+func (a *App) SaveAttachmentToFile(url string, fileName string) error {
+	dataURL, err := a.GetAttachmentData(url)
+	if err != nil {
+		return fmt.Errorf("failed to fetch attachment: %w", err)
+	}
+
+	// Strip the "data:<mime>;base64," prefix
+	comma := strings.Index(dataURL, ",")
+	if comma < 0 {
+		return fmt.Errorf("invalid data URL format")
+	}
+	encoded := dataURL[comma+1:]
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return fmt.Errorf("failed to decode attachment data: %w", err)
+	}
+
+	// Ask the user where to save
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: fileName,
+		Title:           "Enregistrer le fichier",
+	})
+	if err != nil {
+		return fmt.Errorf("save dialog error: %w", err)
+	}
+	if savePath == "" {
+		return nil // user cancelled
+	}
+
+	// Ensure the extension is preserved when the OS strips it
+	if filepath.Ext(savePath) == "" && filepath.Ext(fileName) != "" {
+		savePath += filepath.Ext(fileName)
+	}
+
+	if err := os.WriteFile(savePath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	return nil
 }
 
 // UpdateSystemTrayBadge updates the system tray icon with a badge showing the unread message count.

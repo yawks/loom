@@ -78,29 +78,24 @@ export function ThreadView() {
     );
   }, [threadMessages]);
 
-  if (!selectedThreadId) {
-    return (
-      <div className="h-full flex items-center justify-center text-muted-foreground">
-        Select a thread to view
-      </div>
-    );
-  }
+  if (!selectedThreadId) return null;
 
   if (isLoading) {
     return (
-      <div className="h-full flex items-center justify-center text-muted-foreground">
-        Loading thread...
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        {t("loading") || "Loading…"}
       </div>
     );
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col" style={{ fontFamily: '"Inter Variable", Arial, Helvetica, sans-serif' }}>
-      <div className="p-4 border-b flex justify-between items-center shrink-0">
-        <h3 className="font-semibold" style={{ fontSize: '0.9375rem' }}>Thread</h3>
+    <div className="thread-view flex flex-col h-full overflow-hidden">
+      <div className="thread-view__header px-4 py-3 border-b flex items-center justify-between shrink-0">
+        <h3 className="thread-view__title font-semibold text-base">Thread</h3>
         <Button
           variant="ghost"
           size="icon"
+          className="h-8 w-8"
           onClick={handleClose}
         >
           <X className="h-4 w-4" />

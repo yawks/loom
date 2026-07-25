@@ -40,21 +40,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       },
       enabled: !!conversationId,
       initialData: { pages: [], pageParams: [] },
-      placeholderData: (previousData) => {
-        if (previousData?.pages && Array.isArray(previousData.pages)) return previousData;
-        return { pages: [], pageParams: [] };
-      },
-      structuralSharing: (oldData, newData) => {
-        if (
-          !newData ||
-          typeof newData !== "object" ||
-          !("pages" in newData) ||
-          !Array.isArray((newData as { pages: unknown }).pages)
-        ) {
-          return oldData || { pages: [], pageParams: [] };
-        }
-        return newData;
-      },
+      staleTime: 0,
       getNextPageParam: (lastPage, allPages) => {
         if (!lastPage || !Array.isArray(lastPage) || lastPage.length === 0) return undefined;
         if (!allPages || !Array.isArray(allPages)) return undefined;
@@ -79,7 +65,12 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     return data.pages
       .filter((page) => Array.isArray(page))
       .flat()
-      .map((m: models.Message) => m.protocolMsgId)
+      .map((m: models.Message) => {
+        const rKey = m.reactions?.length
+          ? m.reactions.map((r) => `${r.userId}${r.emoji}`).join("")
+          : "";
+        return rKey ? `${m.protocolMsgId}|${rKey}` : m.protocolMsgId;
+      })
       .join(",");
   }, [data]);
 
@@ -93,7 +84,10 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       if (id) seen.add(id);
       return true;
     });
-  }, [dataKey, data]);
+  // dataKey is a string derived from data's content — stable when content is identical,
+  // so this memo won't rerun when a background refetch returns the same messages.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataKey]);
 
   const messagesKey = useMemo(() => messages.map((m) => m.protocolMsgId).join(","), [messages]);
 
@@ -165,7 +159,9 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
         });
 
         messages.forEach((msg) => {
-          if (msg.senderId && msg.senderName?.trim()) namesMap.set(msg.senderId, msg.senderName);
+          if (msg.senderId && msg.senderName?.trim() && !namesMap.has(msg.senderId)) {
+            namesMap.set(msg.senderId, msg.senderName);
+          }
         });
 
         setParticipantNames(namesMap);

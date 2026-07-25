@@ -12,6 +12,15 @@ import (
 )
 
 func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) string {
+	// For own user, use the device's push name (WhatsApp profile display name)
+	if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil && !jid.IsEmpty() {
+		if jid.User == w.client.Store.ID.User {
+			if w.client.Store.PushName != "" && !isPhoneNumber(w.client.Store.PushName) {
+				return w.client.Store.PushName
+			}
+		}
+	}
+
 	// First, try to get contact info from whatsmeow's Contact store
 	// This is the recommended approach - let whatsmeow handle LID/PN mapping
 	if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil && !jid.IsEmpty() {

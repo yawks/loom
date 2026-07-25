@@ -59,6 +59,9 @@ func InitDatabase() error {
 	if err := db.Exec("PRAGMA cache_size=-32000").Error; err != nil { // 32 MB page cache
 		fmt.Printf("Warning: Failed to set cache_size: %v\n", err)
 	}
+	if err := db.Exec("PRAGMA mmap_size=134217728").Error; err != nil { // 128 MB memory-mapped I/O
+		fmt.Printf("Warning: Failed to set mmap_size: %v\n", err)
+	}
 
 	// Auto-migrate schemas
 	err = db.AutoMigrate(
@@ -115,6 +118,7 @@ func ensureIndices(db *gorm.DB) error {
 	}{
 		{"idx_linked_accounts_meta_contact_id", "linked_accounts", "meta_contact_id"},
 		{"idx_conversations_linked_account_id", "conversations", "linked_account_id"},
+		{"idx_conversations_protocol_conv_id", "conversations", "protocol_conv_id"},
 		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},
 		{"idx_reactions_message_id", "reactions", "message_id"},
 	}
@@ -125,6 +129,14 @@ func ensureIndices(db *gorm.DB) error {
 			fmt.Printf("Error creating index %s: %v\n", idx.Name, err)
 		}
 	}
+
+	// Partial index: covers only non-deleted messages, enabling an index-only
+	// scan for the GROUP BY + MAX(timestamp) pattern used in GetAllLastMessages.
+	err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_latest ON messages(protocol_conv_id, timestamp DESC) WHERE deleted_at IS NULL`).Error
+	if err != nil {
+		fmt.Printf("Error creating index idx_messages_conv_latest: %v\n", err)
+	}
+
 	return nil
 }
 

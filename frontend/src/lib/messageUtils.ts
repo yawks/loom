@@ -55,8 +55,12 @@ export function getSenderDisplayName(
   isFromMe: boolean,
   t: (key: string) => string
 ): string {
-  if (senderName && senderName.trim() && senderName !== senderId) return senderName;
-  if (isFromMe) return t("you") || "You";
+  if (isFromMe) {
+    // Use the real name when the backend resolved one; fall back to "you" for phone-number-only values
+    if (senderName?.trim() && senderName !== senderId && /^\d+$/.exec(senderName) === null) return senderName;
+    return t("you") || "You";
+  }
+  if (senderName?.trim() && senderName !== senderId) return senderName;
 
   const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
   if (whatsappMatch) {

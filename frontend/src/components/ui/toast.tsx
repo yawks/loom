@@ -25,10 +25,10 @@ function ToastItem({ toast, onClose }: ToastProps) {
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border p-4 shadow-lg",
-        toast.type === "error" && "border-destructive bg-destructive/10 text-destructive",
-        toast.type === "success" && "border-green-500 bg-green-500/10 text-green-700 dark:text-green-400",
-        toast.type === "info" && "border-blue-500 bg-blue-500/10 text-blue-700 dark:text-blue-400"
+        "flex items-center gap-3 rounded-lg border p-4 shadow-lg bg-background text-foreground",
+        toast.type === "error" && "border-destructive bg-red-100 dark:bg-red-950 text-destructive",
+        toast.type === "success" && "border-green-500 bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400",
+        toast.type === "info" && "border-blue-500 bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400"
       )}
     >
       <p className="text-sm font-medium">{toast.message}</p>
