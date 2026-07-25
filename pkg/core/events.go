@@ -9,6 +9,9 @@ type EventType string
 const (
 	// EventTypeMessage represents a new message event (text or file).
 	EventTypeMessage EventType = "message"
+	// EventTypeMessageBatch represents a batch of messages from an incremental sync pass.
+	// Used instead of N individual MessageEvents to avoid flooding the frontend.
+	EventTypeMessageBatch EventType = "message_batch"
 	// EventTypeReaction represents a reaction added/removed event.
 	EventTypeReaction EventType = "reaction"
 	// EventTypeTyping represents a typing indicator event.
@@ -43,6 +46,19 @@ type MessageEvent struct {
 // Type returns the event type for MessageEvent.
 func (e MessageEvent) Type() EventType {
 	return EventTypeMessage
+}
+
+// MessageBatchEvent carries multiple new messages from a single conversation sync pass.
+// The frontend processes these together to avoid per-message store and badge updates.
+type MessageBatchEvent struct {
+	InstanceID     string           `json:"instanceId"`
+	ConversationID string           `json:"conversationId"`
+	Messages       []models.Message `json:"messages"`
+}
+
+// Type returns the event type for MessageBatchEvent.
+func (e MessageBatchEvent) Type() EventType {
+	return EventTypeMessageBatch
 }
 
 // ReactionEvent represents a reaction to a message.

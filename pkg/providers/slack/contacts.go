@@ -117,6 +117,12 @@ func (p *SlackProvider) ResolveUserNames(userIDs []string) map[string]string {
 		return result
 	}
 
+	// Resolve self name once so we can detect corrupted cache entries.
+	p.mu.RLock()
+	selfUserID := p.selfUserID
+	p.mu.RUnlock()
+	selfName, _ := p.getUserNameFromCache(selfUserID)
+
 	// Fetch user info from Slack API for missing IDs
 	for _, userID := range userIDs {
 		// Skip if empty or already resolved
@@ -126,12 +132,16 @@ func (p *SlackProvider) ResolveUserNames(userIDs []string) map[string]string {
 
 		// Try to get from cache first
 		cachedName, _ := p.getUserNameFromCache(userID)
-		if cachedName != "" && cachedName != userID {
+
+		// Detect corruption: a non-self user ID cached with the self user's name.
+		cacheCorrupted := userID != selfUserID && selfName != "" && cachedName == selfName
+
+		if cachedName != "" && cachedName != userID && !cacheCorrupted {
 			result[userID] = cachedName
 			continue
 		}
 
-		// Fetch from Slack API
+		// Fetch from Slack API (cache miss or corruption detected)
 		user, err := client.GetUserInfo(userID)
 		if err == nil && user != nil {
 			// Determine display name
@@ -700,6 +710,16 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 				p.log("SlackProvider.updateMPIMNamesAsync: Batch-committed %d slug-resolved MPIMs\n", len(storeUpdates))
 				for _, la := range storeUpdates {
 					db.ContactStore.UpsertLinkedAccount(la)
+					// Also update the parent MetaContact.DisplayName.
+					if la.MetaContactID > 0 {
+						if mc, found := db.ContactStore.FindMetaContact(la.MetaContactID); found {
+							mc.DisplayName = la.Username
+							mc.UpdatedAt = now
+							db.DB.Model(&models.MetaContact{}).Where("id = ?", mc.ID).
+								Updates(map[string]interface{}{"display_name": la.Username, "updated_at": now})
+							db.ContactStore.UpsertMetaContact(mc)
+						}
+					}
 				}
 				// Slug-resolved MPIMs not yet in the store need individual creation (rare).
 				for _, r := range needCreate {
@@ -742,6 +762,10 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 	if db.DB == nil || userID == "" || username == "" {
 		return fmt.Errorf("invalid parameters for updateLinkedAccountName")
 	}
+	// Don't store the ID itself as the display name — it means resolution failed.
+	if username == userID {
+		return nil
+	}
 
 	now := time.Now()
 
@@ -755,6 +779,16 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 			return fmt.Errorf("failed to update LinkedAccount name: %w", err)
 		}
 		db.ContactStore.UpsertLinkedAccount(existing)
+		// Also update the parent MetaContact.DisplayName so the frontend reflects the resolved name.
+		if existing.MetaContactID > 0 {
+			if mc, found := db.ContactStore.FindMetaContact(existing.MetaContactID); found {
+				mc.DisplayName = username
+				mc.UpdatedAt = now
+				db.DB.Model(&models.MetaContact{}).Where("id = ?", mc.ID).
+					Updates(map[string]interface{}{"display_name": username, "updated_at": now})
+				db.ContactStore.UpsertMetaContact(mc)
+			}
+		}
 		return nil
 	}
 

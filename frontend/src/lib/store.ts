@@ -30,6 +30,7 @@ interface AppState {
   setSelectedUserId: (userId: string | null) => void;
   capabilities: Record<string, core.Capabilities>;
   setCapabilities: (instanceId: string, capabilities: core.Capabilities) => void;
+  removeCapabilities: (instanceId: string) => void;
   isTypingInInput: boolean;
   setIsTypingInInput: (isTyping: boolean) => void;
   // Navigation history
@@ -114,6 +115,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCapabilities: (instanceId, caps) => set((state) => ({
     capabilities: { ...state.capabilities, [instanceId]: caps }
   })),
+  removeCapabilities: (instanceId) => set((state) => {
+    const next = { ...state.capabilities };
+    delete next[instanceId];
+    return { capabilities: next };
+  }),
   isTypingInInput: false,
   setIsTypingInInput: (isTyping: boolean) => set({ isTypingInInput: isTyping }),
   selectedAvatarUrl: null,

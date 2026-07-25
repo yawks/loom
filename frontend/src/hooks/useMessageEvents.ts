@@ -41,6 +41,9 @@ export function useMessageEvents() {
   const registerIncomingMessage = useMessageReadStore(
     (state) => state.registerIncomingMessage
   );
+  const registerBatchMessages = useMessageReadStore(
+    (state) => state.registerBatchMessages
+  );
   const markAsReadByProtocolId = useMessageReadStore(
     (state) => state.markAsReadByProtocolId
   );
@@ -76,14 +79,10 @@ export function useMessageEvents() {
 
         registerIncomingMessage(message);
 
-        // Invalidate sort-order queries
-        // Note: Stop invalidating metaContacts here as it's expensive and rarely needed for a new message
-        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
-        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
-        queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
-        queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
-
         // Update last message in cache directly for immediate UI update
+        // Note: ContactList.tsx handles allLastMessages/Timestamps/activeCalls/allMessageCounts
+        // invalidation via its own new-message EventsOn handler with a 300ms debounce.
+        // Doing it here too (without debounce) would cause redundant refetches during bulk sync.
         if (conversationId) {
           queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
             ...(old || {}),
@@ -151,14 +150,6 @@ export function useMessageEvents() {
             queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
           }
         }
-
-        // Ensure selected chat reflects the new message if IDs differ (e.g. DMs)
-        if (state.isNewMessage && selectedContact) {
-          const selectedConvId = selectedContact.linkedAccounts[0]?.conversationId ?? selectedContact.linkedAccounts[0]?.userId;
-          if (selectedConvId && selectedConvId !== conversationId) {
-            queryClient.invalidateQueries({ queryKey: ["messages", selectedConvId] });
-          }
-        }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse message event:", error);
       }
@@ -168,7 +159,49 @@ export function useMessageEvents() {
       isMounted = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [queryClient, registerIncomingMessage, selectedContact]);
+  }, [queryClient, registerIncomingMessage]);
+
+  // Listen for batch message events (emitted during incremental sync instead of N individual events)
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.runtime) return;
+
+    let isMounted = true;
+    const unsubscribeBatch = EventsOn("new-messages-batch", (batchJSON: string) => {
+      if (!isMounted) return;
+      try {
+        const batch: { instanceId: string; conversationId: string; messages: models.Message[] } = JSON.parse(batchJSON);
+        if (!batch.messages?.length) return;
+
+        registerBatchMessages(batch.messages);
+
+        // Update last-message and timestamp caches in one pass per conversation
+        const lastMessageByConv: Record<string, models.Message> = {};
+        const lastTSByConv: Record<string, number> = {};
+        for (const message of batch.messages) {
+          const convId = message.protocolConvId;
+          if (convId) {
+            lastMessageByConv[convId] = message;
+            lastTSByConv[convId] = Math.floor(timeToDate(message.timestamp).getTime() / 1000);
+          }
+        }
+        queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
+          ...(old || {}),
+          ...lastMessageByConv,
+        }));
+        queryClient.setQueryData<Record<string, number>>(["allLastMessageTimestamps"], (old) => ({
+          ...(old || {}),
+          ...lastTSByConv,
+        }));
+      } catch (error) {
+        console.error("useMessageEvents: Failed to parse batch message event:", error);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      if (unsubscribeBatch) unsubscribeBatch();
+    };
+  }, [queryClient, registerBatchMessages]);
 
   // Listen for receipt events (read/delivery confirmations)
   useEffect(() => {

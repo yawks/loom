@@ -12,6 +12,7 @@ export namespace core {
 	    supportsPinConversation: boolean;
 	    supportsMuteConversation: boolean;
 	    supportsQRCodeAuth: boolean;
+	    nativeEmojiReactions: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
@@ -30,6 +31,7 @@ export namespace core {
 	        this.supportsPinConversation = source["supportsPinConversation"];
 	        this.supportsMuteConversation = source["supportsMuteConversation"];
 	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
+	        this.nativeEmojiReactions = source["nativeEmojiReactions"];
 	    }
 	}
 	export class ProviderInfo {

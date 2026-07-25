@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { Layers } from "lucide-react";
+import { Layers, Plus, Search, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -11,7 +10,6 @@ import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
 
-// Color variations for multiple instances of the same provider
 const COLOR_VARIATIONS = [
   { filter: "hue-rotate(0deg)" },
   { filter: "hue-rotate(60deg)" },
@@ -21,15 +19,32 @@ const COLOR_VARIATIONS = [
   { filter: "hue-rotate(300deg)" },
 ];
 
-export function ProviderFilterBar() {
-  const { t } = useTranslation();
-  const [configuredProviders, setConfiguredProviders] = useState<core.ProviderInfo[]>([]);
-  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
-  const setSelectedProviderFilter = useAppStore((state) => state.setSelectedProviderFilter);
-  const metaContacts = useAppStore((state) => state.metaContacts);
-  const readStateByConversation = useMessageReadStore((state) => state.readByConversation);
+interface ProviderFilterBarProps {
+  onOpenSearch: () => void;
+  onOpenProviders: () => void;
+  onOpenSettings: () => void;
+}
 
-  // Unread count per providerInstanceId
+export function ProviderFilterBar({
+  onOpenSearch,
+  onOpenProviders,
+  onOpenSettings,
+}: ProviderFilterBarProps) {
+  const { t } = useTranslation();
+  const [configuredProviders, setConfiguredProviders] = useState<
+    core.ProviderInfo[]
+  >([]);
+  const selectedProviderFilter = useAppStore(
+    (state) => state.selectedProviderFilter
+  );
+  const setSelectedProviderFilter = useAppStore(
+    (state) => state.setSelectedProviderFilter
+  );
+  const metaContacts = useAppStore((state) => state.metaContacts);
+  const readStateByConversation = useMessageReadStore(
+    (state) => state.readByConversation
+  );
+
   const unreadByInstance = useMemo(() => {
     const counts: Record<string, number> = {};
     metaContacts.forEach((contact) => {
@@ -43,7 +58,8 @@ export function ProviderFilterBar() {
         ([key, isRead]) => !key.startsWith("_") && !isRead
       ).length;
       if (unread > 0) {
-        counts[account.providerInstanceId] = (counts[account.providerInstanceId] ?? 0) + unread;
+        counts[account.providerInstanceId] =
+          (counts[account.providerInstanceId] ?? 0) + unread;
       }
     });
     return counts;
@@ -62,7 +78,6 @@ export function ProviderFilterBar() {
     loadProviders();
   }, []);
 
-  // Check if selected provider still exists when providers list changes
   useEffect(() => {
     if (selectedProviderFilter && configuredProviders.length > 0) {
       const providerExists = configuredProviders.some(
@@ -74,39 +89,28 @@ export function ProviderFilterBar() {
     }
   }, [configuredProviders, selectedProviderFilter, setSelectedProviderFilter]);
 
-  // Listen for provider changes (when providers are added/removed)
   useEffect(() => {
     const unsubscribe = EventsOn("contacts-refresh", () => {
-      // Refresh providers list when contacts are refreshed (usually means providers changed)
       loadProviders();
     });
-
     return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
+      if (unsubscribe) unsubscribe();
     };
   }, []);
 
-  // Group providers by providerId to determine color variations
   const providersByType = useMemo(() => {
     const groups: Record<string, core.ProviderInfo[]> = {};
     configuredProviders.forEach((provider) => {
       const key = provider.id;
-      if (!groups[key]) {
-        groups[key] = [];
-      }
+      if (!groups[key]) groups[key] = [];
       groups[key].push(provider);
     });
     return groups;
   }, [configuredProviders]);
 
-  // Get color variation for a provider instance
   const getColorVariation = (provider: core.ProviderInfo) => {
     const instances = providersByType[provider.id] || [];
-    if (instances.length <= 1) {
-      return null; // No variation needed for single instance
-    }
+    if (instances.length <= 1) return null;
     const index = instances.findIndex(
       (p) => (p.instanceId || p.id) === (provider.instanceId || provider.id)
     );
@@ -115,33 +119,47 @@ export function ProviderFilterBar() {
       : null;
   };
 
-  // Only show filter bar if there are 2+ providers
-  if (configuredProviders.length < 2) {
-    return null;
-  }
+  const totalUnread = Object.values(unreadByInstance).reduce(
+    (sum, n) => sum + n,
+    0
+  );
 
-  const totalUnread = Object.values(unreadByInstance).reduce((sum, n) => sum + n, 0);
+  const railButtonClass =
+    "provider-filter-bar__rail-btn h-9 w-9 flex items-center justify-center rounded-lg relative transition-colors hover:bg-white/10 text-sidebar-rail-foreground cursor-pointer border-0 bg-transparent";
 
   return (
-    <div className="provider-filter-bar flex flex-col items-center gap-2 p-2 border-r bg-muted/30">
-      {/* All button */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className={cn(
-          "provider-filter-bar__all-button h-10 w-10 relative",
-          selectedProviderFilter === null && "bg-primary/15 text-primary ring-1 ring-primary/40"
-        )}
-        onClick={() => setSelectedProviderFilter(null)}
-        title={t("all") || "All"}
-      >
-        <Layers className="h-5 w-5" />
-        {totalUnread > 0 && selectedProviderFilter !== null && (
-          <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
-            {totalUnread > 99 ? "99+" : totalUnread}
-          </span>
-        )}
-      </Button>
+    <div className="provider-filter-bar w-14 flex-none flex flex-col items-center gap-1 py-3 bg-sidebar-rail border-r border-black/20">
+      {/* App logo */}
+      <div className="provider-filter-bar__logo mb-2">
+        <img
+          src="/appicon.png"
+          alt="Loom"
+          className="h-8 w-8 rounded-lg opacity-90"
+        />
+      </div>
+
+      <div className="w-8 h-px bg-white/10 mb-1" />
+
+      {/* "All" button — only when 2+ providers */}
+      {configuredProviders.length >= 2 && (
+        <button
+          className={cn(
+            railButtonClass,
+            "provider-filter-bar__all-button",
+            selectedProviderFilter === null &&
+              "bg-white/15 text-white"
+          )}
+          onClick={() => setSelectedProviderFilter(null)}
+          title={t("all") || "All"}
+        >
+          <Layers className="h-5 w-5" />
+          {totalUnread > 0 && selectedProviderFilter !== null && (
+            <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
+              {totalUnread > 99 ? "99+" : totalUnread}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* Provider buttons */}
       {configuredProviders.map((provider) => {
@@ -152,13 +170,12 @@ export function ProviderFilterBar() {
         const unreadCount = unreadByInstance[instanceId] ?? 0;
 
         return (
-          <Button
+          <button
             key={instanceId}
-            variant="ghost"
-            size="icon"
             className={cn(
-              "provider-filter-bar__provider-button h-10 w-10 relative",
-              isSelected && "bg-primary/15 text-primary ring-1 ring-primary/40"
+              railButtonClass,
+              "provider-filter-bar__provider-button",
+              isSelected && "bg-white/15 text-white"
             )}
             onClick={() => setSelectedProviderFilter(instanceId)}
             title={displayName}
@@ -174,9 +191,37 @@ export function ProviderFilterBar() {
                 {unreadCount > 99 ? "99+" : unreadCount}
               </span>
             )}
-          </Button>
+          </button>
         );
       })}
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Bottom actions */}
+      <button
+        className={cn(railButtonClass, "provider-filter-bar__search-button")}
+        onClick={onOpenSearch}
+        title={t("search_placeholder") || "Search"}
+      >
+        <Search className="h-4 w-4" />
+      </button>
+
+      <button
+        className={cn(railButtonClass, "provider-filter-bar__providers-button")}
+        onClick={onOpenProviders}
+        title={t("providers") || "Providers"}
+      >
+        <Plus className="h-4 w-4" />
+      </button>
+
+      <button
+        className={cn(railButtonClass, "provider-filter-bar__settings-button")}
+        onClick={onOpenSettings}
+        title={t("settings") || "Settings"}
+      >
+        <Settings className="h-4 w-4" />
+      </button>
     </div>
   );
 }

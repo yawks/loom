@@ -78,6 +78,8 @@ export function RemoveProvider(arg1:string):Promise<void>;
 
 export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<void>;
+
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
 
 export function SendFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;

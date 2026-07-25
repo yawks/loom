@@ -14,14 +14,16 @@ import {
   GetAvailableProviders,
   GetConfiguredProviders,
   RemoveProvider,
+  SyncProvider,
 } from "../../wailsjs/go/main/App";
-import { MessageCircle, Settings, Trash2, Wine } from "lucide-react";
+import { MessageCircle, RefreshCw, Settings, Trash2, Wine } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { ProviderConfigForm } from "@/components/ProviderConfigForm";
 import type { core } from "../../wailsjs/go/models";
+import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 
 interface ProvidersModalProps {
@@ -46,7 +48,11 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [isRemoving, setIsRemoving] = useState<string | null>(null);
   const [providerToDelete, setProviderToDelete] = useState<string | null>(null);
+  const [syncingInstances, setSyncingInstances] = useState<Set<string>>(new Set());
   const prevOpenRef = useRef(false);
+  const selectedContact = useAppStore((state) => state.selectedContact);
+  const setSelectedContact = useAppStore((state) => state.setSelectedContact);
+  const removeCapabilities = useAppStore((state) => state.removeCapabilities);
 
   const refreshProviders = useCallback(async () => {
     setLoading(true);
@@ -58,12 +64,12 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       ]);
       setAvailableProviders(available);
       setConfiguredProviders(configured);
-      
+
       // Update selectedProvider if it exists to get the latest instanceId
       // Use a ref or state to avoid dependency issues
       setSelectedProvider(current => {
         if (!current) return current;
-        const updatedProvider = configured.find(p => 
+        const updatedProvider = configured.find(p =>
           (p.instanceId || p.id) === (current.instanceId || current.id)
         );
         return updatedProvider || current;
@@ -79,7 +85,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
     prevOpenRef.current = open;
-    
+
     if (open && !wasOpen) {
       // Modal just opened - reset to list view
       console.log("ProvidersModal: modal opened, refreshing providers");
@@ -97,10 +103,41 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       refreshProviders();
     }
   }, [open, refreshProviders]);
-  
+
   useEffect(() => {
     console.log("ProvidersModal: view changed to", view, "selectedProvider:", selectedProvider?.id);
   }, [view, selectedProvider]);
+
+  // Track syncing state per provider instance (for all instances, not just the selected one)
+  useEffect(() => {
+    if (!open) return;
+
+    const unsubscribe = EventsOn("sync-status", (payload: string) => {
+      try {
+        const raw = JSON.parse(payload);
+        const instanceId: string = raw.InstanceID || raw.instanceId || "";
+        const status: string = (raw.Status || raw.status || "").toLowerCase();
+
+        if (!instanceId) return;
+
+        if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
+          setSyncingInstances((prev) => new Set([...prev, instanceId]));
+        } else if (status === "completed" || status === "error") {
+          setSyncingInstances((prev) => {
+            const next = new Set(prev);
+            next.delete(instanceId);
+            return next;
+          });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open || view !== "config" || !selectedProvider) {
@@ -157,13 +194,16 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
 
   const handleRemoveConfirm = async () => {
     if (!providerToDelete) return;
-    
+
     setIsRemoving(providerToDelete);
     try {
       await RemoveProvider(providerToDelete);
-      // Refresh providers list
+      // Clear selected contact if it belongs to the removed provider
+      if (selectedContact?.linkedAccounts?.some((a) => a.providerInstanceId === providerToDelete)) {
+        setSelectedContact(null);
+      }
+      removeCapabilities(providerToDelete);
       await refreshProviders();
-      // The contacts will be refreshed automatically via the contacts-refresh event
       setProviderToDelete(null);
     } catch (err) {
       console.error("Failed to remove provider:", err);
@@ -175,6 +215,15 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
 
   const handleRemoveCancel = () => {
     setProviderToDelete(null);
+  };
+
+  const handleSync = async (provider: core.ProviderInfo) => {
+    const instanceId = provider.instanceId || provider.id;
+    try {
+      await SyncProvider(instanceId);
+    } catch (err) {
+      console.error("Failed to sync provider:", err);
+    }
   };
 
   const configuredIds = useMemo(() => new Set(configuredProviders.map((p) => p.id)), [configuredProviders]);
@@ -240,9 +289,9 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
     return iconContent;
   };
 
-  const providerToDeleteName = providerToDelete 
-    ? configuredProviders.find(p => (p.instanceId || p.id) === providerToDelete)?.instanceName || 
-      configuredProviders.find(p => (p.instanceId || p.id) === providerToDelete)?.name || 
+  const providerToDeleteName = providerToDelete
+    ? configuredProviders.find(p => (p.instanceId || p.id) === providerToDelete)?.instanceName ||
+      configuredProviders.find(p => (p.instanceId || p.id) === providerToDelete)?.name ||
       providerToDelete
     : "";
 
@@ -315,6 +364,15 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                         <Button variant="outline" className="flex items-center gap-2" onClick={() => handleEdit(provider)}>
                           <Settings className="h-4 w-4" />
                           {t("providers_modal_edit")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex items-center gap-2"
+                          onClick={() => handleSync(provider)}
+                          disabled={syncingInstances.has(provider.instanceId || provider.id)}
+                        >
+                          <RefreshCw className={`h-4 w-4 ${syncingInstances.has(provider.instanceId || provider.id) ? "animate-spin" : ""}`} />
+                          {syncingInstances.has(provider.instanceId || provider.id) ? t("providers_modal_syncing") : t("providers_modal_sync")}
                         </Button>
                         <Button
                           variant="ghost"

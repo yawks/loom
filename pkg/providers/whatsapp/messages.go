@@ -1597,29 +1597,33 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 			w.updateLinkedAccountName(msg.SenderID, msg.SenderName)
 		}
 
-		// Get sender avatar URL (only for messages not from me)
-		if !msg.IsFromMe && msg.SenderAvatarURL == "" {
-			// First, try to get avatar from cached conversations
-			w.mu.RLock()
-			if cached, exists := w.conversations[msg.SenderID]; exists && cached.AvatarURL != "" {
-				msg.SenderAvatarURL = cached.AvatarURL
-				w.mu.RUnlock()
+		// Get sender avatar URL
+		if msg.SenderAvatarURL == "" {
+			if msg.IsFromMe {
+				msg.SenderAvatarURL = w.getProfilePictureURL(senderJID)
 			} else {
-				w.mu.RUnlock()
+				// First, try to get avatar from cached conversations
+				w.mu.RLock()
+				if cached, exists := w.conversations[msg.SenderID]; exists && cached.AvatarURL != "" {
+					msg.SenderAvatarURL = cached.AvatarURL
+					w.mu.RUnlock()
+				} else {
+					w.mu.RUnlock()
 
-				// Check if avatar is already being loaded to avoid duplicate requests
-				w.avatarLoadingMu.Lock()
-				isLoading := w.avatarLoading[msg.SenderID]
-				if !isLoading {
-					w.avatarLoading[msg.SenderID] = true
+					// Check if avatar is already being loaded to avoid duplicate requests
+					w.avatarLoadingMu.Lock()
+					isLoading := w.avatarLoading[msg.SenderID]
+					if !isLoading {
+						w.avatarLoading[msg.SenderID] = true
+					}
+					w.avatarLoadingMu.Unlock()
+
+					// Skip synchronous avatar loading to avoid API spam and blocking
+					// Avatars will be loaded on-demand via RefreshContact or during initial sync
+					w.avatarLoadingMu.Lock()
+					delete(w.avatarLoading, msg.SenderID)
+					w.avatarLoadingMu.Unlock()
 				}
-				w.avatarLoadingMu.Unlock()
-
-				// Skip synchronous avatar loading to avoid API spam and blocking
-				// Avatars will be loaded on-demand via RefreshContact or during initial sync
-				w.avatarLoadingMu.Lock()
-				delete(w.avatarLoading, msg.SenderID)
-				w.avatarLoadingMu.Unlock()
 			}
 		}
 

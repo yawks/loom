@@ -1,6 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
-import type { VirtuosoHandle } from "react-virtuoso";
+import { cn, timeToDate } from "@/lib/utils";
+import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
@@ -13,8 +14,7 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
-import { cn, timeToDate } from "@/lib/utils";
-import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
+import type { VirtuosoHandle } from "react-virtuoso";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
@@ -87,8 +87,12 @@ export function MessageIRCItem({
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
 
-  const displayName = getSenderDisplayName(message.senderName, message.senderId, message.isFromMe, t);
+  const resolvedSenderName = (!message.isFromMe && message.senderId)
+    ? (participantNames.get(message.senderId) || message.senderName)
+    : message.senderName;
+  const displayName = getSenderDisplayName(resolvedSenderName, message.senderId, message.isFromMe, t);
   const senderColor = getColorFromString(message.senderId);
+
 
   const prevTimestamp = prevMessage ? timeToDate(prevMessage.timestamp) : null;
   const timeDiffMinutes = prevTimestamp
@@ -97,7 +101,6 @@ export function MessageIRCItem({
 
   const shouldShowSenderForDeleted = isDeleted && nextMessage?.senderId === message.senderId && nextMessage?.isFromMe === message.isFromMe;
   const showSender = !prevMessage || prevMessage.senderId !== message.senderId || prevMessage.isFromMe !== message.isFromMe || timeDiffMinutes >= 5 || shouldShowSenderForDeleted;
-
   const threadMessages = threadsByParent[message.protocolMsgId];
   const threadCount = threadMessages?.length ?? 0;
   const hasThread = threadCount > 0;

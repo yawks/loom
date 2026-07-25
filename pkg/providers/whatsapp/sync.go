@@ -114,7 +114,48 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 	// and emits SyncStatusCompleted once whatsmeow has finished delivering all events.
 	// No extra goroutine is needed here — it would only cause a redundant GetContacts call.
 
+	// On subsequent syncs, re-scan the lookback window so the contact list reflects any
+	// messages that were stored in a prior HistorySync but never individually emitted.
+	// WhatsApp does not expose a per-conversation history API, so we can only surface what
+	// is already in the local database — we cannot fetch truly missing messages from the server.
+	if lastSync != nil {
+		go w.lookbackSync()
+	}
+
 	return nil
+}
+
+// lookbackSync re-emits the most recent message per conversation for those that had
+// activity in the last 24 hours. This keeps contact-list previews and unread counts
+// consistent after a sync that only delivered partial history via HistorySync events.
+func (w *WhatsAppProvider) lookbackSync() {
+	if db.DB == nil {
+		return
+	}
+
+	lookbackSince := time.Now().Add(-24 * time.Hour)
+
+	type convRow struct {
+		ProtocolConvID string
+	}
+	var rows []convRow
+	db.DB.Model(&models.Message{}).
+		Select("DISTINCT protocol_conv_id").
+		Where("protocol_conv_id != '' AND timestamp > ?", lookbackSince).
+		Scan(&rows)
+
+	w.log("WhatsApp: lookbackSync: triggering contacts refresh for %d recent conversations\n", len(rows))
+
+	if len(rows) > 0 {
+		// Emit a single refresh event instead of one MessageEvent per conversation.
+		// MessageEvents would go through registerIncomingMessage on the frontend and be
+		// incorrectly marked as unread (no ConversationReadStatusEvent exists for WhatsApp).
+		// A contacts-refresh triggers GetAllLastMessages() which reads from DB directly.
+		select {
+		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "sync_complete"}:
+		default:
+		}
+	}
 }
 
 // convertHistoryReactions converts WhatsApp reaction data from history sync to our Reaction model.

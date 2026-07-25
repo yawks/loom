@@ -298,7 +298,7 @@ export function VoiceMessage({
 
         // Render waveform
         return (
-            <div className="flex items-center gap-[2px] h-8 w-full cursor-pointer" onClick={(e) => {
+            <div className="flex items-center gap-[2px] h-full w-full cursor-pointer" onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const percentage = x / rect.width;
@@ -366,7 +366,10 @@ export function VoiceMessage({
             </button>
 
             <div className="flex-1 flex flex-col gap-1 min-w-0">
-                {renderWaveform()}
+                {/* Fixed h-8 container so slider↔waveform swap doesn't change item height */}
+                <div className="h-8 flex items-center w-full">
+                  {renderWaveform()}
+                </div>
                 <div className={`flex justify-between text-xs ${isFromMe ? "text-white/70" : "text-muted-foreground"}`}>
                     <span>{formatTime(progress)}</span>
                     <span>{formatTime(duration)}</span>

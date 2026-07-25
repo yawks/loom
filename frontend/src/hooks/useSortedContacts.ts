@@ -6,10 +6,12 @@ import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+
 type SortOption = "alphabetical" | "last_message" | "unread";
 
 export function useSortedContacts(sortBy: SortOption = "last_message") {
   const metaContacts = useAppStore((state) => state.metaContacts);
+  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const { data: aliases = {} } = useQuery<Record<string, string>, Error>({
     queryKey: ["contactAliases"],
     queryFn: async () => {
@@ -97,10 +99,20 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
   const sortedContacts = useMemo(() => {
     let sorted = [...contactsWithAliases];
 
-    // Helper function to get the timestamp for sorting
+    // When a provider filter is active, only consider accounts from that provider.
+    // Without this, a contact with a recent message on provider B would appear in
+    // provider A's "Recent" tab because its max timestamp comes from provider B.
+    const getAccountsForTime = (contact: models.MetaContact): models.LinkedAccount[] => {
+      const accounts = contact.linkedAccounts ?? [];
+      if (!selectedProviderFilter) return accounts;
+      const filtered = accounts.filter((acc) => acc.providerInstanceId === selectedProviderFilter);
+      return filtered.length > 0 ? filtered : accounts;
+    };
+
+    // Helper function to get the timestamp for sorting.
     const getContactTime = (contact: models.MetaContact): number => {
       let maxTime = 0;
-      for (const acc of (contact.linkedAccounts ?? [])) {
+      for (const acc of getAccountsForTime(contact)) {
         // Try both conversationId and userId — they can differ (e.g. Slack DM channel D-prefix
         // vs normalized U-prefix), and we want the best match in lastMessageDates.
         const idsToCheck: string[] = [];
@@ -134,7 +146,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     }
 
     return sorted;
-  }, [contactsWithAliases, sortBy, lastMessageDates]);
+  }, [contactsWithAliases, sortBy, lastMessageDates, selectedProviderFilter]);
 
   return { sortedContacts, lastMessages };
 }

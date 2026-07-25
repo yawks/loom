@@ -70,6 +70,8 @@
   "providers_modal_edit": "Modifier",
   "providers_modal_remove": "Supprimer",
   "providers_modal_removing": "Suppression...",
+  "providers_modal_sync": "Synchroniser",
+  "providers_modal_syncing": "Synchronisation...",
   "providers_modal_available_title": "Fournisseurs disponibles",
   "providers_modal_available_description": "Cliquez sur un fournisseur pour le configurer.",
   "providers_modal_configured_badge": "Configuré",
@@ -211,5 +213,6 @@
   "creating": "Création...",
   "all": "Tous",
   "no_unread_messages": "Pas de messages non lus",
-  "view_recent": "Voir les messages récents"
+  "view_recent": "Voir les messages récents",
+  "scroll_to_bottom": "Aller au dernier message"
 }

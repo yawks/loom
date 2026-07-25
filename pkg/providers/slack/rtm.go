@@ -148,6 +148,11 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	if err := p.ensureConversationContact(ev.Channel, displayName); err != nil {
 		p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", ev.Channel, err)
 	}
+	// For MPIM channels the channel name is an unresolved mpdm- slug at this point.
+	// Kick off an async resolution to replace it with participant display names.
+	if strings.Contains(strings.ToLower(displayName), "mpdm-") {
+		go p.resolveMPIMChannelAsync(ev.Channel)
+	}
 
 	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
 	// Messages are stored under the normalized ID, so the event key must match to keep
@@ -213,6 +218,14 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		}
 	}
 
+	// Build thread ID: non-empty thread_ts that differs from the message's own ts
+	// means this is a reply; if equal it is the root message (handled by the filter).
+	var rtmThreadID *string
+	if ev.ThreadTimestamp != "" {
+		ts := ev.ThreadTimestamp
+		rtmThreadID = &ts
+	}
+
 	// Basic message construction
 	msg := models.Message{
 		ProtocolConvID:  normalizedConvID,
@@ -225,6 +238,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		IsFromMe:        isFromMe,
 		Attachments:     attachmentsJSON,
 		CallType:        callType,
+		ThreadID:        rtmThreadID,
 	}
 
 	// Create the event
@@ -294,7 +308,23 @@ func (p *SlackProvider) resolveUserInfo(userID string) (string, string) {
 	// First, try database cache
 	cachedName, cachedAvatar := p.getUserNameFromCache(userID)
 	if cachedName != "" && cachedName != userID {
-		return cachedName, cachedAvatar
+		// Guard against cache corruption: if a non-self user ID is cached with our
+		// own display name it means ensureConversationContact previously wrote the
+		// sender name instead of the peer name. Bypass the cache and re-fetch from
+		// the API (same pattern as ResolveUserNames).
+		p.mu.RLock()
+		selfUserID := p.selfUserID
+		p.mu.RUnlock()
+		if userID != selfUserID {
+			selfName, _ := p.getUserNameFromCache(selfUserID)
+			if selfName != "" && cachedName == selfName {
+				// Corrupted entry — fall through to API resolution below.
+				cachedName = ""
+			}
+		}
+		if cachedName != "" {
+			return cachedName, cachedAvatar
+		}
 	}
 
 	// Check memory cache
@@ -383,13 +413,10 @@ func (p *SlackProvider) resolveConversationName(conversationID string, fallback 
 		return fallback
 	}
 
-	// DMs: use sender name
+	// DMs: always resolve the peer's user ID first. The fallback may be the
+	// sender's own name (when we sent the message), which must never become the
+	// DM conversation name — the conversation should be named after the other person.
 	if strings.HasPrefix(conversationID, "D") {
-		if fallback != "" && !strings.HasPrefix(fallback, "U") {
-			return fallback
-		}
-
-		// Try to resolve user ID from DM channel ID
 		actualUserID := p.normalizeDMConversationID(conversationID)
 		if actualUserID != conversationID {
 			name, _ := p.resolveUserInfo(actualUserID)
@@ -398,6 +425,23 @@ func (p *SlackProvider) resolveConversationName(conversationID string, fallback 
 			}
 		}
 
+		// Only use the fallback when it is a display name (not a raw user ID).
+		if fallback != "" && !strings.HasPrefix(fallback, "U") && !strings.HasPrefix(fallback, "W") {
+			return fallback
+		}
+		if fallback != "" {
+			return fallback
+		}
+		return conversationID
+	}
+
+	// Already-normalized DM conv IDs (U.../W...): look up the user's display name directly.
+	// This happens when syncConversationHistory is called with the normalised peer user ID.
+	if strings.HasPrefix(conversationID, "U") || strings.HasPrefix(conversationID, "W") {
+		name, _ := p.resolveUserInfo(conversationID)
+		if name != "" && name != conversationID {
+			return name
+		}
 		if fallback != "" {
 			return fallback
 		}
@@ -625,11 +669,87 @@ func (p *SlackProvider) syncConversationHistory(conversationID string) {
 		p.ResolveUserNames(userIDs)
 	}
 
-	// Also make sure the conversation contact exists
+	// Also make sure the conversation contact exists.
+	// Guard: don't overwrite a previously resolved name with an unresolved fallback
+	// (the ID itself, or a raw mpdm- slug that hasn't been resolved yet).
 	conversationName := p.resolveConversationName(conversationID, "")
-	if conversationName != "" {
+	isGoodName := conversationName != "" &&
+		conversationName != conversationID &&
+		!strings.Contains(strings.ToLower(conversationName), "mpdm-")
+	if isGoodName {
 		if err := p.ensureConversationContact(conversationID, conversationName); err != nil {
 			p.log("SlackProvider: failed to ensure conversation contact for %s: %v\n", conversationID, err)
 		}
+	}
+}
+
+// resolveMPIMChannelAsync resolves the display name for an MPIM channel by fetching its
+// member list and replacing the raw mpdm- slug with participant display names.
+// Called when the first message arrives in an MPIM that hasn't been seen before.
+func (p *SlackProvider) resolveMPIMChannelAsync(channelID string) {
+	p.mu.RLock()
+	instanceID := ""
+	if p.config != nil {
+		if id, ok := p.config["_instance_id"].(string); ok {
+			instanceID = id
+		}
+	}
+	p.mu.RUnlock()
+
+	if instanceID == "" {
+		return
+	}
+
+	currentUserID := ""
+	if authTest, err := p.client.AuthTest(); err == nil && authTest != nil {
+		currentUserID = authTest.UserID
+	}
+
+	memberIDs, _, err := p.client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
+		ChannelID: channelID,
+	})
+	if err != nil {
+		p.log("SlackProvider.resolveMPIMChannelAsync: failed to get members for %s: %v\n", channelID, err)
+		return
+	}
+
+	var names []string
+	for _, memberID := range memberIDs {
+		if memberID == currentUserID || memberID == "USLACKBOT" {
+			continue
+		}
+		name, _ := p.resolveUserInfo(memberID)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+
+	if len(names) == 0 {
+		return
+	}
+
+	const maxNames = 5
+	var displayName string
+	if len(names) > maxNames {
+		extra := len(names) - maxNames
+		displayName = strings.Join(names[:maxNames], ", ") + fmt.Sprintf(" +%d", extra)
+	} else {
+		displayName = strings.Join(names, ", ")
+	}
+
+	if err := p.updateLinkedAccountName(instanceID, channelID, displayName); err != nil {
+		p.log("SlackProvider.resolveMPIMChannelAsync: failed to update %s: %v\n", channelID, err)
+		return
+	}
+
+	p.log("SlackProvider.resolveMPIMChannelAsync: updated MPIM %s → '%s'\n", channelID, displayName)
+
+	select {
+	case p.eventChan <- core.ContactStatusEvent{
+		InstanceID: p.getInstanceId(),
+		UserID:     "refresh",
+		Status:     "mpim_updated",
+	}:
+	default:
 	}
 }

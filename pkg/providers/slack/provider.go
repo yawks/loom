@@ -254,7 +254,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%')
 		GROUP BY protocol_conv_id
 		ORDER BY MAX(timestamp) DESC
-		LIMIT 100
+		LIMIT 50
 	`).Scan(&results).Error
 
 	if err != nil {
@@ -379,6 +379,20 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s, looking for messages after)\n",
 			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
 
+		// Emit last_read BEFORE messages so the frontend knows the read state when messages arrive.
+		if lastRead, ok := contactLastRead[conv.ProtocolConvID]; ok && lastRead != "" {
+			select {
+			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
+				ConversationID: conv.ProtocolConvID,
+				LastReadTS:     lastRead,
+			}:
+				p.log("SlackProvider.incrementalSyncExistingConversations: Emitted last_read=%s for %s\n",
+					lastRead, conv.ProtocolConvID)
+			default:
+				p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping read status event\n")
+			}
+		}
+
 		newMessages, err := p.GetConversationHistory(conv.ProtocolConvID, 1000, nil, &sinceTimestamp)
 		if err != nil {
 			p.log("SlackProvider.incrementalSyncExistingConversations: Failed to sync %s: %v\n", conv.ProtocolConvID, err)
@@ -390,19 +404,16 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			successCount++
 			totalNewMessages += len(newMessages)
 
-			firstMsg := newMessages[0]
-			lastMsg := newMessages[len(newMessages)-1]
-			p.log("SlackProvider.incrementalSyncExistingConversations: New messages range from %s to %s\n",
-				firstMsg.Timestamp.Format(time.RFC3339), lastMsg.Timestamp.Format(time.RFC3339))
-
-			for _, msg := range newMessages {
-				select {
-				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(),
-					Message: msg,
-				}:
-				default:
-					p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping event\n")
-				}
+			// Emit one batch event per conversation instead of one MessageEvent per message.
+			// This reduces React re-renders and macOS badge API calls from N to 1 per conversation.
+			select {
+			case p.eventChan <- core.MessageBatchEvent{
+				InstanceID:     p.getInstanceId(),
+				ConversationID: conv.ProtocolConvID,
+				Messages:       newMessages,
+			}:
+			default:
+				p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping batch event\n")
 			}
 		} else {
 			p.log("SlackProvider.incrementalSyncExistingConversations: No new main messages for %s — checking thread replies\n",
@@ -414,20 +425,32 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			if newReplies > 0 {
 				totalNewMessages += newReplies
 				successCount++
-			}
-		}
-
-		// Emit last_read from the contacts map — no GetConversationInfo API call needed.
-		if lastRead, ok := contactLastRead[conv.ProtocolConvID]; ok && lastRead != "" {
-			select {
-			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
-				ConversationID: conv.ProtocolConvID,
-				LastReadTS:     lastRead,
-			}:
-				p.log("SlackProvider.incrementalSyncExistingConversations: Emitted last_read=%s for %s\n",
-					lastRead, conv.ProtocolConvID)
-			default:
-				p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping read status event\n")
+			} else {
+				// Lookback: only when forward sync AND thread refresh found nothing.
+				// Detects messages in the 24h window before the last known message that were
+				// read on another client before this sync ran (so forward sync skips them).
+				const lookbackWindow = 24 * time.Hour
+				if time.Since(conv.LastTimestamp) < 48*time.Hour {
+					lookbackBefore := conv.LastTimestamp
+					lookbackSince := conv.LastTimestamp.Add(-lookbackWindow)
+					missed, err := p.lookbackSyncConversation(conv.ProtocolConvID, lookbackBefore, lookbackSince)
+					if err != nil {
+						p.log("SlackProvider.incrementalSyncExistingConversations: Lookback failed for %s: %v\n", conv.ProtocolConvID, err)
+					} else if len(missed) > 0 {
+						p.log("SlackProvider.incrementalSyncExistingConversations: Lookback found %d missed messages for %s\n", len(missed), conv.ProtocolConvID)
+						successCount++
+						totalNewMessages += len(missed)
+						select {
+						case p.eventChan <- core.MessageBatchEvent{
+							InstanceID:     p.getInstanceId(),
+							ConversationID: conv.ProtocolConvID,
+							Messages:       missed,
+						}:
+						default:
+							p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, dropping lookback batch\n")
+						}
+					}
+				}
 			}
 		}
 

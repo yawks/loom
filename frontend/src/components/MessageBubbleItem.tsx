@@ -101,7 +101,10 @@ export function MessageBubbleItem({
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
 
-  const displayName = getSenderDisplayName(message.senderName, message.senderId, message.isFromMe, t);
+  const resolvedSenderName = (!message.isFromMe && message.senderId)
+    ? (participantNames.get(message.senderId) || message.senderName)
+    : message.senderName;
+  const displayName = getSenderDisplayName(resolvedSenderName, message.senderId, message.isFromMe, t);
 
   const threadMessages = threadsByParent[message.protocolMsgId];
   const threadCount = threadMessages?.length ?? 0;
@@ -287,11 +290,6 @@ export function MessageBubbleItem({
                   {isDeleted && isDeletedRevealed && (
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">{t("deleted_message_badge")}</span>
                   )}
-                  {isUnread && (
-                    <p className={cn("text-xs flex items-center gap-2 justify-end", message.isFromMe ? "text-blue-100" : "text-muted-foreground")}>
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">{t("unread_indicator")}</span>
-                    </p>
-                  )}
                 </div>
               </div>
             </div>
@@ -316,9 +314,9 @@ export function MessageBubbleItem({
           </div>
           {message.isFromMe && (
             <div className="flex flex-col items-center shrink-0">
-              <button onClick={() => handlers.onAvatarClick("", t("you"))} className="shrink-0">
+              <button onClick={() => handlers.onAvatarClick(message.senderAvatarUrl || "", t("you"))} className="shrink-0">
                 <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                  <AvatarImage src="" />
+                  <AvatarImage src={message.senderAvatarUrl || ""} />
                   <AvatarFallback>{t("me")}</AvatarFallback>
                 </Avatar>
               </button>

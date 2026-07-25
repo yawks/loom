@@ -42,6 +42,18 @@
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 
+    /* Sidebar rail (leftmost dark column) */
+    --sidebar-rail: 215 25% 16%;
+    --sidebar-rail-foreground: 215 20% 65%;
+    /* Sidebar nav (conversation list) */
+    --sidebar: 210 20% 97%;
+    --sidebar-foreground: 215 25% 25%;
+    --sidebar-muted-foreground: 215 16% 47%;
+    --sidebar-active: 213 20% 89%;
+    --sidebar-active-foreground: 215 28% 16%;
+    --sidebar-hover: 214 17% 92%;
+    --sidebar-border: 214 17% 88%;
+
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
 
@@ -74,6 +86,16 @@
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
 
+    --sidebar-rail: 222 47% 7%;
+    --sidebar-rail-foreground: 215 20% 60%;
+    --sidebar: 217 30% 13%;
+    --sidebar-foreground: 213 31% 91%;
+    --sidebar-muted-foreground: 215 16% 55%;
+    --sidebar-active: 215 25% 21%;
+    --sidebar-active-foreground: 210 40% 98%;
+    --sidebar-hover: 215 25% 17%;
+    --sidebar-border: 217 30% 19%;
+
     --card: 222.2 84% 4.9%;
     --card-foreground: 210 40% 98%;
 
@@ -102,6 +124,15 @@
 }
 
 @theme {
+  --color-sidebar-rail: hsl(var(--sidebar-rail));
+  --color-sidebar-rail-foreground: hsl(var(--sidebar-rail-foreground));
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-muted-foreground: hsl(var(--sidebar-muted-foreground));
+  --color-sidebar-active: hsl(var(--sidebar-active));
+  --color-sidebar-active-foreground: hsl(var(--sidebar-active-foreground));
+  --color-sidebar-hover: hsl(var(--sidebar-hover));
+  --color-sidebar-border: hsl(var(--sidebar-border));
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
   --color-card: hsl(var(--card));
@@ -222,6 +253,15 @@ html.dark .scroll-area::-webkit-scrollbar-thumb {
 
 html.dark .scroll-area::-webkit-scrollbar-thumb:hover {
   background-color: rgba(180, 180, 200, 0.8) !important;
+}
+
+@keyframes slide-in-from-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.thread-panel-enter {
+  animation: slide-in-from-right 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes shimmer {

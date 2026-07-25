@@ -20,6 +20,7 @@ import (
 
 var chatScopes = []string{
 	"https://www.googleapis.com/auth/chat.messages",
+	"https://www.googleapis.com/auth/chat.messages.reactions",
 	"https://www.googleapis.com/auth/chat.spaces",
 	"https://www.googleapis.com/auth/chat.memberships.readonly",
 	"https://www.googleapis.com/auth/directory.readonly",
@@ -210,6 +211,9 @@ func (p *GoogleChatProvider) SyncHistory(since time.Time) error {
 		UserID:     "refresh",
 		Status:     "new_conversations_discovered",
 	})
+	// Per-conversation forward sync + 24h lookback to catch messages that were
+	// missed because they were read on another client before this sync ran.
+	go p.incrementalSync()
 	return nil
 }
 
@@ -219,11 +223,12 @@ func (p *GoogleChatProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 
 func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:       true,
-		SupportsReactions:     true,
+		SupportsThreads:      true,
+		SupportsReactions:    true,
 		SupportsDeleteMessage: true,
-		SupportsEditMessage:   true,
-		SupportsQRCodeAuth:    false,
+		SupportsEditMessage:  true,
+		SupportsQRCodeAuth:   false,
+		NativeEmojiReactions: true,
 	}
 }
 

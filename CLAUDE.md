@@ -114,6 +114,44 @@ Every component's root element and significant children must carry an explicit s
 
 Rule: if you can't describe what an element is without reading the Tailwind classes, it needs a named class.
 
+### UX invariants — do not regress
+
+These rules have been broken repeatedly by unrelated changes. Always verify them when touching the message view or provider code.
+
+#### Own-message sender name
+
+**Rule**: own messages (`isFromMe === true`) display the user's real name when the backend resolved one, and fall back to the translated "you/me" label otherwise. A bare phone number (all-digit string) is never a valid display name.
+
+**Why**: WhatsApp stores the user's phone number as `senderName` when the profile name is not yet resolved. Slack can store a corrupted name due to a cache bug. The `isFromMe` branch in `getSenderDisplayName` (`messageUtils.ts`) is the **first** check, and it guards against digit-only `senderName` values with `/^\d+$/.exec(senderName) === null` before returning the name.
+
+**Backend side**: `lookupDisplayName` in `pkg/providers/whatsapp/contacts.go` checks `w.client.Store.PushName` (the device's own WhatsApp profile name) first when the JID matches the own user, before falling through to the contact store.
+
+**What to check**: `getSenderDisplayName` in `src/lib/messageUtils.ts` — the `if (isFromMe)` branch must be the very first `return`, and the digit-only guard must stay in place.
+
+#### Own-message avatar
+
+**Rule**: the `<AvatarImage>` for own messages in `MessageBubbleItem.tsx` must use `src={message.senderAvatarUrl || ""}`, not `src=""`. The `ChatInput` optimistic update copies `senderAvatarUrl` from existing own messages in the cache, so the real avatar appears from the first render.
+
+**Backend side**: `enrichMessagesWithSenderInfo` in `pkg/providers/whatsapp/messages.go` must call `getProfilePictureURL(senderJID)` for own messages (the `IsFromMe` branch) so that `senderAvatarUrl` is populated in history and picked up by `currentUserAvatarUrl` in `MessageList.tsx`.
+
+#### Scroll on send
+
+**Rule**: when the last message in the list belongs to the current user (`isFromMe === true`), `followOutput` in `MessageList.tsx` must return `"auto"` (instant jump), not `"smooth"`.
+
+**Why**: the optimistic message is added with `isPending = true`, then replaced by the confirmed message with `isPending = false`. If `followOutput` switches to `"smooth"` at that transition point, Virtuoso plays a visible scroll animation even though the list is already at the bottom, creating a jarring "scroll up then back down" glitch.
+
+**What to check**: the `followOutput` callback in `MessageList.tsx` — the condition must be `lastMsg?.isFromMe === true`, not `lastMsg?.isPending === true`. The `isPending` condition only covers the optimistic phase and breaks the confirmed phase.
+
+#### Inline media rendering (images and videos)
+
+**Rule**: image attachments (type `"image"`, or `mimeType` starting with `image/`) and video attachments (type `"video"`, or `mimeType` starting with `video/`) must **always** be rendered inline in the message list, regardless of the provider. Images render as a clickable `<img>`. Videos render as a `<video controls>` player. Neither should fall back to the generic file card.
+
+**Why**: receiving a photo or video and only seeing a download button destroys the conversational feel that all messaging apps provide. This is a non-negotiable UX baseline.
+
+**Where the rule lives**: `MessageAttachments.tsx` — the `isImage` and `isVideo` branches must both appear before the generic `isPdf` and file-card fallbacks in the `parsedAttachments.map(...)` render. The `useEffect` must load both `attachment.thumbnail` (for the poster) and `attachment.url` (for playback) independently for video; images only need `thumbnail || url`.
+
+**What to check when touching `MessageAttachments.tsx`**: confirm that `isVideo` is declared before `isAudio` and `isPdf`, that it is checked in the JSX `if/else` chain before `isAudio`, and that both `videoDataUrl` and `videoThumbnailDataUrl` are derived from the module-level `_attachmentDataCache`.
+
 ---
 
 ## Go provider architecture

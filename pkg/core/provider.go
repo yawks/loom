@@ -272,15 +272,18 @@ type Provider interface {
 
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
-	SupportsThreads         bool `json:"supportsThreads"`
-	SupportsReactions       bool `json:"supportsReactions"`
-	SupportsCustomEmojis    bool `json:"supportsCustomEmojis"`
-	SupportsTypingIndicator bool `json:"supportsTypingIndicator"`
-	SupportsGroupManagement bool `json:"supportsGroupManagement"`
-	SupportsDeleteMessage   bool `json:"supportsDeleteMessage"`
-	SupportsEditMessage     bool `json:"supportsEditMessage"`
-	SupportsReadReceipts    bool `json:"supportsReadReceipts"`
-	SupportsPinConversation bool `json:"supportsPinConversation"`
+	SupportsThreads          bool `json:"supportsThreads"`
+	SupportsReactions        bool `json:"supportsReactions"`
+	SupportsCustomEmojis     bool `json:"supportsCustomEmojis"`
+	SupportsTypingIndicator  bool `json:"supportsTypingIndicator"`
+	SupportsGroupManagement  bool `json:"supportsGroupManagement"`
+	SupportsDeleteMessage    bool `json:"supportsDeleteMessage"`
+	SupportsEditMessage      bool `json:"supportsEditMessage"`
+	SupportsReadReceipts     bool `json:"supportsReadReceipts"`
+	SupportsPinConversation  bool `json:"supportsPinConversation"`
 	SupportsMuteConversation bool `json:"supportsMuteConversation"`
-	SupportsQRCodeAuth      bool `json:"supportsQRCodeAuth"`
+	SupportsQRCodeAuth       bool `json:"supportsQRCodeAuth"`
+	// NativeEmojiReactions indicates the provider's reaction API expects raw Unicode
+	// emoji characters (e.g. "👍") rather than Slack-style names (e.g. "+1").
+	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
 }

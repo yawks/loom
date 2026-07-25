@@ -5,12 +5,13 @@ import {
   FileText,
   Image as ImageIcon,
   Music,
+  Play,
   Video,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { GetAttachmentData } from "../../wailsjs/go/main/App";
+import { GetAttachmentData, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { VoiceMessage } from "./VoiceMessage";
 
 // Module-level caches — survive Virtuoso unmount/remount cycles so images don't
@@ -80,9 +81,16 @@ export function MessageAttachments({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  // Index of the video attachment the user clicked play on. null = show thumbnail.
+  // Keeping <video> out of the DOM until play-click prevents native controls from
+  // intercepting Virtuoso wheel events and stops ResizeObserver cascades.
+  const [playingVideoIndex, setPlayingVideoIndex] = useState<number | null>(null);
   // Increment to force a re-render when the module-level cache is updated.
   const [, setCacheVersion] = useState(0);
-  const bumpCache = () => setCacheVersion((v) => v + 1);
+  const bumpCache = (url: string, success: boolean) => {
+    console.log(`[Scroll] bumpCache fired: ${success ? "✅" : "❌"} ${url.substring(0, 60)} (msgID: ${messageID})`);
+    setCacheVersion((v) => v + 1);
+  };
 
   // Parse and deduplicate attachments using useMemo to avoid re-parsing on every render
   const parsedAttachments = useMemo(() => {
@@ -137,10 +145,17 @@ export function MessageAttachments({
     const urlsToLoad: string[] = [];
 
     for (const attachment of parsedAttachments) {
-      if (attachment.type === "image" || attachment.type === "video") {
+      if (attachment.type === "image") {
         const url = attachment.thumbnail || attachment.url;
         if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
           urlsToLoad.push(url);
+        }
+      } else if (attachment.type === "video") {
+        if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
+          urlsToLoad.push(attachment.thumbnail);
+        }
+        if (attachment.url && !_attachmentDataCache.has(attachment.url) && !_attachmentFailedUrls.has(attachment.url) && !_attachmentLoadingUrls.has(attachment.url)) {
+          urlsToLoad.push(attachment.url);
         }
       } else if (attachment.type === "audio" || attachment.type === "voice") {
         const url = attachment.url;
@@ -157,12 +172,12 @@ export function MessageAttachments({
       GetAttachmentData(url)
         .then((dataUrl) => {
           _attachmentDataCache.set(url, dataUrl);
-          bumpCache();
+          bumpCache(url, true);
         })
         .catch((error) => {
           console.error(`Failed to load attachment ${url}:`, error);
           _attachmentFailedUrls.add(url);
-          bumpCache();
+          bumpCache(url, false);
         })
         .finally(() => {
           _attachmentLoadingUrls.delete(url);
@@ -174,13 +189,7 @@ export function MessageAttachments({
 
   const handleDownload = async (attachment: Attachment) => {
     try {
-      const dataUrl = await GetAttachmentData(attachment.url);
-      const link = document.createElement("a");
-      link.href = dataUrl;
-      link.download = attachment.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      await SaveAttachmentToFile(attachment.url, attachment.fileName);
     } catch (error) {
       console.error("Failed to download attachment:", error);
     }
@@ -264,10 +273,13 @@ export function MessageAttachments({
 
           const Icon = getFileIcon(attachment.mimeType, attachment.type);
           const isImage = attachment.type === "image";
+          const isVideo = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
           const isAudio = attachment.type === "audio";
           const isPdf = attachment.mimeType === "application/pdf";
           const thumbnail = attachment.thumbnail || attachment.url;
           const audioUrl = _attachmentDataCache.get(attachment.url);
+          const videoDataUrl = _attachmentDataCache.get(attachment.url);
+          const videoThumbnailDataUrl = attachment.thumbnail ? _attachmentDataCache.get(attachment.thumbnail) : undefined;
           const imageDataUrl = _attachmentDataCache.get(thumbnail);
           const imageFailed = _attachmentFailedUrls.has(thumbnail);
 
@@ -279,19 +291,22 @@ export function MessageAttachments({
               onMouseLeave={() => setHoveredIndex(null)}
             >
               {isImage ? (
+                // Fixed-size container: skeleton and loaded image share identical dimensions,
+                // eliminating the Virtuoso height-remeasure that causes content to jump.
                 <div
-                  className="relative cursor-pointer rounded-lg overflow-hidden max-w-xs"
+                  className="message-attachment__image relative cursor-pointer rounded-lg overflow-hidden"
+                  style={{ width: "320px", height: "200px", contain: "strict" }}
                   onClick={() => handleImageClick(attachment)}
                 >
-                  {thumbnail && imageDataUrl ? (
+                  {imageDataUrl ? (
                     <img
                       src={imageDataUrl}
                       alt={attachment.fileName}
-                      className="max-w-full h-auto rounded-lg"
-                      style={{ maxHeight: "300px" }}
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                      className="bg-muted"
                     />
                   ) : (
-                    <div className="w-48 h-48 bg-muted flex flex-col items-center justify-center rounded-lg gap-1">
+                    <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
                       <ImageIcon className="h-12 w-12 text-muted-foreground" />
                       {imageFailed && (
                         <span className="text-xs text-muted-foreground">{attachment.fileName}</span>
@@ -299,6 +314,59 @@ export function MessageAttachments({
                     </div>
                   )}
                   {hoveredIndex === index && imageDataUrl && (
+                    <button
+                      className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
+                      title="Télécharger"
+                    >
+                      <Download className="h-4 w-4 text-white" />
+                    </button>
+                  )}
+                </div>
+              ) : isVideo ? (
+                // contain:strict isolates the container so Virtuoso's ResizeObserver never
+                // sees internal dimension changes. The <video> element is only mounted after
+                // the user clicks play — keeping it out of the DOM prevents native controls
+                // from intercepting Virtuoso wheel events while browsing the conversation.
+                <div
+                  className="message-attachment__video relative rounded-lg overflow-hidden bg-black"
+                  style={{ width: "320px", height: "200px", contain: "strict" }}
+                >
+                  {playingVideoIndex === index && videoDataUrl ? (
+                    <video
+                      autoPlay
+                      controls
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                      src={videoDataUrl}
+                      onEnded={() => setPlayingVideoIndex(null)}
+                    >
+                      <track kind="captions" />
+                    </video>
+                  ) : videoDataUrl ? (
+                    <button
+                      className="w-full h-full flex items-center justify-center relative"
+                      style={
+                        videoThumbnailDataUrl
+                          ? { backgroundImage: `url(${videoThumbnailDataUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
+                          : undefined
+                      }
+                      onClick={() => setPlayingVideoIndex(index)}
+                      aria-label={`Lire ${attachment.fileName}`}
+                    >
+                      {!videoThumbnailDataUrl && <Video className="h-10 w-10 text-white/60" />}
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="bg-black/40 rounded-full p-3 hover:bg-black/60 transition-colors">
+                          <Play className="h-8 w-8 text-white fill-white" />
+                        </div>
+                      </div>
+                    </button>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2">
+                      <Video className="h-10 w-10 text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground truncate max-w-[10rem]">{attachment.fileName}</span>
+                    </div>
+                  )}
+                  {hoveredIndex === index && videoDataUrl && (
                     <button
                       className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
                       onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}

@@ -13,11 +13,12 @@ import { ConversationDetailsView } from "./ConversationDetailsView";
 import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { Header } from "./Header";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
 import { ProviderFilterBar } from "./ProviderFilterBar";
 import { ProvidersModal } from "./ProvidersModal";
+import { SearchModal } from "./SearchModal";
+import { SettingsModal } from "./SettingsModal";
 import { SyncStatusFooter } from "./SyncStatusFooter";
 import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
@@ -28,89 +29,82 @@ import { useTranslation } from "react-i18next";
 
 export function ChatLayout() {
   const { t } = useTranslation();
-  // Listen to real-time message events
   useMessageEvents();
-  // Handle keyboard shortcuts
   useKeyboardShortcuts();
-  // Update system tray badge with unread count
   useSystemTrayBadge();
 
   const selectedContact = useAppStore((state) => state.selectedContact);
   const showThreads = useAppStore((state) => state.showThreads);
+  const setShowThreads = useAppStore((state) => state.setShowThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
+  const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const showConversationDetails = useAppStore(
     (state) => state.showConversationDetails
   );
   const theme = useAppStore((state) => state.theme);
 
-  // State for provider checking and onboarding
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showProvidersModal, setShowProvidersModal] = useState(false);
-
-  // State for tracking sync status
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Function to check providers and update onboarding state
   const checkProviders = useCallback(async () => {
     try {
       const providers = await GetConfiguredProviders();
       const hasConfiguredProviders = providers && providers.length > 0;
-      // Don't show onboarding if syncing (provider is being configured)
       setShowOnboarding(!hasConfiguredProviders && !isSyncing);
     } catch (error) {
       console.error("Failed to check providers:", error);
-      // Assume providers exist on error to avoid blocking the UI
       setShowOnboarding(false);
     }
   }, [isSyncing]);
 
-  // Check if providers are configured on mount
   useEffect(() => {
-    // This is a valid use case: initializing state from async data on mount
-    // The setState is called asynchronously inside checkProviders, not directly in the effect
     checkProviders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen for contacts-refresh events (triggered when providers are added/removed)
-  // Use debounce to avoid excessive calls during MPIM processing
+  // ⌘K / Ctrl+K search shortcut
+  useEffect(() => {
+    if (showOnboarding) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes("MAC");
+      if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setIsSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showOnboarding]);
+
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = EventsOn("contacts-refresh", () => {
-      // Debounce: wait 2 seconds before checking providers
-      // This reduces calls during MPIM processing which emits many refresh events
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
+      if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
-      checkProviders();
+        checkProviders();
       }, 2000);
     });
-
     return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-      if (unsubscribe) {
-        unsubscribe();
-      }
+      if (timeoutId) clearTimeout(timeoutId);
+      if (unsubscribe) unsubscribe();
     };
   }, [checkProviders]);
 
-  // Listen to sync status to track if syncing is in progress
   useEffect(() => {
     const unsubscribe = EventsOn("sync-status", (statusJSON: string) => {
       try {
         const status = JSON.parse(statusJSON);
-        const isActiveSync = status.Status === "fetching_contacts" || 
-                            status.Status === "fetching_history" || 
-                            status.Status === "fetching_avatars";
+        const isActiveSync =
+          status.Status === "fetching_contacts" ||
+          status.Status === "fetching_history" ||
+          status.Status === "fetching_avatars";
         setIsSyncing(isActiveSync);
-        // Recheck providers when sync completes (after a delay to allow contacts to refresh)
         if (status.Status === "completed" || status.Status === "error") {
-          // Wait longer to allow contacts-refresh event to be processed
           setTimeout(async () => {
-            setIsSyncing(false); // Sync is done
+            setIsSyncing(false);
             await checkProviders();
           }, 2000);
         }
@@ -118,24 +112,17 @@ export function ChatLayout() {
         console.error("Failed to parse sync status:", error);
       }
     });
-
     return () => {
       if (unsubscribe) unsubscribe();
     };
   }, [checkProviders]);
 
-  // Note: Removed duplicate contacts-refresh listener - now handled by debounced version above
-
-  // Refresh provider check when ProvidersModal closes
   const handleProvidersModalClose = async (open: boolean) => {
     setShowProvidersModal(open);
     if (!open) {
-      // When modal closes after connecting, assume sync is starting
-      // This prevents showing onboarding while sync is starting
       setIsSyncing(true);
-      // Wait a bit then check providers (in case provider was just created)
       setTimeout(async () => {
-      await checkProviders();
+        await checkProviders();
       }, 1000);
     }
   };
@@ -144,25 +131,29 @@ export function ChatLayout() {
     setShowProvidersModal(true);
   };
 
-  // Show threads panel only if it's toggled on and a thread is selected
-  const shouldShowThreadsPanel = showThreads && selectedThreadId !== null;
-  // Show conversation details panel if toggled on
-  const shouldShowDetailsPanel = showConversationDetails && selectedContact !== null;
+  const shouldShowThreadsOverlay = showThreads && selectedThreadId !== null;
+  const shouldShowDetailsPanel =
+    showConversationDetails && selectedContact !== null;
 
-  // Calculate panel sizes based on which sidebars are visible
+  const handleCloseThread = () => {
+    setShowThreads(false);
+    setSelectedThreadId(null);
+  };
+
   const getMessagesPanelSize = () => {
-    if (shouldShowThreadsPanel && shouldShowDetailsPanel) return 40;
-    if (shouldShowThreadsPanel || shouldShowDetailsPanel) return 50;
+    if (shouldShowDetailsPanel) return 50;
     return 75;
   };
 
   return (
     <div className="flex flex-col h-screen">
       {/* macOS title bar drag area */}
-      <div className="h-[28px] bg-background" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
-      <Header hasProviders={!showOnboarding} />
+      <div
+        className="h-[44px] bg-sidebar-rail shrink-0"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      />
+
       {showOnboarding ? (
-        // Onboarding screen when no providers configured
         <div className="flex-1 flex items-center justify-center bg-background">
           <div className="max-w-md mx-auto p-8 text-center space-y-6">
             <div className="flex items-center justify-center mb-6">
@@ -190,65 +181,102 @@ export function ChatLayout() {
           </div>
         </div>
       ) : (
-        // Normal chat layout when providers are configured
         <>
-          <ResizablePanelGroup direction="horizontal" className="flex-1">
-            <ProviderFilterBar />
-            <ResizablePanel id="contacts-panel" defaultSize={25} minSize={15}>
-              <Suspense fallback={<ContactListSkeleton />}>
-                <ContactList />
-              </Suspense>
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel
-              id="messages-panel"
-              defaultSize={getMessagesPanelSize()}
-              minSize={30}
+          <div className="flex flex-1 min-h-0">
+            {/* Column 1: Icon rail */}
+            <ProviderFilterBar
+              onOpenSearch={() => setIsSearchOpen(true)}
+              onOpenProviders={handleConfigureProvider}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+            />
+
+            {/* Columns 2+3: Sidebar + Messages */}
+            <ResizablePanelGroup
+              direction="horizontal"
+              className="flex-1"
             >
-              <Suspense fallback={<MessageListSkeleton />}>
-                {selectedContact ? (
-                  <MessageList selectedConversation={selectedContact} />
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
-                    <img
-                      src="https://api.iconify.design/marketeq:conversation.svg"
-                      className="h-16 w-16 mb-4 opacity-50"
-                      style={{
-                        filter: theme === "dark"
-                          ? "grayscale(1) invert(1) brightness(1.5)"
-                          : "none"
-                      }}
-                      alt="Conversation icon"
-                    />
-                    <p className="text-xl font-medium">{t("select_a_conversation")}</p>
-                  </div>
-                )}
-              </Suspense>
-            </ResizablePanel>
-            {shouldShowDetailsPanel && (
-              <>
-                <ResizableHandle withHandle />
-                <ResizablePanel id="details-panel" defaultSize={25} minSize={15}>
-                  <Suspense fallback={<ConversationDetailsViewSkeleton />}>
-                    <ConversationDetailsView
-                      selectedConversation={selectedContact!}
-                    />
+              <ResizablePanel
+                id="contacts-panel"
+                defaultSize={22}
+                minSize={15}
+              >
+                <Suspense fallback={<ContactListSkeleton />}>
+                  <ContactList />
+                </Suspense>
+              </ResizablePanel>
+              <ResizableHandle withHandle />
+              <ResizablePanel
+                id="messages-panel"
+                defaultSize={getMessagesPanelSize()}
+                minSize={30}
+              >
+                {/* Relative container so the thread overlay can be absolute-positioned */}
+                <div className="relative h-full overflow-hidden">
+                  <Suspense fallback={<MessageListSkeleton />}>
+                    {selectedContact ? (
+                      <MessageList selectedConversation={selectedContact} />
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+                        <img
+                          src="https://api.iconify.design/marketeq:conversation.svg"
+                          className="h-16 w-16 mb-4 opacity-50"
+                          style={{
+                            filter:
+                              theme === "dark"
+                                ? "grayscale(1) invert(1) brightness(1.5)"
+                                : "none",
+                          }}
+                          alt="Conversation icon"
+                        />
+                        <p className="text-xl font-medium">
+                          {t("select_a_conversation")}
+                        </p>
+                      </div>
+                    )}
                   </Suspense>
-                </ResizablePanel>
-              </>
-            )}
-            {shouldShowThreadsPanel && (
-              <>
-                <ResizableHandle withHandle />
-                <ResizablePanel id="threads-panel" defaultSize={25} minSize={15} className="relative">
-                  <ThreadView />
-                </ResizablePanel>
-              </>
-            )}
-          </ResizablePanelGroup>
+
+                  {/* Thread overlay — slides in from the right over the messages area */}
+                  {shouldShowThreadsOverlay && (
+                    <>
+                      {/* Dim backdrop — click or Escape to close */}
+                      <button
+                        className="absolute inset-0 bg-black/25 z-10 cursor-default border-0 p-0"
+                        aria-label={t("close_thread") || "Close thread"}
+                        onClick={handleCloseThread}
+                        onKeyDown={(e) => e.key === "Escape" && handleCloseThread()}
+                      />
+                      {/* Thread panel */}
+                      <div className="thread-panel-enter absolute inset-y-0 right-0 z-20 w-[560px] max-w-[90%] flex flex-col bg-background shadow-2xl border-l overflow-hidden">
+                        <ThreadView />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </ResizablePanel>
+              {shouldShowDetailsPanel && (
+                <>
+                  <ResizableHandle withHandle />
+                  <ResizablePanel
+                    id="details-panel"
+                    defaultSize={25}
+                    minSize={15}
+                  >
+                    <Suspense fallback={<ConversationDetailsViewSkeleton />}>
+                      <ConversationDetailsView
+                        selectedConversation={selectedContact!}
+                      />
+                    </Suspense>
+                  </ResizablePanel>
+                </>
+              )}
+            </ResizablePanelGroup>
+          </div>
           <SyncStatusFooter />
         </>
       )}
+
+      <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
+      <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
       <AvatarModal />
       <ProvidersModal
         open={showProvidersModal}

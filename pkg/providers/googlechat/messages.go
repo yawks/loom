@@ -95,19 +95,31 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		Name string `json:"name"`
 	}
 	type msgBody struct {
-		Text               string     `json:"text,omitempty"`
-		Thread             *threadRef `json:"thread,omitempty"`
-		MessageReplyOption string     `json:"messageReplyOption,omitempty"`
+		Text   string     `json:"text,omitempty"`
+		Thread *threadRef `json:"thread,omitempty"`
 	}
 
 	body := msgBody{Text: text}
+	path := "/" + convID + "/messages"
+	// canonicalThreadID is the parent message's ProtocolMsgID (used as ThreadID in the model).
+	// It stays empty when threadID is a thread resource name (e.g. from SendReply).
+	var canonicalThreadID string
 	if threadID != nil && *threadID != "" {
-		body.Thread = &threadRef{Name: *threadID}
-		body.MessageReplyOption = "REPLY_MESSAGE_OR_FAIL"
+		threadName := *threadID
+		if strings.Contains(threadName, "/messages/") {
+			// Caller passed a message resource name — resolve to thread name for the API
+			// and keep the original as the canonical parent message ID.
+			canonicalThreadID = threadName
+			if resolved := p.getMessageThreadName(threadName); resolved != "" {
+				threadName = resolved
+			}
+		}
+		body.Thread = &threadRef{Name: threadName}
+		path += "?messageReplyOption=REPLY_MESSAGE_OR_FAIL"
 	}
 
 	var result ChatMessage
-	if err := p.apiPost("/"+convID+"/messages", body, &result); err != nil {
+	if err := p.apiPost(path, body, &result); err != nil {
 		return nil, err
 	}
 
@@ -122,6 +134,9 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		p.mu.RLock()
 		m.SenderName = p.selfName
 		p.mu.RUnlock()
+	}
+	if canonicalThreadID != "" {
+		m.ThreadID = &canonicalThreadID
 	}
 	if db.DB != nil {
 		convDBID, _ := p.ensureConversation(convID)
@@ -143,6 +158,11 @@ func (p *GoogleChatProvider) SendReply(convID, text, quotedMessageID string) (*m
 	// Set ThreadID to the parent's ProtocolMsgID (not the Google Chat thread name)
 	// so the frontend can correctly group this reply under the parent.
 	msg.ThreadID = &quotedMessageID
+	if db.DB != nil && msg.ProtocolMsgID != "" {
+		db.DB.Model(&models.Message{}).
+			Where("protocol_msg_id = ?", msg.ProtocolMsgID).
+			Update("thread_id", quotedMessageID)
+	}
 	return msg, nil
 }
 
@@ -230,7 +250,47 @@ func (p *GoogleChatProvider) AddReaction(convID, messageID, emoji string) error 
 	}
 
 	msgPath := ensureMessagePath(convID, messageID)
-	return p.apiPost("/"+msgPath+"/reactions", reactionBody{Emoji: emojiRef{Unicode: emoji}}, nil)
+	if err := p.apiPost("/"+msgPath+"/reactions", reactionBody{Emoji: emojiRef{Unicode: stripVariationSelectors(emoji)}}, nil); err != nil {
+		return err
+	}
+
+	selfID := p.getSelfID()
+	if db.DB != nil && selfID != "" {
+		var msg models.Message
+		if db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error == nil {
+			reaction := models.Reaction{
+				MessageID: msg.ID,
+				UserID:    selfID,
+				Emoji:     emoji,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, selfID, emoji).
+				FirstOrCreate(&reaction)
+		}
+	}
+	if selfID != "" {
+		p.emit(core.ReactionEvent{
+			InstanceID:     p.getInstanceID(),
+			ConversationID: convID,
+			MessageID:      messageID,
+			UserID:         selfID,
+			Emoji:          emoji,
+			Added:          true,
+			Timestamp:      time.Now().Unix(),
+		})
+	}
+	return nil
+}
+
+// stripVariationSelectors removes Unicode variation selectors from an emoji string.
+func stripVariationSelectors(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 0xFE00 && r <= 0xFE0F {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func (p *GoogleChatProvider) RemoveReaction(convID, messageID, emoji string) error {
@@ -244,13 +304,33 @@ func (p *GoogleChatProvider) RemoveReaction(convID, messageID, emoji string) err
 		return err
 	}
 
+	target := stripVariationSelectors(emoji)
 	selfID := p.getSelfID()
 	for _, r := range resp.Reactions {
-		if r.Emoji == nil || r.Emoji.Unicode != emoji || r.User == nil {
+		if r.Emoji == nil || r.User == nil {
 			continue
 		}
-		if strings.TrimPrefix(r.User.Name, "users/") == selfID {
-			return p.apiDelete("/" + r.Name)
+		if r.Emoji.Unicode == target && strings.TrimPrefix(r.User.Name, "users/") == selfID {
+			if err := p.apiDelete("/" + r.Name); err != nil {
+				return err
+			}
+			if db.DB != nil && selfID != "" {
+				var msg models.Message
+				if db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error == nil {
+					db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, selfID, emoji).
+						Delete(&models.Reaction{})
+				}
+			}
+			p.emit(core.ReactionEvent{
+				InstanceID:     p.getInstanceID(),
+				ConversationID: convID,
+				MessageID:      messageID,
+				UserID:         selfID,
+				Emoji:          emoji,
+				Added:          false,
+				Timestamp:      time.Now().Unix(),
+			})
+			return nil
 		}
 	}
 	return nil
@@ -429,12 +509,15 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		}
 	}
 
+	type existingRecord struct {
+		ThreadID *string
+	}
 	var existing []models.Message
-	existingMap := make(map[string]struct{})
+	existingMap := make(map[string]existingRecord)
 	if len(msgIDs) > 0 {
 		db.DB.Where("protocol_msg_id IN ?", msgIDs).Find(&existing)
 		for _, m := range existing {
-			existingMap[m.ProtocolMsgID] = struct{}{}
+			existingMap[m.ProtocolMsgID] = existingRecord{ThreadID: m.ThreadID}
 		}
 	}
 
@@ -445,7 +528,13 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 			continue
 		}
 		seen[m.ProtocolMsgID] = true
-		if _, exists := existingMap[m.ProtocolMsgID]; exists {
+		if rec, exists := existingMap[m.ProtocolMsgID]; exists {
+			// Patch thread_id when the API now reports a thread but the DB has none.
+			if m.ThreadID != nil && *m.ThreadID != "" && (rec.ThreadID == nil || *rec.ThreadID == "") {
+				db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ?", m.ProtocolMsgID).
+					Update("thread_id", *m.ThreadID)
+			}
 			// Patch attachments for existing messages that still have the old web UI URL.
 			if m.Attachments != "" && !strings.Contains(m.Attachments, "chat.google.com") {
 				db.DB.Model(&models.Message{}).
@@ -646,5 +735,94 @@ func mimeFromExt(ext string) string {
 		return "application/pdf"
 	default:
 		return "application/octet-stream"
+	}
+}
+
+// incrementalSync performs a per-conversation forward sync and 24-hour lookback for all
+// conversations with recent activity in the local database. Called from SyncHistory as
+// a background goroutine on the 2nd+ sync to catch messages that were missed because
+// they were read on another client before this sync ran.
+func (p *GoogleChatProvider) incrementalSync() {
+	if p.getHTTPClient() == nil || db.DB == nil {
+		return
+	}
+
+	var rawConvs []struct {
+		ProtocolConvID string
+		LastTimestamp  string // SQLite returns MAX(timestamp) as string
+	}
+	db.DB.Raw(`
+		SELECT protocol_conv_id, MAX(timestamp) AS last_timestamp
+		FROM messages
+		WHERE protocol_conv_id != ''
+		GROUP BY protocol_conv_id
+	`).Scan(&rawConvs)
+
+	for _, r := range rawConvs {
+		var lastTS time.Time
+		var err error
+		lastTS, err = time.Parse(time.RFC3339Nano, r.LastTimestamp)
+		if err != nil {
+			lastTS, err = time.Parse(time.RFC3339Nano, strings.Replace(r.LastTimestamp, " ", "T", 1))
+			if err != nil {
+				lastTS, err = time.Parse(time.RFC3339, strings.Replace(r.LastTimestamp, " ", "T", 1))
+				if err != nil {
+					p.log("GoogleChatProvider.incrementalSync: failed to parse timestamp %q for %s: %v\n", r.LastTimestamp, r.ProtocolConvID, err)
+					continue
+				}
+			}
+		}
+		// Always forward-sync to avoid missing messages when the app was closed
+		// for more than 48h. Restrict the 24h lookback to recent conversations only.
+		recentActivity := time.Since(lastTS) < 48*time.Hour
+		p.syncOneConversation(r.ProtocolConvID, lastTS, recentActivity)
+
+	}
+}
+
+const googleChatLookbackWindow = 24 * time.Hour
+
+// syncOneConversation does a forward sync and, if recentActivity is true, a 24h lookback.
+func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time, recentActivity bool) {
+	// Forward sync: messages after the last known timestamp.
+	since := lastTS
+	newMsgs, err := p.GetConversationHistory(convID, 500, nil, &since)
+	if err != nil {
+		p.log("GoogleChatProvider.incrementalSync: forward sync failed for %s: %v\n", convID, err)
+	} else if len(newMsgs) > 0 {
+		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: newMsgs})
+	}
+
+	if !recentActivity {
+		return
+	}
+
+	// Lookback: snapshot existing IDs in the 24h window before lastTS,
+	// then fetch the same window from the API and emit only truly new messages.
+	lookbackSince := lastTS.Add(-googleChatLookbackWindow)
+	var existingIDs []string
+	db.DB.Model(&models.Message{}).
+		Where("protocol_conv_id = ? AND timestamp > ? AND timestamp < ?", convID, lookbackSince, lastTS).
+		Pluck("protocol_msg_id", &existingIDs)
+	existingSet := make(map[string]bool, len(existingIDs))
+	for _, id := range existingIDs {
+		existingSet[id] = true
+	}
+
+	before := lastTS
+	lookbackMsgs, err := p.GetConversationHistory(convID, 500, &before, &lookbackSince)
+	if err != nil {
+		p.log("GoogleChatProvider.incrementalSync: lookback failed for %s: %v\n", convID, err)
+		return
+	}
+	var missedMsgs []models.Message
+	for _, msg := range lookbackMsgs {
+		if !existingSet[msg.ProtocolMsgID] {
+			p.log("GoogleChatProvider.incrementalSync: found missed message %s for %s\n", msg.ProtocolMsgID, convID)
+			missedMsgs = append(missedMsgs, msg)
+		}
+	}
+	if len(missedMsgs) > 0 {
+		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: missedMsgs})
 	}
 }

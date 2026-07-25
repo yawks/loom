@@ -6,6 +6,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
@@ -15,6 +16,7 @@ import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 
 interface SearchModalProps {
   open: boolean;
@@ -30,6 +32,20 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const contacts = useAppStore((state) => state.metaContacts);
+
+  const { data: configuredProviders = [] } = useQuery({
+    queryKey: ["configuredProviders"],
+    queryFn: () => GetConfiguredProviders().catch(() => []),
+  });
+
+  const providerNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of configuredProviders) {
+      const id = p.instanceId || p.id;
+      map.set(id, p.instanceName || p.name);
+    }
+    return map;
+  }, [configuredProviders]);
 
   // Calculate relevance score for a contact name based on search query
   const calculateRelevanceScore = (name: string, query: string): number => {
@@ -212,7 +228,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                   key={contact.id}
                   ref={index === selectedIndex ? selectedItemRef : null}
                   className={cn(
-                    "flex items-center space-x-3 p-3 rounded-lg cursor-pointer transition-colors",
+                    "search-modal__result flex items-center space-x-3 p-3 rounded-lg cursor-pointer transition-colors",
                     index === selectedIndex
                       ? "bg-accent border border-border"
                       : "hover:bg-muted"
@@ -246,7 +262,16 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                       return null;
                     })()}
                   </div>
-                  <span className="font-medium">{contact.displayName}</span>
+                  <div className="search-modal__contact-info flex flex-col min-w-0">
+                    <span className="search-modal__contact-name font-medium">{contact.displayName}</span>
+                    {contact.linkedAccounts?.length > 0 && (
+                      <span className="search-modal__contact-providers text-xs opacity-40 truncate">
+                        {contact.linkedAccounts
+                          .map((a) => providerNameById.get(a.providerInstanceId) ?? a.providerInstanceId)
+                          .join(" · ")}
+                      </span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
