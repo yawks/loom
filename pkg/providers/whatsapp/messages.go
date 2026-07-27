@@ -673,9 +673,12 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		return nil
 	}
 
-	// Get conversation ID
-	convID := evt.Info.Chat.String()
-	chatJID := evt.Info.Chat
+	// Get conversation ID, normalizing LID JIDs to their canonical phone number JID.
+	// Without this, live messages from a LID-based chat (e.g. "267859930403006@lid")
+	// would be stored under a different protocol_conv_id than the history messages
+	// that were already migrated to the phone number form ("33617590388@s.whatsapp.net").
+	chatJID := w.normalizeChatJID(evt.Info.Chat)
+	convID := chatJID.String()
 
 	// Check if this is a call message
 	var callType string
@@ -1124,6 +1127,15 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 		chatJID, err := types.ParseJID(convID)
 		if err != nil {
 			continue
+		}
+		// Normalize LID JIDs to phone number JIDs so messages are stored under the
+		// canonical ID and not duplicated across "267859930403006@lid" / "33617590388@s.whatsapp.net".
+		if chatJID.Server == "lid" {
+			if normalized := w.normalizeChatJID(chatJID); normalized.Server != "lid" {
+				fmt.Printf("WhatsApp: [CACHE_MESSAGES] Normalized conv LID %s → %s\n", convID, normalized.String())
+				chatJID = normalized
+				convID = normalized.String()
+			}
 		}
 		historyMsgs := conv.GetMessages()
 		fmt.Printf("WhatsApp: [CACHE_MESSAGES] Conversation %s has %d messages in history\n", convID, len(historyMsgs))

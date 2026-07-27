@@ -3,6 +3,7 @@ package db
 import (
 	"Loom/pkg/models"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -29,7 +31,13 @@ func InitDatabase() error {
 
 	// Configure SQLite with WAL mode and a long busy timeout.
 	// cache=shared keeps a single shared page cache across the connection pool.
-	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=30000&_journal_mode=WAL&cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=30000&_journal_mode=WAL&cache=shared"), &gorm.Config{
+		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+			SlowThreshold: 350 * time.Millisecond,
+			LogLevel:      logger.Warn,
+			Colorful:      true,
+		}),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -206,18 +214,18 @@ func migrateProviderConfiguration(db *gorm.DB) error {
 	// Check if instance_id column exists by trying to query it
 	var testValue string
 	err = db.Raw("SELECT instance_id FROM provider_configurations LIMIT 1").Scan(&testValue).Error
-	
+
 	// If the query fails, the column doesn't exist yet
 	if err != nil {
 		fmt.Println("Migration: Adding instance_id and instance_name columns to provider_configurations...")
-		
+
 		// Step 1: Add columns as nullable first
 		err = db.Exec("ALTER TABLE provider_configurations ADD COLUMN instance_id TEXT").Error
 		if err != nil {
 			// Column might already exist from a previous failed migration
 			fmt.Printf("Migration: Warning - Could not add instance_id column: %v\n", err)
 		}
-		
+
 		err = db.Exec("ALTER TABLE provider_configurations ADD COLUMN instance_name TEXT").Error
 		if err != nil {
 			fmt.Printf("Migration: Warning - Could not add instance_name column: %v\n", err)
@@ -235,7 +243,7 @@ func migrateProviderConfiguration(db *gorm.DB) error {
 				if config.InstanceName == "" {
 					instanceName = config.ProviderID
 				}
-				
+
 				db.Model(&config).Updates(map[string]interface{}{
 					"instance_id":   instanceID,
 					"instance_name": instanceName,
@@ -264,11 +272,11 @@ func migrateLinkedAccount(db *gorm.DB) error {
 	// Check if provider_instance_id column exists by trying to query it
 	var testValue string
 	err = db.Raw("SELECT provider_instance_id FROM linked_accounts LIMIT 1").Scan(&testValue).Error
-	
+
 	// If the query fails, the column doesn't exist yet
 	if err != nil {
 		fmt.Println("Migration: Adding provider_instance_id column to linked_accounts...")
-		
+
 		// Add column as nullable
 		err = db.Exec("ALTER TABLE linked_accounts ADD COLUMN provider_instance_id TEXT").Error
 		if err != nil {
@@ -281,8 +289,8 @@ func migrateLinkedAccount(db *gorm.DB) error {
 	// Check if unique constraint exists on (provider_instance_id, user_id)
 	var constraintExists int
 	err = db.Raw(`
-		SELECT COUNT(*) FROM sqlite_master 
-		WHERE type='index' 
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='index'
 		AND name='idx_linked_accounts_provider_user'
 	`).Scan(&constraintExists).Error
 
@@ -290,7 +298,7 @@ func migrateLinkedAccount(db *gorm.DB) error {
 		fmt.Println("Migration: Adding unique index on (provider_instance_id, user_id) to linked_accounts...")
 		// Create unique index (SQLite doesn't support adding constraints to existing tables easily)
 		err = db.Exec(`
-			CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_accounts_provider_user 
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_accounts_provider_user
 			ON linked_accounts(provider_instance_id, user_id)
 		`).Error
 		if err != nil {
@@ -298,6 +306,33 @@ func migrateLinkedAccount(db *gorm.DB) error {
 		} else {
 			fmt.Println("Migration: Unique index created successfully")
 		}
+	}
+
+	// Fix WhatsApp group entries that were incorrectly saved with is_group = 0.
+	// WhatsApp group JIDs always end with @g.us — use that to detect them.
+	if err := db.Exec(`
+		UPDATE linked_accounts
+		SET is_group = 1
+		WHERE protocol = 'whatsapp'
+		  AND user_id LIKE '%@g.us'
+		  AND is_group = 0
+	`).Error; err != nil {
+		fmt.Printf("Migration: Warning - Could not fix WhatsApp group is_group: %v\n", err)
+	} else {
+		fmt.Println("Migration: WhatsApp group is_group correction applied")
+	}
+
+	// Fix WhatsApp DM entries incorrectly saved with status = 'active'.
+	// 'active' is an internal conversation-cache marker, not a valid presence status.
+	if err := db.Exec(`
+		UPDATE linked_accounts
+		SET status = 'offline'
+		WHERE protocol = 'whatsapp'
+		  AND status = 'active'
+	`).Error; err != nil {
+		fmt.Printf("Migration: Warning - Could not fix WhatsApp active status: %v\n", err)
+	} else {
+		fmt.Println("Migration: WhatsApp 'active' status correction applied")
 	}
 
 	return nil

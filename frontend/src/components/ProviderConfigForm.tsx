@@ -6,7 +6,7 @@ import {
   GetProviderQRCode,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ interface ProviderConfigFormProps {
   provider: core.ProviderInfo;
   mode: "create" | "edit";
   initialValues?: Record<string, any>;
+  autoConnect?: boolean; // When true and provider uses QR auth, trigger connect immediately on mount
   onBack: () => void;
   onRefresh: () => Promise<void> | void;
   onClose?: () => void; // Callback to close the modal
@@ -39,6 +40,7 @@ export function ProviderConfigForm({
   provider,
   mode,
   initialValues,
+  autoConnect = false,
   onBack,
   onRefresh,
   onClose,
@@ -84,6 +86,7 @@ export function ProviderConfigForm({
   const [qrCode, setQrCode] = useState("");
   const [isPollingQR, setIsPollingQR] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
+  const autoConnectFiredRef = useRef(false);
 
   useEffect(() => {
     setValues((prev) => {
@@ -223,6 +226,14 @@ export function ProviderConfigForm({
     }, 3000);
     return () => window.clearInterval(interval);
   }, [isPollingQR, fetchQRCode]);
+
+  // Auto-trigger the connect flow when opened via "Re-authenticate" for QR-based providers.
+  // Only fires once on mount (guarded by ref) to avoid re-triggering on re-renders.
+  useEffect(() => {
+    if (!autoConnect || autoConnectFiredRef.current || Object.keys(schema).length > 0) return;
+    autoConnectFiredRef.current = true;
+    handleConnect();
+  }, [autoConnect, handleConnect, schema]);
 
   const hasFields = Object.keys(schema).length > 0;
 

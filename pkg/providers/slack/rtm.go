@@ -100,6 +100,17 @@ func (p *SlackProvider) startRTM() {
 				p.log("SlackProvider.startRTM: Invalid Credentials\n")
 				return
 
+			case *slack.PresenceChangeEvent:
+				isOnline := ev.Presence == "active"
+				select {
+				case p.eventChan <- core.PresenceEvent{
+					InstanceID: p.getInstanceId(),
+					UserID:     ev.User,
+					IsOnline:   isOnline,
+				}:
+				default:
+				}
+
 			case *slack.UnmarshallingErrorEvent:
 				// The slack-go library emits this for any RTM event type it doesn't
 				// have a struct for (e.g. "badge_counts_updated"). These are harmless;
@@ -120,6 +131,14 @@ func (p *SlackProvider) startRTM() {
 
 // handleRTMMessageEvent handles incoming RTM message events.
 func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
+	// Handle message_changed: another user edited a message in this channel.
+	if ev.SubType == "message_changed" {
+		if ev.Channel != "" && ev.SubMessage != nil && ev.SubMessage.Timestamp != "" {
+			p.handleRTMMessageChanged(ev.Channel, ev.SubMessage.Timestamp, ev.SubMessage.Text)
+		}
+		return
+	}
+
 	// Skip messages with no text/user (e.g. subtype messages we don't care about)
 	if ev.User == "" && ev.Text == "" {
 		return
@@ -276,6 +295,35 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 			p.log("SlackProvider: ContactStatusEvent emitted for huddle\n")
 		default:
 		}
+	}
+}
+
+// handleRTMMessageChanged updates a message in the DB when Slack emits a message_changed event.
+func (p *SlackProvider) handleRTMMessageChanged(channel, msgTimestamp, newText string) {
+	if db.DB == nil {
+		return
+	}
+
+	normalizedConvID := p.normalizeDMConversationID(channel)
+
+	var existingMsg models.Message
+	if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msgTimestamp, normalizedConvID).First(&existingMsg).Error; err != nil {
+		p.log("SlackProvider.handleRTMMessageChanged: message %s not found in DB, skipping\n", msgTimestamp)
+		return
+	}
+
+	existingMsg.Body = p.preprocessMessageBody(newText)
+	existingMsg.IsEdited = true
+
+	if err := db.DB.Save(&existingMsg).Error; err != nil {
+		p.log("SlackProvider.handleRTMMessageChanged: failed to update message %s: %v\n", msgTimestamp, err)
+		return
+	}
+
+	select {
+	case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: existingMsg}:
+	default:
+		p.log("SlackProvider.handleRTMMessageChanged: WARNING - event channel full for message %s\n", msgTimestamp)
 	}
 }
 

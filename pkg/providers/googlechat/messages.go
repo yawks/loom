@@ -751,12 +751,20 @@ func (p *GoogleChatProvider) incrementalSync() {
 		ProtocolConvID string
 		LastTimestamp  string // SQLite returns MAX(timestamp) as string
 	}
+	// Messages are stored in a shared database. Restrict the sync source to
+	// conversations owned by this Google Chat instance; without the joins, the
+	// provider attempts to call the Google Chat API for WhatsApp/Slack IDs.
+	instanceID := p.getInstanceID()
 	db.DB.Raw(`
-		SELECT protocol_conv_id, MAX(timestamp) AS last_timestamp
-		FROM messages
-		WHERE protocol_conv_id != ''
-		GROUP BY protocol_conv_id
-	`).Scan(&rawConvs)
+		SELECT m.protocol_conv_id, MAX(m.timestamp) AS last_timestamp
+		FROM messages AS m
+		JOIN conversations AS c ON c.protocol_conv_id = m.protocol_conv_id
+		JOIN linked_accounts AS la ON la.id = c.linked_account_id
+		WHERE m.protocol_conv_id != ''
+		  AND la.provider_instance_id = ?
+		  AND la.protocol = 'googlechat'
+		GROUP BY m.protocol_conv_id
+	`, instanceID).Scan(&rawConvs)
 
 	for _, r := range rawConvs {
 		var lastTS time.Time

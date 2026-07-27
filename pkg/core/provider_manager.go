@@ -22,6 +22,7 @@ type ProviderInfo struct {
 	Config       ProviderConfig         `json:"config"`       // Current configuration
 	IsActive     bool                   `json:"isActive"`     // Whether the provider is currently active
 	ConfigSchema map[string]interface{} `json:"configSchema"` // Schema for configuration fields
+	SyncError    string                 `json:"syncError"`    // Non-empty when the provider failed to authenticate or connect at startup
 }
 
 // ProviderFactory is a function that creates a new provider instance.

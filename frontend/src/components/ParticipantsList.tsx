@@ -1,13 +1,13 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Calendar, X } from "lucide-react";
 import { GetGroupParticipants, GetParticipantNames, SetContactAlias } from "../../wailsjs/go/main/App";
-import { getStatusEmoji } from "@/lib/statusEmoji";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { Calendar, X } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Emoji } from "./Emoji";
+import { Input } from "@/components/ui/input";
+import { getStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
@@ -39,7 +39,7 @@ async function fetchParticipantsData(conversationId: string): Promise<{
   if (!groupParticipants || groupParticipants.length === 0) {
     return { groupParticipants: [], participantNames: {} };
   }
-  
+
   const ids = groupParticipants.map((p) => p.userId);
   try {
     const participantNames = await GetParticipantNames(ids);
@@ -64,13 +64,13 @@ function getSenderDisplayName(
   // Robust handling: extract local part from various WhatsApp ID formats
   // Supports: "33603018166@s.whatsapp.net", "186560595132538:6@lid", "187119343554767:7@lid"
   let phoneNumber: string | null = null;
-  
+
   // Match "digits" optionally followed by ":digits@server"
   const match = senderId.match(/^(\d+)(?::\d+)?@/);
   if (match) {
     phoneNumber = match[1];
   }
-  
+
   if (phoneNumber) {
     // If this looks like a French number (starts with 33 and 11 digits) format nicely
     if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
@@ -184,10 +184,10 @@ export function ParticipantsList({
         if (/:\d+@/.test(msg.senderId)) {
           return; // Skip this sender
         }
-        
+
         const existing = participantMap.get(msg.senderId);
         const msgTime = timeToDate(msg.timestamp);
-        
+
         if (!existing) {
           participantMap.set(msg.senderId, {
             senderId: msg.senderId,
@@ -239,12 +239,12 @@ export function ParticipantsList({
     if (aliases[senderId]) {
       return aliases[senderId];
     }
-    
+
     // Use senderName if available, otherwise format the ID
     if (senderName && senderName.trim().length > 0) {
       return senderName;
     }
-    
+
     // Fall back to formatting the ID itself
     return getSenderDisplayName(senderName, senderId, isFromMe, t);
   };
@@ -257,7 +257,7 @@ export function ParticipantsList({
           participant.senderId,
           participant.isFromMe
         );
-        
+
         // WhatsApp presence check via presenceMap
         const isOnlinePresence = presenceMap[participant.senderId] === true;
         let presenceMatch = isOnlinePresence;
@@ -289,7 +289,9 @@ export function ParticipantsList({
           return null;
         })();
 
-        const linkedAccountStatus = participantLinkedAccount?.status || null;
+        const linkedAccountStatus = (participantLinkedAccount?.status && participantLinkedAccount.status !== "offline")
+          ? participantLinkedAccount.status
+          : null;
         const statusEmoji = participantLinkedAccount ? getStatusEmoji(participantLinkedAccount) : null;
         // Use participant's providerInstanceId, or fall back to the conversation's (for channel participants)
         const providerInstanceId = participantLinkedAccount?.providerInstanceId
@@ -297,7 +299,7 @@ export function ParticipantsList({
           || undefined;
         const avatarUrl = participantLinkedAccount?.avatarUrl || participant.senderAvatarUrl;
 
-        // Effective status: linked account status (provider) takes precedence over presenceMap (WhatsApp)
+        // Mirror ContactList logic: non-offline provider status takes priority, then presenceMap
         const effectiveStatus = linkedAccountStatus || (presenceMatch ? "online" : "offline");
 
         return (
@@ -394,7 +396,7 @@ function ParticipantItem({
       busy: "bg-red-500",
       holiday: "bg-purple-500",
     };
-    const bgColor = colorMap[status] ?? "bg-green-500";
+    const bgColor = colorMap[status] ?? "bg-gray-500";
     const titleMap: Record<string, string> = {
       online: t("active"),
       away: t("away") || "Away",

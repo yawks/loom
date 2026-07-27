@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Smile } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import EmojiPicker, { type EmojiClickData, Theme } from "emoji-picker-react";
+import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { GetCustomEmojis } from "../../wailsjs/go/main/App";
 
 // Matches the internal CustomEmoji type expected by emoji-picker-react
@@ -21,6 +21,8 @@ interface ReactionPickerProps {
   provider?: string;
   instanceId?: string;
 }
+
+const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
 export function ReactionPicker({
   onReactionSelect,
@@ -86,14 +88,16 @@ export function ReactionPicker({
         align="start"
         onClick={(e) => e.stopPropagation()}
       >
-        <EmojiPicker
-          onEmojiClick={handleEmojiClick}
-          customEmojis={customEmojis}
-          height={400}
-          searchPlaceholder={t("search_emoji") ?? "Search emojis…"}
-          theme={isDark ? Theme.DARK : Theme.LIGHT}
-          lazyLoadEmojis
-        />
+        <Suspense fallback={<div className="h-[400px] w-[352px]" />}>
+          <EmojiPicker
+            onEmojiClick={handleEmojiClick}
+            customEmojis={customEmojis}
+            height={400}
+            searchPlaceholder={t("search_emoji") ?? "Search emojis…"}
+            theme={(isDark ? "dark" : "light") as Theme}
+            lazyLoadEmojis
+          />
+        </Suspense>
       </PopoverContent>
     </Popover>
   );

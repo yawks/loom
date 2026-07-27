@@ -3,7 +3,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 
 import { Emoji } from "./Emoji";
 import { cleanEmoji } from "@/lib/userDisplayNames";
@@ -12,7 +12,7 @@ import type { models } from "../../wailsjs/go/models";
 
 // Get display name for a user ID (same logic as in ConversationDetailsView)
 function getDisplayName(
-  userId: string, 
+  userId: string,
   participantNames?: Map<string, string>,
   allMessages?: models.Message[]
 ): string {
@@ -22,7 +22,7 @@ function getDisplayName(
     if (name && name.trim().length > 0) {
       return name;
     }
-    
+
     // If not found and ID contains ":", try without the ":digits" part (for WhatsApp LID format)
     // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
     if (userId.includes(":") && (userId.includes("@s.whatsapp.net") || userId.includes("@g.us"))) {
@@ -33,7 +33,7 @@ function getDisplayName(
       }
     }
   }
-  
+
   // If not found in participantNames, try to find in messages (for provider user IDs)
   if (allMessages) {
     for (const message of allMessages) {
@@ -42,23 +42,23 @@ function getDisplayName(
       }
     }
   }
-  
+
   // For provider user IDs (U1234567890), return a formatted version
   if (userId.startsWith("U") && /^U[A-Z0-9]+$/.test(userId)) {
     // provider user ID - return as-is (will be handled by UI or backend lookup)
     return userId;
   }
-  
+
   // Robust handling: extract local part from various WhatsApp ID formats
   // Supports: "33603018166@s.whatsapp.net", "33662865152:47@s.whatsapp.net" (LID format)
   let phoneNumber: string | null = null;
-  
+
   // Match "digits" optionally followed by ":digits@server"
   const match = userId.match(/^(\d+)(?::\d+)?@/);
   if (match) {
     phoneNumber = match[1];
   }
-  
+
   if (phoneNumber) {
     // If this looks like a French number (starts with 33 and 11 digits) format nicely
     if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
@@ -111,7 +111,7 @@ export function MessageReactions({
   // Group reactions by emoji (after cleaning skin-tones)
   const reactionGroups = useMemo(() => {
     const groups = new Map<string, ReactionGroup>();
-    
+
     reactions.forEach((reaction) => {
       // First, normalize format: ensure emoji has colons for proper cleaning
       // Reactions can be stored as "+1::skin-tone-2" or ":+1::skin-tone-2:"
@@ -122,10 +122,10 @@ export function MessageReactions({
       if (!normalizedEmoji.endsWith(":")) {
         normalizedEmoji = `${normalizedEmoji}:`;
       }
-      
+
       // Now clean skin-tone modifiers from normalized emoji
       let cleanedEmoji = cleanEmoji(normalizedEmoji);
-      
+
       // Ensure cleaned emoji still has colons (in case it was removed)
       if (!cleanedEmoji.startsWith(":")) {
         cleanedEmoji = `:${cleanedEmoji}`;
@@ -133,7 +133,7 @@ export function MessageReactions({
       if (!cleanedEmoji.endsWith(":")) {
         cleanedEmoji = `${cleanedEmoji}:`;
       }
-      
+
       // Group by cleaned emoji
       const existing = groups.get(cleanedEmoji);
       if (existing) {
@@ -153,12 +153,22 @@ export function MessageReactions({
     return Array.from(groups.values());
   }, [reactions]);
 
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const firstBtn = rootRef.current?.querySelector("button");
+    if (firstBtn) {
+      const r = firstBtn.getBoundingClientRect();
+      const s = getComputedStyle(firstBtn);
+      console.log("[Reactions] button height:", r.height, "px | paddingTop:", s.paddingTop, "paddingBottom:", s.paddingBottom, "fontSize:", s.fontSize, "lineHeight:", s.lineHeight);
+    }
+  }, []);
+
   if (reactionGroups.length === 0) {
     return null;
   }
 
   return (
-    <div className={cn("flex flex-wrap gap-1 mt-1", className)}>
+    <div ref={rootRef} className={cn("flex flex-wrap gap-1 items-center mt-1", className)}>
       {reactionGroups.map((group) => {
         const hasCurrentUser = currentUserId && group.userIds.includes(currentUserId);
         const displayNames = isGroup
@@ -172,7 +182,7 @@ export function MessageReactions({
             <Emoji
               emoji={group.emoji}
               providerInstanceId={providerInstanceId}
-              size={16}
+              size={14}
               className="inline align-middle"
             />
             {group.userIds.length > 1 && <span className="ml-0.5">{group.userIds.length}</span>}
@@ -183,7 +193,7 @@ export function MessageReactions({
           <button
             onClick={() => onReactionClick?.(group.emoji)}
             className={cn(
-              "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-colors",
+              "inline-flex items-center gap-1 px-2 h-[1.375rem] rounded-md text-[0.55rem] transition-colors",
               hasCurrentUser
                 ? "bg-primary/20 border-primary/50 text-primary"
                 : "bg-muted border-border text-foreground hover:bg-muted/80"
@@ -225,8 +235,8 @@ function ReactionPopover({ button, children }: { button: React.ReactNode; childr
           {button}
         </div>
       </PopoverTrigger>
-      <PopoverContent 
-        className="w-auto p-2" 
+      <PopoverContent
+        className="w-auto p-2"
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onOpenAutoFocus={(e) => e.preventDefault()}

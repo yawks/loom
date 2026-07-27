@@ -207,6 +207,19 @@ export function MessageList({
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
   const markMultipleAsRead = useMessageReadStore((state) => state.markMultipleAsRead);
 
+  // IDs of all thread reply messages — excluded from the conversation-level read marking
+  // because thread replies are only considered "read" when the thread panel has been shown.
+  const threadReplyIds = useMemo(() => {
+    const ids = new Set<string>();
+    Object.values(threadsByParent).forEach((msgs) =>
+      msgs.forEach((msg) => {
+        ids.add(getMessageDomId(msg));
+        if (msg.protocolMsgId) ids.add(msg.protocolMsgId);
+      })
+    );
+    return ids;
+  }, [threadsByParent]);
+
   // Effects
   useEffect(() => { setIsTypingInInput(false); }, [selectedConversation?.id, setIsTypingInInput]);
   useEffect(() => { setRevealedDeletedMessages(new Set()); }, [conversationId]);
@@ -221,10 +234,13 @@ export function MessageList({
     return () => { window.removeEventListener("focus", handleFocus); window.removeEventListener("blur", handleBlur); };
   }, []);
 
-  // Mark conversation as read
+  // Mark conversation as read — only for main messages, not thread replies.
+  // Thread reply messages are only marked read when the thread panel is displayed.
   useEffect(() => {
     if (!conversationId) return;
-    const unreadMessages = Object.entries(conversationReadState).filter(([, isRead]) => !isRead).map(([msgId]) => msgId);
+    const unreadMessages = Object.entries(conversationReadState)
+      .filter(([msgId, isRead]) => !isRead && !msgId.startsWith("_") && !threadReplyIds.has(msgId))
+      .map(([msgId]) => msgId);
     if (unreadMessages.length === 0) return;
 
     const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
@@ -239,7 +255,7 @@ export function MessageList({
     markConversationAsReadOnServer(conversationId)
       .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
       .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation]);
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, threadReplyIds]);
 
   // Snapshot the first unread message ID once per conversation (when messages first arrive).
   // A live useMemo on conversationReadState would recompute every time a message is
@@ -467,7 +483,8 @@ export function MessageList({
     onAvatarClick: handleAvatarClick,
     onNavigateToEdit: handleNavigateToEdit,
     setOpenActionsMessageId,
-  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads]);
+    showToast,
+  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
 
   const commonItemProps = {
     mainMessages,

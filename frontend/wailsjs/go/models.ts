@@ -43,6 +43,7 @@ export namespace core {
 	    config: Record<string, any>;
 	    isActive: boolean;
 	    configSchema: Record<string, any>;
+	    syncError: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderInfo(source);
@@ -58,6 +59,7 @@ export namespace core {
 	        this.config = source["config"];
 	        this.isActive = source["isActive"];
 	        this.configSchema = source["configSchema"];
+	        this.syncError = source["syncError"];
 	    }
 	}
 
@@ -96,6 +98,29 @@ export namespace gorm {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace main {
+	
+	export class LinkPreview {
+	    title: string;
+	    description: string;
+	    imageURL: string;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LinkPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.imageURL = source["imageURL"];
+	        this.url = source["url"];
+	    }
 	}
 
 }

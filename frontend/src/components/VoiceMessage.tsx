@@ -1,5 +1,5 @@
 import { GetAttachmentData, MarkMessageAsPlayed } from "../../wailsjs/go/main/App";
-import { Pause, Play } from "lucide-react";
+import { Loader2, Pause, Play } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 interface VoiceMessageProps {
@@ -28,6 +28,8 @@ export function VoiceMessage({
     const [playbackRate, setPlaybackRate] = useState(1);
     const [hasPlayedAndMarked, setHasPlayedAndMarked] = useState(false);
     const [waveform, setWaveform] = useState<number[]>([]);
+    const [loadRequested] = useState(true);
+    const [playWhenReady, setPlayWhenReady] = useState(false);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -96,8 +98,12 @@ export function VoiceMessage({
     // Load audio data
     useEffect(() => {
         let active = true;
+        let objectUrl: string | null = null;
+        let audioContext: AudioContext | null = null;
+        setAudioUrl(null);
+        setWaveform([]);
         const loadAudio = async () => {
-            if (!attachment.url) return;
+            if (!attachment.url || !loadRequested) return;
             try {
                 const data = await GetAttachmentData(attachment.url);
                 if (!active) return;
@@ -139,7 +145,7 @@ export function VoiceMessage({
                         console.log("[VoiceMessage] Decoded OGG successfully", { sampleRate, channels: channelData.length });
 
                         // Generate waveform data from the first channel
-                        if (channelData.length > 0) {
+                        if (channelData.length > 0 && active) {
                             setWaveform(calculateWaveform(channelData[0]));
                         }
 
@@ -147,8 +153,13 @@ export function VoiceMessage({
                         // If stereo, we'd need to interleave, but let's assume mono/take first channel for now
                         const wavBlob = encodeWAV(channelData[0], sampleRate);
                         const url = URL.createObjectURL(wavBlob);
+                        objectUrl = url;
 
-                        setAudioUrl(url);
+                        if (active) {
+                            setAudioUrl(url);
+                        } else {
+                            URL.revokeObjectURL(url);
+                        }
                         return;
                     } catch (decodeErr) {
                         console.warn("[VoiceMessage] Failed to decode OGG, falling back to original source:", decodeErr);
@@ -158,7 +169,7 @@ export function VoiceMessage({
                 // Fallback for supported formats (MP3/M4A) - decode with Web Audio API to generate waveform
                 console.log("[VoiceMessage] Attempting Web Audio API decoding for waveform...");
                 try {
-                    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+                    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
                     
                     // Convert data URL to ArrayBuffer
                     const response = await fetch(data);
@@ -170,7 +181,7 @@ export function VoiceMessage({
                     // Generate waveform from decoded audio
                     const samples = audioBuffer.getChannelData(0); // Use first channel
                     const calculatedWaveform = calculateWaveform(samples);
-                    setWaveform(calculatedWaveform);
+                    if (active) setWaveform(calculatedWaveform);
                     console.log("[VoiceMessage] Generated waveform from Web Audio API", { 
                         sampleRate: audioBuffer.sampleRate, 
                         duration: audioBuffer.duration,
@@ -179,14 +190,16 @@ export function VoiceMessage({
                     
                     // Update duration if available
                     if (audioBuffer.duration > 0 && !attachment.duration) {
-                        setDuration(audioBuffer.duration);
+                        if (active) setDuration(audioBuffer.duration);
                     }
                     
-                    setAudioUrl(data);
+                    if (active) setAudioUrl(data);
                 } catch (webAudioErr) {
                     console.warn("[VoiceMessage] Web Audio API decoding failed, using native playback:", webAudioErr);
-                    setAudioUrl(data);
+                    if (active) setAudioUrl(data);
                     // Waveform will remain empty, showing fallback slider
+                } finally {
+                    await audioContext?.close();
                 }
             } catch (err) {
                 console.error("Failed to load voice message:", err);
@@ -195,8 +208,10 @@ export function VoiceMessage({
         loadAudio();
         return () => {
             active = false;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            void audioContext?.close();
         };
-    }, [attachment.url, attachment.fileName]);
+    }, [attachment.url, attachment.fileName, loadRequested]);
 
     // Handle playback rate
     useEffect(() => {
@@ -205,8 +220,28 @@ export function VoiceMessage({
         }
     }, [playbackRate]);
 
+    // Preserve the expected one-click behaviour while still deferring the
+    // costly fetch/decode until the user elects to play a voice note.
+    useEffect(() => {
+        if (!playWhenReady || !audioUrl || !audioRef.current) return;
+        setPlayWhenReady(false);
+        audioRef.current.play()
+            .then(() => {
+                setIsPlaying(true);
+                if (!isFromMe && !hasPlayedAndMarked) {
+                    MarkMessageAsPlayed(conversationID, messageID).catch(console.error);
+                    setHasPlayedAndMarked(true);
+                }
+            })
+            .catch((err) => console.error("Playback failed:", err));
+    }, [audioUrl, conversationID, hasPlayedAndMarked, isFromMe, messageID, playWhenReady]);
+
     const togglePlay = async () => {
-        if (!audioRef.current || !audioUrl) return;
+        if (!audioUrl) {
+            setPlayWhenReady(true);
+            return;
+        }
+        if (!audioRef.current) return;
 
         if (isPlaying) {
             audioRef.current.pause();
@@ -358,17 +393,25 @@ export function VoiceMessage({
                     : "bg-primary/10 hover:bg-primary/20 text-primary"
                     }`}
             >
-                {isPlaying ? (
-                    <Pause className="h-5 w-5 fill-current" />
-                ) : (
-                    <Play className="h-5 w-5 fill-current ml-0.5" />
-                )}
+                {!audioUrl && <Loader2 className="h-5 w-5 animate-spin opacity-60" />}
+                {audioUrl && isPlaying && <Pause className="h-5 w-5 fill-current" />}
+                {audioUrl && !isPlaying && <Play className="h-5 w-5 fill-current ml-0.5" />}
             </button>
 
             <div className="flex-1 flex flex-col gap-1 min-w-0">
                 {/* Fixed h-8 container so slider↔waveform swap doesn't change item height */}
                 <div className="h-8 flex items-center w-full">
-                  {renderWaveform()}
+                  {!audioUrl ? (
+                      <div className="flex items-center gap-[2px] h-full w-full">
+                          {Array.from({ length: 40 }, (_, i) => (
+                              <div
+                                  key={i}
+                                  className={`flex-1 rounded-full animate-pulse ${isFromMe ? "bg-white/30" : "bg-primary/20"}`}
+                                  style={{ height: `${20 + Math.sin(i * 0.8) * 15 + 15}%` }}
+                              />
+                          ))}
+                      </div>
+                  ) : renderWaveform()}
                 </div>
                 <div className={`flex justify-between text-xs ${isFromMe ? "text-white/70" : "text-muted-foreground"}`}>
                     <span>{formatTime(progress)}</span>

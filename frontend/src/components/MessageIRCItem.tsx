@@ -1,6 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
-import { cn, timeToDate } from "@/lib/utils";
+import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
+import { LinkPreviewCard } from "./LinkPreviewCard";
 import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
 
 import { CallMessage } from "./CallMessage";
@@ -102,11 +103,11 @@ export function MessageIRCItem({
   const shouldShowSenderForDeleted = isDeleted && nextMessage?.senderId === message.senderId && nextMessage?.isFromMe === message.isFromMe;
   const showSender = !prevMessage || prevMessage.senderId !== message.senderId || prevMessage.isFromMe !== message.isFromMe || timeDiffMinutes >= 5 || shouldShowSenderForDeleted;
   const threadMessages = threadsByParent[message.protocolMsgId];
-  const threadCount = threadMessages?.length ?? 0;
-  const hasThread = threadCount > 0;
-  const lastThreadMsg = hasThread
-    ? [...threadMessages].sort((a, b) => timeToDate(b.timestamp).getTime() - timeToDate(a.timestamp).getTime())[0]
-    : null;
+  const hasThread = (threadMessages?.length ?? 0) > 0;
+  const hasUnreadInThread = hasThread && threadMessages.some(
+    (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
+  );
+  const previewUrl = (!isDeleted && message.body) ? extractFirstUrl(message.body) : null;
 
   const deletedListWrapperClass = cn(
     "w-full flex flex-col gap-1 message",
@@ -259,15 +260,16 @@ export function MessageIRCItem({
                         {!showSender && message.body && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
                             <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
-                            {message.isEdited && <span className="text-muted-foreground ml-1 text-xs italic">({t("edited")})</span>}
+                            {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
                         {showSender && message.body?.trim() && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
                             <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
-                            {message.isEdited && <span className="text-muted-foreground ml-1 text-xs italic">({t("edited")})</span>}
+                            {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
+                        {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                         {message.attachments?.trim() && (
                           <MessageAttachments
                             attachments={message.attachments}
@@ -275,6 +277,7 @@ export function MessageIRCItem({
                             conversationID={conversationId}
                             messageID={String(message.id)}
                             layout={messageLayout as "bubble" | "irc"}
+                            showToast={handlers.showToast}
                           />
                         )}
                         {!message.body?.trim() && !message.attachments?.trim() && (
@@ -292,17 +295,6 @@ export function MessageIRCItem({
               </div>
             )}
           </div>
-          {message.reactions && message.reactions.length > 0 && (
-            <MessageReactions
-              reactions={message.reactions}
-              isGroup={isGroupConversation}
-              participantNames={participantNames}
-              currentUserId={currentUserId}
-              providerInstanceId={providerInstanceId}
-              allMessages={mainMessages}
-              onReactionClick={(emoji) => handlers.onReaction(message, emoji)}
-            />
-          )}
           {isUnread && (
             <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">{t("unread_indicator")}</span>
           )}
@@ -326,15 +318,29 @@ export function MessageIRCItem({
           )}
         </div>
       </div>
-      {hasThread && lastThreadMsg && (
-        <MessageThreadPreview
-          lastThreadMsg={lastThreadMsg}
-          threadCount={threadCount}
-          providerInstanceId={providerInstanceId}
-          className="ml-[80px]"
-          onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
-          onAvatarClick={handlers.onAvatarClick}
-        />
+      {(hasThread || (message.reactions && message.reactions.length > 0)) && (
+        <div className="flex items-stretch flex-wrap gap-1 mt-1 ml-[80px]">
+          {hasThread && (
+            <MessageThreadPreview
+              threadMessages={threadMessages}
+              hasUnread={hasUnreadInThread}
+              onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
+              onAvatarClick={handlers.onAvatarClick}
+            />
+          )}
+          {message.reactions && message.reactions.length > 0 && (
+            <MessageReactions
+              reactions={message.reactions}
+              isGroup={isGroupConversation}
+              participantNames={participantNames}
+              currentUserId={currentUserId}
+              providerInstanceId={providerInstanceId}
+              allMessages={mainMessages}
+              onReactionClick={(emoji) => handlers.onReaction(message, emoji)}
+              className="mt-0"
+            />
+          )}
+        </div>
       )}
     </div>
   );

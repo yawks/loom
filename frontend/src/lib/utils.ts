@@ -29,7 +29,7 @@ export function timeToDate(time: any): Date {
  */
 export function transformUrls(text: string): string {
   if (!text) return text;
-  
+
   // Pattern to match <URL|text> or <URL>
   // This regex matches:
   // - <https://example.com|Link Text> -> [Link Text](https://example.com)
@@ -55,9 +55,9 @@ export function escapeLeadingDashes(text: string): string {
  */
 export function fixCodeBlocks(text: string): string {
   if (!text) return text;
-  
+
   let fixed = text;
-  
+
   // Languages that highlight.js recognises as valid fence identifiers.
   const KNOWN_LANGS = new Set([
     'bash', 'c', 'clojure', 'cpp', 'cs', 'css', 'dart', 'dockerfile',
@@ -92,4 +92,12 @@ export function fixCodeBlocks(text: string): string {
   });
 
   return fixed;
+}
+
+const URL_RE = /https?:\/\/[^\s<>"'\])​]+/;
+
+/** Returns the first http/https URL found in text, or null. */
+export function extractFirstUrl(text: string): string | null {
+  const m = URL_RE.exec(text);
+  return m ? m[0].replace(/[.,;!?]+$/, "") : null;
 }

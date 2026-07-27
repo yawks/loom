@@ -5,10 +5,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
+import { Emoji } from "./Emoji";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { MessageText } from "./MessageText";
 import { NewConversationModal } from "./NewConversationModal";
-import { Emoji } from "./Emoji";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -61,6 +61,10 @@ export function ContactList() {
   const { data: contacts } = useSuspenseQuery<models.MetaContact[], Error>({
     queryKey: ["metaContacts"],
     queryFn: fetchMetaContacts,
+    // Always refetch on mount to catch status updates that fired before this
+    // component's useEffect listeners were installed.
+    refetchOnMount: "always",
+    staleTime: 0,
   });
   const typingByConversation = useTypingStore((state) => state.typingByConversation);
 
@@ -139,7 +143,7 @@ export function ContactList() {
           statusEmoji?: string;
           statusText?: string;
         };
-        
+
         // Invalidate contacts query to refetch with updated status
         // This ensures the UI reflects the latest status and emoji
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
@@ -193,10 +197,24 @@ export function ContactList() {
     setMetaContacts(contacts);
   }, [contacts, setMetaContacts]);
 
-  // Debug: Log when presenceMap changes
+  // Temporary badge diagnostic — remove after debugging
   useEffect(() => {
-    //console.log(`[ContactList] presenceMap changed, current entries:`, Object.entries(presenceMap));
-  }, [presenceMap]);
+    const onlinePresenceKeys = Object.entries(presenceMap).filter(([, v]) => v).map(([k]) => k);
+    // Find contacts whose userId matches a presenceMap key
+    const presenceMatches = contacts.flatMap(c =>
+      c.linkedAccounts
+        .filter(a => presenceMap[a.userId] === true)
+        .map(a => `${c.displayName} [userId=${a.userId} isGroup=${a.isGroup}]`)
+    );
+    const nonOffline = contacts.flatMap(c =>
+      c.linkedAccounts
+        .filter(a => a.status && a.status !== "offline")
+        .map(a => `${c.displayName} [${a.protocol}:${a.status}]`)
+    );
+    console.log(`[badge-diag] contacts=${contacts.length} presenceKeys=${onlinePresenceKeys.join(",") || "(none)"}`);
+    console.log(`[badge-diag] presenceMatches:`, presenceMatches.length > 0 ? presenceMatches : "(none)");
+    console.log(`[badge-diag] non-offline-statuses:`, nonOffline.length > 0 ? nonOffline : "(none)");
+  }, [contacts, presenceMap]);
 
   // Use shared hook for sorted contacts
   const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
@@ -507,7 +525,7 @@ export function ContactList() {
                     if (statusEmojiData) {
                       return (
                         <div
-                          className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
+                          className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center "
                           title={statusEmojiData.emoji}
                         >
                           <Emoji
@@ -520,13 +538,13 @@ export function ContactList() {
                     }
                     return null;
                   })()}
-                  {!isCurrentUser && !isTyping && (() => {
+                  {!isCurrentUser && !isTyping && !isGroup && (() => {
                     // Get status from linked accounts (prefer first account with a status)
                     const accountStatus = contact.linkedAccounts.find(acc => acc.status && acc.status !== "offline")?.status || null;
                     const status = accountStatus || (isOnline ? "online" : null);
-                    
+
                     if (!status) return null;
-                    
+
                     // Special handling for meeting status - show calendar icon
                     if (status === "meeting") {
                       return (
@@ -538,11 +556,11 @@ export function ContactList() {
                         </div>
                       );
                     }
-                    
+
                     // Determine status badge color and title for other statuses
                     let bgColor = "";
                     let titleText = "";
-                    
+
                     switch (status) {
                       case "online":
                         bgColor = "bg-green-500";
@@ -564,7 +582,7 @@ export function ContactList() {
                         bgColor = "bg-gray-500";
                         titleText = status;
                     }
-                    
+
                     return (
                       <div
                         className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-sidebar`}
@@ -572,7 +590,7 @@ export function ContactList() {
                     />
                     );
                   })()}
-                  {isTyping && (
+                  {isTyping && !isGroup && (
                     <div
                       className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-sidebar animate-pulse"
                       title={t("typing_indicator_title")}

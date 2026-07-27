@@ -16,7 +16,7 @@ import {
   RemoveProvider,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
-import { MessageCircle, RefreshCw, Settings, Trash2, Wine } from "lucide-react";
+import { AlertTriangle, MessageCircle, RefreshCw, Settings, Trash2, Wine } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -174,7 +174,16 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
     };
   }, [open, view, selectedProvider, onOpenChange]);
 
+  const [isReauth, setIsReauth] = useState(false);
+
   const handleEdit = (provider: core.ProviderInfo) => {
+    setIsReauth(false);
+    setSelectedProvider(provider);
+    setView("config");
+  };
+
+  const handleReauth = (provider: core.ProviderInfo) => {
+    setIsReauth(true);
     setSelectedProvider(provider);
     setView("config");
   };
@@ -340,7 +349,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
               ) : (
                 <div className="space-y-3">
                   {configuredProviders.map((provider) => (
-                    <Card key={provider.instanceId || provider.id}>
+                    <Card key={provider.instanceId || provider.id} className={provider.syncError ? "border-orange-500/60" : ""}>
                       <CardHeader className="flex flex-row items-center justify-between space-y-0">
                         <div className="flex items-center gap-3">
                           {getProviderIcon(provider)}
@@ -356,11 +365,33 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                             <CardDescription>{provider.description}</CardDescription>
                           </div>
                         </div>
-                        {provider.isActive && (
+                        {provider.isActive && !provider.syncError && (
                           <span className="text-xs font-medium text-green-600">{t("providers_modal_active")}</span>
                         )}
+                        {provider.syncError && (
+                          <span className="text-xs font-medium text-orange-500 flex items-center gap-1">
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            {t("providers_modal_sync_error_label")}
+                          </span>
+                        )}
                       </CardHeader>
-                      <CardContent className="flex gap-2">
+                      {provider.syncError && (
+                        <div className="providers-modal__error-banner mx-6 mb-3 flex items-start gap-2 rounded-md bg-orange-500/10 border border-orange-500/30 px-3 py-2 text-sm text-orange-700 dark:text-orange-400">
+                          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                          <span>{provider.syncError}</span>
+                        </div>
+                      )}
+                      <CardContent className="flex gap-2 flex-wrap">
+                        {provider.syncError && (
+                          <Button
+                            variant="default"
+                            className="providers-modal__reauth-button flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white"
+                            onClick={() => handleReauth(provider)}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                            {t("providers_modal_reauth")}
+                          </Button>
+                        )}
                         <Button variant="outline" className="flex items-center gap-2" onClick={() => handleEdit(provider)}>
                           <Settings className="h-4 w-4" />
                           {t("providers_modal_edit")}
@@ -441,8 +472,10 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
               provider={selectedProvider}
               mode={configuredIds.has(selectedProvider.id) ? "edit" : "create"}
               initialValues={selectedProvider.config}
+              autoConnect={isReauth}
               onBack={() => {
                 console.log("ProvidersModal: onBack called, returning to list view");
+                setIsReauth(false);
                 setView("list");
                 setSelectedProvider(null);
               }}
@@ -452,6 +485,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
               onClose={() => {
                 console.log("ProvidersModal: closing modal from ProviderConfigForm");
                 onOpenChange(false);
+                setIsReauth(false);
                 setView("list");
                 setSelectedProvider(null);
               }}

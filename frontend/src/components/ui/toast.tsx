@@ -6,6 +6,7 @@ export interface Toast {
   id: string;
   message: string;
   type?: "error" | "success" | "info";
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastProps {
@@ -32,6 +33,14 @@ function ToastItem({ toast, onClose }: ToastProps) {
       )}
     >
       <p className="text-sm font-medium">{toast.message}</p>
+      {toast.action && (
+        <button
+          onClick={() => { toast.action!.onClick(); onClose(toast.id); }}
+          className="ml-2 shrink-0 text-sm font-semibold underline hover:no-underline"
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button
         onClick={() => onClose(toast.id)}
         className="ml-auto rounded-md p-1 hover:bg-black/10 dark:hover:bg-white/10"
@@ -61,9 +70,9 @@ let toastIdCounter = 0;
 export function useToast() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const showToast = (message: string, type: Toast["type"] = "info") => {
+  const showToast = (message: string, type: Toast["type"] = "info", action?: Toast["action"]) => {
     const id = `toast-${++toastIdCounter}`;
-    setToasts((prev) => [...prev, { id, message, type }]);
+    setToasts((prev) => [...prev, { id, message, type, action }]);
     return id;
   };
 

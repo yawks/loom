@@ -1,10 +1,10 @@
-import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames } from "../../wailsjs/go/main/App";
+import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
-import { timeToDate } from "@/lib/utils";
+import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 
 const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
@@ -40,6 +40,9 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       },
       enabled: !!conversationId,
       initialData: { pages: [], pageParams: [] },
+      // Bound an opened conversation to 500 messages. The visible list is
+      // virtualised, but query data itself otherwise grows for the session.
+      maxPages: 10,
       staleTime: 0,
       getNextPageParam: (lastPage, allPages) => {
         if (!lastPage || !Array.isArray(lastPage) || lastPage.length === 0) return undefined;
@@ -186,6 +189,25 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
     }
   }, [messages.length, isLoading, queryClient]);
+
+  // Pre-fetch link previews so the cache is warm before Virtuoso renders the items.
+  // Without this, previews appear after render and cause a Virtuoso layout shift (flicker).
+  useEffect(() => {
+    for (const msg of mainMessages) {
+      if (!msg.body) continue;
+      const url = extractFirstUrl(msg.body);
+      if (!url) continue;
+      const key = ["link-preview", url];
+      if (queryClient.getQueryData(key) !== undefined) continue;
+      queryClient.prefetchQuery({
+        queryKey: key,
+        queryFn: () => FetchLinkPreview(url),
+        staleTime: 60 * 60 * 1000,
+      });
+    }
+  // mainMessages reference is stable when content hasn't changed (same dataKey memo).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainMessages]);
 
   return {
     messages,

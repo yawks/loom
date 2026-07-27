@@ -33,6 +33,9 @@ interface AppState {
   removeCapabilities: (instanceId: string) => void;
   isTypingInInput: boolean;
   setIsTypingInInput: (isTyping: boolean) => void;
+  syncErrors: Record<string, string>;
+  setSyncError: (instanceId: string, message: string) => void;
+  clearSyncError: (instanceId: string) => void;
   // Navigation history
   conversationHistory: models.MetaContact[];
   historyIndex: number;
@@ -122,6 +125,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   isTypingInInput: false,
   setIsTypingInInput: (isTyping: boolean) => set({ isTypingInInput: isTyping }),
+  syncErrors: {},
+  setSyncError: (instanceId, message) => set((state) => ({
+    syncErrors: { ...state.syncErrors, [instanceId]: message }
+  })),
+  clearSyncError: (instanceId) => set((state) => {
+    const next = { ...state.syncErrors };
+    delete next[instanceId];
+    return { syncErrors: next };
+  }),
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
   metaContacts: [],

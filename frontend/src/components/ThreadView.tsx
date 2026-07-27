@@ -1,5 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
@@ -7,9 +7,10 @@ import { GetThreadMessages } from "../../wailsjs/go/main/App";
 import { MessageText } from "./MessageText";
 import { X } from "lucide-react";
 import type { models } from "../../wailsjs/go/models";
-import { getColorFromString, getSenderDisplayName } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getSenderDisplayName } from "@/lib/messageUtils";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -63,6 +64,8 @@ export function ThreadView() {
     enabled: !!selectedThreadId && !!conversationId,
   });
 
+  const markMultipleAsRead = useMessageReadStore((state) => state.markMultipleAsRead);
+
   // Sort thread messages by timestamp and filter out empty messages
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
@@ -77,6 +80,15 @@ export function ThreadView() {
         timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
     );
   }, [threadMessages]);
+
+  // Mark all unread thread messages as read as soon as the panel is visible with content.
+  useEffect(() => {
+    if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
+    const unreadIds = sortedThreadMessages
+      .filter((msg) => !msg.isFromMe)
+      .map((msg) => getMessageDomId(msg));
+    if (unreadIds.length > 0) markMultipleAsRead(conversationId, unreadIds);
+  }, [selectedThreadId, conversationId, sortedThreadMessages, markMultipleAsRead]);
 
   if (!selectedThreadId) return null;
 
