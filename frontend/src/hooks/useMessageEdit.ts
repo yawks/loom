@@ -50,6 +50,8 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
 
     queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
     queryClient.refetchQueries({ queryKey: ["messages", conversationId] });
+    queryClient.invalidateQueries({ queryKey: ["threads"] });
+    queryClient.refetchQueries({ queryKey: ["threads"] });
 
     try {
       await EditMessage(conversationId, messageId, newText);

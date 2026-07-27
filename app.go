@@ -1168,7 +1168,7 @@ func (a *App) GetThreadMessages(conversationID string, threadID string) ([]model
 	// First try to load from database
 	var messages []models.Message
 	if db.DB != nil {
-		err := db.DB.Where("protocol_conv_id = ? AND thread_id = ?", conversationID, threadID).
+		err := db.DB.Where("thread_id = ?", threadID).
 			Preload("Receipts").
 			Preload("Reactions").
 			Order("timestamp ASC").
@@ -1183,8 +1183,16 @@ func (a *App) GetThreadMessages(conversationID string, threadID string) ([]model
 	}
 
 	// If not found in DB, try to fetch from provider
-	// This shouldn't happen often as threads are fetched with the main conversation
-	fmt.Printf("[GetThreadMessages] Thread messages not found in database, returning empty list\n")
+	if provider := a.getProviderForConversation(conversationID); provider != nil {
+		fmt.Printf("[GetThreadMessages] Fetching thread messages from provider for conversation %s, thread %s\n", conversationID, threadID)
+		fetchedMessages, err := provider.GetThreads(threadID)
+		if err == nil && len(fetchedMessages) > 0 {
+			a.enrichMessagesWithSenderNames(fetchedMessages)
+			return fetchedMessages, nil
+		}
+	}
+
+	fmt.Printf("[GetThreadMessages] Thread messages not found in database or provider, returning empty list\n")
 	return []models.Message{}, nil
 }
 
@@ -1244,13 +1252,22 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	return provider.SendMessage(conversationID, content, nil, nil)
 }
 
-// SendReply sends a reply to a message
+// SendReply sends a quoted reply to a message in the main conversation thread
 func (a *App) SendReply(conversationID string, content string, quotedMessageID string) (*models.Message, error) {
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return provider.SendMessage(conversationID, content, nil, &quotedMessageID)
+	return provider.SendReply(conversationID, content, quotedMessageID)
+}
+
+// SendThreadMessage sends a reply inside a thread
+func (a *App) SendThreadMessage(conversationID string, content string, threadID string) (*models.Message, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	return provider.SendMessage(conversationID, content, nil, &threadID)
 }
 
 func (a *App) SendFile(conversationID string, base64Data string, filename string, mimeType string) error {
@@ -1400,7 +1417,7 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 	}
 	// Remove from local DB
 	if db.DB != nil {
-		db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, conversationID).Delete(&models.Message{})
+		db.DB.Where("protocol_msg_id = ? OR (protocol_msg_id = ? AND protocol_conv_id = ?)", messageID, messageID, conversationID).Delete(&models.Message{})
 	}
 	// Notify frontend
 	if a.ctx != nil {

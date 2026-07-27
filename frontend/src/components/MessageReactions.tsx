@@ -3,7 +3,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { useMemo, useState, useRef, useEffect } from "react";
+import { useMemo, useState, useRef } from "react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useTranslation } from "react-i18next";
 
 import { Emoji } from "./Emoji";
 import { cleanEmoji } from "@/lib/userDisplayNames";
@@ -81,9 +83,20 @@ function getDisplayName(
     .join(" ");
 }
 
+function getUserAvatarUrl(userId: string, allMessages?: models.Message[]): string | undefined {
+  if (allMessages) {
+    for (const message of allMessages) {
+      if (message.senderId === userId && message.senderAvatarUrl) {
+        return message.senderAvatarUrl;
+      }
+    }
+  }
+  return undefined;
+}
+
 interface MessageReactionsProps {
   reactions: models.Reaction[];
-  isGroup: boolean;
+  isGroup?: boolean;
   participantNames?: Map<string, string>;
   currentUserId?: string;
   providerInstanceId?: string;
@@ -100,7 +113,7 @@ interface ReactionGroup {
 
 export function MessageReactions({
   reactions,
-  isGroup,
+  isGroup: _isGroup,
   participantNames,
   currentUserId,
   providerInstanceId,
@@ -108,6 +121,8 @@ export function MessageReactions({
   onReactionClick,
   className,
 }: MessageReactionsProps) {
+  const { t } = useTranslation();
+
   // Group reactions by emoji (after cleaning skin-tones)
   const reactionGroups = useMemo(() => {
     const groups = new Map<string, ReactionGroup>();
@@ -154,14 +169,6 @@ export function MessageReactions({
   }, [reactions]);
 
   const rootRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const firstBtn = rootRef.current?.querySelector("button");
-    if (firstBtn) {
-      const r = firstBtn.getBoundingClientRect();
-      const s = getComputedStyle(firstBtn);
-      console.log("[Reactions] button height:", r.height, "px | paddingTop:", s.paddingTop, "paddingBottom:", s.paddingBottom, "fontSize:", s.fontSize, "lineHeight:", s.lineHeight);
-    }
-  }, []);
 
   if (reactionGroups.length === 0) {
     return null;
@@ -171,11 +178,6 @@ export function MessageReactions({
     <div ref={rootRef} className={cn("flex flex-wrap gap-1 items-center mt-1", className)}>
       {reactionGroups.map((group) => {
         const hasCurrentUser = currentUserId && group.userIds.includes(currentUserId);
-        const displayNames = isGroup
-          ? group.userIds
-              .map((userId) => getDisplayName(userId, participantNames, allMessages))
-              .filter(Boolean)
-          : [];
 
         const buttonContent = (
           <>
@@ -203,13 +205,28 @@ export function MessageReactions({
           </button>
         );
 
-        if (isGroup && displayNames.length > 0) {
+        if (group.userIds.length > 0) {
           return (
             <ReactionPopover key={group.emoji} button={button}>
-              <div className="flex flex-col gap-1">
-                {displayNames.map((name, idx) => (
-                  <span key={idx} className="text-sm">{name}</span>
-                ))}
+              <div className="flex flex-col gap-1.5 p-1 min-w-[100px]">
+                {group.userIds.map((userId) => {
+                  const isMe = currentUserId && userId === currentUserId;
+                  const name = isMe
+                    ? t("you") || "Vous"
+                    : getDisplayName(userId, participantNames, allMessages);
+                  const avatarUrl = getUserAvatarUrl(userId, allMessages);
+                  const fallbackInitials = name ? name.substring(0, 2).toUpperCase() : "?";
+
+                  return (
+                    <div key={userId} className="flex items-center gap-2 text-xs">
+                      <Avatar className="h-5 w-5 shrink-0">
+                        <AvatarImage src={avatarUrl} />
+                        <AvatarFallback className="text-[10px]">{fallbackInitials}</AvatarFallback>
+                      </Avatar>
+                      <span className="font-medium text-popover-foreground whitespace-nowrap">{name}</span>
+                    </div>
+                  );
+                })}
               </div>
             </ReactionPopover>
           );
@@ -236,7 +253,7 @@ function ReactionPopover({ button, children }: { button: React.ReactNode; childr
         </div>
       </PopoverTrigger>
       <PopoverContent
-        className="w-auto p-2"
+        className="w-auto p-2 border shadow-md rounded-md bg-popover text-popover-foreground"
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onOpenAutoFocus={(e) => e.preventDefault()}
@@ -246,4 +263,3 @@ function ReactionPopover({ button, children }: { button: React.ReactNode; childr
     </Popover>
   );
 }
-

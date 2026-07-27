@@ -1,7 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { GetCustomEmojis, SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage } from "../../wailsjs/go/main/App";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { Theme } from "emoji-picker-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -112,12 +112,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }, [selectedContact]);
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string }) => {
-      // If we're in a thread (threadId prop set), use that as the quotedMessageId
-      const actualQuotedMessageId = threadId || quotedMessageId;
-      
-      if (actualQuotedMessageId) {
-        return await SendReply(conversationId, text, actualQuotedMessageId);
+    mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string; quotedBody?: string; quotedSenderName?: string }) => {
+      if (threadId) {
+        return await SendThreadMessage(conversationId, text, threadId);
+      }
+      if (quotedMessageId) {
+        return await SendReply(conversationId, text, quotedMessageId);
       }
       return await SendMessage(conversationId, text);
     },
@@ -125,12 +125,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     onMutate: async ({ conversationId, text, quotedMessageId }) => {
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
-      
-      // Check if this is a thread message
-      const actualThreadId = threadId || quotedMessageId;
-      if (actualThreadId) {
+
+      // Only skip optimistic update for actual thread messages (threadId prop), not quoted replies
+      if (threadId) {
         // Don't do optimistic update for thread messages - they will be added via RTM event
-        console.log(`[ChatInput] Sending to thread ${actualThreadId}, skipping optimistic update`);
+        console.log(`[ChatInput] Sending to thread ${threadId}, skipping optimistic update`);
         return { tempId, conversationId, isThreadMessage: true };
       }
       
@@ -165,6 +164,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         isPending: true,
         sendFailed: false,
         quotedMessageId: quotedMessageId,
+        quotedBody: replyingToMessage?.body ?? undefined,
+        quotedSenderName: replyingToMessage?.senderName ?? undefined,
+        quotedSenderId: replyingToMessage?.senderId ?? undefined,
         senderId: currentUserInfo.senderId,
         senderName: currentUserInfo.senderName,
         senderAvatarUrl: currentUserInfo.senderAvatarUrl,
@@ -222,14 +224,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const tempId = context?.tempId;
       const isThreadMessage = context?.isThreadMessage;
 
-      // If we sent to a thread, invalidate and refetch the thread cache
+      // If we sent to an actual thread (threadId prop set), invalidate and refetch the thread cache
       if (isThreadMessage) {
-        const { quotedMessageId } = variables;
-        const actualThreadId = threadId || quotedMessageId;
-        console.log(`[ChatInput] Sent message to thread ${actualThreadId}, invalidating thread cache`);
-        queryClient.invalidateQueries({ queryKey: ["threads", conversationId, actualThreadId] });
-        queryClient.refetchQueries({ queryKey: ["threads", conversationId, actualThreadId] });
-        
+        console.log(`[ChatInput] Sent message to thread ${threadId}, invalidating thread cache`);
+        queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
+        queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
         // Also invalidate main messages to update thread count badge
         queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
         return; // Don't do optimistic update for thread messages

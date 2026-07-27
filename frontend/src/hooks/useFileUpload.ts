@@ -46,12 +46,33 @@ async function compressImageFile(file: File): Promise<File> {
   }
 }
 
+export interface UploadState {
+  isUploading: boolean;
+  currentFileIndex: number;
+  totalFiles: number;
+  currentFileName: string;
+  progressPercent: number;
+  fileProgressPercent: number;
+  statusText?: string;
+  error?: string | null;
+}
+
 export function useFileUpload(conversationId: string) {
   const queryClient = useQueryClient();
   const [isDragging, setIsDragging] = useState(false);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [pendingFilePaths, setPendingFilePaths] = useState<string[]>([]);
+  const [uploadState, setUploadState] = useState<UploadState>({
+    isUploading: false,
+    currentFileIndex: 0,
+    totalFiles: 0,
+    currentFileName: "",
+    progressPercent: 0,
+    fileProgressPercent: 0,
+    statusText: "",
+    error: null,
+  });
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -90,8 +111,37 @@ export function useFileUpload(conversationId: string) {
     const hasFilePaths = Boolean(filePaths && filePaths.length > 0);
     if (!conversationId || (files.length === 0 && !hasFilePaths)) return;
 
+    const totalCount = (filePaths ? filePaths.length : 0) + files.length;
+    setUploadState({
+      isUploading: true,
+      currentFileIndex: 1,
+      totalFiles: totalCount,
+      currentFileName: filePaths?.[0]?.split(/[/\\]/).pop() || files[0]?.name || "",
+      progressPercent: 5,
+      fileProgressPercent: 0,
+      statusText: "",
+      error: null,
+    });
+
+    let currentItemIndex = 0;
+
     if (hasFilePaths && filePaths) {
-      for (const filePath of filePaths) {
+      for (let idx = 0; idx < filePaths.length; idx++) {
+        const filePath = filePaths[idx];
+        currentItemIndex = idx + 1;
+        const fileName = filePath.split(/[/\\]/).pop() || filePath;
+        const basePercent = Math.round(((currentItemIndex - 1) / totalCount) * 100);
+
+        setUploadState({
+          isUploading: true,
+          currentFileIndex: currentItemIndex,
+          totalFiles: totalCount,
+          currentFileName: fileName,
+          progressPercent: Math.max(5, basePercent),
+          fileProgressPercent: 50,
+          error: null,
+        });
+
         try {
           if (typeof SendFileFromPath === "function") {
             await SendFileFromPath(conversationId, filePath);
@@ -101,17 +151,42 @@ export function useFileUpload(conversationId: string) {
         } catch (error) {
           console.error("Failed to send file from path:", filePath, error);
         }
+
+        const completedPercent = Math.round((currentItemIndex / totalCount) * 100);
+        setUploadState({
+          isUploading: true,
+          currentFileIndex: currentItemIndex,
+          totalFiles: totalCount,
+          currentFileName: fileName,
+          progressPercent: completedPercent,
+          fileProgressPercent: 100,
+          error: null,
+        });
       }
     }
 
-    const shouldProcessFileObjects = files.length > 0 && !hasFilePaths;
+    const shouldProcessFileObjects = files.length > 0;
     if (!shouldProcessFileObjects) {
+      setUploadState(prev => ({ ...prev, progressPercent: 100 }));
+      setTimeout(() => {
+        setUploadState({
+          isUploading: false,
+          currentFileIndex: 0,
+          totalFiles: 0,
+          currentFileName: "",
+          progressPercent: 0,
+          fileProgressPercent: 0,
+          statusText: "",
+          error: null,
+        });
+      }, 500);
       refreshMessages();
       return;
     }
 
     if (typeof SendFile !== "function") {
       console.error("SendFile API is not available. Please rebuild the application to generate Wails bindings.");
+      setUploadState(prev => ({ ...prev, isUploading: false, error: "SendFile API not available" }));
       return;
     }
 
@@ -121,8 +196,23 @@ export function useFileUpload(conversationId: string) {
       [key: string]: unknown;
     }
 
-    for (const initialFile of files) {
-      let file = initialFile;
+    const pathOffset = filePaths ? filePaths.length : 0;
+
+    for (let i = 0; i < files.length; i++) {
+      let file = files[i];
+      currentItemIndex = pathOffset + i + 1;
+      const basePercent = Math.round(((currentItemIndex - 1) / totalCount) * 100);
+
+      setUploadState({
+        isUploading: true,
+        currentFileIndex: currentItemIndex,
+        totalFiles: totalCount,
+        currentFileName: file.name,
+        progressPercent: Math.max(5, basePercent),
+        fileProgressPercent: 10,
+        error: null,
+      });
+
       try {
         const maxSize = 64 * 1024 * 1024;
         if (file.size > maxSize) {
@@ -154,10 +244,24 @@ export function useFileUpload(conversationId: string) {
         if (filePath && typeof filePath === "string") {
           if (typeof SendFileFromPath === "function") {
             await SendFileFromPath(conversationId, filePath);
+            const compPercent = Math.round((currentItemIndex / totalCount) * 100);
+            setUploadState({
+              isUploading: true,
+              currentFileIndex: currentItemIndex,
+              totalFiles: totalCount,
+              currentFileName: file.name,
+              progressPercent: compPercent,
+              fileProgressPercent: 100,
+              error: null,
+            });
             continue;
           } else {
             console.warn("SendFileFromPath not available yet, falling back to reading file");
           }
+        }
+
+        if (file.type?.startsWith("image/") && file.size > 1024 * 1024) {
+          setUploadState(prev => ({ ...prev, statusText: "compressing" }));
         }
 
         file = await compressImageFile(file);
@@ -166,10 +270,24 @@ export function useFileUpload(conversationId: string) {
         let fileMimeType = file.type || "application/octet-stream";
         let fileName = file.name;
 
+        setUploadState(prev => ({ ...prev, statusText: undefined, fileProgressPercent: 20 }));
+
         try {
           fileData = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             const timeout = setTimeout(() => { reader.abort(); reject(new Error(`Timeout reading file: ${file.name}`)); }, 30000);
+
+            reader.onprogress = (e) => {
+              if (e.lengthComputable && e.total > 0) {
+                const fPct = Math.round((e.loaded / e.total) * 100);
+                const oPct = Math.round(((currentItemIndex - 1 + (fPct / 100) * 0.7) / totalCount) * 100);
+                setUploadState(prev => ({
+                  ...prev,
+                  fileProgressPercent: fPct,
+                  progressPercent: Math.max(prev.progressPercent, oPct),
+                }));
+              }
+            };
 
             reader.onload = (e) => {
               clearTimeout(timeout);
@@ -220,15 +338,46 @@ export function useFileUpload(conversationId: string) {
           }
         }
 
+        setUploadState(prev => ({
+          ...prev,
+          fileProgressPercent: 90,
+          progressPercent: Math.round(((currentItemIndex - 0.1) / totalCount) * 100),
+        }));
+
         if (typeof SendFile === "function") {
           await SendFile(conversationId, fileData, fileName, fileMimeType);
         } else {
           throw new Error("SendFile API is not available");
         }
+
+        const compPct = Math.round((currentItemIndex / totalCount) * 100);
+        setUploadState({
+          isUploading: true,
+          currentFileIndex: currentItemIndex,
+          totalFiles: totalCount,
+          currentFileName: file.name,
+          progressPercent: compPct,
+          fileProgressPercent: 100,
+          error: null,
+        });
       } catch (error) {
         console.error("Failed to send file:", file.name, error);
       }
     }
+
+    setUploadState(prev => ({ ...prev, progressPercent: 100 }));
+    setTimeout(() => {
+      setUploadState({
+        isUploading: false,
+        currentFileIndex: 0,
+        totalFiles: 0,
+        currentFileName: "",
+        progressPercent: 0,
+        fileProgressPercent: 0,
+        statusText: "",
+        error: null,
+      });
+    }, 500);
 
     refreshMessages();
   }, [conversationId, refreshMessages]);
@@ -325,6 +474,7 @@ export function useFileUpload(conversationId: string) {
     setPendingFiles,
     pendingFilePaths,
     setPendingFilePaths,
+    uploadState,
     handleDragEnter,
     handleDragLeave,
     handleDragOver,

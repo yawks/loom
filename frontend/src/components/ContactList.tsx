@@ -1,6 +1,6 @@
 import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetAllActiveCalls, GetAllMessageCounts, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -33,6 +33,7 @@ export function ContactList() {
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
+  const setCapabilities = useAppStore((state) => state.setCapabilities);
   const [sortBy, setSortBy] = useState<SortOption>("last_message");
   const [hasInitializedSort, setHasInitializedSort] = useState(false);
 
@@ -349,6 +350,17 @@ export function ContactList() {
   // IMPORTANT: wait for allMessageCounts to finish loading before deciding —
   // an empty {} during loading would incorrectly switch the tab to alphabetical,
   // disabling the allLastMessageTimestamps query and emptying the "recent" tab.
+  useEffect(() => {
+    if (configuredProviders.length === 0) return;
+    configuredProviders.forEach((provider) => {
+      const id = provider.instanceId;
+      if (!id) return;
+      GetCapabilities(id)
+        .then((caps) => setCapabilities(id, caps))
+        .catch(() => {});
+    });
+  }, [configuredProviders, setCapabilities]);
+
   useEffect(() => {
     if (hasInitializedSort || contacts.length === 0 || allMessageCountsIsPending) {
       return;

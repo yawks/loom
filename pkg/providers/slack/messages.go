@@ -140,9 +140,120 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	return sentMessage, nil
 }
 
-// SendReply sends a text message as a reply to another message.
+// parseSlackBlockQuote extracts quoted message details from Slack block quote syntax (> *Name*\n> text...)
+func (p *SlackProvider) parseSlackBlockQuote(rawText string) (cleanText string, quotedSenderName string, quotedBody string, isQuote bool) {
+	lines := strings.Split(rawText, "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "> *") {
+		return rawText, "", "", false
+	}
+
+	firstLine := lines[0]
+	endIdx := strings.LastIndex(firstLine, "*")
+	if endIdx <= 3 {
+		return rawText, "", "", false
+	}
+	senderName := firstLine[3:endIdx]
+
+	// If senderName looks like a user ID (e.g. U12345678), try to resolve it
+	if (strings.HasPrefix(senderName, "U") || strings.HasPrefix(senderName, "W")) && len(senderName) >= 8 && len(senderName) <= 12 {
+		if cachedName, _ := p.getUserNameFromCache(senderName); cachedName != "" {
+			senderName = cachedName
+		} else if p.client != nil {
+			if user, err := p.client.GetUserInfo(senderName); err == nil && user != nil {
+				senderName = getUserDisplayName(user)
+			}
+		}
+	}
+
+	var quoteLines []string
+	var textLines []string
+	inQuote := true
+
+	for _, line := range lines[1:] {
+		if inQuote && strings.HasPrefix(line, "> ") {
+			quoteLines = append(quoteLines, strings.TrimPrefix(line, "> "))
+		} else if inQuote && line == ">" {
+			quoteLines = append(quoteLines, "")
+		} else {
+			inQuote = false
+			textLines = append(textLines, line)
+		}
+	}
+
+	if len(quoteLines) == 0 {
+		return rawText, "", "", false
+	}
+
+	qBody := strings.Join(quoteLines, "\n")
+	cText := strings.TrimSpace(strings.Join(textLines, "\n"))
+	return cText, senderName, qBody, true
+}
+
+// SendReply sends a quoted reply in the main channel (not as a Slack thread reply).
+// Slack has no native inline quote, so we format the original message as a block quote.
 func (p *SlackProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
-	return p.SendMessage(conversationID, text, nil, &quotedMessageID)
+	var prefix string
+	var quotedMsg *models.Message
+	var quotedSenderName string
+	var quotedBody string
+
+	if db.DB != nil {
+		var quoted models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", quotedMessageID).First(&quoted).Error; err == nil {
+			quotedMsg = &quoted
+			quotedSenderName = quoted.SenderName
+			if quotedSenderName == "" || quotedSenderName == quoted.SenderID {
+				if cachedName, _ := p.getUserNameFromCache(quoted.SenderID); cachedName != "" {
+					quotedSenderName = cachedName
+				} else if p.client != nil {
+					if user, err := p.client.GetUserInfo(quoted.SenderID); err == nil && user != nil {
+						quotedSenderName = getUserDisplayName(user)
+					} else {
+						quotedSenderName = quoted.SenderID
+					}
+				} else {
+					quotedSenderName = quoted.SenderID
+				}
+			}
+			quotedBody = quoted.Body
+			if quotedBody == "" && quoted.Attachments != "" {
+				quotedBody = "📎 Attachment"
+			}
+			// Prefix every line with "> " so Slack renders it as a block quote
+			lines := strings.Split(quotedBody, "\n")
+			for i, l := range lines {
+				lines[i] = "> " + l
+			}
+			prefix = fmt.Sprintf("> *%s*\n%s\n", quotedSenderName, strings.Join(lines, "\n"))
+		}
+	}
+	sentMessage, err := p.SendMessage(conversationID, prefix+text, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if sentMessage != nil {
+		// Set clean body for Loom (without raw blockquote prefix)
+		sentMessage.Body = text
+		if quotedMsg != nil {
+			sentMessage.QuotedMessageID = &quotedMessageID
+			sentMessage.QuotedSenderID = &quotedMsg.SenderID
+			sentMessage.QuotedBody = &quotedBody
+			sentMessage.QuotedSenderName = quotedSenderName
+
+			if db.DB != nil && sentMessage.ProtocolMsgID != "" {
+				db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ?", sentMessage.ProtocolMsgID).
+					Updates(map[string]interface{}{
+						"body":               text,
+						"quoted_message_id":  quotedMessageID,
+						"quoted_sender_id":   quotedMsg.SenderID,
+						"quoted_body":        quotedBody,
+						"quoted_sender_name": quotedSenderName,
+					})
+			}
+		}
+	}
+	return sentMessage, nil
 }
 
 // SendFile sends a file to a given conversation without text.
@@ -895,8 +1006,49 @@ func (p *SlackProvider) mergeAttachments(existingJSON, newJSON string) string {
 }
 
 // GetThreads loads all messages in a discussion thread.
-func (p *SlackProvider) GetThreads(_ string) ([]models.Message, error) {
-	return nil, fmt.Errorf("not implemented: requires conversationID")
+func (p *SlackProvider) GetThreads(parentMessageID string) ([]models.Message, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+
+	actualChannelID := ""
+	convID := ""
+	if db.DB != nil {
+		var parentMsg models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", parentMessageID).First(&parentMsg).Error; err == nil {
+			convID = parentMsg.ProtocolConvID
+			actualChannelID = parentMsg.ProtocolConvID
+		}
+	}
+
+	if actualChannelID == "" {
+		return []models.Message{}, nil
+	}
+
+	// Resolve user ID → actual DM channel ID
+	if len(actualChannelID) > 0 && actualChannelID[0] == 'U' {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{actualChannelID},
+		})
+		if err == nil && channel != nil && channel.ID != "" {
+			actualChannelID = channel.ID
+		}
+	}
+
+	replies, err := p.getThreadReplies(actualChannelID, parentMessageID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(replies) > 0 && convID != "" {
+		p.storeMessagesForConversation(convID, replies)
+	}
+
+	return replies, nil
 }
 
 // EditMessage edits an existing message.
@@ -1261,20 +1413,36 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		}
 	}
 
+	// Detect Slack blockquote formatting
+	var quotedMsgID *string
+	var quotedSenderName string
+	var quotedBody *string
+
+	if cleanText, qSender, qBody, isQuote := p.parseSlackBlockQuote(body); isQuote {
+		body = cleanText
+		quotedSenderName = qSender
+		quotedBody = &qBody
+		qID := msg.Timestamp + "-quote"
+		quotedMsgID = &qID
+	}
+
 	return models.Message{
-		ProtocolMsgID:   msg.Timestamp,
-		ProtocolConvID:  normalizedConversationID, // Use normalized ID
-		Body:            body,
-		SenderID:        msg.User,
-		SenderName:      senderName,
-		SenderAvatarURL: senderAvatarURL,
-		Timestamp:       ts,
-		IsFromMe:        isFromMe,
-		ThreadID:        threadID,
-		Reactions:       reactions,
-		Attachments:     attachmentsJSON,
-		CallType:        callType,
-		CallUrl:         callUrl,
+		ProtocolMsgID:    msg.Timestamp,
+		ProtocolConvID:   normalizedConversationID, // Use normalized ID
+		Body:             body,
+		SenderID:         msg.User,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
+		Timestamp:        ts,
+		IsFromMe:         isFromMe,
+		ThreadID:         threadID,
+		Reactions:        reactions,
+		Attachments:      attachmentsJSON,
+		CallType:         callType,
+		CallUrl:          callUrl,
+		QuotedMessageID:  quotedMsgID,
+		QuotedSenderName: quotedSenderName,
+		QuotedBody:       quotedBody,
 	}
 }
 
