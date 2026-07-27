@@ -93,6 +93,8 @@ export function SendMessage(arg1:string,arg2:string):Promise<models.Message>;
 
 export function SendReply(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 
+export function SendThreadMessage(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
+
 export function SetActiveProvider(arg1:string):Promise<void>;
 
 export function SetContactAlias(arg1:string,arg2:string):Promise<void>;

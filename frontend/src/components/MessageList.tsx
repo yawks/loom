@@ -26,7 +26,8 @@ import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
 import { MessageIRCItem } from "./MessageIRCItem";
 import { TypingIndicator } from "./TypingIndicator";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
@@ -172,6 +173,7 @@ export function MessageList({
     setPendingFiles,
     pendingFilePaths,
     setPendingFilePaths,
+    uploadState,
     handleDragEnter,
     handleDragLeave,
     handleDragOver,
@@ -395,12 +397,13 @@ export function MessageList({
   const handleReaction = useCallback(async (message: models.Message, emoji: string) => {
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
-    const useNativeEmoji = protocol === "googlechat";
+    const useNativeEmoji = protocol === "googlechat" || protocol === "whatsapp";
 
     // Helper to get canonical name without colons (e.g. "thumbsup")
     const getCleanName = (emojiStr: string): string => {
       const clean = emojiStr.startsWith(":") && emojiStr.endsWith(":") ? emojiStr.slice(1, -1) : emojiStr;
-      const name = unicodeToEmojiName(clean);
+      const unicode = unicodeEmojiMap[clean] || clean;
+      const name = unicodeToEmojiName(unicode);
       return name || clean;
     };
 
@@ -409,7 +412,7 @@ export function MessageList({
 
     let apiEmoji: string;
     if (useNativeEmoji) {
-      // Provider expects raw Unicode (e.g. Google Chat)
+      // Provider expects raw Unicode (e.g. Google Chat, WhatsApp)
       const clean = emoji.startsWith(":") && emoji.endsWith(":") ? emoji.slice(1, -1) : emoji;
       const resolvedUnicode = unicodeEmojiMap[clean];
       if (resolvedUnicode) {
@@ -636,6 +639,30 @@ export function MessageList({
           </div>
         )}
         <div className="shrink-0">
+          {uploadState.isUploading && (
+            <div className="mx-4 mb-2 p-2.5 rounded-lg border bg-background/95 backdrop-blur shadow-sm space-y-1.5 transition-all">
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
+                <span className="flex items-center gap-2 min-w-0 truncate">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+                  <span className="truncate">
+                    {uploadState.statusText === "compressing"
+                      ? t("compressing_image")
+                      : t("uploading_file_progress", {
+                          current: uploadState.currentFileIndex,
+                          total: uploadState.totalFiles,
+                        })}
+                  </span>
+                </span>
+                <span className="shrink-0 font-mono text-[11px] font-semibold ml-2">{uploadState.progressPercent}%</span>
+              </div>
+              <Progress value={uploadState.progressPercent} className="h-1.5" />
+              {uploadState.currentFileName && (
+                <p className="text-[11px] text-muted-foreground/70 truncate" title={uploadState.currentFileName}>
+                  {uploadState.currentFileName}
+                </p>
+              )}
+            </div>
+          )}
           <TypingIndicator conversationId={conversationId} />
           <ChatInput
             onFileUploadRequest={(files, filePaths) => {
@@ -655,6 +682,7 @@ export function MessageList({
           onOpenChange={setIsFileUploadModalOpen}
           files={pendingFiles}
           filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
+          uploadState={uploadState}
           onConfirm={handleFileUpload}
         />
         <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>

@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"fmt"
+	"strings"
 	"time"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -56,11 +57,12 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 		ID:        proto.String(messageID),
 	}
 
-	// Create reaction message
+	// Create reaction message (trim any outer colons if present)
+	reactionEmoji := strings.Trim(emoji, ":")
 	reactionMsg := &waE2E.Message{
 		ReactionMessage: &waE2E.ReactionMessage{
 			Key:               msgKey,
-			Text:              proto.String(emoji),
+			Text:              proto.String(reactionEmoji),
 			GroupingKey:       proto.String(messageID),
 			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
 		},

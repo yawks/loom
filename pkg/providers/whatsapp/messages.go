@@ -1639,7 +1639,30 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 			}
 		}
 
-		// Enrich quoted message sender name
+		// Enrich quoted message info and sender name
+		if msg.QuotedMessageID != nil && *msg.QuotedMessageID != "" {
+			if db.DB != nil {
+				var origMsg models.Message
+				if db.DB.Where("protocol_msg_id = ?", *msg.QuotedMessageID).First(&origMsg).Error == nil {
+					if msg.QuotedBody == nil || *msg.QuotedBody == "" {
+						bodyText := origMsg.Body
+						if bodyText == "" && origMsg.Attachments != "" {
+							bodyText = "📎 Attachment"
+						}
+						msg.QuotedBody = &bodyText
+					}
+					if msg.QuotedSenderName == "" {
+						if origMsg.SenderName != "" {
+							msg.QuotedSenderName = origMsg.SenderName
+						}
+					}
+					if msg.QuotedSenderID == nil || *msg.QuotedSenderID == "" {
+						msg.QuotedSenderID = &origMsg.SenderID
+					}
+				}
+			}
+		}
+
 		if msg.QuotedSenderID != nil && *msg.QuotedSenderID != "" {
 			quotedSenderJID, err := types.ParseJID(*msg.QuotedSenderID)
 			if err == nil {
@@ -1649,11 +1672,9 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 				} else {
 					quotedSenderName = w.lookupSenderName(quotedSenderJID)
 				}
-				// Set the quoted sender name (not persisted, for display only)
 				if quotedSenderName != "" {
 					msg.QuotedSenderName = quotedSenderName
-				} else {
-					// Fallback to sender ID
+				} else if msg.QuotedSenderName == "" {
 					msg.QuotedSenderName = *msg.QuotedSenderID
 				}
 			}
@@ -1788,38 +1809,6 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 		return nil, fmt.Errorf("invalid sender ID in quoted message: %w", err)
 	}
 
-	// Create ExtendedTextMessage with ContextInfo for the quoted message
-	msg := &waE2E.Message{
-		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-			Text: &text,
-			ContextInfo: &waE2E.ContextInfo{
-				StanzaID:    &quotedMessageID,
-				Participant: proto.String(senderJID.String()),
-				QuotedMessage: &waE2E.Message{
-					Conversation: &quotedMessage.Body,
-				},
-			},
-		},
-	}
-
-	// Send message
-	resp, err := w.client.SendMessage(w.ctx, jid, msg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send reply: %w", err)
-	}
-
-	// Get quoted sender name for display
-	var quotedSenderName string
-	isGroup := jid.Server == types.GroupServer
-	if isGroup {
-		quotedSenderName = w.lookupSenderNameInGroup(senderJID, jid)
-	} else {
-		quotedSenderName = w.lookupSenderName(senderJID)
-	}
-	if quotedSenderName == "" {
-		quotedSenderName = quotedMessage.SenderID
-	}
-
 	// Determine quoted body text
 	quotedBodyText := quotedMessage.Body
 	if quotedBodyText == "" && quotedMessage.Attachments != "" {
@@ -1842,6 +1831,38 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 				}
 			}
 		}
+	}
+
+	// Create ExtendedTextMessage with ContextInfo for the quoted message
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: &text,
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    &quotedMessageID,
+				Participant: proto.String(senderJID.String()),
+				QuotedMessage: &waE2E.Message{
+					Conversation: &quotedBodyText,
+				},
+			},
+		},
+	}
+
+	// Send message
+	resp, err := w.client.SendMessage(w.ctx, jid, msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send reply: %w", err)
+	}
+
+	// Get quoted sender name for display
+	var quotedSenderName string
+	isGroup := jid.Server == types.GroupServer
+	if isGroup {
+		quotedSenderName = w.lookupSenderNameInGroup(senderJID, jid)
+	} else {
+		quotedSenderName = w.lookupSenderName(senderJID)
+	}
+	if quotedSenderName == "" {
+		quotedSenderName = quotedMessage.SenderID
 	}
 
 	// Convert to our Message model

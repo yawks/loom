@@ -242,17 +242,17 @@ export function MessageIRCItem({
                         )}
                         {message.quotedMessageId && message.quotedBody && (
                           <div
-                            className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
+                            className="mb-2 pl-3 pr-2 py-1.5 border-l-[3px] border-purple-600 dark:border-purple-400 bg-muted/40 hover:bg-muted/70 cursor-pointer rounded-r transition-colors text-left"
                             onClick={() => {
                               const quotedId = message.quotedMessageId || "";
                               const quotedIdx = mainMessages.findIndex((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
                               if (quotedIdx >= 0) virtuosoRef.current?.scrollToIndex({ index: quotedIdx, behavior: "smooth", align: "center" });
                             }}
                           >
-                            <div className="text-xs font-medium opacity-80 text-left">
+                            <div className="text-xs font-semibold text-purple-700 dark:text-purple-400 mb-0.5 text-left flex items-center gap-1.5">
                               {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
                             </div>
-                            <div className="text-sm opacity-70 line-clamp-2 text-left">
+                            <div className="text-xs md:text-sm text-foreground/80 line-clamp-2 text-left">
                               <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
                             </div>
                           </div>

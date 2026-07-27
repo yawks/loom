@@ -178,6 +178,10 @@ export function SendReply(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendReply'](arg1, arg2, arg3);
 }
 
+export function SendThreadMessage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendThreadMessage'](arg1, arg2, arg3);
+}
+
 export function SetActiveProvider(arg1) {
   return window['go']['main']['App']['SetActiveProvider'](arg1);
 }

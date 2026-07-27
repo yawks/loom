@@ -256,17 +256,25 @@ export function MessageBubbleItem({
                   <>
                     {message.quotedMessageId && message.quotedBody && (
                       <div
-                        className="mb-2 pl-3 border-l-4 border-primary/50 py-1 cursor-pointer hover:bg-muted/50 rounded transition-colors text-left"
+                        className={cn(
+                          "mb-2 pl-3 pr-2 py-1.5 border-l-[3px] cursor-pointer rounded-r transition-colors text-left",
+                          message.isFromMe
+                            ? "border-white/70 bg-black/10 hover:bg-black/20"
+                            : "border-purple-600 dark:border-purple-400 bg-muted/40 hover:bg-muted/70"
+                        )}
                         onClick={() => {
                           const quotedId = message.quotedMessageId || "";
                           const quotedIdx = mainMessages.findIndex((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
                           if (quotedIdx >= 0) virtuosoRef.current?.scrollToIndex({ index: quotedIdx, behavior: "smooth", align: "center" });
                         }}
                       >
-                        <div className="text-xs font-medium opacity-80 text-left">
+                        <div className={cn(
+                          "text-xs font-semibold mb-0.5 text-left flex items-center gap-1.5",
+                          message.isFromMe ? "text-white/90" : "text-purple-700 dark:text-purple-400"
+                        )}>
                           {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
                         </div>
-                        <div className="text-sm opacity-70 line-clamp-2 text-left">
+                        <div className={cn("text-xs md:text-sm line-clamp-2 text-left", message.isFromMe ? "text-white/80" : "text-foreground/80")}>
                           <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
                         </div>
                       </div>
