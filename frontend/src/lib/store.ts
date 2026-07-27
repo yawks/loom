@@ -65,12 +65,26 @@ const saveToStorage = <T>(key: string, value: T): void => {
   }
 };
 
+const updateRecentlyViewed = (contactId: number) => {
+  if (typeof window === "undefined" || !contactId) return;
+  try {
+    const raw = window.localStorage.getItem("loom_recently_viewed_ids");
+    let ids: number[] = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(ids)) ids = [];
+    ids = [contactId, ...ids.filter((id) => id !== contactId)].slice(0, 20);
+    window.localStorage.setItem("loom_recently_viewed_ids", JSON.stringify(ids));
+  } catch (error) {
+    console.error("Failed to save recently viewed to localStorage:", error);
+  }
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   selectedContact: null,
   setSelectedContact: (contact, skipHistory = false) => {
     set({ selectedContact: contact });
     if (contact && !skipHistory) {
       get().addToHistory(contact);
+      updateRecentlyViewed(contact.id);
     }
   },
   showThreads: false,
