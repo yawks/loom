@@ -476,6 +476,60 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 		p.log("SlackProvider.SyncHistory: Failed to emit contacts-refresh event (channel full)\n")
 	}
 
+	// Fetch real-time presence for DM contacts using users.getPresence.
+	// users.list presence=true and users.info are both deprecated/unreliable for presence.
+	// users.getPresence is the only Slack endpoint that returns accurate real-time presence.
+	// We combine it with cached status text/emoji (from initializeStatusCache) to also
+	// detect "meeting", "busy", "holiday" etc. for away users with custom status.
+	go func(dmContacts []models.LinkedAccount, instanceID string) {
+		p.mu.RLock()
+		client := p.client
+		p.mu.RUnlock()
+		if client == nil {
+			return
+		}
+
+		seen := make(map[string]bool)
+		for _, contact := range dmContacts {
+			if contact.IsGroup || contact.UserID == "" || seen[contact.UserID] {
+				continue
+			}
+			seen[contact.UserID] = true
+
+			userPresence, err := client.GetUserPresence(contact.UserID)
+			if err != nil {
+				p.log("SlackProvider.SyncHistory: GetUserPresence failed for %s: %v\n", contact.UserID, err)
+				continue
+			}
+
+			// Combine real-time presence with cached status text/emoji.
+			p.statusCacheMu.RLock()
+			cached := p.statusCache[contact.UserID]
+			p.statusCacheMu.RUnlock()
+
+			newStatus := p.determineStatus(userPresence.Presence, cached.statusText, cached.statusEmoji)
+			p.log("SlackProvider.SyncHistory: presence for %s: presence=%s status=%s (cached text=%q emoji=%q)\n",
+				contact.UserID, userPresence.Presence, newStatus, cached.statusText, cached.statusEmoji)
+
+			if contact.Status == newStatus {
+				continue
+			}
+			contact.Status = newStatus
+			db.ContactStore.UpsertLinkedAccount(contact)
+			if db.DB != nil {
+				db.DB.Model(&contact).Update("status", newStatus)
+			}
+		}
+		select {
+		case p.eventChan <- core.ContactStatusEvent{
+			InstanceID: p.getInstanceId(),
+			UserID:     "refresh",
+			Status:     "sync_complete",
+		}:
+		default:
+		}
+	}(contacts, instanceID)
+
 	// Fetch and emit last_read timestamp for each conversation.
 	// Also build maps for incrementalSyncExistingConversations to avoid per-conversation API calls.
 	p.log("SlackProvider.SyncHistory: Emitting last_read timestamps from cached metadata\n")

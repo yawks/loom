@@ -290,7 +290,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 	// Optimization: If it's a huge workspace, client.GetUsers() is a CPU/memory killer.
 	// To optimize CPU, we will skip detailed processing for users who aren't "Active" (no IM).
 
-	fullUserList, err := p.client.GetUsers()
+	fullUserList, err := p.client.GetUsers(slack.GetUsersOptionPresence(true))
 	if err != nil {
 		p.log("SlackProvider.GetContacts: WARNING - failed to get users: %v\n", err)
 	} else {
@@ -316,50 +316,11 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			}
 
 			// Determine status based on presence and custom status
-			status := "offline"
 			extraData := make(map[string]interface{})
 
 			statusText := user.Profile.StatusText
 			statusEmoji := user.Profile.StatusEmoji
-
-			if user.Presence == "active" {
-				// User is active, but check for custom status (like meeting)
-				statusLower := ""
-				if statusText != "" {
-					statusLower = strings.ToLower(statusText)
-				}
-
-				// Check for calendar emoji (meeting status)
-				// Common calendar emojis: :calendar:, :spiral_calendar:, etc.
-				isMeeting := strings.Contains(statusEmoji, "calendar") ||
-					strings.Contains(statusLower, "meeting") ||
-					strings.Contains(statusLower, "réunion") ||
-					strings.Contains(statusLower, "en réunion")
-
-				if isMeeting {
-					status = "meeting"
-				} else {
-					status = "online"
-				}
-			} else if user.Presence == "away" {
-				// Check if there's a custom status that might indicate a specific away type
-				statusLower := ""
-				if statusText != "" {
-					statusLower = strings.ToLower(statusText)
-				}
-
-				// Map common status texts to specific status types
-				if strings.Contains(statusLower, "holiday") || strings.Contains(statusLower, "vacation") || strings.Contains(statusLower, "vacances") {
-					status = "holiday"
-				} else if strings.Contains(statusLower, "busy") || strings.Contains(statusLower, "dnd") || strings.Contains(statusLower, "do not disturb") {
-					status = "busy"
-				} else if strings.Contains(statusLower, "meeting") || strings.Contains(statusLower, "réunion") || strings.Contains(statusEmoji, "calendar") {
-					status = "meeting"
-				} else {
-					// Default away status
-					status = "away"
-				}
-			}
+			status := p.determineStatus(user.Presence, statusText, statusEmoji)
 
 			// Store status emoji and text in Extra field for potential future use
 			if statusEmoji != "" {

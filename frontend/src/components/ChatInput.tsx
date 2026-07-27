@@ -1,9 +1,9 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import EmojiPicker, { Theme } from "emoji-picker-react";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { GetCustomEmojis, SendMessage, SendReply } from "../../wailsjs/go/main/App";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import type { Theme } from "emoji-picker-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,10 @@ interface ChatInputProps {
   currentUserName?: string;
   currentUserAvatarUrl?: string;
 }
+
+// emoji-picker-react carries a large emoji dataset. Do not retain it in the
+// renderer until the user actually opens the composer picker.
+const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
 const normalizeClipboardPath = (rawValue: string | null): string | null => {
   if (!rawValue) {
@@ -91,6 +95,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const selectedContact = useAppStore((state) => state.selectedContact);
   const theme = useAppStore((state) => state.theme);
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
+  const showThreads = useAppStore((state) => state.showThreads);
+  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
+  const isThreadOpen = !threadId && showThreads && selectedThreadId !== null;
   const queryClient = useQueryClient();
   
   // Focus textarea when a conversation is selected
@@ -687,7 +694,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                 <EmojiPicker
                   onEmojiClick={handleEmojiClick}
                   customEmojis={customEmojis}
-                  theme={theme === "dark" ? Theme.DARK : Theme.LIGHT}
+                  theme={(theme === "dark" ? "dark" : "light") as Theme}
                   width={352}
                   height={435}
                   lazyLoadEmojis
@@ -702,6 +709,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             onChange={handleMessageChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            disabled={isThreadOpen}
             placeholder={t("type_a_message")}
             className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             rows={1}

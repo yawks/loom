@@ -986,7 +986,7 @@ func (p *SlackProvider) initializeStatusCache() {
 		return
 	}
 
-	users, err := client.GetUsers()
+	users, err := client.GetUsers(slack.GetUsersOptionPresence(true))
 	if err != nil {
 		p.log("SlackProvider.initializeStatusCache: WARNING - failed to get users: %v\n", err)
 		return
@@ -1011,44 +1011,48 @@ func (p *SlackProvider) initializeStatusCache() {
 	p.log("SlackProvider.initializeStatusCache: initialized cache for %d users\n", len(p.statusCache))
 }
 
-// determineStatus determines the status string based on presence, statusText, and statusEmoji
+// determineStatus determines the status string based on presence, statusText, and statusEmoji.
 func (p *SlackProvider) determineStatus(presence, statusText, statusEmoji string) string {
-	status := "offline"
+	switch presence {
+	case "active":
+		return activeStatus(statusText, statusEmoji)
+	case "away":
+		return awayStatus(statusText, statusEmoji)
+	default:
+		return "offline"
+	}
+}
 
-	if presence == "active" {
-		statusLower := ""
-		if statusText != "" {
-			statusLower = strings.ToLower(statusText)
-		}
+func activeStatus(statusText, statusEmoji string) string {
+	sl := strings.ToLower(statusText)
+	if strings.Contains(statusEmoji, "calendar") ||
+		containsAny(sl, "meeting", "réunion", "en réunion") {
+		return "meeting"
+	}
+	return "online"
+}
 
-		isMeeting := strings.Contains(statusEmoji, "calendar") ||
-			strings.Contains(statusLower, "meeting") ||
-			strings.Contains(statusLower, "réunion") ||
-			strings.Contains(statusLower, "en réunion")
+func awayStatus(statusText, statusEmoji string) string {
+	sl := strings.ToLower(statusText)
+	if containsAny(sl, "holiday", "vacation", "vacances") {
+		return "holiday"
+	}
+	if containsAny(sl, "busy", "dnd", "do not disturb", "occupé", "occupée", "indisponible") {
+		return "busy"
+	}
+	if containsAny(sl, "meeting", "réunion") || strings.Contains(statusEmoji, "calendar") {
+		return "meeting"
+	}
+	return "away"
+}
 
-		if isMeeting {
-			status = "meeting"
-		} else {
-			status = "online"
-		}
-	} else if presence == "away" {
-		statusLower := ""
-		if statusText != "" {
-			statusLower = strings.ToLower(statusText)
-		}
-
-		if strings.Contains(statusLower, "holiday") || strings.Contains(statusLower, "vacation") || strings.Contains(statusLower, "vacances") {
-			status = "holiday"
-		} else if strings.Contains(statusLower, "busy") || strings.Contains(statusLower, "dnd") || strings.Contains(statusLower, "do not disturb") {
-			status = "busy"
-		} else if strings.Contains(statusLower, "meeting") || strings.Contains(statusLower, "réunion") || strings.Contains(statusEmoji, "calendar") {
-			status = "meeting"
-		} else {
-			status = "away"
+func containsAny(s string, keywords ...string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(s, kw) {
+			return true
 		}
 	}
-
-	return status
+	return false
 }
 
 // pollStatusUpdates periodically checks for status changes and emits events
@@ -1067,60 +1071,69 @@ func (p *SlackProvider) pollStatusUpdates() {
 	}
 }
 
-// checkStatusChanges checks for status changes and emits ContactStatusEvent if changed
+// checkStatusChanges polls real-time presence for all known DM contacts and persists changes.
+// Uses users.getPresence (not users.list presence=true which is deprecated/unreliable).
 func (p *SlackProvider) checkStatusChanges() {
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
-
 	if client == nil {
 		return
 	}
 
-	users, err := client.GetUsers()
-	if err != nil {
-		p.log("SlackProvider.checkStatusChanges: WARNING - failed to get users: %v\n", err)
-		return
-	}
+	instanceID := p.getInstanceId()
+	contacts := db.ContactStore.FindByProvider(instanceID)
 
 	p.statusCacheMu.Lock()
 	defer p.statusCacheMu.Unlock()
 
-	for _, user := range users {
-		if user.Deleted || user.IsBot {
+	changed := false
+	for _, contact := range contacts {
+		if contact.IsGroup || contact.UserID == "" {
 			continue
 		}
 
-		newStatus := p.determineStatus(user.Presence, user.Profile.StatusText, user.Profile.StatusEmoji)
-		newStatusEmoji := user.Profile.StatusEmoji
-		newStatusText := user.Profile.StatusText
+		userPresence, err := client.GetUserPresence(contact.UserID)
+		if err != nil {
+			continue
+		}
 
-		// Check if status has changed
-		cached, exists := p.statusCache[user.ID]
-		if !exists || cached.status != newStatus || cached.statusEmoji != newStatusEmoji || cached.statusText != newStatusText {
-			// Status changed, emit event
-			select {
-			case p.eventChan <- core.ContactStatusEvent{InstanceID: p.getInstanceId(),
-				UserID:      user.ID,
-				Status:      newStatus,
-				StatusEmoji: newStatusEmoji,
-				StatusText:  newStatusText,
-			}:
-				p.log("SlackProvider.checkStatusChanges: emitted status change for user %s: %s -> %s (emoji: %s, text: %s)\n",
-					user.ID, cached.status, newStatus, newStatusEmoji, newStatusText)
-			default:
-				p.log("SlackProvider.checkStatusChanges: WARNING - event channel full, dropping status change event\n")
-			}
+		cached := p.statusCache[contact.UserID]
+		newStatus := p.determineStatus(userPresence.Presence, cached.statusText, cached.statusEmoji)
 
-			// Update cache
-			p.statusCache[user.ID] = userStatus{
-				status:      newStatus,
-				statusEmoji: newStatusEmoji,
-				statusText:  newStatusText,
+		if cached.status == newStatus {
+			continue
+		}
+
+		if la, ok := db.ContactStore.FindByProviderUser(instanceID, contact.UserID); ok {
+			la.Status = newStatus
+			db.ContactStore.UpsertLinkedAccount(la)
+			if db.DB != nil {
+				db.DB.Model(&la).Update("status", newStatus)
 			}
+		}
+		select {
+		case p.eventChan <- core.ContactStatusEvent{
+			InstanceID:  instanceID,
+			UserID:      contact.UserID,
+			Status:      newStatus,
+			StatusEmoji: cached.statusEmoji,
+			StatusText:  cached.statusText,
+		}:
+		default:
+		}
+		p.statusCache[contact.UserID] = userStatus{status: newStatus, statusEmoji: cached.statusEmoji, statusText: cached.statusText}
+		changed = true
+	}
+
+	if changed {
+		select {
+		case p.eventChan <- core.ContactStatusEvent{InstanceID: instanceID, UserID: "refresh", Status: "sync_complete"}:
+		default:
 		}
 	}
 }
+
 
 // Disconnect disconnects from the Slack API.
 func (p *SlackProvider) Disconnect() error {

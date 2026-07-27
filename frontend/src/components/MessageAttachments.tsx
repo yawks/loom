@@ -10,15 +10,48 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
-import { GetAttachmentData, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
+import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { VoiceMessage } from "./VoiceMessage";
 
-// Module-level caches — survive Virtuoso unmount/remount cycles so images don't
-// flicker back to the placeholder when the user scrolls away and returns.
+// Module-level cache for small previews. It is deliberately byte-bounded: data
+// URLs are substantially larger than their source files and otherwise survive
+// for the entire WebView lifetime.
 const _attachmentDataCache = new Map<string, string>();
 const _attachmentFailedUrls = new Set<string>();
 const _attachmentLoadingUrls = new Set<string>();
+const MAX_ATTACHMENT_CACHE_BYTES = 64 * 1024 * 1024;
+let attachmentCacheBytes = 0;
+
+function getCachedAttachment(url: string): string | undefined {
+  const data = _attachmentDataCache.get(url);
+  if (data !== undefined) {
+    // Map insertion order gives us a compact LRU implementation.
+    _attachmentDataCache.delete(url);
+    _attachmentDataCache.set(url, data);
+  }
+  return data;
+}
+
+function cacheAttachment(url: string, data: string): void {
+  const previous = _attachmentDataCache.get(url);
+  if (previous) attachmentCacheBytes -= previous.length * 2;
+  _attachmentDataCache.delete(url);
+
+  const bytes = data.length * 2;
+  // Never retain a full-resolution file larger than the whole preview cache.
+  if (bytes > MAX_ATTACHMENT_CACHE_BYTES) return;
+  _attachmentDataCache.set(url, data);
+  attachmentCacheBytes += bytes;
+
+  while (attachmentCacheBytes > MAX_ATTACHMENT_CACHE_BYTES) {
+    const oldest = _attachmentDataCache.entries().next().value as [string, string] | undefined;
+    if (!oldest) break;
+    _attachmentDataCache.delete(oldest[0]);
+    attachmentCacheBytes -= oldest[1].length * 2;
+  }
+}
 
 interface Attachment {
   type: string;
@@ -35,6 +68,7 @@ interface MessageAttachmentsProps {
   messageID: string;
   isFromMe: boolean;
   layout?: "bubble" | "irc";
+  showToast?: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -77,7 +111,9 @@ export function MessageAttachments({
   messageID,
   isFromMe,
   layout = "bubble",
+  showToast,
 }: MessageAttachmentsProps) {
+  const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -85,6 +121,7 @@ export function MessageAttachments({
   // Keeping <video> out of the DOM until play-click prevents native controls from
   // intercepting Virtuoso wheel events and stops ResizeObserver cascades.
   const [playingVideoIndex, setPlayingVideoIndex] = useState<number | null>(null);
+  const [playingVideoData, setPlayingVideoData] = useState<string | null>(null);
   // Increment to force a re-render when the module-level cache is updated.
   const [, setCacheVersion] = useState(0);
   const bumpCache = (url: string, success: boolean) => {
@@ -133,19 +170,15 @@ export function MessageAttachments({
     return uniqueAttachments;
   }, [attachments]);
 
-  if (parsedAttachments.length === 0) {
-    return null;
-  }
-  
-  // Load image and audio data URLs.
-  // Uses module-level caches so data survives Virtuoso unmount/remount cycles.
+  // Preload only compact display previews. Full images, video and audio are
+  // loaded after an explicit user action.
   useEffect(() => {
     if (parsedAttachments.length === 0) return;
 
     const urlsToLoad: string[] = [];
 
     for (const attachment of parsedAttachments) {
-      if (attachment.type === "image") {
+      if (attachment.type === "image" || attachment.mimeType?.startsWith("image/")) {
         const url = attachment.thumbnail || attachment.url;
         if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
           urlsToLoad.push(url);
@@ -153,14 +186,6 @@ export function MessageAttachments({
       } else if (attachment.type === "video") {
         if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
           urlsToLoad.push(attachment.thumbnail);
-        }
-        if (attachment.url && !_attachmentDataCache.has(attachment.url) && !_attachmentFailedUrls.has(attachment.url) && !_attachmentLoadingUrls.has(attachment.url)) {
-          urlsToLoad.push(attachment.url);
-        }
-      } else if (attachment.type === "audio" || attachment.type === "voice") {
-        const url = attachment.url;
-        if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
-          urlsToLoad.push(url);
         }
       }
     }
@@ -171,7 +196,7 @@ export function MessageAttachments({
       _attachmentLoadingUrls.add(url);
       GetAttachmentData(url)
         .then((dataUrl) => {
-          _attachmentDataCache.set(url, dataUrl);
+          cacheAttachment(url, dataUrl);
           bumpCache(url, true);
         })
         .catch((error) => {
@@ -187,11 +212,21 @@ export function MessageAttachments({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedAttachments]);
 
+  if (parsedAttachments.length === 0) {
+    return null;
+  }
+
   const handleDownload = async (attachment: Attachment) => {
     try {
-      await SaveAttachmentToFile(attachment.url, attachment.fileName);
+      const savedPath = await SaveAttachmentToFile(attachment.url, attachment.fileName);
+      if (!savedPath) return; // user cancelled the dialog
+      showToast?.(t("file_saved"), "success", {
+        label: t("open_file"),
+        onClick: () => OpenFile(savedPath).catch(console.error),
+      });
     } catch (error) {
       console.error("Failed to download attachment:", error);
+      showToast?.(t("file_save_error"), "error");
     }
   };
 
@@ -199,7 +234,7 @@ export function MessageAttachments({
     if (attachment.type === "image" && attachment.url) {
       const url = attachment.url;
       // Prefer the full-res URL; fall back to the already-loaded thumbnail.
-      const cached = _attachmentDataCache.get(url) ?? _attachmentDataCache.get(attachment.thumbnail ?? "");
+      const cached = getCachedAttachment(url) ?? getCachedAttachment(attachment.thumbnail ?? "");
       if (cached) {
         setSelectedImage(cached);
         return;
@@ -207,12 +242,25 @@ export function MessageAttachments({
       try {
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
-          _attachmentDataCache.set(url, dataUrl);
           setSelectedImage(dataUrl);
         }
       } catch (error) {
         console.error("Failed to load image:", error);
       }
+    }
+  };
+
+  const handlePlayVideo = async (attachment: Attachment, index: number) => {
+    try {
+      // Full video data is intentionally not retained in the shared cache.
+      // It is released when playback ends or the message unmounts.
+      const dataUrl = await GetAttachmentData(attachment.url);
+      setPlayingVideoData(dataUrl);
+      setPlayingVideoIndex(index);
+    } catch (error) {
+      console.error("Failed to load video:", error);
+      _attachmentFailedUrls.add(attachment.url);
+      bumpCache(attachment.url, false);
     }
   };
 
@@ -272,15 +320,14 @@ export function MessageAttachments({
           }
 
           const Icon = getFileIcon(attachment.mimeType, attachment.type);
-          const isImage = attachment.type === "image";
+          const isImage = attachment.type === "image" || attachment.mimeType?.startsWith("image/");
           const isVideo = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
           const isAudio = attachment.type === "audio";
           const isPdf = attachment.mimeType === "application/pdf";
           const thumbnail = attachment.thumbnail || attachment.url;
-          const audioUrl = _attachmentDataCache.get(attachment.url);
-          const videoDataUrl = _attachmentDataCache.get(attachment.url);
-          const videoThumbnailDataUrl = attachment.thumbnail ? _attachmentDataCache.get(attachment.thumbnail) : undefined;
-          const imageDataUrl = _attachmentDataCache.get(thumbnail);
+          const audioUrl = getCachedAttachment(attachment.url);
+          const videoThumbnailDataUrl = attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
+          const imageDataUrl = getCachedAttachment(thumbnail);
           const imageFailed = _attachmentFailedUrls.has(thumbnail);
 
           return (
@@ -332,17 +379,17 @@ export function MessageAttachments({
                   className="message-attachment__video relative rounded-lg overflow-hidden bg-black"
                   style={{ width: "320px", height: "200px", contain: "strict" }}
                 >
-                  {playingVideoIndex === index && videoDataUrl ? (
+                  {playingVideoIndex === index && playingVideoData ? (
                     <video
                       autoPlay
                       controls
                       style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      src={videoDataUrl}
-                      onEnded={() => setPlayingVideoIndex(null)}
+                      src={playingVideoData}
+                      onEnded={() => { setPlayingVideoIndex(null); setPlayingVideoData(null); }}
                     >
                       <track kind="captions" />
                     </video>
-                  ) : videoDataUrl ? (
+                  ) : (
                     <button
                       className="w-full h-full flex items-center justify-center relative"
                       style={
@@ -350,7 +397,7 @@ export function MessageAttachments({
                           ? { backgroundImage: `url(${videoThumbnailDataUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
                           : undefined
                       }
-                      onClick={() => setPlayingVideoIndex(index)}
+                      onClick={() => handlePlayVideo(attachment, index)}
                       aria-label={`Lire ${attachment.fileName}`}
                     >
                       {!videoThumbnailDataUrl && <Video className="h-10 w-10 text-white/60" />}
@@ -360,13 +407,8 @@ export function MessageAttachments({
                         </div>
                       </div>
                     </button>
-                  ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-                      <Video className="h-10 w-10 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground truncate max-w-[10rem]">{attachment.fileName}</span>
-                    </div>
                   )}
-                  {hoveredIndex === index && videoDataUrl && (
+                  {hoveredIndex === index && (
                     <button
                       className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
                       onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
@@ -403,7 +445,9 @@ export function MessageAttachments({
                       Your browser does not support the audio element.
                     </audio>
                   ) : (
-                    <div className="text-xs opacity-70">Loading audio...</div>
+                    <button className="text-xs opacity-70 text-left underline" onClick={() => GetAttachmentData(attachment.url).then((data) => { cacheAttachment(attachment.url, data); bumpCache(attachment.url, true); }).catch(console.error)}>
+                      Load audio
+                    </button>
                   )}
                 </div>
               ) : isPdf ? (

@@ -875,14 +875,24 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Determine if it's a group call
 		isGroup := strings.Contains(convID, "@g.us")
 
-		// Try to find existing call message created by CallOffer
+		// Try to find existing call message created by CallOffer.
+		// The offer may have been stored under a different conv ID (e.g. a LID that was later
+		// resolved to a JID), so fall back to searching by call ID alone when the exact
+		// protocol_conv_id lookup fails.
 		var existingCallMessage *models.Message
 		if db.DB != nil {
 			var dbMsg models.Message
-			// Look for call message with this CallID
 			if err := db.DB.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
 				existingCallMessage = &dbMsg
 				fmt.Printf("WhatsApp: Found existing call message for call %s, will update it\n", callID)
+			} else {
+				// Fallback: search by call ID only — handles LID→JID mismatch between offer and terminate
+				if err2 := db.DB.Where("protocol_msg_id LIKE ? AND call_type IN ?",
+					fmt.Sprintf("call_%s%%", callID),
+					[]string{"incoming_call", "incoming_group_call"}).First(&dbMsg).Error; err2 == nil {
+					existingCallMessage = &dbMsg
+					fmt.Printf("WhatsApp: Found existing call message for call %s via fallback search (conv mismatch: stored=%s resolved=%s)\n", callID, dbMsg.ProtocolConvID, convID)
+				}
 			}
 		}
 
@@ -1419,6 +1429,16 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 			continue
 		}
 
+		// Normalize LID JIDs to phone number JIDs to avoid duplicate DM conversations.
+		// WhatsApp may send the same contact as both "267859930403006@lid" and
+		// "33617590388@s.whatsapp.net"; normalizing here ensures we use one canonical ID.
+		if jid.Server == "lid" {
+			if normalized := w.normalizeChatJID(jid); normalized.Server != "lid" {
+				fmt.Printf("WhatsApp: Normalized conversation LID %s → %s\n", jidString, normalized.String())
+				jid = normalized
+			}
+		}
+
 		// Get display name using centralized function (handles LID resolution, phone formatting, etc.)
 		// Try conversation name fields first as fallback
 		fallbackName := ""
@@ -1454,7 +1474,8 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 			UserID:             jid.String(),
 			Username:           displayName,
 			AvatarURL:          avatarURL, // Will be loaded asynchronously if empty
-			Status:             "active",
+			IsGroup:            jid.Server == types.GroupServer,
+			Status:             "offline",
 			CreatedAt:          lastActivity,
 			UpdatedAt:          lastActivity,
 		}
@@ -1486,6 +1507,7 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 					existing.Username = linked.Username
 					existing.UpdatedAt = linked.UpdatedAt
 				}
+				existing.IsGroup = linked.IsGroup
 
 				// If existing contact doesn't have MetaContactID, create one
 				if existing.MetaContactID == 0 {

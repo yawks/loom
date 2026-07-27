@@ -5,7 +5,17 @@ import { useAppStore } from "@/lib/store";
 import i18n from "@/i18n";
 import "./App.css";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Conversations are frequently revisited, but keeping every inactive
+      // history in memory for the whole session is unnecessarily expensive.
+      staleTime: 30_000,
+      gcTime: 2 * 60_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 function AppContent() {
   const theme = useAppStore((state) => state.theme);

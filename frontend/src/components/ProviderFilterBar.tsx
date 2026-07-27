@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { Layers, Plus, Search, Settings } from "lucide-react";
+import { AlertTriangle, Layers, Plus, Search, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -41,6 +41,9 @@ export function ProviderFilterBar({
     (state) => state.setSelectedProviderFilter
   );
   const metaContacts = useAppStore((state) => state.metaContacts);
+  const syncErrors = useAppStore((state) => state.syncErrors);
+  const setSyncError = useAppStore((state) => state.setSyncError);
+  const clearSyncError = useAppStore((state) => state.clearSyncError);
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
@@ -69,6 +72,16 @@ export function ProviderFilterBar({
     try {
       const providers = await GetConfiguredProviders();
       setConfiguredProviders(providers);
+      // Seed the sync-error store from the value the backend computed at startup.
+      // This is the reliable path: no event timing required.
+      providers.forEach((p) => {
+        const id = p.instanceId || p.id;
+        if (p.syncError) {
+          setSyncError(id, p.syncError);
+        } else {
+          clearSyncError(id);
+        }
+      });
     } catch (error) {
       console.error("Failed to load providers:", error);
     }
@@ -97,6 +110,28 @@ export function ProviderFilterBar({
       if (unsubscribe) unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = EventsOn("sync-status", (statusJSON: string) => {
+      try {
+        const parsed = JSON.parse(statusJSON);
+        const instanceId = parsed.InstanceID || parsed.instanceId;
+        const status = (parsed.Status || parsed.status || "").toLowerCase();
+        const message = parsed.Message || parsed.message || "";
+        if (!instanceId) return;
+        if (status === "error") {
+          setSyncError(instanceId, message);
+        } else {
+          clearSyncError(instanceId);
+        }
+      } catch (e) {
+        console.error("Failed to parse sync status in ProviderFilterBar:", e);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [setSyncError, clearSyncError]);
 
   const providersByType = useMemo(() => {
     const groups: Record<string, core.ProviderInfo[]> = {};
@@ -168,6 +203,7 @@ export function ProviderFilterBar({
         const colorVariation = getColorVariation(provider);
         const displayName = provider.instanceName || provider.name;
         const unreadCount = unreadByInstance[instanceId] ?? 0;
+        const syncError = syncErrors[instanceId];
 
         return (
           <button
@@ -178,7 +214,7 @@ export function ProviderFilterBar({
               isSelected && "bg-white/15 text-white"
             )}
             onClick={() => setSelectedProviderFilter(instanceId)}
-            title={displayName}
+            title={syncError ? `${displayName} — ${syncError}` : displayName}
           >
             <div
               className="provider-filter-bar__provider-icon h-6 w-6 flex items-center justify-center"
@@ -189,6 +225,11 @@ export function ProviderFilterBar({
             {unreadCount > 0 && (
               <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
                 {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+            {syncError && (
+              <span className="provider-filter-bar__sync-error-badge absolute -bottom-1 -right-1 h-4 w-4 flex items-center justify-center rounded-full bg-orange-500 pointer-events-none">
+                <AlertTriangle className="h-2.5 w-2.5 text-white" />
               </span>
             )}
           </button>

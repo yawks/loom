@@ -108,10 +108,10 @@ func (e ContactStatusEvent) Type() EventType {
 
 // PresenceEvent represents a real-time presence update (online/offline).
 type PresenceEvent struct {
-	InstanceID string
-	UserID     string // Protocol user ID
-	IsOnline   bool   // true if online, false if offline
-	LastSeen   int64  // Unix timestamp of last seen (0 if not available or user is online)
+	InstanceID string `json:"instanceId"`
+	UserID     string `json:"userId"`
+	IsOnline   bool   `json:"isOnline"`
+	LastSeen   int64  `json:"lastSeen"`
 }
 
 // Type returns the event type for PresenceEvent.

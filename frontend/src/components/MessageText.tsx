@@ -6,7 +6,7 @@ import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { transformUrls, escapeLeadingDashes, fixCodeBlocks } from "../lib/utils";
+import { transformUrls, fixCodeBlocks } from "../lib/utils";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
@@ -50,6 +50,9 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
     p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
     br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
     div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
+    ul: ({ ...props }) => <ul className="list-disc pl-5 my-1 space-y-0.5" {...props} />,
+    ol: ({ ...props }) => <ol className="list-decimal pl-5 my-1 space-y-0.5" {...props} />,
+    li: ({ ...props }) => <li className="leading-snug" {...props} />,
   };
 }
 
@@ -85,8 +88,6 @@ export const MessageText = memo(function MessageText({
 
     if (preview) {
       processedText = processedText.replace(/\n+/g, " ");
-    } else {
-      processedText = escapeLeadingDashes(processedText);
     }
 
     const textWithoutSkinTones = cleanEmoji(processedText);

@@ -12,8 +12,9 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
-import { cn, timeToDate } from "@/lib/utils";
+import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
 import { getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
+import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
@@ -31,6 +32,7 @@ export interface MessageHandlers {
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onNavigateToEdit: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
   setOpenActionsMessageId: (id: string | null) => void;
+  showToast: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
 }
 
 interface MessageBubbleItemProps {
@@ -107,11 +109,11 @@ export function MessageBubbleItem({
   const displayName = getSenderDisplayName(resolvedSenderName, message.senderId, message.isFromMe, t);
 
   const threadMessages = threadsByParent[message.protocolMsgId];
-  const threadCount = threadMessages?.length ?? 0;
-  const hasThread = threadCount > 0;
-  const lastThreadMsg = hasThread
-    ? [...threadMessages].sort((a, b) => timeToDate(b.timestamp).getTime() - timeToDate(a.timestamp).getTime())[0]
-    : null;
+  const hasThread = (threadMessages?.length ?? 0) > 0;
+  const hasUnreadInThread = hasThread && threadMessages.some(
+    (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
+  );
+  const previewUrl = (!isDeleted && message.body) ? extractFirstUrl(message.body) : null;
 
   const baseBubbleColorClass = message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground";
   const deletedPlaceholderClass = message.isFromMe ? "bg-blue-950/80 text-blue-100" : "bg-muted/70 text-muted-foreground";
@@ -270,12 +272,15 @@ export function MessageBubbleItem({
                       </div>
                     )}
                     {message.body?.trim() && (
-                      <MessageText text={message.body} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
+                      <>
+                        <MessageText text={message.body} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
+                        {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
+                      </>
                     )}
                   </>
                 )}
                 {message.attachments?.trim() && (
-                  <MessageAttachments attachments={message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} />
+                  <MessageAttachments attachments={message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} />
                 )}
                 {!message.body?.trim() && !message.attachments?.trim() && (
                   <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
@@ -291,23 +296,11 @@ export function MessageBubbleItem({
                     <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive/80">{t("deleted_message_badge")}</span>
                   )}
                 </div>
+                {message.isEdited && editingMessageId !== messageId && (
+                  <span className="text-xs opacity-40 italic">({t("edited")})</span>
+                )}
               </div>
             </div>
-            {message.isEdited && (
-              <span className={cn("text-xs text-muted-foreground italic", message.isFromMe ? "self-end" : "self-start")}>{t("edited")}</span>
-            )}
-            {message.reactions && message.reactions.length > 0 && (
-              <MessageReactions
-                reactions={message.reactions}
-                isGroup={isGroupConversation}
-                participantNames={participantNames}
-                currentUserId={currentUserId}
-                providerInstanceId={providerInstanceId}
-                allMessages={mainMessages}
-                onReactionClick={(emoji) => handlers.onReaction(message, emoji)}
-                className={message.isFromMe ? "self-end" : "self-start"}
-              />
-            )}
             <div className={message.isFromMe ? "self-end" : "self-start"}>
               <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} layout="bubble" />
             </div>
@@ -324,15 +317,29 @@ export function MessageBubbleItem({
             </div>
           )}
         </div>
-        {hasThread && lastThreadMsg && (
-          <MessageThreadPreview
-            lastThreadMsg={lastThreadMsg}
-            threadCount={threadCount}
-            providerInstanceId={providerInstanceId}
-            className={cn("ml-15", message.isFromMe ? "ml-auto" : "mr-auto")}
-            onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
-            onAvatarClick={handlers.onAvatarClick}
-          />
+        {(hasThread || (message.reactions && message.reactions.length > 0)) && (
+          <div className={cn("flex items-stretch flex-wrap gap-1 mt-1", message.isFromMe ? "ml-auto" : "ml-15")}>
+            {hasThread && (
+              <MessageThreadPreview
+                threadMessages={threadMessages}
+                hasUnread={hasUnreadInThread}
+                onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
+                onAvatarClick={handlers.onAvatarClick}
+              />
+            )}
+            {message.reactions && message.reactions.length > 0 && (
+              <MessageReactions
+                reactions={message.reactions}
+                isGroup={isGroupConversation}
+                participantNames={participantNames}
+                currentUserId={currentUserId}
+                providerInstanceId={providerInstanceId}
+                allMessages={mainMessages}
+                onReactionClick={(emoji) => handlers.onReaction(message, emoji)}
+                className="mt-0"
+              />
+            )}
+          </div>
         )}
       </div>
     </div>

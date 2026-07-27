@@ -100,6 +100,24 @@ func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) str
 	return ""
 }
 
+// normalizeChatJID resolves a LID JID to its canonical phone number JID when possible.
+// WhatsApp history sync sometimes reports conversations using LID-based JIDs
+// (e.g. "267859930403006@lid") instead of phone number JIDs ("33617590388@s.whatsapp.net").
+// This causes the same DM to appear twice if both forms are present.
+func (w *WhatsAppProvider) normalizeChatJID(jid types.JID) types.JID {
+	if jid.Server != "lid" {
+		return jid
+	}
+	if w.client == nil || w.client.Store == nil || w.client.Store.LIDs == nil {
+		return jid
+	}
+	phoneJID, err := w.client.Store.LIDs.GetPNForLID(w.ctx, jid)
+	if err == nil && !phoneJID.IsEmpty() {
+		return phoneJID
+	}
+	return jid
+}
+
 func (w *WhatsAppProvider) lookupSenderName(jid types.JID) string {
 	return w.lookupDisplayName(jid, "")
 }
@@ -313,6 +331,51 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 		}
 	}
 
+	// Deduplicate LID vs phone-number conversations.
+	// If both "267859930403006@lid" and "33617590388@s.whatsapp.net" are present for the
+	// same contact (can happen with data already persisted before the normalization above),
+	// keep only the phone-number version and drop the LID entry.
+	if w.client != nil && w.client.Store != nil && w.client.Store.LIDs != nil {
+		phoneIdx := make(map[string]int, len(linkedAccounts))
+		for i, acc := range linkedAccounts {
+			jid, err := types.ParseJID(acc.UserID)
+			if err == nil && jid.Server == types.DefaultUserServer {
+				phoneIdx[acc.UserID] = i
+			}
+		}
+		toRemove := make(map[int]bool)
+		for i, acc := range linkedAccounts {
+			jid, err := types.ParseJID(acc.UserID)
+			if err != nil || jid.Server != "lid" {
+				continue
+			}
+			phoneJID, err := w.client.Store.LIDs.GetPNForLID(w.ctx, jid)
+			if err != nil || phoneJID.IsEmpty() {
+				continue
+			}
+			phoneStr := phoneJID.String()
+			if _, exists := phoneIdx[phoneStr]; exists {
+				// Phone-number version already present — drop the LID duplicate.
+				toRemove[i] = true
+				fmt.Printf("WhatsApp: Dedup — removing LID conversation %s (canonical: %s)\n", acc.UserID, phoneStr)
+			} else {
+				// Promote the LID entry to use the phone-number ID.
+				linkedAccounts[i].UserID = phoneStr
+				phoneIdx[phoneStr] = i
+				fmt.Printf("WhatsApp: Dedup — promoted LID conversation %s → %s\n", acc.UserID, phoneStr)
+			}
+		}
+		if len(toRemove) > 0 {
+			filtered := linkedAccounts[:0]
+			for i, acc := range linkedAccounts {
+				if !toRemove[i] {
+					filtered = append(filtered, acc)
+				}
+			}
+			linkedAccounts = filtered
+		}
+	}
+
 	fmt.Printf("WhatsApp: GetContacts returning %d conversations (%d cached + %d fallback)\n", len(linkedAccounts), cachedCount, len(fallbackAccounts))
 
 	// Save contacts to database and keep the in-memory store in sync.
@@ -351,6 +414,10 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 			}
 			if existing.Status != linkedAccounts[i].Status {
 				existing.Status = linkedAccounts[i].Status
+				changed = true
+			}
+			if existing.IsGroup != linkedAccounts[i].IsGroup {
+				existing.IsGroup = linkedAccounts[i].IsGroup
 				changed = true
 			}
 

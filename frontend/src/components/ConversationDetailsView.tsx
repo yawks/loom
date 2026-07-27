@@ -1,8 +1,7 @@
 import { GetContactAliases, GetMessagesForConversation, SendFile } from "../../wailsjs/go/main/App";
 import { cn } from "@/lib/utils";
-import { useCallback, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { Suspense } from "react";
 
 import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
@@ -86,6 +85,7 @@ export function ConversationDetailsView({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
+  const [idCopied, setIdCopied] = useState(false);
 
   const queryClient = useQueryClient();
   const conversationId =
@@ -380,6 +380,25 @@ export function ConversationDetailsView({
               />
             </Suspense>
           </div>
+
+          {/* Debug: conversation ID */}
+          {conversationId && (
+            <div className="conversation-details__debug-id pt-2 border-t">
+              <button
+                className="w-full text-left"
+                title="Click to copy"
+                onClick={() => {
+                  navigator.clipboard.writeText(conversationId);
+                  setIdCopied(true);
+                  setTimeout(() => setIdCopied(false), 1500);
+                }}
+              >
+                <p className="text-[10px] text-muted-foreground/50 font-mono break-all leading-relaxed hover:text-muted-foreground transition-colors">
+                  {idCopied ? "✓ copied" : conversationId}
+                </p>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       <FileUploadModal

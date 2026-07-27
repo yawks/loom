@@ -38,6 +38,10 @@ export function EditMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['EditMessage'](arg1, arg2, arg3);
 }
 
+export function FetchLinkPreview(arg1) {
+  return window['go']['main']['App']['FetchLinkPreview'](arg1);
+}
+
 export function ForceSyncCompletion(arg1) {
   return window['go']['main']['App']['ForceSyncCompletion'](arg1);
 }
@@ -140,6 +144,10 @@ export function MarkMessageAsPlayed(arg1, arg2) {
 
 export function MarkMessageAsRead(arg1, arg2) {
   return window['go']['main']['App']['MarkMessageAsRead'](arg1, arg2);
+}
+
+export function OpenFile(arg1) {
+  return window['go']['main']['App']['OpenFile'](arg1);
 }
 
 export function RemoveProvider(arg1) {

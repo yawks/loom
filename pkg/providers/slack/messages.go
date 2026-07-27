@@ -176,7 +176,6 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 
 	params := slack.UploadFileV2Parameters{
 		Channel:  actualChannelID,
-		File:     file.FileName,
 		Reader:   bytes.NewReader(file.Data),
 		FileSize: file.FileSize,
 		Filename: file.FileName,
@@ -947,6 +946,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 		} else {
 			// Update existing message
 			existingMsg.Body = newText
+			existingMsg.IsEdited = true
 			if timestamp != "" {
 				existingMsg.Timestamp = parseSlackTimestamp(timestamp)
 			}
@@ -960,6 +960,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 			Body:           newText,
 			Timestamp:      ts,
 			IsFromMe:       true,
+			IsEdited:       true,
 		}
 	}
 
@@ -1216,8 +1217,17 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Extract and optimize message body
 	body := msg.Text
 
-	// If text is empty or too short (e.g. "digest"), try extracting from blocks or attachments
-	if len(body) < 10 {
+	// When the message has rich_text blocks, always prefer block extraction: Slack populates
+	// msg.Text with triple-backtick preformatted markers for rich_text_preformatted elements,
+	// which causes bullet lists to render as code blocks. Block extraction produces clean markdown.
+	hasRichTextBlock := false
+	for _, block := range msg.Blocks.BlockSet {
+		if _, ok := block.(*slack.RichTextBlock); ok {
+			hasRichTextBlock = true
+			break
+		}
+	}
+	if hasRichTextBlock || len(body) < 10 {
 		extracted := p.extractTextFromRichContent(msg)
 		if len(extracted) > len(body) {
 			body = extracted
@@ -1328,6 +1338,87 @@ func (p *SlackProvider) preprocessMessageBody(text string) string {
 	return text
 }
 
+func applyRichTextStyle(text string, style *slack.RichTextSectionTextStyle) string {
+	if style == nil {
+		return text
+	}
+	switch {
+	case style.Code:
+		return "`" + text + "`"
+	case style.Bold && style.Italic:
+		return "***" + text + "***"
+	case style.Bold:
+		return "**" + text + "**"
+	case style.Italic:
+		return "_" + text + "_"
+	case style.Strike:
+		return "~~" + text + "~~"
+	}
+	return text
+}
+
+// richTextSectionToText converts a RichTextSection's elements to a plain-text/markdown string.
+func (p *SlackProvider) richTextSectionToText(section *slack.RichTextSection) string {
+	var sb strings.Builder
+	for _, elem := range section.Elements {
+		switch e := elem.(type) {
+		case *slack.RichTextSectionTextElement:
+			sb.WriteString(applyRichTextStyle(e.Text, e.Style))
+		case *slack.RichTextSectionLinkElement:
+			linkText := e.Text
+			if linkText == "" {
+				linkText = e.URL
+			}
+			sb.WriteString("[" + linkText + "](" + e.URL + ")")
+		case *slack.RichTextSectionUserElement:
+			// Will be resolved by preprocessMessageBody
+			sb.WriteString("<@" + e.UserID + ">")
+		case *slack.RichTextSectionChannelElement:
+			sb.WriteString("<#" + e.ChannelID + ">")
+		case *slack.RichTextSectionEmojiElement:
+			sb.WriteString(":" + e.Name + ":")
+		case *slack.RichTextSectionBroadcastElement:
+			sb.WriteString("@" + e.Range)
+		}
+	}
+	return sb.String()
+}
+
+// richTextBlockToMarkdown converts a RichTextBlock to a markdown string, preserving
+// bullet/ordered lists and preformatted sections.
+func (p *SlackProvider) richTextBlockToMarkdown(block *slack.RichTextBlock) string {
+	var parts []string
+	for _, elem := range block.Elements {
+		switch e := elem.(type) {
+		case *slack.RichTextSection:
+			parts = append(parts, p.richTextSectionToText(e))
+		case *slack.RichTextList:
+			for i, item := range e.Elements {
+				if section, ok := item.(*slack.RichTextSection); ok {
+					itemText := p.richTextSectionToText(section)
+					indent := strings.Repeat("  ", e.Indent)
+					var prefix string
+					if e.Style == slack.RTEListOrdered {
+						prefix = fmt.Sprintf("%s%d. ", indent, i+1+e.Offset)
+					} else {
+						prefix = indent + "- "
+					}
+					parts = append(parts, prefix+itemText)
+				}
+			}
+		case *slack.RichTextPreformatted:
+			content := p.richTextSectionToText(&slack.RichTextSection{Elements: e.Elements})
+			parts = append(parts, "```\n"+content+"\n```")
+		case *slack.RichTextQuote:
+			content := p.richTextSectionToText(&slack.RichTextSection{Elements: e.Elements})
+			for _, line := range strings.Split(content, "\n") {
+				parts = append(parts, "> "+line)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // extractTextFromRichContent extracts a readable string from Slack Blocks and Attachments
 func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 	var parts []string
@@ -1335,6 +1426,8 @@ func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 	// Extract from blocks (the modern way)
 	for _, block := range msg.Blocks.BlockSet {
 		switch b := block.(type) {
+		case *slack.RichTextBlock:
+			parts = append(parts, p.richTextBlockToMarkdown(b))
 		case *slack.SectionBlock:
 			if b.Text != nil {
 				parts = append(parts, b.Text.Text)

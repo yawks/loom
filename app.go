@@ -23,6 +23,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/net/html"
 	"gorm.io/gorm"
 )
 
@@ -50,6 +51,19 @@ type metaContactsCache struct {
 type queryCache[T any] struct {
 	mu        sync.RWMutex
 	data      T
+	expiresAt time.Time
+}
+
+// LinkPreview holds Open Graph metadata for a URL.
+type LinkPreview struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ImageURL    string `json:"imageURL"`
+	URL         string `json:"url"`
+}
+
+type linkPreviewEntry struct {
+	preview   LinkPreview
 	expiresAt time.Time
 }
 
@@ -84,6 +98,17 @@ type App struct {
 	// while another provider is still fetching history.
 	syncingProviders   map[string]bool
 	syncingProvidersMu sync.Mutex
+
+	// providerErrors holds the last startup error per provider instance (instanceID → message).
+	// Populated in startup() when a provider fails IsAuthenticated or Connect.
+	// Exposed via GetConfiguredProviders so the sidebar can show a warning badge without
+	// relying on a one-shot event that might fire before the listener is registered.
+	providerErrors   map[string]string
+	providerErrorsMu sync.RWMutex
+
+	// linkPreviewCache caches fetched Open Graph previews (1-hour TTL).
+	linkPreviewCache   map[string]linkPreviewEntry
+	linkPreviewCacheMu sync.RWMutex
 }
 
 // NewApp creates a new App application struct
@@ -393,6 +418,7 @@ func (a *App) startup(ctx context.Context) {
 		if isAuth {
 			if err := provider.Connect(); err != nil {
 				log.Printf("Warning: Failed to connect provider %s: %v", providerConfig.ProviderID, err)
+				a.setProviderError(instanceID, fmt.Sprintf("Connection failed: %v", err))
 				continue
 			}
 			// Start event listener for all connected providers
@@ -404,6 +430,7 @@ func (a *App) startup(ctx context.Context) {
 				}
 				providerConfig.IsActive = false
 			}
+			a.setProviderError(instanceID, "Session expired — please re-authenticate")
 			continue
 		}
 
@@ -487,6 +514,21 @@ func (a *App) resyncAllProviders() {
 // domReady is called when the frontend DOM is ready. It is the right place to start
 // operations that emit events to the frontend, since the Wails IPC and React's EventsOn
 // listeners are guaranteed to be active by this point.
+func (a *App) setProviderError(instanceID, message string) {
+	a.providerErrorsMu.Lock()
+	defer a.providerErrorsMu.Unlock()
+	if a.providerErrors == nil {
+		a.providerErrors = make(map[string]string)
+	}
+	a.providerErrors[instanceID] = message
+}
+
+func (a *App) clearProviderError(instanceID string) {
+	a.providerErrorsMu.Lock()
+	defer a.providerErrorsMu.Unlock()
+	delete(a.providerErrors, instanceID)
+}
+
 func (a *App) domReady(ctx context.Context) {
 	syncs := a.pendingSyncs
 	a.pendingSyncs = nil
@@ -659,11 +701,14 @@ func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 	case core.SyncStatusFetchingHistory, core.SyncStatusFetchingContacts, core.SyncStatusFetchingAvatars:
 		a.syncingProviders[e.InstanceID] = true
 		a.syncingProvidersMu.Unlock()
+		// Provider is active again — clear any startup error so the sidebar badge disappears.
+		a.clearProviderError(e.InstanceID)
 
 	case core.SyncStatusCompleted:
 		delete(a.syncingProviders, e.InstanceID)
 		stillSyncing := len(a.syncingProviders) > 0
 		a.syncingProvidersMu.Unlock()
+		a.clearProviderError(e.InstanceID)
 
 		if stillSyncing {
 			// At least one other provider is still active — swallow this event.
@@ -714,12 +759,22 @@ func (a *App) GetConfig() map[string]interface{} {
 
 func (a *App) SaveConfig(config map[string]interface{}) error { return nil }
 
-// GetConfiguredProviders returns a list of configured providers with their status
+// GetConfiguredProviders returns a list of configured providers with their status.
+// Each entry's SyncError field is non-empty when the provider failed to authenticate
+// or connect at startup, so the frontend can show a warning badge immediately on mount.
 func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 	if a.providerManager == nil {
 		return []core.ProviderInfo{}, nil
 	}
-	return a.providerManager.GetConfiguredProviders(), nil
+	providers := a.providerManager.GetConfiguredProviders()
+	a.providerErrorsMu.RLock()
+	defer a.providerErrorsMu.RUnlock()
+	for i := range providers {
+		if msg, ok := a.providerErrors[providers[i].InstanceID]; ok {
+			providers[i].SyncError = msg
+		}
+	}
+	return providers, nil
 }
 
 // For frontend compatibility if GetConfiguredProviders doesn't return exactly what's needed
@@ -1502,16 +1557,18 @@ func (a *App) GetCapabilities(instanceID string) (core.Capabilities, error) {
 }
 
 // GetAllActiveCalls returns a map of conversation IDs to boolean indicating if there's an active call
-// An active call is one with CallType "incoming_call" or "incoming_group_call" that hasn't been terminated
+// An active call is one with CallType "incoming_call" or "incoming_group_call" that hasn't been terminated.
+// We limit to the last 3 minutes: the CallTerminate event may not update the DB record when a LID→JID
+// resolution mismatch causes the lookup to fail, leaving a stale "incoming_call" row. A real ringing
+// call cannot last longer than a couple of minutes.
 func (a *App) GetAllActiveCalls() (map[string]bool, error) {
 	if db.DB == nil {
 		return map[string]bool{}, nil
 	}
 
-	// Find all messages with active call types (incoming_call or incoming_group_call)
-	// These are calls that are currently active (ringing/ongoing)
+	cutoff := time.Now().Add(-3 * time.Minute)
 	var activeCallMessages []models.Message
-	err := db.DB.Where("call_type IN ?", []string{"incoming_call", "incoming_group_call"}).
+	err := db.DB.Where("call_type IN ? AND timestamp >= ?", []string{"incoming_call", "incoming_group_call"}, cutoff).
 		Select("protocol_conv_id").
 		Group("protocol_conv_id").
 		Find(&activeCallMessages).Error
@@ -1869,21 +1926,22 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 }
 
 // SaveAttachmentToFile fetches an attachment and saves it to a user-chosen location via native dialog.
-func (a *App) SaveAttachmentToFile(url string, fileName string) error {
+// Returns the saved file path on success, or an empty string if the user cancelled.
+func (a *App) SaveAttachmentToFile(url string, fileName string) (string, error) {
 	dataURL, err := a.GetAttachmentData(url)
 	if err != nil {
-		return fmt.Errorf("failed to fetch attachment: %w", err)
+		return "", fmt.Errorf("failed to fetch attachment: %w", err)
 	}
 
 	// Strip the "data:<mime>;base64," prefix
 	comma := strings.Index(dataURL, ",")
 	if comma < 0 {
-		return fmt.Errorf("invalid data URL format")
+		return "", fmt.Errorf("invalid data URL format")
 	}
 	encoded := dataURL[comma+1:]
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return fmt.Errorf("failed to decode attachment data: %w", err)
+		return "", fmt.Errorf("failed to decode attachment data: %w", err)
 	}
 
 	// Ask the user where to save
@@ -1892,10 +1950,10 @@ func (a *App) SaveAttachmentToFile(url string, fileName string) error {
 		Title:           "Enregistrer le fichier",
 	})
 	if err != nil {
-		return fmt.Errorf("save dialog error: %w", err)
+		return "", fmt.Errorf("save dialog error: %w", err)
 	}
 	if savePath == "" {
-		return nil // user cancelled
+		return "", nil // user cancelled
 	}
 
 	// Ensure the extension is preserved when the OS strips it
@@ -1904,9 +1962,14 @@ func (a *App) SaveAttachmentToFile(url string, fileName string) error {
 	}
 
 	if err := os.WriteFile(savePath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return "", fmt.Errorf("failed to write file: %w", err)
 	}
-	return nil
+	return savePath, nil
+}
+
+// OpenFile opens a file with the default system application.
+func (a *App) OpenFile(path string) error {
+	return openFile(path)
 }
 
 // UpdateSystemTrayBadge updates the system tray icon with a badge showing the unread message count.
@@ -1948,4 +2011,122 @@ func (a *App) setupSystemTray(ctx context.Context) {
 	appMenu.Append(quitItem)
 
 	a.systemTray = appMenu
+}
+
+// metaAttrs extracts property, name, and content from a <meta> node's attributes.
+func metaAttrs(n *html.Node) (property, name, content string) {
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "property":
+			property = a.Val
+		case "name":
+			name = a.Val
+		case "content":
+			content = a.Val
+		}
+	}
+	return
+}
+
+// applyMetaToPreview updates preview fields from a single <meta> node.
+func applyMetaToPreview(n *html.Node, p *LinkPreview) {
+	property, name, content := metaAttrs(n)
+	switch property {
+	case "og:title":
+		p.Title = content
+	case "og:description":
+		p.Description = content
+	case "og:image":
+		p.ImageURL = content
+	case "og:url":
+		if content != "" {
+			p.URL = content
+		}
+	}
+	if p.Description == "" && (name == "description" || name == "twitter:description") {
+		p.Description = content
+	}
+	if p.Title == "" && name == "twitter:title" {
+		p.Title = content
+	}
+	if p.ImageURL == "" && name == "twitter:image" {
+		p.ImageURL = content
+	}
+}
+
+// walkHTMLForPreview traverses the HTML tree and extracts OG/meta/title data into p.
+func walkHTMLForPreview(n *html.Node, p *LinkPreview, title *string) {
+	if n.Type == html.ElementNode {
+		switch n.Data {
+		case "title":
+			if n.FirstChild != nil && *title == "" {
+				*title = strings.TrimSpace(n.FirstChild.Data)
+			}
+		case "meta":
+			applyMetaToPreview(n, p)
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		walkHTMLForPreview(c, p, title)
+	}
+}
+
+// FetchLinkPreview fetches and parses Open Graph metadata for a given URL.
+// Results are cached for one hour to avoid repeated network requests.
+func (a *App) FetchLinkPreview(url string) (LinkPreview, error) {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return LinkPreview{}, fmt.Errorf("invalid URL: %s", url)
+	}
+
+	// Serve from cache when available.
+	a.linkPreviewCacheMu.RLock()
+	if a.linkPreviewCache != nil {
+		if entry, ok := a.linkPreviewCache[url]; ok && time.Now().Before(entry.expiresAt) {
+			a.linkPreviewCacheMu.RUnlock()
+			return entry.preview, nil
+		}
+	}
+	a.linkPreviewCacheMu.RUnlock()
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return LinkPreview{}, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Loom/1.0; +https://github.com/loom)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return LinkPreview{}, fmt.Errorf("fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return LinkPreview{}, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+	}
+
+	// Limit to 512 KB to avoid reading huge pages.
+	body := io.LimitReader(resp.Body, 512*1024)
+	doc, err := html.Parse(body)
+	if err != nil {
+		return LinkPreview{}, fmt.Errorf("HTML parse error: %w", err)
+	}
+
+	preview := LinkPreview{URL: url}
+	var title string
+	walkHTMLForPreview(doc, &preview, &title)
+
+	if preview.Title == "" {
+		preview.Title = title
+	}
+
+	a.linkPreviewCacheMu.Lock()
+	if a.linkPreviewCache == nil {
+		a.linkPreviewCache = make(map[string]linkPreviewEntry)
+	}
+	a.linkPreviewCache[url] = linkPreviewEntry{preview: preview, expiresAt: time.Now().Add(time.Hour)}
+	a.linkPreviewCacheMu.Unlock()
+
+	return preview, nil
 }
