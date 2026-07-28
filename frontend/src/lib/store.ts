@@ -10,6 +10,8 @@ interface AppState {
   setShowThreads: (show: boolean) => void;
   selectedThreadId: string | null;
   setSelectedThreadId: (threadId: string | null) => void;
+  selectedThreadParentMessage: models.Message | null;
+  setSelectedThreadParentMessage: (msg: models.Message | null) => void;
   showConversationDetails: boolean;
   setShowConversationDetails: (show: boolean) => void;
   messageLayout: "bubble" | "irc";
@@ -95,10 +97,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (threadId) {
       set({ showThreads: true });
     } else {
-      // When clearing thread, don't close the panel automatically
-      // The user can close it manually with the toggle button
+      set({ selectedThreadParentMessage: null });
     }
   },
+  selectedThreadParentMessage: null,
+  setSelectedThreadParentMessage: (msg) => set({ selectedThreadParentMessage: msg }),
   showConversationDetails: false,
   setShowConversationDetails: (show) => set({ showConversationDetails: show }),
   messageLayout: loadFromStorage<"bubble" | "irc">("messageLayout", "bubble"),

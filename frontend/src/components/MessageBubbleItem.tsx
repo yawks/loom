@@ -28,7 +28,7 @@ export interface MessageHandlers {
   onDeleteLocalMessage: (message: models.Message) => void;
   onSaveEdit: (skipValidation?: boolean) => void;
   onCancelEdit: () => void;
-  onThreadClick: (parentMsgId: string) => void;
+  onThreadClick: (parentMsgId: string, message: models.Message) => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onNavigateToEdit: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
   setOpenActionsMessageId: (id: string | null) => void;
@@ -185,7 +185,7 @@ export function MessageBubbleItem({
                   onDelete={() => handlers.onDeleteClick(message)}
                   onReply={() => handlers.onReplyClick(message)}
                   onReact={(emoji) => handlers.onReaction(message, emoji)}
-                  onStartThread={() => handlers.onThreadClick(message.protocolMsgId)}
+                  onStartThread={() => handlers.onThreadClick(message.protocolMsgId, message)}
                   currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}
                   messageId={messageId}
                   openActionsMessageId={openActionsMessageId}
@@ -331,7 +331,7 @@ export function MessageBubbleItem({
               <MessageThreadPreview
                 threadMessages={threadMessages}
                 hasUnread={hasUnreadInThread}
-                onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
+                onThreadClick={() => handlers.onThreadClick(message.protocolMsgId, message)}
                 onAvatarClick={handlers.onAvatarClick}
               />
             )}

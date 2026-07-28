@@ -307,7 +307,7 @@ export function MessageIRCItem({
                 onDelete={() => handlers.onDeleteClick(message)}
                 onReply={() => handlers.onReplyClick(message)}
                 onReact={(emoji) => handlers.onReaction(message, emoji)}
-                onStartThread={() => handlers.onThreadClick(message.protocolMsgId)}
+                onStartThread={() => handlers.onThreadClick(message.protocolMsgId, message)}
                 currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}
                 messageId={messageId}
                 openActionsMessageId={openActionsMessageId}
@@ -324,7 +324,7 @@ export function MessageIRCItem({
             <MessageThreadPreview
               threadMessages={threadMessages}
               hasUnread={hasUnreadInThread}
-              onThreadClick={() => handlers.onThreadClick(message.protocolMsgId)}
+              onThreadClick={() => handlers.onThreadClick(message.protocolMsgId, message)}
               onAvatarClick={handlers.onAvatarClick}
             />
           )}

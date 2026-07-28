@@ -6,6 +6,8 @@
   "recent": "Recent",
   "unread": "Unread",
   "threads": "Threads",
+  "no_threads_in_conversation": "No threads in this conversation",
+  "back_to_threads": "Back to threads",
   "type_a_message": "Type a message...",
   "send": "Send",
   "participants": "Participants",

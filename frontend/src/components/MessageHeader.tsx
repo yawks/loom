@@ -26,7 +26,6 @@ export function MessageHeader({
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const showThreads = useAppStore((state) => state.showThreads);
-  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
 
   const instanceId = linkedAccounts[0]?.providerInstanceId;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true;
@@ -47,7 +46,7 @@ export function MessageHeader({
   }, [configuredProviders, linkedAccounts]);
 
   return (
-    <div className={cn("message-header p-4 border-b flex justify-between items-center shrink-0 transition-opacity duration-200", showThreads && selectedThreadId !== null && "opacity-20")}>
+    <div className={cn("message-header p-4 border-b flex justify-between items-center shrink-0 transition-opacity duration-200", showThreads && "opacity-20")}>
       <div className="message-header__identity flex items-center gap-3 min-w-0">
         <Avatar className="message-header__avatar h-9 w-9 shrink-0">
           <AvatarImage src={avatarUrl} alt={displayName} />
