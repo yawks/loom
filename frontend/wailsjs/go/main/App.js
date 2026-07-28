@@ -182,6 +182,10 @@ export function SendThreadMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendThreadMessage'](arg1, arg2, arg3);
 }
 
+export function SendThreadReply(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendThreadReply'](arg1, arg2, arg3, arg4);
+}
+
 export function SetActiveProvider(arg1) {
   return window['go']['main']['App']['SetActiveProvider'](arg1);
 }

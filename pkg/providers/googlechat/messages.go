@@ -166,6 +166,22 @@ func (p *GoogleChatProvider) SendReply(convID, text, quotedMessageID string) (*m
 	return msg, nil
 }
 
+func (p *GoogleChatProvider) SendThreadReply(convID, text, threadID, quotedMessageID string) (*models.Message, error) {
+	msg, err := p.SendReply(convID, text, quotedMessageID)
+	if err != nil {
+		return nil, err
+	}
+	if msg != nil {
+		msg.ThreadID = &threadID
+		if db.DB != nil && msg.ProtocolMsgID != "" {
+			db.DB.Model(&models.Message{}).
+				Where("protocol_msg_id = ?", msg.ProtocolMsgID).
+				Update("thread_id", threadID)
+		}
+	}
+	return msg, nil
+}
+
 func (p *GoogleChatProvider) SendFile(convID string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	if file == nil {
 		return nil, fmt.Errorf("no file provided")

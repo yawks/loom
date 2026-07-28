@@ -2,7 +2,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
-import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,7 @@ export function MessageIRCItem({
   handlers,
 }: MessageIRCItemProps) {
   const { t } = useTranslation();
+  message = normalizeSlackQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
   const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;

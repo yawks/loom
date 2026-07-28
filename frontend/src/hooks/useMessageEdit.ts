@@ -48,13 +48,35 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
     setEditingText("");
     setOriginalEditText("");
 
-    queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
-    queryClient.refetchQueries({ queryKey: ["messages", conversationId] });
-    queryClient.invalidateQueries({ queryKey: ["threads"] });
-    queryClient.refetchQueries({ queryKey: ["threads"] });
+    // Reflect the edit immediately. The protocol call can take long enough for
+    // a refetch issued beforehand to return the old message.
+    queryClient.setQueryData<InfiniteData<models.Message[]>>(
+      ["messages", conversationId],
+      (oldData) => {
+        if (!oldData || !Array.isArray(oldData.pages)) return oldData;
+        return {
+          ...oldData,
+          pages: oldData.pages.map((page) =>
+            Array.isArray(page)
+              ? page.map((msg) =>
+                msg.protocolMsgId === messageId
+                  ? ({ ...msg, body: newText, isEdited: true } as models.Message)
+                  : msg
+              )
+              : page
+          ),
+        };
+      }
+    );
 
     try {
       await EditMessage(conversationId, messageId, newText);
+      // Fetch after the protocol operation so the optimistic copy is reconciled
+      // with the persisted message and any provider-side normalization.
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ["messages", conversationId] }),
+        queryClient.refetchQueries({ queryKey: ["threads"] }),
+      ]);
     } catch (error) {
       console.error("Failed to edit message:", error);
       queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -64,7 +86,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
           const pages = oldData.pages.map((page) => {
             if (!Array.isArray(page)) return page as models.Message[];
             return (page as models.Message[]).map((msg) =>
-              msg.protocolMsgId === messageId ? { ...msg, body: originalText } : msg
+              msg.protocolMsgId === messageId ? { ...msg, body: originalText, isEdited: message.isEdited } : msg
             );
           });
           return { ...oldData, pages: pages as models.Message[][] };

@@ -145,19 +145,34 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		socketThreadID = &ts
 	}
 
+	messageBody := p.preprocessMessageBody(ev.Text)
+	var quotedMessageID *string
+	var quotedSenderName string
+	var quotedBody *string
+	if cleanText, senderName, body, isQuote := p.parseSlackBlockQuote(messageBody); isQuote {
+		messageBody = cleanText
+		id := ev.TimeStamp + "-quote"
+		quotedMessageID = &id
+		quotedSenderName = senderName
+		quotedBody = &body
+	}
+
 	// Basic message construction
 	msg := models.Message{
-		ProtocolConvID:  normalizedConvID,
-		ProtocolMsgID:   ev.TimeStamp, // Slack uses timestamp as ID
-		SenderID:        ev.User,
-		SenderName:      senderName,
-		SenderAvatarURL: senderAvatarURL,
-		Body:            p.preprocessMessageBody(ev.Text),
-		Timestamp:       timestamp,
-		IsFromMe:        isFromMe,
-		Attachments:     "[]", // Handle attachments if any
-		CallType:        callType,
-		ThreadID:        socketThreadID,
+		ProtocolConvID:   normalizedConvID,
+		ProtocolMsgID:    ev.TimeStamp, // Slack uses timestamp as ID
+		SenderID:         ev.User,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
+		Body:             messageBody,
+		Timestamp:        timestamp,
+		IsFromMe:         isFromMe,
+		Attachments:      "[]", // Handle attachments if any
+		CallType:         callType,
+		ThreadID:         socketThreadID,
+		QuotedMessageID:  quotedMessageID,
+		QuotedSenderName: quotedSenderName,
+		QuotedBody:       quotedBody,
 	}
 
 	// Check if this conversation already has messages in DB (to decide if we need an initial sync).

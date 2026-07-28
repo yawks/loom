@@ -25,7 +25,7 @@ import { ArrowLeft, Loader2, X } from "lucide-react";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
-import { getColorFromString, getMessageDomId, getSenderDisplayName } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
 import { unicodeEmojiMap, unicodeToEmojiName } from "@/lib/emojiMap";
 import { useAppStore } from "@/lib/store";
@@ -106,6 +106,78 @@ function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerI
   );
 }
 
+function ThreadParentMessage({
+  message,
+  layout,
+  providerInstanceId,
+  onAvatarClick,
+  t,
+}: {
+  message: models.Message;
+  layout: "bubble" | "irc";
+  providerInstanceId: string | undefined;
+  onAvatarClick: (url: string | undefined, name?: string) => void;
+  t: (key: string) => string;
+}) {
+  const displayName = getSenderDisplayName(message.senderName, message.senderId, message.isFromMe, t);
+  const timestamp = timeToDate(message.timestamp);
+
+  if (layout === "bubble") {
+    return (
+      <div className={cn("flex items-start gap-3", message.isFromMe && "justify-end")}>
+        {!message.isFromMe && (
+          <button onClick={() => onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+            <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
+              <AvatarImage src={message.senderAvatarUrl} />
+              <AvatarFallback className="text-xs">{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
+            </Avatar>
+          </button>
+        )}
+        <div className={cn("rounded-lg p-2 text-left max-w-[80%]", message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground")}>
+          <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
+          {message.attachments && message.attachments.trim() !== "" && (
+            <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="bubble" />
+          )}
+          <p className={cn("text-xs mt-1", message.isFromMe ? "text-blue-100" : "text-muted-foreground")}>
+            {timestamp.toLocaleTimeString()}
+          </p>
+        </div>
+        {message.isFromMe && (
+          <button onClick={() => onAvatarClick(message.senderAvatarUrl, t("you"))} className="shrink-0">
+            <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
+              <AvatarImage src={message.senderAvatarUrl} />
+              <AvatarFallback className="text-xs">{t("me")}</AvatarFallback>
+            </Avatar>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const senderColor = getColorFromString(message.senderId);
+  const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
+  return (
+    <div className="flex items-start">
+      <div className="flex flex-col items-center min-w-[60px]">
+        <button onClick={() => onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+          <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
+            <AvatarImage src={message.senderAvatarUrl} />
+            <AvatarFallback className="text-xs">{message.isFromMe ? t("me") : displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
+          </Avatar>
+        </button>
+        <span className="text-xs text-muted-foreground mt-1">{timeString}</span>
+      </div>
+      <div className="flex flex-col items-start ml-5 flex-1 min-w-0 text-left">
+        <span className="font-semibold text-sm h-6 flex items-center mt-2.5" style={{ color: senderColor }}>{displayName}</span>
+        <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
+        {message.attachments && message.attachments.trim() !== "" && (
+          <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="irc" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ThreadView() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -115,6 +187,7 @@ export function ThreadView() {
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const messageLayout = useAppStore((state) => state.messageLayout);
+  const selectedThreadParentMessage = useAppStore((state) => state.selectedThreadParentMessage);
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
@@ -308,16 +381,19 @@ export function ThreadView() {
 
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
-    const filtered = threadMessages.filter((msg) => {
+    const filtered = threadMessages.map(normalizeSlackQuotedReply).filter((msg) => {
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
-      return hasBody || hasAttachments;
+      if (!hasBody && !hasAttachments) return false;
+      // Exclude the parent message itself — it is displayed separately above the replies
+      if (selectedThreadId && msg.protocolMsgId === selectedThreadId) return false;
+      return true;
     });
     return [...filtered].sort(
       (a, b) =>
         timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
     );
-  }, [threadMessages]);
+  }, [threadMessages, selectedThreadId]);
 
   const currentUserId = useMemo(() => {
     for (const msg of sortedThreadMessages) {
@@ -504,6 +580,22 @@ export function ThreadView() {
         </Button>
       </div>
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
+        {selectedThreadParentMessage && (
+          <div className="thread-view__parent mb-4 pb-4 border-b">
+            <ThreadParentMessage
+              message={selectedThreadParentMessage}
+              layout={messageLayout}
+              providerInstanceId={providerInstanceId}
+              onAvatarClick={handleAvatarClick}
+              t={t}
+            />
+            <div className="thread-view__reply-count flex items-center gap-2 mt-3 text-xs text-muted-foreground">
+              <div className="flex-1 h-px bg-border" />
+              <span>{sortedThreadMessages.length} {sortedThreadMessages.length === 1 ? t("reply") || "reply" : t("replies") || "replies"}</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+          </div>
+        )}
         {sortedThreadMessages.length === 0 ? (
           <div className="text-center text-muted-foreground py-8">
             No messages in this thread

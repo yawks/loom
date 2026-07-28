@@ -73,6 +73,9 @@ type Provider interface {
 	// Returns the created message or an error.
 	SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error)
 
+	// SendThreadReply sends a text message as a quoted reply to another message inside a thread.
+	SendThreadReply(conversationID string, text string, threadID string, quotedMessageID string) (*models.Message, error)
+
 	// SendFile sends a file to a given conversation without text.
 	// If threadID is not nil, the file will be sent as a reply in the specified thread.
 	// Returns the created message or an error.

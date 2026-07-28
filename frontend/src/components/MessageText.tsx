@@ -11,6 +11,39 @@ import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
 
+interface SlackInlineQuote {
+  sender: string;
+  quotedText: string;
+  body: string;
+}
+
+// Slack serializes Loom's quoted replies as a Markdown block quote. Parse it
+// before generic Markdown rendering so replies remain readable even when the
+// cached message has lost its quotedMessageId/quotedBody metadata.
+function parseSlackInlineQuote(text: string): SlackInlineQuote | null {
+  const lines = text
+    .replace(/&gt;|&#(?:0*62);/gi, ">")
+    .replace(/\r\n/g, "\n")
+    .replace(/^[\s\u200B]+/, "")
+    .split("\n");
+  const header = lines[0]?.match(/^>\s*\*([^*]+)\*\s*$/);
+  if (!header) return null;
+
+  const quotedLines: string[] = [];
+  let index = 1;
+  while (index < lines.length && /^>\s?/.test(lines[index])) {
+    quotedLines.push(lines[index].replace(/^>\s?/, ""));
+    index += 1;
+  }
+  if (quotedLines.length === 0) return null;
+
+  return {
+    sender: header[1].trim(),
+    quotedText: quotedLines.join("\n"),
+    body: lines.slice(index).join("\n").trimStart(),
+  };
+}
+
 function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean): Components {
   return {
     a: ({ href, children, ...props }) => {
@@ -50,6 +83,9 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
     p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
     br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
     div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
+    blockquote: ({ ...props }) => (
+      <blockquote className="my-1 border-l-2 border-current/40 pl-3 italic opacity-90" {...props} />
+    ),
     ul: ({ ...props }) => <ul className="list-disc pl-5 my-1 space-y-0.5" {...props} />,
     ol: ({ ...props }) => <ol className="list-decimal pl-5 my-1 space-y-0.5" {...props} />,
     li: ({ ...props }) => <li className="leading-snug" {...props} />,
@@ -78,12 +114,19 @@ export const MessageText = memo(function MessageText({
   isFromMe = false,
 }: MessageTextProps) {
   useRenderCount("MessageText", { textLength: text?.length, preview });
+  const slackInlineQuote = useMemo(() => parseSlackInlineQuote(text), [text]);
 
   const parsedContent = useMemo(() => {
     if (!text) return null;
 
     // Preprocessing
     let processedText = transformUrls(text);
+    // Last-resort compatibility for cached Slack replies that reach this
+    // component without reply metadata. Do this before emoji splitting and
+    // Markdown parsing so neither stage can expose the protocol's `>` syntax.
+    if (/^\s*>\s*\*[^*\n]+\*\s*$/m.test(processedText)) {
+      processedText = processedText.replace(/^\s*>\s?/gm, "");
+    }
     processedText = fixCodeBlocks(processedText);
 
     if (preview) {
@@ -98,10 +141,19 @@ export const MessageText = memo(function MessageText({
       return textWithoutSkinTones;
     }
 
+    // Markdown constructs such as Slack's quoted replies span multiple lines.
+    // Passing each line independently makes react-markdown treat `>` as plain
+    // text, so keep the complete document intact when no emoji replacement is
+    // needed.
+    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
+    if (!emojiPattern.test(textWithoutSkinTones)) {
+      return textWithoutSkinTones;
+    }
+    emojiPattern.lastIndex = 0;
+
     const parts: (string | ReactElement)[] = [];
     let lastIndex = 0;
 
-    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
     let match: RegExpExecArray | null;
     while (true) {
       match = emojiPattern.exec(textWithoutSkinTones);
@@ -170,6 +222,18 @@ export const MessageText = memo(function MessageText({
       {content}
     </ReactMarkdown>
   );
+
+  if (slackInlineQuote) {
+    return (
+      <div className={cn(className, "max-w-full overflow-hidden space-y-1")}>
+        <blockquote className="border-l-2 border-current/40 pl-3 text-sm opacity-90">
+          <div className="font-semibold">{slackInlineQuote.sender}</div>
+          {renderMarkdown(slackInlineQuote.quotedText)}
+        </blockquote>
+        {slackInlineQuote.body && renderMarkdown(slackInlineQuote.body)}
+      </div>
+    );
+  }
 
   if (typeof parsedContent === "string") {
     return <div className={cn(className, "max-w-full overflow-hidden")}>{renderMarkdown(parsedContent)}</div>;

@@ -2,7 +2,7 @@ import { GetMessagesForConversation, GetMessagesForConversationBefore, GetPartic
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getMessageDomId } from "@/lib/messageUtils";
+import { getMessageDomId, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -65,21 +65,14 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
 
   const dataKey = useMemo(() => {
     if (!data?.pages) return "";
-    return data.pages
-      .filter((page) => Array.isArray(page))
-      .flat()
-      .map((m: models.Message) => {
-        const rKey = m.reactions?.length
-          ? m.reactions.map((r) => `${r.userId}${r.emoji}`).join("")
-          : "";
-        return rKey ? `${m.protocolMsgId}|${rKey}` : m.protocolMsgId;
-      })
-      .join(",");
+    // Keep derived messages stable across identical refetches, while still
+    // rebuilding them for every server-side update (including edits to body).
+    return JSON.stringify(data.pages);
   }, [data]);
 
   const messages = useMemo(() => {
     if (!data?.pages || !Array.isArray(data.pages)) return [];
-    const flat = data.pages.filter((page) => Array.isArray(page)).flat();
+    const flat = data.pages.filter((page) => Array.isArray(page)).flat().map(normalizeSlackQuotedReply);
     const seen = new Set<string>();
     return flat.filter((msg) => {
       const id = msg.protocolMsgId;
