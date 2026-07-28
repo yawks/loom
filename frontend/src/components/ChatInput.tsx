@@ -2,7 +2,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage } from "../../wailsjs/go/main/App";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "emoji-picker-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -84,9 +84,48 @@ interface CustomEmoji {
   imgUrl: string;
 }
 
+const DRAFT_STORAGE_PREFIX = "loom_chat_draft";
+
+const getDraftStorageKey = (conversationId?: string, providerInstanceId?: string, threadId?: string): string | null => {
+  if (!conversationId) {
+    return null;
+  }
+
+  return [DRAFT_STORAGE_PREFIX, providerInstanceId || "default", conversationId, threadId || "main"]
+    .map(encodeURIComponent)
+    .join(":");
+};
+
+const readDraft = (key: string | null): string => {
+  if (!key || typeof window === "undefined") {
+    return "";
+  }
+
+  try {
+    return window.localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+};
+
+const saveDraft = (key: string | null, value: string): void => {
+  if (!key || typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (value === "") {
+      window.localStorage.removeItem(key);
+    } else {
+      window.localStorage.setItem(key, value);
+    }
+  } catch {
+    // A draft is non-critical; ignore unavailable or full localStorage.
+  }
+};
+
 export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl }: ChatInputProps) {
   const { t } = useTranslation();
-  const [message, setMessage] = useState("");
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -98,6 +137,13 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const showThreads = useAppStore((state) => state.showThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const isThreadOpen = !threadId && showThreads && selectedThreadId !== null;
+  const activeAccount = selectedContact?.linkedAccounts[0];
+  const conversationId = activeAccount?.conversationId || activeAccount?.userId;
+  const draftStorageKey = useMemo(
+    () => getDraftStorageKey(conversationId, activeAccount?.providerInstanceId, threadId),
+    [conversationId, activeAccount?.providerInstanceId, threadId]
+  );
+  const [message, setMessage] = useState(() => readDraft(draftStorageKey));
   const queryClient = useQueryClient();
   
   // Focus textarea when a conversation is selected
@@ -308,9 +354,18 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     }
   }, []);
 
+  // Restore the draft associated with the currently displayed conversation/thread.
+  useEffect(() => {
+    const draft = readDraft(draftStorageKey);
+    setMessage(draft);
+    setIsTypingInInput(draft.trim().length > 0);
+    requestAnimationFrame(adjustTextareaHeight);
+  }, [adjustTextareaHeight, draftStorageKey, setIsTypingInInput]);
+
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
     setMessage(newValue);
+    saveDraft(draftStorageKey, newValue);
     adjustTextareaHeight();
     
     // Hide unread divider when user starts typing
@@ -326,6 +381,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const text = message.trim();
       const quotedMessageId = replyingToMessage?.protocolMsgId;
       setMessage("");
+      saveDraft(draftStorageKey, "");
       setIsTypingInInput(false); // Reset typing state after sending
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -444,7 +500,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   const handleEmojiClick = (emojiData: any) => {
     const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;
-    setMessage((prev) => prev + emojiText);
+    setMessage((prev) => {
+      const newMessage = prev + emojiText;
+      saveDraft(draftStorageKey, newMessage);
+      return newMessage;
+    });
+    setIsTypingInInput(true);
     setIsEmojiPickerOpen(false);
     // Adjust height after emoji is added
     setTimeout(adjustTextareaHeight, 0);

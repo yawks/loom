@@ -848,6 +848,7 @@ export function ThreadView() {
       </div>
       <div className="border-t shrink-0">
         <ChatInput
+          key={`thread-${conversationId}-${selectedThreadId}`}
           onFileUploadRequest={() => { }}
           replyingToMessage={replyingToMessage}
           onCancelReply={() => setReplyingToMessage(null)}

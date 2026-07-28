@@ -198,7 +198,6 @@ export function MessageList({
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
-  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const isTypingInInput = useAppStore((state) => state.isTypingInInput);
@@ -670,6 +669,7 @@ export function MessageList({
           )}
           <TypingIndicator conversationId={conversationId} />
           <ChatInput
+            key={`main-${conversationId}`}
             onFileUploadRequest={(files, filePaths) => {
               setPendingFiles(files);
               setPendingFilePaths(filePaths || []);
