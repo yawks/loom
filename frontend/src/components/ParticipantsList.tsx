@@ -1,13 +1,11 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Calendar, X } from "lucide-react";
+import { X } from "lucide-react";
 import { GetGroupParticipants, GetParticipantNames, SetContactAlias } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { Emoji } from "./Emoji";
 import { Input } from "@/components/ui/input";
-import { getStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
@@ -274,7 +272,7 @@ export function ParticipantsList({
           }
         }
 
-        // Find the participant's own linked account for provider status/emoji/avatar.
+        // Find the participant's own linked account for provider status/avatar.
         // First try direct match in selectedConversation (works for DMs).
         // Fall back to metaContacts store (works for channel participants).
         const participantLinkedAccount = (() => {
@@ -292,11 +290,6 @@ export function ParticipantsList({
         const linkedAccountStatus = (participantLinkedAccount?.status && participantLinkedAccount.status !== "offline")
           ? participantLinkedAccount.status
           : null;
-        const statusEmoji = participantLinkedAccount ? getStatusEmoji(participantLinkedAccount) : null;
-        // Use participant's providerInstanceId, or fall back to the conversation's (for channel participants)
-        const providerInstanceId = participantLinkedAccount?.providerInstanceId
-          || selectedConversation.linkedAccounts?.[0]?.providerInstanceId
-          || undefined;
         const avatarUrl = participantLinkedAccount?.avatarUrl || participant.senderAvatarUrl;
 
         // Mirror ContactList logic: non-offline provider status takes priority, then presenceMap
@@ -312,8 +305,6 @@ export function ParticipantsList({
             displayName={displayName}
             status={effectiveStatus}
             alias={aliases[participant.senderId]}
-            statusEmoji={statusEmoji}
-            providerInstanceId={providerInstanceId}
             onAvatarClick={onAvatarClick}
             onAliasChange={async (newAlias: string) => {
               await SetContactAlias(participant.senderId, newAlias);
@@ -339,8 +330,6 @@ interface ParticipantItemProps {
   displayName: string;
   status: string;
   alias?: string;
-  statusEmoji?: string | null;
-  providerInstanceId?: string;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string) => void;
   onAliasChange: (newAlias: string) => Promise<void>;
 }
@@ -350,8 +339,6 @@ function ParticipantItem({
   displayName,
   status,
   alias,
-  statusEmoji,
-  providerInstanceId,
   onAvatarClick,
   onAliasChange,
 }: ParticipantItemProps) {
@@ -375,40 +362,6 @@ function ParticipantItem({
     } else if (e.key === "Escape") {
       handleCancel();
     }
-  };
-
-  // Render the status badge on the avatar
-  const renderStatusBadge = () => {
-    if (!status || status === "offline") return null;
-    if (status === "meeting") {
-      return (
-        <div
-          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
-          title={t("meeting") || "In a meeting"}
-        >
-          <Calendar className="h-2 w-2 text-white" />
-        </div>
-      );
-    }
-    const colorMap: Record<string, string> = {
-      online: "bg-green-500",
-      away: "bg-yellow-500",
-      busy: "bg-red-500",
-      holiday: "bg-purple-500",
-    };
-    const bgColor = colorMap[status] ?? "bg-gray-500";
-    const titleMap: Record<string, string> = {
-      online: t("active"),
-      away: t("away") || "Away",
-      busy: t("busy") || "Busy",
-      holiday: t("holiday") || "Holiday",
-    };
-    return (
-      <div
-        className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full ${bgColor} border-2 border-background`}
-        title={titleMap[status] ?? status}
-      />
-    );
   };
 
   // Render the status text row
@@ -484,7 +437,7 @@ function ParticipantItem({
         }
       }}
     >
-      <div className="relative shrink-0">
+      <div className="shrink-0">
         <button
           onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName)}
           className="shrink-0"
@@ -496,20 +449,6 @@ function ParticipantItem({
             </AvatarFallback>
           </Avatar>
         </button>
-        {/* Status emoji overlay */}
-        {statusEmoji && (
-          <div
-            className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center"
-            title={statusEmoji}
-          >
-            <Emoji
-              emoji={statusEmoji}
-              providerInstanceId={providerInstanceId}
-              size={12}
-            />
-          </div>
-        )}
-        {renderStatusBadge()}
       </div>
       <div className="flex-1 min-w-0">
         {isEditing ? (
@@ -557,4 +496,3 @@ function ParticipantItem({
     </div>
   );
 }
-
