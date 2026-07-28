@@ -1,17 +1,17 @@
 import { GetContactAliases, GetMessagesForConversation } from "../../wailsjs/go/main/App";
-import { cn } from "@/lib/utils";
 import { Suspense, useMemo, useState } from "react";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
+import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
+import { ParticipantsList } from "./ParticipantsList";
 import { X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import { useTranslation } from "react-i18next";
-import { ParticipantsList } from "./ParticipantsList";
-import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
 
 const fetchMessages = async (conversationID: string): Promise<models.Message[]> => {
   const result = await GetMessagesForConversation(conversationID);
@@ -54,13 +54,13 @@ export function ConversationDetailsView({
     handleDrop,
     handleFileUpload,
   } = useFileUpload(conversationId);
-  
+
   // Use a different query key to avoid conflicts with MessageList's useInfiniteQuery
   const { data: messagesData } = useSuspenseQuery<models.Message[], Error>({
     queryKey: ["messages-details", conversationId],
     queryFn: () => fetchMessages(conversationId),
   });
-  
+
   // Ensure messages is always an array
   const messages = useMemo(() => {
     if (!messagesData || !Array.isArray(messagesData)) {
@@ -88,7 +88,7 @@ export function ConversationDetailsView({
   };
 
   return (
-    <div 
+    <div
       className={cn(
         "flex flex-col h-full transition-colors",
         isDragging && "bg-muted/50"
@@ -127,7 +127,7 @@ export function ConversationDetailsView({
           {conversationId && (
             <div className="conversation-details__debug-id pt-2 border-t">
               <button
-                className="w-full text-left"
+                className="w-full"
                 title="Click to copy"
                 onClick={() => {
                   navigator.clipboard.writeText(conversationId);
@@ -135,7 +135,7 @@ export function ConversationDetailsView({
                   setTimeout(() => setIdCopied(false), 1500);
                 }}
               >
-                <p className="text-[10px] text-muted-foreground/50 font-mono break-all leading-relaxed hover:text-muted-foreground transition-colors">
+                <p className="text-[10px] text-muted-foreground/50 font-mono break-all leading-relaxed hover:text-muted-foreground transition-colors text-center">
                   {idCopied ? "✓ copied" : conversationId}
                 </p>
               </button>
