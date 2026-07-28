@@ -1,13 +1,14 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useMemo, useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
-import { AddReaction, DeleteMessage, GetThreadMessages, RemoveReaction } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageReactions } from "./MessageReactions";
 import { MessageText } from "./MessageText";
+import { MessageThreadPreview } from "./MessageThreadPreview";
 import { Input } from "@/components/ui/input";
 import { ToastContainer, useToast } from "@/components/ui/toast";
 import {
@@ -20,8 +21,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { X } from "lucide-react";
+import { ArrowLeft, Loader2, X } from "lucide-react";
+import type { InfiniteData } from "@tanstack/react-query";
 import type { models } from "../../wailsjs/go/models";
+// InfiniteData is used to type the cache seed read via queryClient.getQueryData
 import { getColorFromString, getMessageDomId, getSenderDisplayName } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
 import { unicodeEmojiMap, unicodeToEmojiName } from "@/lib/emojiMap";
@@ -34,6 +37,74 @@ import { useTranslation } from "react-i18next";
 const fetchThreads = async (conversationID: string, threadID: string) => {
   return GetThreadMessages(conversationID, threadID);
 };
+
+const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
+  try {
+    const result = beforeTimestamp
+      ? await GetMessagesForConversationBefore(conversationID, beforeTimestamp)
+      : await GetMessagesForConversation(conversationID);
+    return Array.isArray(result) ? result : [];
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return [];
+  }
+};
+
+interface ThreadListItemProps {
+  parentMessage: models.Message;
+  replies: models.Message[];
+  providerInstanceId: string | undefined;
+  onClick: () => void;
+  onAvatarClick: (url: string | undefined, name?: string) => void;
+}
+
+function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerInstanceId, onClick, onAvatarClick }: ThreadListItemProps) {
+  const { t } = useTranslation();
+  const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
+  const timestamp = timeToDate(parentMessage.timestamp);
+  const today = new Date();
+  const isToday = timestamp.toDateString() === today.toDateString();
+  const timeStr = isToday
+    ? timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : timestamp.toLocaleDateString([], { month: "short", day: "numeric" });
+
+  return (
+    <button
+      onClick={onClick}
+      className="thread-list-item w-full p-4 text-left hover:bg-muted/50 transition-colors flex flex-col gap-2 border-b last:border-b-0"
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <button
+          type="button"
+          className="shrink-0 bg-transparent border-0 p-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAvatarClick(parentMessage.senderAvatarUrl, displayName);
+          }}
+        >
+          <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
+            <AvatarImage src={parentMessage.senderAvatarUrl} />
+            <AvatarFallback className="text-xs">{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
+          </Avatar>
+        </button>
+        <span className="text-sm font-medium truncate">{displayName}</span>
+        <span className="text-xs text-muted-foreground ml-auto shrink-0">{timeStr}</span>
+      </div>
+      {parentMessage.body && parentMessage.body.trim() !== "" && (
+        <p className="text-sm text-muted-foreground line-clamp-2 pl-8">
+          {parentMessage.body}
+        </p>
+      )}
+      <div className="pl-8">
+        <MessageThreadPreview
+          threadMessages={replies}
+          onThreadClick={() => {}}
+          onAvatarClick={onAvatarClick}
+        />
+      </div>
+    </button>
+  );
+}
 
 export function ThreadView() {
   const { t } = useTranslation();
@@ -53,15 +124,143 @@ export function ThreadView() {
   const protocol = activeAccount?.protocol;
   const providerInstanceId = activeAccount?.providerInstanceId;
 
-  // Get conversation ID from selected contact
   const conversationId =
     activeAccount?.conversationId ??
     activeAccount?.userId ??
     "";
 
+  // Thread list navigation state
+  const [threadOpenedFromList, setThreadOpenedFromList] = useState(false);
+  const savedScrollTopRef = useRef(0);
+  const shouldRestoreScrollRef = useRef(false);
+  const threadListScrollRef = useRef<HTMLDivElement>(null);
+
+  // Reset navigation state when conversation changes
+  useEffect(() => {
+    setThreadOpenedFromList(false);
+    savedScrollTopRef.current = 0;
+    shouldRestoreScrollRef.current = false;
+  }, [conversationId]);
+
+  // Restore thread list scroll position after going back
+  useEffect(() => {
+    if (selectedThreadId === null && shouldRestoreScrollRef.current) {
+      shouldRestoreScrollRef.current = false;
+      const savedTop = savedScrollTopRef.current;
+      requestAnimationFrame(() => {
+        if (threadListScrollRef.current) {
+          threadListScrollRef.current.scrollTop = savedTop;
+        }
+      });
+    }
+  }, [selectedThreadId]);
+
+  // Independent message accumulation for the thread list — never touches the shared
+  // ["messages", conversationId] cache so MessageList is never disturbed.
+  const [threadListMessages, setThreadListMessages] = useState<models.Message[]>([]);
+  const [threadListHasMore, setThreadListHasMore] = useState(false);
+  const [threadListIsFetching, setThreadListIsFetching] = useState(false);
+
+  // Seed from the shared cache whenever the conversation changes, then diverge.
+  useEffect(() => {
+    const cached = queryClient.getQueryData<InfiniteData<models.Message[]>>(["messages", conversationId]);
+    const flat = cached ? cached.pages.flat() : [];
+    setThreadListMessages(flat);
+    const lastPage = cached?.pages[cached.pages.length - 1];
+    setThreadListHasMore(!!lastPage && lastPage.length >= 50);
+  }, [conversationId, queryClient]);
+
+  const fetchMoreThreadListMessages = useCallback(async () => {
+    if (threadListIsFetching || !threadListHasMore || !conversationId) return;
+    setThreadListIsFetching(true);
+    try {
+      const oldest = threadListMessages.length
+        ? threadListMessages.reduce((a, b) =>
+            timeToDate(a.timestamp) < timeToDate(b.timestamp) ? a : b
+          )
+        : null;
+      const newMsgs = await fetchMessages(
+        conversationId,
+        oldest ? timeToDate(oldest.timestamp) : undefined
+      );
+      const seenIds = new Set(threadListMessages.map((m) => m.protocolMsgId).filter(Boolean));
+      const deduped = newMsgs.filter((m) => !seenIds.has(m.protocolMsgId));
+      setThreadListMessages((prev) => [...deduped, ...prev]);
+      setThreadListHasMore(newMsgs.length >= 50);
+    } catch (e) {
+      console.error("Failed to load more messages for thread list", e);
+    } finally {
+      setThreadListIsFetching(false);
+    }
+  }, [conversationId, threadListMessages, threadListIsFetching, threadListHasMore]);
+
+  const threadsParentList = useMemo(() => {
+    const threadReplies: Record<string, models.Message[]> = {};
+    threadListMessages.forEach((msg) => {
+      const isReply = msg.threadId && msg.threadId !== msg.protocolMsgId;
+      if (isReply && msg.threadId) {
+        if (!threadReplies[msg.threadId]) threadReplies[msg.threadId] = [];
+        threadReplies[msg.threadId].push(msg);
+      }
+    });
+    return threadListMessages
+      .filter(
+        (msg) =>
+          (!msg.threadId || msg.threadId === msg.protocolMsgId) &&
+          msg.protocolMsgId &&
+          (threadReplies[msg.protocolMsgId]?.length ?? 0) > 0
+      )
+      .map((msg) => ({
+        parentMessage: msg,
+        replies: (threadReplies[msg.protocolMsgId!] ?? []).sort(
+          (a, b) => timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
+        ),
+      }))
+      .sort((a, b) => {
+        const aLatest = Math.max(...a.replies.map((r) => timeToDate(r.timestamp).getTime()));
+        const bLatest = Math.max(...b.replies.map((r) => timeToDate(r.timestamp).getTime()));
+        return bLatest - aLatest;
+      });
+  }, [threadListMessages]);
+
+  // Scroll-position preservation when older messages are prepended to the list
+  const prevScrollMetricsRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+
+  // After prepend: compensate the layout shift so the viewport doesn't jump
+  useEffect(() => {
+    if (!prevScrollMetricsRef.current || !threadListScrollRef.current) return;
+    const el = threadListScrollRef.current;
+    const delta = el.scrollHeight - prevScrollMetricsRef.current.scrollHeight;
+    if (delta > 0) el.scrollTop = prevScrollMetricsRef.current.scrollTop + delta;
+    prevScrollMetricsRef.current = null;
+  }, [threadsParentList]);
+
+  // Auto-fill: keep fetching until the list overflows (user can then scroll to get more)
+  useEffect(() => {
+    if (selectedThreadId !== null) return;
+    if (!threadListHasMore || threadListIsFetching) return;
+    requestAnimationFrame(() => {
+      const container = threadListScrollRef.current;
+      if (!container) return;
+      if (container.scrollHeight <= container.clientHeight) {
+        prevScrollMetricsRef.current = { scrollTop: container.scrollTop, scrollHeight: container.scrollHeight };
+        fetchMoreThreadListMessages();
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedThreadId, threadsParentList.length, threadListHasMore, threadListIsFetching]);
+
+  const handleThreadListScroll = useCallback(() => {
+    const el = threadListScrollRef.current;
+    if (!el || !threadListHasMore || threadListIsFetching) return;
+    if (el.scrollTop <= 80) {
+      prevScrollMetricsRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+      fetchMoreThreadListMessages();
+    }
+  }, [threadListHasMore, threadListIsFetching, fetchMoreThreadListMessages]);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // State for reply input & hover actions
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -70,18 +269,30 @@ export function ThreadView() {
   const handleClose = () => {
     setSelectedThreadId(null);
     setShowThreads(false);
+    setThreadOpenedFromList(false);
+    setReplyingToMessage(null);
+  };
+
+  const handleOpenThread = (messageId: string) => {
+    savedScrollTopRef.current = threadListScrollRef.current?.scrollTop ?? 0;
+    setThreadOpenedFromList(true);
+    setSelectedThreadId(messageId);
+  };
+
+  const handleBackToList = () => {
+    shouldRestoreScrollRef.current = true;
+    setSelectedThreadId(null);
+    setThreadOpenedFromList(false);
     setReplyingToMessage(null);
   };
 
   const handleAvatarClick = (avatarUrl: string | undefined, displayName?: string) => {
-    // Use avatar URL if available, otherwise use a placeholder based on display name
     const urlToShow = avatarUrl || (displayName ? `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}` : null);
     if (urlToShow) {
       setSelectedAvatarUrl(urlToShow);
     }
   };
 
-  // Use useQuery instead of useSuspenseQuery to handle conditional rendering
   const { data: threadMessages, isLoading } = useQuery<models.Message[], Error>({
     queryKey: ["threads", conversationId, selectedThreadId || ""],
     queryFn: () => {
@@ -95,10 +306,8 @@ export function ThreadView() {
 
   const markMultipleAsRead = useMessageReadStore((state) => state.markMultipleAsRead);
 
-  // Sort thread messages by timestamp and filter out empty messages
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
-    // Filter out empty messages (no body and no attachments)
     const filtered = threadMessages.filter((msg) => {
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
@@ -190,7 +399,6 @@ export function ThreadView() {
     [conversationId, selectedThreadId, protocol, currentUserId, queryClient]
   );
 
-  // Scroll to bottom when new messages arrive (e.g. after sending)
   useEffect(() => {
     if (!scrollContainerRef.current || sortedThreadMessages.length === 0) return;
     const el = scrollContainerRef.current;
@@ -201,7 +409,6 @@ export function ThreadView() {
     }
   }, [sortedThreadMessages]);
 
-  // Mark all unread thread messages as read as soon as the panel is visible with content.
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
     const unreadIds = sortedThreadMessages
@@ -210,12 +417,68 @@ export function ThreadView() {
     if (unreadIds.length > 0) markMultipleAsRead(conversationId, unreadIds);
   }, [selectedThreadId, conversationId, sortedThreadMessages, markMultipleAsRead]);
 
-  if (!selectedThreadId) return null;
+  // Thread list view (no thread selected yet)
+  if (!selectedThreadId) {
+    return (
+      <div className="thread-view flex flex-col h-full overflow-hidden">
+        <div className="thread-view__header px-4 py-3 border-b flex items-center justify-between shrink-0">
+          <h3 className="thread-view__title font-semibold text-base">{t("threads")}</h3>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div
+          ref={threadListScrollRef}
+          onScroll={handleThreadListScroll}
+          className="thread-view__list flex-1 overflow-y-auto min-h-0 scroll-area"
+        >
+          {threadListIsFetching && (
+            <div className="flex justify-center py-3">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {threadsParentList.length === 0 && !threadListIsFetching ? (
+            <div className="text-center text-muted-foreground py-8 px-4">
+              {t("no_threads_in_conversation")}
+            </div>
+          ) : (
+            <div className="thread-view__list-items">
+              {threadsParentList.map(({ parentMessage, replies }) => (
+                <ThreadListItem
+                  key={parentMessage.protocolMsgId}
+                  parentMessage={parentMessage}
+                  replies={replies}
+                  providerInstanceId={providerInstanceId}
+                  onClick={() => handleOpenThread(parentMessage.protocolMsgId!)}
+                  onAvatarClick={handleAvatarClick}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        {t("loading") || "Loading…"}
+      <div className="thread-view flex flex-col h-full overflow-hidden">
+        <div className="thread-view__header px-4 py-3 border-b flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            {threadOpenedFromList && (
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleBackToList} title={t("back_to_threads")}>
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            )}
+            <h3 className="thread-view__title font-semibold text-base">Thread</h3>
+          </div>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex-1 flex items-center justify-center text-muted-foreground">
+          {t("loading") || "Loading…"}
+        </div>
       </div>
     );
   }
@@ -223,7 +486,14 @@ export function ThreadView() {
   return (
     <div className="thread-view flex flex-col h-full overflow-hidden">
       <div className="thread-view__header px-4 py-3 border-b flex items-center justify-between shrink-0">
-        <h3 className="thread-view__title font-semibold text-base">Thread</h3>
+        <div className="flex items-center gap-2 min-w-0">
+          {threadOpenedFromList && (
+            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={handleBackToList} title={t("back_to_threads")}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          )}
+          <h3 className="thread-view__title font-semibold text-base">Thread</h3>
+        </div>
         <Button
           variant="ghost"
           size="icon"
@@ -449,7 +719,6 @@ export function ThreadView() {
                     </div>
                   )}
                   <div className="flex items-start py-1">
-                    {/* Left column */}
                     <div className="flex flex-col items-center min-w-[60px]">
                       {showSender ? (
                         <>
@@ -470,7 +739,6 @@ export function ThreadView() {
                         <span className="text-xs text-muted-foreground leading-none" style={{ marginTop: '10px' }}>{timeString}</span>
                       )}
                     </div>
-                    {/* Right column */}
                     <div className="flex flex-col items-start ml-5 flex-1 min-w-0 text-left">
                       {editingMessageId === messageId ? (
                         <div className="flex flex-col gap-2 w-full mt-2">
@@ -578,7 +846,6 @@ export function ThreadView() {
           </div>
         )}
       </div>
-      {/* Reply input for thread */}
       <div className="border-t shrink-0">
         <ChatInput
           onFileUploadRequest={() => { }}

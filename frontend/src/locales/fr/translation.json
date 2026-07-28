@@ -6,6 +6,8 @@
   "recent": "Récent",
   "unread": "Non lus",
   "threads": "Fils de discussion",
+  "no_threads_in_conversation": "Aucun fil de discussion dans cette conversation",
+  "back_to_threads": "Retour aux fils",
   "type_a_message": "Écrivez un message...",
   "send": "Envoyer",
   "participants": "Participants",

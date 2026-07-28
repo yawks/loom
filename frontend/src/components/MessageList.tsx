@@ -200,6 +200,7 @@ export function MessageList({
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
+  const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const isTypingInInput = useAppStore((state) => state.isTypingInInput);
   const messageLayout = useAppStore((state) => state.messageLayout);
   const showConversationDetails = useAppStore((state) => state.showConversationDetails);
@@ -351,8 +352,12 @@ export function MessageList({
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const handleToggleThreads = () => {
-    if (showThreads) setSelectedThreadId(null);
-    setShowThreads(!showThreads);
+    if (showThreads) {
+      setSelectedThreadId(null);
+      setShowThreads(false);
+    } else {
+      setShowThreads(true);
+    }
   };
 
   const handleToggleDetails = () => setShowConversationDetails(!showConversationDetails);
@@ -482,7 +487,7 @@ export function MessageList({
     onDeleteLocalMessage: handleDeleteLocalMessage,
     onSaveEdit: handleSaveEdit,
     onCancelEdit: handleCancelEdit,
-    onThreadClick: (parentMsgId: string) => { setSelectedThreadId(parentMsgId); setShowThreads(true); },
+    onThreadClick: (parentMsgId: string, message: models.Message) => { setSelectedThreadId(parentMsgId); setShowThreads(true); setSelectedThreadParentMessage(message); },
     onAvatarClick: handleAvatarClick,
     onNavigateToEdit: handleNavigateToEdit,
     setOpenActionsMessageId,
@@ -549,7 +554,7 @@ export function MessageList({
             </div>
           </div>
         ) : (
-          <div className={cn("message-list__scroll-wrapper relative flex-1 min-h-0 transition-opacity duration-200", showThreads && selectedThreadId !== null && "opacity-20")}>
+          <div className={cn("message-list__scroll-wrapper relative flex-1 min-h-0 transition-opacity duration-200", showThreads && "opacity-20")}>
           <VirtuosoFetchingContext.Provider value={isFetchingNextPage}>
           <Virtuoso
             key={conversationId}

@@ -36,7 +36,6 @@ export function ChatLayout() {
   const selectedContact = useAppStore((state) => state.selectedContact);
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
-  const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const showConversationDetails = useAppStore(
     (state) => state.showConversationDetails
@@ -131,7 +130,7 @@ export function ChatLayout() {
     setShowProvidersModal(true);
   };
 
-  const shouldShowThreadsOverlay = showThreads && selectedThreadId !== null;
+  const shouldShowThreadsOverlay = showThreads;
   const shouldShowDetailsPanel =
     showConversationDetails && selectedContact !== null;
 
