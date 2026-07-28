@@ -411,6 +411,8 @@ func (w *WhatsAppProvider) handleEditedProtocolMessage(evt *events.Message, prot
 	newText := ""
 	if editedMsg.Conversation != nil {
 		newText = *editedMsg.Conversation
+	} else if editedMsg.ExtendedTextMessage != nil && editedMsg.ExtendedTextMessage.Text != nil {
+		newText = *editedMsg.ExtendedTextMessage.Text
 	}
 
 	// Update the message in cache and database
@@ -751,6 +753,21 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	// Check if message is from me
 	isFromMe := evt.Info.IsFromMe
+
+	// In a one-to-one incoming message, the sender is the authoritative remote
+	// identity. Usually it is identical to Chat, but this is not always true for
+	// bridged/Matrix messages and while WhatsApp is resolving LID mappings.  Do
+	// not let a stale Chat/LID mapping put a message from a new person in an
+	// existing conversation (and subsequently rename that existing contact).
+	if !isFromMe && chatJID.Server == types.DefaultUserServer {
+		if senderJID, err := types.ParseJID(senderID); err == nil &&
+			senderJID.Server == types.DefaultUserServer && senderID != convID {
+			fmt.Printf("WhatsApp: Direct message identity mismatch: chat=%s, sender=%s; using sender as conversation ID\n", convID, senderID)
+			chatJID = senderJID
+			convID = senderID
+		}
+	}
+
 	var senderName string
 
 	// Always try to get the actual name, even for messages from me
@@ -1902,6 +1919,22 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	return sentMessage, nil
 }
 
+func (w *WhatsAppProvider) SendThreadReply(conversationID string, text string, threadID string, quotedMessageID string) (*models.Message, error) {
+	sentMessage, err := w.SendReply(conversationID, text, quotedMessageID)
+	if err != nil {
+		return nil, err
+	}
+	if sentMessage != nil {
+		sentMessage.ThreadID = &threadID
+		if db.DB != nil && sentMessage.ProtocolMsgID != "" {
+			db.DB.Model(&models.Message{}).
+				Where("protocol_msg_id = ?", sentMessage.ProtocolMsgID).
+				Update("thread_id", threadID)
+		}
+	}
+	return sentMessage, nil
+}
+
 func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
 	fmt.Printf("WhatsApp: EditMessage called: conversationID=%s, messageID=%s\n", conversationID, messageID)
 	if w.client == nil {
@@ -1945,6 +1978,27 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 		return nil, fmt.Errorf("message not found: %s", messageID)
 	}
 
+	// Preserve the original quote context. WhatsApp replaces the message content
+	// with EditedMessage, so a plain Conversation payload would remove the reply.
+	editedContent := &waE2E.Message{Conversation: &newText}
+	if originalMsg.QuotedMessageID != nil && *originalMsg.QuotedMessageID != "" {
+		quotedBody := ""
+		if originalMsg.QuotedBody != nil {
+			quotedBody = *originalMsg.QuotedBody
+		}
+		contextInfo := &waE2E.ContextInfo{
+			StanzaID:      originalMsg.QuotedMessageID,
+			Participant:   originalMsg.QuotedSenderID,
+			QuotedMessage: &waE2E.Message{Conversation: &quotedBody},
+		}
+		editedContent = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        &newText,
+				ContextInfo: contextInfo,
+			},
+		}
+	}
+
 	// Create a ProtocolMessage of type MESSAGE_EDIT
 	protocolMsg := &waProto.ProtocolMessage{
 		Type: waProto.ProtocolMessage_MESSAGE_EDIT.Enum(),
@@ -1952,9 +2006,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 			RemoteJID: proto.String(conversationID),
 			ID:        proto.String(messageID),
 		},
-		EditedMessage: &waE2E.Message{
-			Conversation: &newText,
-		},
+		EditedMessage: editedContent,
 	}
 
 	// Create the message with the protocol message

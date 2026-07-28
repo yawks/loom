@@ -245,19 +245,34 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		rtmThreadID = &ts
 	}
 
+	messageBody := p.preprocessMessageBody(ev.Text)
+	var quotedMessageID *string
+	var quotedSenderName string
+	var quotedBody *string
+	if cleanText, senderName, body, isQuote := p.parseSlackBlockQuote(messageBody); isQuote {
+		messageBody = cleanText
+		id := ev.Timestamp + "-quote"
+		quotedMessageID = &id
+		quotedSenderName = senderName
+		quotedBody = &body
+	}
+
 	// Basic message construction
 	msg := models.Message{
-		ProtocolConvID:  normalizedConvID,
-		ProtocolMsgID:   ev.Timestamp, // Slack uses timestamp as ID
-		SenderID:        ev.User,
-		SenderName:      senderName,
-		SenderAvatarURL: senderAvatarURL,
-		Body:            p.preprocessMessageBody(ev.Text),
-		Timestamp:       timestamp,
-		IsFromMe:        isFromMe,
-		Attachments:     attachmentsJSON,
-		CallType:        callType,
-		ThreadID:        rtmThreadID,
+		ProtocolConvID:   normalizedConvID,
+		ProtocolMsgID:    ev.Timestamp, // Slack uses timestamp as ID
+		SenderID:         ev.User,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
+		Body:             messageBody,
+		Timestamp:        timestamp,
+		IsFromMe:         isFromMe,
+		Attachments:      attachmentsJSON,
+		CallType:         callType,
+		ThreadID:         rtmThreadID,
+		QuotedMessageID:  quotedMessageID,
+		QuotedSenderName: quotedSenderName,
+		QuotedBody:       quotedBody,
 	}
 
 	// Create the event

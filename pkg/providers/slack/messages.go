@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -90,6 +91,16 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 		Timestamp:       ts,
 		IsFromMe:        true,
 	}
+	// A quoted reply is encoded by Slack as Markdown text. Normalize it before
+	// persisting or emitting the local send event; SendThreadReply will replace
+	// this provisional quote ID with the real target ID immediately afterwards.
+	if cleanText, quotedSenderName, quotedBody, isQuote := p.parseSlackBlockQuote(text); isQuote {
+		quotedMessageID := timestamp + "-quote"
+		sentMessage.Body = cleanText
+		sentMessage.QuotedMessageID = &quotedMessageID
+		sentMessage.QuotedSenderName = quotedSenderName
+		sentMessage.QuotedBody = &quotedBody
+	}
 	if threadID != nil {
 		sentMessage.ThreadID = threadID
 	}
@@ -142,6 +153,9 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 
 // parseSlackBlockQuote extracts quoted message details from Slack block quote syntax (> *Name*\n> text...)
 func (p *SlackProvider) parseSlackBlockQuote(rawText string) (cleanText string, quotedSenderName string, quotedBody string, isQuote bool) {
+	// RTM encodes leading quote markers as &gt;. Decode before parsing so the
+	// transport representation and the REST representation behave identically.
+	rawText = html.UnescapeString(rawText)
 	lines := strings.Split(rawText, "\n")
 	if len(lines) == 0 || !strings.HasPrefix(lines[0], "> *") {
 		return rawText, "", "", false
@@ -245,6 +259,72 @@ func (p *SlackProvider) SendReply(conversationID string, text string, quotedMess
 					Where("protocol_msg_id = ?", sentMessage.ProtocolMsgID).
 					Updates(map[string]interface{}{
 						"body":               text,
+						"quoted_message_id":  quotedMessageID,
+						"quoted_sender_id":   quotedMsg.SenderID,
+						"quoted_body":        quotedBody,
+						"quoted_sender_name": quotedSenderName,
+					})
+			}
+		}
+	}
+	return sentMessage, nil
+}
+
+// SendThreadReply sends a quoted reply to a specific message inside a Slack thread.
+func (p *SlackProvider) SendThreadReply(conversationID string, text string, threadID string, quotedMessageID string) (*models.Message, error) {
+	var prefix string
+	var quotedMsg *models.Message
+	var quotedSenderName string
+	var quotedBody string
+
+	if db.DB != nil {
+		var quoted models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", quotedMessageID).First(&quoted).Error; err == nil {
+			quotedMsg = &quoted
+			quotedSenderName = quoted.SenderName
+			if quotedSenderName == "" || quotedSenderName == quoted.SenderID {
+				if cachedName, _ := p.getUserNameFromCache(quoted.SenderID); cachedName != "" {
+					quotedSenderName = cachedName
+				} else if p.client != nil {
+					if user, err := p.client.GetUserInfo(quoted.SenderID); err == nil && user != nil {
+						quotedSenderName = getUserDisplayName(user)
+					} else {
+						quotedSenderName = quoted.SenderID
+					}
+				} else {
+					quotedSenderName = quoted.SenderID
+				}
+			}
+			quotedBody = quoted.Body
+			if quotedBody == "" && quoted.Attachments != "" {
+				quotedBody = "📎 Attachment"
+			}
+			lines := strings.Split(quotedBody, "\n")
+			for i, l := range lines {
+				lines[i] = "> " + l
+			}
+			prefix = fmt.Sprintf("> *%s*\n%s\n", quotedSenderName, strings.Join(lines, "\n"))
+		}
+	}
+	sentMessage, err := p.SendMessage(conversationID, prefix+text, nil, &threadID)
+	if err != nil {
+		return nil, err
+	}
+	if sentMessage != nil {
+		sentMessage.Body = text
+		sentMessage.ThreadID = &threadID
+		if quotedMsg != nil {
+			sentMessage.QuotedMessageID = &quotedMessageID
+			sentMessage.QuotedSenderID = &quotedMsg.SenderID
+			sentMessage.QuotedBody = &quotedBody
+			sentMessage.QuotedSenderName = quotedSenderName
+
+			if db.DB != nil && sentMessage.ProtocolMsgID != "" {
+				db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ?", sentMessage.ProtocolMsgID).
+					Updates(map[string]interface{}{
+						"body":               text,
+						"thread_id":          threadID,
 						"quoted_message_id":  quotedMessageID,
 						"quoted_sender_id":   quotedMsg.SenderID,
 						"quoted_body":        quotedBody,
@@ -793,6 +873,18 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 			if existingMsg, exists := existingMap[msg.ProtocolMsgID]; exists {
 				// Message exists, update it
 				msg.ID = existingMsg.ID
+				// Slack has no native quoted-reply fields. During a later sync it
+				// returns only the Markdown block quote (or, after an edit, no quote
+				// information at all). Never let that incomplete payload erase the
+				// metadata stored by Loom, otherwise the UI flips between a reply card
+				// and raw `>` lines on successive refetches.
+				if existingMsg.QuotedMessageID != nil &&
+					(msg.QuotedMessageID == nil || strings.HasSuffix(*msg.QuotedMessageID, "-quote")) {
+					msg.QuotedMessageID = existingMsg.QuotedMessageID
+					msg.QuotedSenderID = existingMsg.QuotedSenderID
+					msg.QuotedSenderName = existingMsg.QuotedSenderName
+					msg.QuotedBody = existingMsg.QuotedBody
+				}
 				// Preserve existing attachments if new ones are empty (to avoid overwriting with empty)
 				// But if new attachments exist, merge them with existing ones to avoid losing data
 				if msg.Attachments == "" && existingMsg.Attachments != "" {
@@ -1085,7 +1177,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 	// Get existing message from database to preserve other fields
 	var existingMsg models.Message
 	if db.DB != nil {
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, conversationID).First(&existingMsg).Error; err != nil {
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&existingMsg).Error; err != nil {
 			// Message not found in database, create a new one
 			ts := parseSlackTimestamp(timestamp)
 			existingMsg = models.Message{
@@ -1146,6 +1238,18 @@ func (p *SlackProvider) DeleteMessage(conversationID string, messageID string) e
 
 	if client == nil {
 		return fmt.Errorf("slack client not initialized")
+	}
+
+	// A thread can be opened from a cached message while the selected contact
+	// still uses an older conversation identifier (notably for DMs, which are
+	// normalized from a D... channel ID to a U... user ID).  chat.delete must be
+	// called with the channel that owns the message, so prefer the persisted
+	// message metadata when it is available.
+	if db.DB != nil {
+		var storedMessage models.Message
+		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&storedMessage).Error; err == nil && storedMessage.ProtocolConvID != "" {
+			conversationID = storedMessage.ProtocolConvID
+		}
 	}
 
 	// Resolve user ID → actual DM channel ID (same pattern as SendMessage)

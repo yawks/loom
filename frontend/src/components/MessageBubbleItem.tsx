@@ -13,7 +13,7 @@ import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
-import { getMessageDomId, getSenderDisplayName, isDifferentDay } from "@/lib/messageUtils";
+import { getMessageDomId, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
@@ -85,6 +85,10 @@ export function MessageBubbleItem({
   handlers,
 }: MessageBubbleItemProps) {
   const { t } = useTranslation();
+  // The cache can briefly contain Slack's transport representation alongside
+  // valid reply metadata. Normalize at the final render boundary so the raw
+  // quote is never rendered below the reply card.
+  message = normalizeSlackQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
   const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;

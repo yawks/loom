@@ -7,6 +7,42 @@ export const getMessageDomId = (message: models.Message): string => {
   return `ts-${timeToDate(message.timestamp).getTime()}`;
 };
 
+// Slack has no native quoted-reply field: it serializes a reply as a block quote.
+// Older cached messages (and messages edited by older Loom versions) may therefore
+// arrive without the quoted* fields. Recover them before rendering so they keep the
+// same reply card as newly-created messages.
+export const normalizeSlackQuotedReply = (message: models.Message): models.Message => {
+  if (!message.body) return message;
+
+  const lines = message.body
+    .replace(/&gt;|&#(?:0*62);/gi, ">")
+    .replace(/\r\n/g, "\n")
+    .replace(/^[\s\u200B]+/, "")
+    .split("\n");
+  // Slack may normalize *name* to _name_ when returning an edited message.
+  const header = lines[0]?.match(/^>\s*(?:\*([^*]+)\*|_([^_]+)_|(.+?))\s*$/);
+  if (!header) return message;
+
+  const quoteLines: string[] = [];
+  let index = 1;
+  while (index < lines.length && /^>\s?/.test(lines[index])) {
+    quoteLines.push(lines[index].replace(/^>\s?/, ""));
+    index += 1;
+  }
+
+  if (quoteLines.length === 0) return message;
+  const body = lines.slice(index).join("\n").trimStart();
+  const quotedMessageId = message.quotedMessageId || `${getMessageDomId(message)}-quote`;
+
+  return {
+    ...message,
+    body,
+    quotedMessageId,
+    quotedSenderName: (header[1] || header[2] || header[3]).trim(),
+    quotedBody: quoteLines.join("\n"),
+  } as models.Message;
+};
+
 export const isDifferentDay = (date1: Date, date2: Date | null): boolean => {
   if (!date2) return true;
   return (

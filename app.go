@@ -1270,6 +1270,15 @@ func (a *App) SendThreadMessage(conversationID string, content string, threadID 
 	return provider.SendMessage(conversationID, content, nil, &threadID)
 }
 
+// SendThreadReply sends a quoted reply to a specific message inside a thread
+func (a *App) SendThreadReply(conversationID string, content string, threadID string, quotedMessageID string) (*models.Message, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	return provider.SendThreadReply(conversationID, content, threadID, quotedMessageID)
+}
+
 func (a *App) SendFile(conversationID string, base64Data string, filename string, mimeType string) error {
 	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
@@ -1382,7 +1391,24 @@ func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	return a.getActiveProvider().GetThreads(parentMessageID)
 }
 
+// resolveMessageConversation returns the conversation recorded for a message.
+// ThreadView can hold a cached contact ID while its messages have a normalized
+// provider conversation ID (for example, Slack DMs). Actions must use the
+// message's own conversation so they reach the correct remote channel.
+func (a *App) resolveMessageConversation(conversationID, messageID string) string {
+	if db.DB == nil || messageID == "" {
+		return conversationID
+	}
+
+	var message models.Message
+	if err := db.DB.Select("protocol_conv_id").Where("protocol_msg_id = ?", messageID).First(&message).Error; err == nil && message.ProtocolConvID != "" {
+		return message.ProtocolConvID
+	}
+	return conversationID
+}
+
 func (a *App) AddReaction(conversationID, messageID, emoji string) error {
+	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)
@@ -1391,6 +1417,7 @@ func (a *App) AddReaction(conversationID, messageID, emoji string) error {
 }
 
 func (a *App) RemoveReaction(conversationID, messageID, emoji string) error {
+	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)
@@ -1399,6 +1426,7 @@ func (a *App) RemoveReaction(conversationID, messageID, emoji string) error {
 }
 
 func (a *App) EditMessage(conversationID, messageID, newText string) error {
+	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)
@@ -1408,6 +1436,7 @@ func (a *App) EditMessage(conversationID, messageID, newText string) error {
 }
 
 func (a *App) DeleteMessage(conversationID, messageID string) error {
+	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)

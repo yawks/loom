@@ -1,7 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Paperclip, Send, Smile, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "emoji-picker-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -160,6 +160,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const sendMessageMutation = useMutation({
     mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string; quotedBody?: string; quotedSenderName?: string }) => {
       if (threadId) {
+        if (quotedMessageId) {
+          return await SendThreadReply(conversationId, text, threadId, quotedMessageId);
+        }
         return await SendThreadMessage(conversationId, text, threadId);
       }
       if (quotedMessageId) {
