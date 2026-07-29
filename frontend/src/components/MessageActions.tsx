@@ -1,4 +1,4 @@
-import { Edit, MessageSquare, MoreVertical, Reply, Trash2 } from "lucide-react";
+import { Edit, Forward, MessageSquare, MoreVertical, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -20,6 +20,7 @@ interface MessageActionsProps {
   onReply?: () => void;
   onReact?: (emoji: string) => void;
   onStartThread?: () => void;
+  onForward?: () => void;
   currentReactions?: string[];
   className?: string;
   messageId?: string;
@@ -35,6 +36,7 @@ export function MessageActions({
   onReply,
   onReact,
   onStartThread,
+  onForward,
   currentReactions = [],
   className,
   messageId,
@@ -98,6 +100,20 @@ export function MessageActions({
           title={t("start_thread")}
         >
           <MessageSquare className="h-4 w-4" />
+        </Button>
+      )}
+      {onForward && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 hover:bg-muted"
+          onClick={(e) => {
+            e.stopPropagation();
+            onForward();
+          }}
+          title={t("forward_message")}
+        >
+          <Forward className="h-4 w-4" />
         </Button>
       )}
       {onReact && supportsReactions && (

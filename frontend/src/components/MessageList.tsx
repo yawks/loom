@@ -20,6 +20,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
+import { ForwardMessageModal } from "./ForwardMessageModal";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { MessageHandlers } from "./MessageBubbleItem";
 import { MessageBubbleItem } from "./MessageBubbleItem";
@@ -129,6 +130,8 @@ export function MessageList({
   const [separatorDismissed, setSeparatorDismissed] = useState(false);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<models.Message | null>(null);
+  const [forwardModalOpen, setForwardModalOpen] = useState(false);
   const [revealedDeletedMessages, setRevealedDeletedMessages] = useState<Set<string>>(() => new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
@@ -383,6 +386,11 @@ export function MessageList({
     setReplyingToMessage(message);
   }, []);
 
+  const handleForwardClick = useCallback((message: models.Message) => {
+    setForwardingMessage(message);
+    setForwardModalOpen(true);
+  }, []);
+
   const handleConfirmDelete = useCallback(async () => {
     if (!messageToDelete || typeof DeleteMessage !== "function") return;
     const { conversationID, messageID } = messageToDelete;
@@ -481,6 +489,7 @@ export function MessageList({
     onEditMessage: handleEditMessage,
     onDeleteClick: handleDeleteClick,
     onReplyClick: handleReplyClick,
+    onForwardClick: handleForwardClick,
     onReaction: handleReaction,
     onRetrySend: handleRetrySend,
     onDeleteLocalMessage: handleDeleteLocalMessage,
@@ -491,7 +500,7 @@ export function MessageList({
     onNavigateToEdit: handleNavigateToEdit,
     setOpenActionsMessageId,
     showToast,
-  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
+  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
 
   const commonItemProps = {
     mainMessages,
@@ -704,6 +713,12 @@ export function MessageList({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        <ForwardMessageModal
+          open={forwardModalOpen}
+          onOpenChange={setForwardModalOpen}
+          message={forwardingMessage}
+          providerInstanceId={providerInstanceId}
+        />
       </div>
     </>
   );
