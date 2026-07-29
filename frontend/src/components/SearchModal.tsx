@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { Emoji } from "./Emoji";
+import { ProtocolIcon } from "./ProtocolIcon";
 import { cn, timeToDate } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -106,6 +107,14 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
     for (const p of configuredProviders) {
       const id = p.instanceId || p.id;
       map.set(id, p.instanceName || p.name);
+    }
+    return map;
+  }, [configuredProviders]);
+
+  const providerProtocolById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of configuredProviders) {
+      map.set(p.instanceId || p.id, p.id);
     }
     return map;
   }, [configuredProviders]);
@@ -635,14 +644,16 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                               {contact.displayName}
                             </span>
                             {contact.linkedAccounts?.length > 0 && (
-                              <span className="search-modal__contact-providers text-xs opacity-40 truncate">
-                                {contact.linkedAccounts
-                                  .map(
-                                    (a) =>
-                                      providerNameById.get(a.providerInstanceId) ??
-                                      a.providerInstanceId
-                                  )
-                                  .join(" · ")}
+                              <span className="search-modal__contact-providers flex items-center gap-1 text-xs opacity-40 truncate">
+                                {contact.linkedAccounts.map((a, i) => (
+                                  <span key={a.providerInstanceId + i} className="search-modal__contact-provider-entry flex items-center gap-0.5">
+                                    {providerProtocolById.get(a.providerInstanceId) && (
+                                      <ProtocolIcon protocol={providerProtocolById.get(a.providerInstanceId)!} size={12} />
+                                    )}
+                                    {providerNameById.get(a.providerInstanceId) ?? a.providerInstanceId}
+                                    {i < contact.linkedAccounts.length - 1 && <span className="mx-0.5">·</span>}
+                                  </span>
+                                ))}
                               </span>
                             )}
                           </div>
