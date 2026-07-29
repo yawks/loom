@@ -1662,11 +1662,11 @@ func (a *App) StartGoogleMessagesLogin(instanceID string, cookieJSON string) (st
 	return pairer.StartGoogleAccountPairing(cookieJSON)
 }
 
-// AutoPairGoogleMessages opens a Chrome window, logs in with the provided
-// credentials, extracts the Google session cookies, and starts the Gaia pairing
-// flow. The browser window is visible so the user can complete 2FA.
+// AutoPairGoogleMessages opens a Chrome window on the Google login page, waits
+// for the user to authenticate (credentials and 2FA entered in the browser),
+// then extracts session cookies and starts the Gaia pairing flow.
 // Returns the pairing emoji to confirm on the phone.
-func (a *App) AutoPairGoogleMessages(instanceID string, email string, password string) (string, error) {
+func (a *App) AutoPairGoogleMessages(instanceID string) (string, error) {
 	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
 		return "", err
@@ -1679,7 +1679,7 @@ func (a *App) AutoPairGoogleMessages(instanceID string, email string, password s
 	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
 	defer cancel()
 
-	cookies, err := googlemessages.FetchGoogleCookiesViaLogin(ctx, email, password)
+	cookies, err := googlemessages.FetchGoogleCookiesViaLogin(ctx)
 	if err != nil {
 		return "", err
 	}

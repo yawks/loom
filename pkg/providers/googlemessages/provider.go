@@ -325,7 +325,9 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 		result := db.DB.Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&existing)
 		if result.Error != nil {
 			reactions := message.Reactions
+			receipts := message.Receipts
 			message.Reactions = nil
+			message.Receipts = nil
 			if err := db.DB.Create(&message).Error; err != nil {
 				return err
 			}
@@ -336,6 +338,9 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				if err := db.DB.Create(&reactions).Error; err != nil {
 					return err
 				}
+			}
+			if err := storeGoogleMessagesReceipts(message.ID, receipts); err != nil {
+				return err
 			}
 		} else {
 			existing.Body, existing.Timestamp, existing.SenderID, existing.SenderName, existing.IsFromMe, existing.QuotedMessageID = message.Body, message.Timestamp, message.SenderID, message.SenderName, message.IsFromMe, message.QuotedMessageID
@@ -356,6 +361,34 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 					return err
 				}
 			}
+			if err := storeGoogleMessagesReceipts(existing.ID, message.Receipts); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func storeGoogleMessagesReceipts(messageID uint, receipts []models.MessageReceipt) error {
+	for _, receipt := range receipts {
+		var existing models.MessageReceipt
+		result := db.DB.Where(
+			"message_id = ? AND user_id = ? AND receipt_type = ?",
+			messageID, receipt.UserID, receipt.ReceiptType,
+		).First(&existing)
+		if result.Error == nil {
+			if receipt.Timestamp.After(existing.Timestamp) {
+				existing.Timestamp = receipt.Timestamp
+				if err := db.DB.Save(&existing).Error; err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		receipt.ID = 0
+		receipt.MessageID = messageID
+		if err := db.DB.Create(&receipt).Error; err != nil {
+			return err
 		}
 	}
 	return nil
@@ -385,6 +418,9 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 		timestamp = time.Now()
 	}
 	message := models.Message{ProtocolMsgID: remote.GetMessageID(), ProtocolConvID: conversationID, SenderID: senderID, SenderName: senderName, Body: strings.Join(parts, "\n"), Timestamp: timestamp, IsFromMe: fromMe, Attachments: p.mediaAttachmentsJSON(remote)}
+	if fromMe {
+		message.Receipts = googleMessagesReceipts(remote.GetMessageStatus().GetStatus(), conversationID, timestamp)
+	}
 	for _, entry := range remote.GetReactions() {
 		emoji := entry.GetData().GetUnicode()
 		if emoji == "" {
@@ -398,6 +434,25 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 		message.QuotedMessageID = ptr(reply.GetMessageID())
 	}
 	return message
+}
+
+func googleMessagesReceipts(status gmproto.MessageStatusType, conversationID string, timestamp time.Time) []models.MessageReceipt {
+	var receiptType string
+	switch status {
+	case gmproto.MessageStatusType_OUTGOING_DELIVERED:
+		receiptType = string(core.ReceiptTypeDelivery)
+	case gmproto.MessageStatusType_OUTGOING_DISPLAYED:
+		receiptType = string(core.ReceiptTypeRead)
+	default:
+		return nil
+	}
+	// Google exposes an aggregate outgoing status rather than one status per RCS
+	// participant. The conversation ID represents that remote side.
+	return []models.MessageReceipt{{
+		UserID:      conversationID,
+		ReceiptType: receiptType,
+		Timestamp:   timestamp,
+	}}
 }
 
 // mediaAttachmentsJSON downloads encrypted Google Messages media into Loom's
@@ -512,6 +567,39 @@ func attachmentTypeFromMIME(mimeType string) string {
 func ptr(value string) *string { return &value }
 
 func (p *Provider) StreamEvents() (<-chan core.ProviderEvent, error) { return p.eventChan, nil }
+
+func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return fmt.Errorf("%s: not authenticated", providerID)
+	}
+	if conversationID == "" || messageID == "" {
+		return fmt.Errorf("%s: conversation ID and message ID are required", providerID)
+	}
+	if err := client.MarkRead(conversationID, messageID); err != nil {
+		return fmt.Errorf("%s: mark message as read: %w", providerID, err)
+	}
+	return nil
+}
+
+func (p *Provider) MarkConversationAsRead(conversationID string) error {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return fmt.Errorf("%s: not authenticated", providerID)
+	}
+	response, err := client.FetchMessages(conversationID, 1, nil)
+	if err != nil {
+		return fmt.Errorf("%s: fetch latest message for read marker: %w", providerID, err)
+	}
+	if len(response.GetMessages()) == 0 || response.GetMessages()[0].GetMessageID() == "" {
+		return nil
+	}
+	return p.MarkMessageAsRead(conversationID, response.GetMessages()[0].GetMessageID())
+}
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
@@ -747,6 +835,16 @@ func (p *Provider) handleLibGMEvent(event any) {
 		}
 		p.emitReactionChanges(message, previous)
 		p.emit(core.MessageEvent{InstanceID: p.instance, Message: message})
+		for _, receipt := range message.Receipts {
+			p.emit(core.ReceiptEvent{
+				InstanceID:     p.instance,
+				ConversationID: message.ProtocolConvID,
+				MessageID:      message.ProtocolMsgID,
+				ReceiptType:    core.ReceiptType(receipt.ReceiptType),
+				UserID:         receipt.UserID,
+				Timestamp:      receipt.Timestamp.Unix(),
+			})
+		}
 	case *gmproto.Conversation:
 		if event.GetConversationID() == "" {
 			return

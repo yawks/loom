@@ -7,7 +7,7 @@ import {time} from '../models';
 
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function AutoPairGoogleMessages(arg1:string,arg2:string,arg3:string):Promise<string>;
+export function AutoPairGoogleMessages(arg1:string):Promise<string>;
 
 export function CompleteGoogleMessagesLogin(arg1:string):Promise<void>;
 

@@ -6,8 +6,8 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
-export function AutoPairGoogleMessages(arg1, arg2, arg3) {
-  return window['go']['main']['App']['AutoPairGoogleMessages'](arg1, arg2, arg3);
+export function AutoPairGoogleMessages(arg1) {
+  return window['go']['main']['App']['AutoPairGoogleMessages'](arg1);
 }
 
 export function CompleteGoogleMessagesLogin(arg1) {

@@ -88,8 +88,6 @@ export function ProviderConfigForm({
   const { toasts, showToast, closeToast } = useToast();
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
   const [qrCode, setQrCode] = useState("");
-	const [googleEmail, setGoogleEmail] = useState("");
-	const [googlePassword, setGooglePassword] = useState("");
 	const [pairingEmoji, setPairingEmoji] = useState("");
   const [isPollingQR, setIsPollingQR] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
@@ -415,52 +413,28 @@ export function ProviderConfigForm({
         </CardHeader>
         <CardContent className="space-y-4">
           {!pairingEmoji ? (
-            <>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Adresse e-mail Google</label>
-                <Input
-                  type="email"
-                  value={googleEmail}
-                  onChange={(e) => setGoogleEmail(e.target.value)}
-                  placeholder="exemple@gmail.com"
-                  autoComplete="email"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Mot de passe</label>
-                <Input
-                  type="password"
-                  value={googlePassword}
-                  onChange={(e) => setGooglePassword(e.target.value)}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                />
-              </div>
-              <Button
-                disabled={isSaving || !googleEmail.trim() || !googlePassword.trim()}
-                onClick={async () => {
-                  setIsSaving(true);
-                  try {
-                    let instanceID = provider.instanceId || currentInstanceID;
-                    if (!instanceID) {
-                      instanceID = await CreateProviderWithOptions(provider.id, {}, instanceName, "", true);
-                      setCurrentInstanceID(instanceID);
-                    }
-                    const emoji = await AutoPairGoogleMessages(instanceID, googleEmail, googlePassword);
-                    setPairingEmoji(emoji);
-                    setGoogleEmail("");
-                    setGooglePassword("");
-                  } catch (error) {
-                    console.error("Failed to start Google Messages pairing:", error);
-                    showToast(String(error) || "Impossible de démarrer l’appairage Google Messages", "error");
-                  } finally {
-                    setIsSaving(false);
+            <Button
+              disabled={isSaving}
+              onClick={async () => {
+                setIsSaving(true);
+                try {
+                  let instanceID = provider.instanceId || currentInstanceID;
+                  if (!instanceID) {
+                    instanceID = await CreateProviderWithOptions(provider.id, {}, instanceName, "", true);
+                    setCurrentInstanceID(instanceID);
                   }
-                }}
-              >
-                {isSaving ? "Ouverture du navigateur…" : "Démarrer l’appairage"}
-              </Button>
-            </>
+                  const emoji = await AutoPairGoogleMessages(instanceID);
+                  setPairingEmoji(emoji);
+                } catch (error) {
+                  console.error("Failed to start Google Messages pairing:", error);
+                  showToast(String(error) || "Impossible de démarrer l’appairage Google Messages", "error");
+                } finally {
+                  setIsSaving(false);
+                }
+              }}
+            >
+              {isSaving ? "Connexion en cours…" : "Se connecter avec Google"}
+            </Button>
           ) : (
             <div className="space-y-3">
               <p className="text-center text-5xl" aria-label="Pairing emoji">{pairingEmoji}</p>
