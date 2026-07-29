@@ -176,11 +176,17 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
 
-      // Only skip optimistic update for actual thread messages (threadId prop), not quoted replies
+      // A thread reply is conversation activity too. Move the parent conversation
+      // immediately, even though the reply itself lives in the thread cache.
       if (threadId) {
-        // Don't do optimistic update for thread messages - they will be added via RTM event
-        console.log(`[ChatInput] Sending to thread ${threadId}, skipping optimistic update`);
-        return { tempId, conversationId, isThreadMessage: true };
+        const previousTimestamp = queryClient.getQueryData<Record<string, string | number | null>>(
+          ["allLastMessageTimestamps"]
+        )?.[conversationId];
+        queryClient.setQueryData<Record<string, string | number | null>>(
+          ["allLastMessageTimestamps"],
+          (old) => ({ ...(old || {}), [conversationId]: now.toISOString() })
+        );
+        return { tempId, conversationId, isThreadMessage: true, previousTimestamp };
       }
       
       // Get current user info from existing messages, fall back to props passed from MessageList
@@ -279,6 +285,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // If we sent to an actual thread (threadId prop set), invalidate and refetch the thread cache
       if (isThreadMessage) {
         console.log(`[ChatInput] Sent message to thread ${threadId}, invalidating thread cache`);
+        if (message?.timestamp) {
+          queryClient.setQueryData<Record<string, string | number | null>>(
+            ["allLastMessageTimestamps"],
+            (old) => ({ ...(old || {}), [conversationId]: message.timestamp as unknown as string })
+          );
+          queryClient.setQueryData<Record<string, models.Message | null>>(
+            ["allLastMessages"],
+            (old) => ({ ...(old || {}), [conversationId]: message })
+          );
+        }
         queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
         queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
         // Also invalidate main messages to update thread count badge
@@ -327,6 +343,21 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     onError: (_error, variables, context) => {
       const conversationId = variables.conversationId;
       const tempId = context?.tempId;
+      if (context?.isThreadMessage) {
+        queryClient.setQueryData<Record<string, string | number | null>>(
+          ["allLastMessageTimestamps"],
+          (old) => {
+            const updated = { ...(old || {}) };
+            if (context.previousTimestamp == null) {
+              delete updated[conversationId];
+            } else {
+              updated[conversationId] = context.previousTimestamp;
+            }
+            return updated;
+          }
+        );
+        return;
+      }
       // Mark temp message as failed
       queryClient.setQueryData<InfiniteData<models.Message[]>>(
         ["messages", conversationId],

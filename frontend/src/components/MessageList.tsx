@@ -31,7 +31,7 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
-import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
+import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 
 
 import { useAppStore } from "@/lib/store";
@@ -109,6 +109,7 @@ export function MessageList({
 
   const providerInstanceId = activeAccount?.providerInstanceId;
   const protocol = activeAccount?.protocol;
+  const capabilities = useAppStore((state) => state.capabilities);
   const isGroupFromProvider = !!activeAccount?.isGroup;
 
   // State
@@ -460,38 +461,13 @@ export function MessageList({
   const handleReaction = useCallback(async (message: models.Message, emoji: string) => {
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
-    const useNativeEmoji = protocol === "googlechat" || protocol === "googlemessages" || protocol === "whatsapp";
-
-    // Helper to get canonical name without colons (e.g. "thumbsup")
-    const getCleanName = (emojiStr: string): string => {
-      const clean = emojiStr.startsWith(":") && emojiStr.endsWith(":") ? emojiStr.slice(1, -1) : emojiStr;
-      const unicode = emojiNameToUnicode(clean) || clean;
-      const name = unicodeToEmojiName(unicode);
-      return name || clean;
-    };
-
-    const targetName = getCleanName(emoji);
-    const emojiName = targetName;
-
-    let apiEmoji: string;
-    if (useNativeEmoji) {
-      // Provider expects raw Unicode (e.g. Google Chat, WhatsApp)
-      const clean = emoji.startsWith(":") && emoji.endsWith(":") ? emoji.slice(1, -1) : emoji;
-      const resolvedUnicode = emojiNameToUnicode(clean);
-      if (resolvedUnicode) {
-        apiEmoji = resolvedUnicode;
-      } else {
-        apiEmoji = clean;
-      }
-    } else {
-      // Non-native emoji providers expect the emoji name (without colons)
-      apiEmoji = targetName;
-    }
-
-    const normalizedEmoji = `:${emojiName}:`;
+    const nativeEmojiReactions = providerInstanceId
+      ? capabilities[providerInstanceId]?.nativeEmojiReactions ?? false
+      : false;
+    const { apiEmoji, canonicalName, storedEmoji } = normalizeReaction(emoji, nativeEmojiReactions);
 
     const hasReaction = messageReactions.some((r) => {
-      return getCleanName(r.emoji) === targetName && r.userId === currentUserId;
+      return reactionMatches(r.emoji, canonicalName) && r.userId === currentUserId;
     });
 
     queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -505,9 +481,9 @@ export function MessageList({
               if (msg.protocolMsgId !== protocolMsgId && getMessageDomId(msg) !== protocolMsgId) return msg;
               const updatedReactions = hasReaction
                 ? (msg.reactions || []).filter((r) => {
-                    return !(getCleanName(r.emoji) === targetName && r.userId === currentUserId);
+                    return !(reactionMatches(r.emoji, canonicalName) && r.userId === currentUserId);
                   })
-                : [...(msg.reactions || []), models.Reaction.createFrom({ id: 0, messageId: msg.id, userId: currentUserId || "", emoji: normalizedEmoji, createdAt: new Date(), updatedAt: new Date() })];
+                : [...(msg.reactions || []), models.Reaction.createFrom({ id: 0, messageId: msg.id, userId: currentUserId || "", emoji: storedEmoji, createdAt: new Date(), updatedAt: new Date() })];
               return models.Message.createFrom({ ...msg, reactions: updatedReactions });
             })
           ),
@@ -517,10 +493,10 @@ export function MessageList({
 
     console.log("[Loom Debug] handleReaction parameters:", {
       emoji,
-      targetName,
+      canonicalName,
       apiEmoji,
       hasReaction,
-      useNativeEmoji
+      nativeEmojiReactions
     });
 
     try {
@@ -532,7 +508,7 @@ export function MessageList({
       queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
       queryClient.refetchQueries({ queryKey: ["messages", conversationId] });
     }
-  }, [conversationId, currentUserId, providerInstanceId, protocol, queryClient, t, showToast]);
+  }, [capabilities, conversationId, currentUserId, providerInstanceId, queryClient, t, showToast]);
 
 
   const handlers: MessageHandlers = useMemo(() => ({

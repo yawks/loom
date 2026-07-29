@@ -60,15 +60,20 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
 
             if (href.startsWith("loom://conversation")) {
               const mentionURL = new URL(href);
-              const jid = mentionURL.searchParams.get("jid");
-              if (!jid) return;
+              // "jid" is kept as a compatibility fallback for messages already
+              // stored before internal conversation links became provider-neutral.
+              const accountId =
+                mentionURL.searchParams.get("accountId") ??
+                mentionURL.searchParams.get("jid");
+              const instanceId = mentionURL.searchParams.get("instanceId");
+              if (!accountId) return;
 
               const { metaContacts, setSelectedContact } = useAppStore.getState();
               const contact = metaContacts.find((candidate) =>
                 candidate.linkedAccounts.some(
                   (account) =>
-                    account.protocol === "whatsapp" &&
-                    (account.userId === jid || account.conversationId === jid)
+                    (!instanceId || account.providerInstanceId === instanceId) &&
+                    (account.userId === accountId || account.conversationId === accountId)
                 )
               );
               if (contact) setSelectedContact(contact);

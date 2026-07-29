@@ -841,6 +841,7 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 							}
 						}
 					}
+					a.invalidateMessageCaches()
 					reactionJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "reaction", string(reactionJSON))
@@ -2095,10 +2096,12 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 	var messages []models.Message
 	// ROW_NUMBER() window function does a single pass over the partial index
 	// (protocol_conv_id, timestamp DESC WHERE deleted_at IS NULL), avoiding the
-	// double-scan of the previous self-join. GORM silently ignores the rn column.
+	// double-scan of the previous self-join. ID makes equal timestamps deterministic.
+	// Thread replies intentionally participate: activity in a thread makes its
+	// conversation recent too. GORM silently ignores the rn column.
 	err := db.DB.Raw(`
 		SELECT * FROM (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC) AS rn
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS rn
 			FROM messages
 			WHERE deleted_at IS NULL
 		) WHERE rn = 1
@@ -2139,6 +2142,7 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 
 	rows, err := db.DB.Model(&models.Message{}).
 		Select("protocol_conv_id, MAX(timestamp) as max_time").
+		Where("deleted_at IS NULL").
 		Group("protocol_conv_id").
 		Rows()
 	if err != nil {
@@ -2154,28 +2158,34 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning message row: %v\n", err)
 			continue
 		}
-		if ts := db.ParseTime(maxTime); ts > 0 {
+		if ts := db.ParseTimeMillis(maxTime); ts > 0 {
 			result[protocolConvID] = ts
 		}
 	}
 
+	// A newly added reaction is conversation activity as well. Keep the latest
+	// surviving reaction date so the ordering is identical after a restart.
 	reactionRows, err := db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
 		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
 		Where("messages.deleted_at IS NULL").
 		Group("messages.protocol_conv_id").
 		Rows()
-	if err == nil {
-		defer reactionRows.Close()
-		for reactionRows.Next() {
-			var protocolConvID string
-			var maxTime interface{}
-			if err := reactionRows.Scan(&protocolConvID, &maxTime); err != nil {
-				continue
-			}
-			if ts := db.ParseTime(maxTime); ts > result[protocolConvID] {
-				result[protocolConvID] = ts
-			}
+	if err != nil {
+		fmt.Printf("[GetAllLastMessageTimestamps] Error getting reaction timestamps: %v\n", err)
+		return map[string]int64{}, err
+	}
+	defer reactionRows.Close()
+
+	for reactionRows.Next() {
+		var protocolConvID string
+		var maxTime interface{}
+		if err := reactionRows.Scan(&protocolConvID, &maxTime); err != nil {
+			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning reaction row: %v\n", err)
+			continue
+		}
+		if ts := db.ParseTimeMillis(maxTime); ts > result[protocolConvID] {
+			result[protocolConvID] = ts
 		}
 	}
 

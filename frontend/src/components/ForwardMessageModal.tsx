@@ -69,7 +69,7 @@ export function ForwardMessageModal({
       if (timestamp) {
         dates[convId] =
           typeof timestamp === "number"
-            ? timestamp * 1000
+            ? (timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
             : timeToDate(timestamp as string).getTime();
       }
     }

@@ -27,7 +27,7 @@ import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
 import { getColorFromString, getMessageDomId, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
-import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
+import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
@@ -192,6 +192,7 @@ export function ThreadView() {
     (state) => state.setSelectedAvatarUrl
   );
   const selectedContact = useAppStore((state) => state.selectedContact);
+  const capabilities = useAppStore((state) => state.capabilities);
 
   const activeAccount = selectedContact?.linkedAccounts[0];
   const protocol = activeAccount?.protocol;
@@ -437,27 +438,13 @@ export function ThreadView() {
     async (message: models.Message, emoji: string) => {
       const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
       const messageReactions = message.reactions || [];
-      const useNativeEmoji = protocol === "googlechat" || protocol === "whatsapp";
-
-      const getCleanName = (emojiStr: string): string => {
-        const clean = emojiStr.startsWith(":") && emojiStr.endsWith(":") ? emojiStr.slice(1, -1) : emojiStr;
-        const unicode = emojiNameToUnicode(clean) || clean;
-        const name = unicodeToEmojiName(unicode);
-        return name || clean;
-      };
-
-      const targetName = getCleanName(emoji);
-      let apiEmoji: string;
-      if (useNativeEmoji) {
-        const clean = emoji.startsWith(":") && emoji.endsWith(":") ? emoji.slice(1, -1) : emoji;
-        const resolvedUnicode = emojiNameToUnicode(clean);
-        apiEmoji = resolvedUnicode ? resolvedUnicode : clean;
-      } else {
-        apiEmoji = targetName;
-      }
+      const nativeEmojiReactions = providerInstanceId
+        ? capabilities[providerInstanceId]?.nativeEmojiReactions ?? false
+        : false;
+      const { apiEmoji, canonicalName } = normalizeReaction(emoji, nativeEmojiReactions);
 
       const hasReaction = messageReactions.some((r) => {
-        return getCleanName(r.emoji) === targetName && (currentUserId ? r.userId === currentUserId : false);
+        return reactionMatches(r.emoji, canonicalName) && (currentUserId ? r.userId === currentUserId : false);
       });
 
       try {
@@ -472,7 +459,7 @@ export function ThreadView() {
         console.error("Failed to update reaction:", error);
       }
     },
-    [conversationId, selectedThreadId, protocol, currentUserId, queryClient]
+    [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient]
   );
 
   useEffect(() => {
