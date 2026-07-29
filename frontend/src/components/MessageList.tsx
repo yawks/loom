@@ -31,7 +31,7 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
-import { unicodeEmojiMap, unicodeToEmojiName } from "@/lib/emojiMap";
+import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
 
 
 import { useAppStore } from "@/lib/store";
@@ -465,7 +465,7 @@ export function MessageList({
     // Helper to get canonical name without colons (e.g. "thumbsup")
     const getCleanName = (emojiStr: string): string => {
       const clean = emojiStr.startsWith(":") && emojiStr.endsWith(":") ? emojiStr.slice(1, -1) : emojiStr;
-      const unicode = unicodeEmojiMap[clean] || clean;
+      const unicode = emojiNameToUnicode(clean) || clean;
       const name = unicodeToEmojiName(unicode);
       return name || clean;
     };
@@ -477,7 +477,7 @@ export function MessageList({
     if (useNativeEmoji) {
       // Provider expects raw Unicode (e.g. Google Chat, WhatsApp)
       const clean = emoji.startsWith(":") && emoji.endsWith(":") ? emoji.slice(1, -1) : emoji;
-      const resolvedUnicode = unicodeEmojiMap[clean];
+      const resolvedUnicode = emojiNameToUnicode(clean);
       if (resolvedUnicode) {
         apiEmoji = resolvedUnicode;
       } else {

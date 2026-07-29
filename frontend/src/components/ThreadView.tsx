@@ -27,7 +27,7 @@ import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
 import { getColorFromString, getMessageDomId, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
-import { unicodeEmojiMap, unicodeToEmojiName } from "@/lib/emojiMap";
+import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
@@ -441,7 +441,7 @@ export function ThreadView() {
 
       const getCleanName = (emojiStr: string): string => {
         const clean = emojiStr.startsWith(":") && emojiStr.endsWith(":") ? emojiStr.slice(1, -1) : emojiStr;
-        const unicode = unicodeEmojiMap[clean] || clean;
+        const unicode = emojiNameToUnicode(clean) || clean;
         const name = unicodeToEmojiName(unicode);
         return name || clean;
       };
@@ -450,7 +450,7 @@ export function ThreadView() {
       let apiEmoji: string;
       if (useNativeEmoji) {
         const clean = emoji.startsWith(":") && emoji.endsWith(":") ? emoji.slice(1, -1) : emoji;
-        const resolvedUnicode = unicodeEmojiMap[clean];
+        const resolvedUnicode = emojiNameToUnicode(clean);
         apiEmoji = resolvedUnicode ? resolvedUnicode : clean;
       } else {
         apiEmoji = targetName;

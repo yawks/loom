@@ -6259,7 +6259,6 @@ export const unicodeEmojiMap: Record<string, string> = {
   "yen_banknote": "💴",
   "yerba": "🧉",
   "yes": "👍",
-  "yes-tone3": "👍🏽",
   "yin_yang": "☯️",
   "yo_yo": "🪀",
   "yoga": "🧘",
@@ -6297,6 +6296,46 @@ export const unicodeEmojiMap: Record<string, string> = {
   "zw": "🇿🇼",
   "zzz": "😴"
 };
+
+const SKIN_TONE_MODIFIERS = ["🏻", "🏼", "🏽", "🏾", "🏿"] as const;
+const SKIN_TONE_PATTERN = /^(.*)-tone([1-5])$/;
+const SKIN_TONE_MODIFIER_PATTERN = /[\u{1F3FB}-\u{1F3FF}]/gu;
+
+/**
+ * Resolves an emoji name to Unicode, generating skin-tone variants dynamically.
+ * Example: "yes-tone3" -> "👍🏽"
+ */
+export function emojiNameToUnicode(name: string): string | null {
+  const directMatch = unicodeEmojiMap[name];
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const toneMatch = name.match(SKIN_TONE_PATTERN);
+  if (!toneMatch) {
+    return null;
+  }
+
+  const [, baseName, toneNumber] = toneMatch;
+  let baseEmoji: string | undefined = unicodeEmojiMap[baseName];
+
+  // Some provider aliases only exist in the generated map as a toned variant.
+  // Use that variant as a seed and remove its modifier before applying the
+  // requested tone.
+  if (!baseEmoji) {
+    const seededVariant = Object.entries(unicodeEmojiMap).find(([candidate]) =>
+      candidate.startsWith(`${baseName}-tone`)
+    );
+    baseEmoji = seededVariant?.[1];
+  }
+
+  if (!baseEmoji) {
+    return null;
+  }
+
+  const modifier = SKIN_TONE_MODIFIERS[Number(toneNumber) - 1];
+  return `${baseEmoji.replace(SKIN_TONE_MODIFIER_PATTERN, "")}${modifier}`;
+}
 
 // Preferred emoji names for common reactions
 // These are the most standard/recognized names
@@ -6346,5 +6385,21 @@ function getReverseEmojiMap(): Record<string, string> {
  */
 export function unicodeToEmojiName(unicodeEmoji: string): string | null {
   const reverseMap = getReverseEmojiMap();
-  return reverseMap[unicodeEmoji] || null;
+  const directMatch = reverseMap[unicodeEmoji];
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const toneModifier = unicodeEmoji.match(SKIN_TONE_MODIFIER_PATTERN)?.[0];
+  if (!toneModifier) {
+    return null;
+  }
+
+  const baseEmoji = unicodeEmoji.replace(SKIN_TONE_MODIFIER_PATTERN, "");
+  const baseName = reverseMap[baseEmoji];
+  const toneIndex = SKIN_TONE_MODIFIERS.indexOf(
+    toneModifier as (typeof SKIN_TONE_MODIFIERS)[number]
+  );
+
+  return baseName && toneIndex >= 0 ? `${baseName}-tone${toneIndex + 1}` : null;
 }
