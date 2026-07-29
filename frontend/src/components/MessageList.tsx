@@ -26,7 +26,6 @@ import type { MessageHandlers } from "./MessageBubbleItem";
 import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
 import { MessageIRCItem } from "./MessageIRCItem";
-import { TypingIndicator } from "./TypingIndicator";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -554,6 +553,7 @@ export function MessageList({
         <MessageHeader
           displayName={selectedConversation.displayName}
           avatarUrl={selectedConversation.avatarUrl}
+          conversationId={conversationId}
           linkedAccounts={selectedConversation.linkedAccounts}
           onToggleThreads={handleToggleThreads}
           onToggleDetails={handleToggleDetails}
@@ -693,7 +693,6 @@ export function MessageList({
               )}
             </div>
           )}
-          <TypingIndicator conversationId={conversationId} />
           <ChatInput
             key={`main-${conversationId}`}
             onFileUploadRequest={(files, filePaths) => {

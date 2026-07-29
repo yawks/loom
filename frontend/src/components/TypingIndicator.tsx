@@ -4,13 +4,14 @@ import { useMemo } from "react";
 
 interface TypingIndicatorProps {
   conversationId: string;
+  variant?: "input" | "header" | "list";
 }
 
 /**
  * Displays who is currently typing in a conversation
  * Shows "user is typing", "user1 and user2 are typing", "user1, user2 and user3 are typing"
  */
-export function TypingIndicator({ conversationId }: TypingIndicatorProps) {
+export function TypingIndicator({ conversationId, variant = "input" }: TypingIndicatorProps) {
   const { t } = useTranslation();
   
   // Get typing users from store - use selector to avoid unnecessary re-renders
@@ -64,17 +65,41 @@ export function TypingIndicator({ conversationId }: TypingIndicatorProps) {
     return null;
   }
 
+  const dots = (
+    <span className="flex gap-0.5 shrink-0" aria-hidden="true">
+      <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]" />
+      <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
+      <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce" />
+    </span>
+  );
+
+  if (variant === "header") {
+    return (
+      <span className="message-header__typing flex items-center gap-1.5 text-xs text-primary truncate">
+        {dots}
+        <span className="truncate">{typingMessage}</span>
+      </span>
+    );
+  }
+
+  if (variant === "list") {
+    return (
+      <div
+        className="contact-list__typing flex items-center gap-1.5 text-xs mt-0.5 text-primary min-w-0"
+        title={typingMessage}
+      >
+        {dots}
+        <span className="truncate">{typingMessage}</span>
+      </div>
+    );
+  }
+
   return (
     <div className="px-4 py-2 border-t">
       <div className="flex items-center gap-2">
-        <div className="flex gap-1">
-          <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.3s]"></span>
-          <span className="h-2 w-2 rounded-full bg-primary animate-bounce [animation-delay:-0.15s]"></span>
-          <span className="h-2 w-2 rounded-full bg-primary animate-bounce"></span>
-        </div>
+        {dots}
         <span className="text-sm text-muted-foreground">{typingMessage}</span>
       </div>
     </div>
   );
 }
-

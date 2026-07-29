@@ -349,16 +349,20 @@ func (p *SlackProvider) handleRTMTypingEvent(ev *slack.UserTypingEvent) {
 	}
 
 	userName := p.resolveUserName(ev.User)
+	// Messages and conversations use the peer user ID for Slack DMs. Typing
+	// events carry the raw D… channel ID, so normalize it to the same key before
+	// forwarding the event to the frontend.
+	conversationID := p.normalizeDMConversationID(ev.Channel)
 
 	select {
 	case p.eventChan <- core.TypingEvent{InstanceID: p.getInstanceId(),
-		ConversationID: ev.Channel,
+		ConversationID: conversationID,
 		UserID:         ev.User,
 		UserName:       userName,
 		IsTyping:       true,
 	}:
 	default:
-		p.log("SlackProvider: WARNING - Failed to emit TypingEvent for %s in %s\n", ev.User, ev.Channel)
+		p.log("SlackProvider: WARNING - Failed to emit TypingEvent for %s in %s\n", ev.User, conversationID)
 	}
 }
 

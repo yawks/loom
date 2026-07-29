@@ -18,6 +18,7 @@ import { usePresenceStore } from "@/lib/presenceStore";
 import { useSortedContacts } from "@/hooks/useSortedContacts";
 import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
+import { TypingIndicator } from "./TypingIndicator";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -481,15 +482,18 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             </div>
           )}
           {filteredContacts.map((contact) => {
-            const conversationId =
-              contact.linkedAccounts[0]?.conversationId ??
-              contact.linkedAccounts[0]?.userId ??
-              "";
+            const accountConversationId = (account: models.LinkedAccount) =>
+              account.conversationId ?? account.userId ?? "";
+            const typingAccount = contact.linkedAccounts.find(
+              (account) => (typingByConversation[accountConversationId(account)]?.length ?? 0) > 0
+            );
+            const conversationId = accountConversationId(contact.linkedAccounts[0]);
+            const typingConversationId = typingAccount ? accountConversationId(typingAccount) : "";
             const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
             const displayUnreadCount =
               unreadCount > 99 ? "99+" : unreadCount.toString();
             const isSelected = selectedContact?.id === contact.id;
-            const isTyping = (typingByConversation[conversationId]?.length ?? 0) > 0;
+            const isTyping = typingConversationId !== "";
             const messageCount = messageCountByConversation[conversationId] ?? 0;
             const isEmptyDuringSync = syncStatus === "syncing" && messageCount === 0;
 
@@ -600,12 +604,6 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                     />
                     );
                   })()}
-                  {isTyping && !isGroup && (
-                    <div
-                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-sidebar animate-pulse"
-                      title={t("typing_indicator_title")}
-                    />
-                  )}
                 </div>
                 <div className="contact-list__item-content flex flex-col flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -637,6 +635,9 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                   </div>
                   {/* Last message preview */}
                   {(() => {
+                    if (isTyping) {
+                      return <TypingIndicator conversationId={typingConversationId} variant="list" />;
+                    }
                     const lastMessage = lastMessages[conversationId];
                     if (lastMessage?.body) {
                       return (

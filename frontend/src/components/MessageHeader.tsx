@@ -10,16 +10,20 @@ import { useAppStore } from "@/lib/store";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
+import { TypingIndicator } from "./TypingIndicator";
+import { useTypingStore } from "@/lib/typingStore";
 
 export function MessageHeader({
   displayName,
   avatarUrl,
+  conversationId,
   linkedAccounts,
   onToggleThreads,
   onToggleDetails,
 }: {
   displayName: string;
   avatarUrl?: string;
+  conversationId: string;
   linkedAccounts: models.LinkedAccount[];
   onToggleThreads: () => void;
   onToggleDetails: () => void;
@@ -27,6 +31,9 @@ export function MessageHeader({
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const showThreads = useAppStore((state) => state.showThreads);
+  const isTyping = useTypingStore(
+    (state) => (state.typingByConversation[conversationId]?.length ?? 0) > 0
+  );
 
   const instanceId = linkedAccounts[0]?.providerInstanceId;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true;
@@ -57,7 +64,9 @@ export function MessageHeader({
         </Avatar>
         <div className="message-header__name-block flex flex-col min-w-0">
           <h2 className="message-header__display-name text-lg font-semibold leading-tight truncate">{displayName}</h2>
-          {providerEntries.length > 0 && (
+          {isTyping ? (
+            <TypingIndicator conversationId={conversationId} variant="header" />
+          ) : providerEntries.length > 0 && (
             <span className="message-header__provider-names flex items-center gap-1 text-xs opacity-40 truncate">
               {providerEntries.map((e, i) => (
                 <span key={e.protocolId + i} className="message-header__provider-entry flex items-center gap-0.5">

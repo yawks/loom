@@ -79,11 +79,11 @@ func (e ReactionEvent) Type() EventType {
 
 // TypingEvent represents a typing indicator event.
 type TypingEvent struct {
-	InstanceID     string
-	ConversationID string // Protocol conversation ID
-	UserID         string // User who is typing
-	UserName       string // Display name of the user who is typing
-	IsTyping       bool   // true if typing, false if stopped
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	UserID         string `json:"userId"`         // User who is typing
+	UserName       string `json:"userName"`       // Display name of the user who is typing
+	IsTyping       bool   `json:"isTyping"`       // true if typing, false if stopped
 }
 
 // Type returns the event type for TypingEvent.
