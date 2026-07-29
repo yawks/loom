@@ -1485,17 +1485,10 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Extract and optimize message body
 	body := msg.Text
 
-	// When the message has rich_text blocks, always prefer block extraction: Slack populates
-	// msg.Text with triple-backtick preformatted markers for rich_text_preformatted elements,
-	// which causes bullet lists to render as code blocks. Block extraction produces clean markdown.
-	hasRichTextBlock := false
-	for _, block := range msg.Blocks.BlockSet {
-		if _, ok := block.(*slack.RichTextBlock); ok {
-			hasRichTextBlock = true
-			break
-		}
-	}
-	if hasRichTextBlock || len(body) < 10 {
+	// When the message has blocks, prefer block extraction over msg.Text:
+	// - rich_text blocks: Slack serializes bullet lists as triple-backtick code blocks in msg.Text
+	// - section/header/action blocks (bot messages): msg.Text is a short fallback, blocks hold full content
+	if len(msg.Blocks.BlockSet) > 0 || len(body) < 10 {
 		extracted := p.extractTextFromRichContent(msg)
 		if len(extracted) > len(body) {
 			body = extracted
@@ -1728,6 +1721,18 @@ func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 		case *slack.HeaderBlock:
 			if b.Text != nil {
 				parts = append(parts, b.Text.Text)
+			}
+		case *slack.ActionBlock:
+			if b.Elements != nil {
+				var labels []string
+				for _, elem := range b.Elements.ElementSet {
+					if btn, ok := elem.(*slack.ButtonBlockElement); ok && btn.Text != nil {
+						labels = append(labels, btn.Text.Text)
+					}
+				}
+				if len(labels) > 0 {
+					parts = append(parts, "["+strings.Join(labels, " / ")+"]")
+				}
 			}
 		}
 	}
