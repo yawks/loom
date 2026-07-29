@@ -6,6 +6,14 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
+export function AutoPairGoogleMessages(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AutoPairGoogleMessages'](arg1, arg2, arg3);
+}
+
+export function CompleteGoogleMessagesLogin(arg1) {
+  return window['go']['main']['App']['CompleteGoogleMessagesLogin'](arg1);
+}
+
 export function ConfigureProvider(arg1) {
   return window['go']['main']['App']['ConfigureProvider'](arg1);
 }
@@ -192,6 +200,10 @@ export function SetActiveProvider(arg1) {
 
 export function SetContactAlias(arg1, arg2) {
   return window['go']['main']['App']['SetContactAlias'](arg1, arg2);
+}
+
+export function StartGoogleMessagesLogin(arg1, arg2) {
+  return window['go']['main']['App']['StartGoogleMessagesLogin'](arg1, arg2);
 }
 
 export function SyncProvider(arg1) {

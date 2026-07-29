@@ -10,6 +10,7 @@
   "back_to_threads": "Retour aux fils",
   "type_a_message": "Écrivez un message...",
   "send": "Envoyer",
+  "send_failed": "Échec de l'envoi du message",
   "participants": "Participants",
   "contact": "Contact",
   "switch_protocol": "Passer à {{protocol}}",

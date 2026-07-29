@@ -1,6 +1,6 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import React, { type ReactElement, useMemo, memo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
 import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
@@ -10,6 +10,7 @@ import { transformUrls, fixCodeBlocks } from "../lib/utils";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
+import { useAppStore } from "@/lib/store";
 
 interface SlackInlineQuote {
   sender: string;
@@ -54,7 +55,26 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
           href={href}
           onClick={(e) => {
             e.preventDefault();
-            if (href) BrowserOpenURL(href);
+            if (!href) return;
+
+            if (href.startsWith("loom://conversation")) {
+              const mentionURL = new URL(href);
+              const jid = mentionURL.searchParams.get("jid");
+              if (!jid) return;
+
+              const { metaContacts, setSelectedContact } = useAppStore.getState();
+              const contact = metaContacts.find((candidate) =>
+                candidate.linkedAccounts.some(
+                  (account) =>
+                    account.protocol === "whatsapp" &&
+                    (account.userId === jid || account.conversationId === jid)
+                )
+              );
+              if (contact) setSelectedContact(contact);
+              return;
+            }
+
+            BrowserOpenURL(href);
           }}
           className={cn(
             "cursor-pointer hover:underline",
@@ -146,7 +166,16 @@ export const MessageText = memo(function MessageText({
     // text, so keep the complete document intact when no emoji replacement is
     // needed.
     const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
-    if (!emojiPattern.test(textWithoutSkinTones)) {
+    // SharePoint (among others) uses URL paths such as `/:p:/`. Do not turn
+    // those path segments into custom emojis before Markdown sees the URL.
+    const urlRanges = Array.from(textWithoutSkinTones.matchAll(/https?:\/\/[^\s<>"']+/g))
+      .map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+    const isInsideUrl = (index: number) =>
+      urlRanges.some(({ start, end }) => index >= start && index < end);
+    const hasEmojiOutsideUrl = Array.from(textWithoutSkinTones.matchAll(emojiPattern))
+      .some((match) => !isInsideUrl(match.index ?? 0));
+
+    if (!hasEmojiOutsideUrl) {
       return textWithoutSkinTones;
     }
     emojiPattern.lastIndex = 0;
@@ -161,6 +190,10 @@ export const MessageText = memo(function MessageText({
 
       const matchIndex = match.index;
       const matchText = match[0];
+
+      if (isInsideUrl(matchIndex)) {
+        continue;
+      }
 
       if (matchIndex > lastIndex) {
         const textBefore = textWithoutSkinTones.substring(lastIndex, matchIndex);
@@ -218,6 +251,7 @@ export const MessageText = memo(function MessageText({
       remarkPlugins={remarkPlugins}
       rehypePlugins={[[rehypeHighlight, { detect: true }]]}
       components={isInline ? inlineComponents : blockComponents}
+      urlTransform={(url) => (url.startsWith("loom://") ? url : defaultUrlTransform(url))}
     >
       {content}
     </ReactMarkdown>

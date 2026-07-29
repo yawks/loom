@@ -1,5 +1,7 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  AutoPairGoogleMessages,
+  CompleteGoogleMessagesLogin,
   ConnectProvider,
   CreateProvider,
   CreateProviderWithOptions,
@@ -7,10 +9,11 @@ import {
   SyncProvider,
 } from "../../wailsjs/go/main/App";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ToastContainer, useToast } from "@/components/ui/toast";
+import { RefreshCw } from "lucide-react";
 import type { core } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
@@ -81,9 +84,13 @@ export function ProviderConfigForm({
   });
 
   const [isSaving, setIsSaving] = useState(false);
+	const [isRefreshing, setIsRefreshing] = useState(false);
   const { toasts, showToast, closeToast } = useToast();
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
   const [qrCode, setQrCode] = useState("");
+	const [googleEmail, setGoogleEmail] = useState("");
+	const [googlePassword, setGooglePassword] = useState("");
+	const [pairingEmoji, setPairingEmoji] = useState("");
   const [isPollingQR, setIsPollingQR] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
   const autoConnectFiredRef = useRef(false);
@@ -117,7 +124,8 @@ export function ProviderConfigForm({
   };
 
   // Providers with a dedicated connection flow in this form (they handle connect themselves).
-  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack";
+  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack" || provider.id === "googlemessages";
+  const usesQRCodeAuth = provider.id === "whatsapp";
 
   const handleSave = useCallback(async () => {
     setIsSaving(true);
@@ -150,19 +158,25 @@ export function ProviderConfigForm({
   }, [provider.id, provider.instanceId, currentInstanceID, values, instanceName, hasOwnConnectFlow, onRefresh, onClose, t, showToast]);
 
   const fetchQRCode = useCallback(async () => {
+	  // Google Messages uses account-cookie pairing and emoji confirmation, not QR.
+	  // Keep this guard even though only WhatsApp renders the QR card: reauth can
+	  // otherwise invoke this callback before the form has re-rendered.
+	  if (!usesQRCodeAuth) {
+		return;
+	  }
     try {
       // Use the current instanceID (either from provider or from creation)
       // Prefer provider.instanceId if available, otherwise use currentInstanceID
       const instanceID = provider.instanceId || currentInstanceID;
       console.log(`ProviderConfigForm.fetchQRCode: Fetching QR code for instanceID: ${instanceID} (provider.instanceId: ${provider.instanceId}, currentInstanceID: ${currentInstanceID})`);
-      
+
       // Don't try to fetch QR code if we don't have a valid instanceID
       // Valid instanceID should be in format "provider-number" (e.g., "whatsapp-1")
       if (!instanceID || !instanceID.includes('-')) {
         console.warn(`ProviderConfigForm.fetchQRCode: Skipping - Invalid instanceID ${instanceID}. Provider instanceId: ${provider.instanceId}`);
         return;
       }
-      
+
       const code = await GetProviderQRCode(instanceID);
       console.log(`ProviderConfigForm.fetchQRCode: QR code received: ${code ? 'yes' : 'no'}`);
       setQrCode(code ?? "");
@@ -171,9 +185,15 @@ export function ProviderConfigForm({
       console.error("ProviderConfigForm.fetchQRCode: Failed to fetch QR code:", error);
       setPollError(t("qr_code_fetch_error"));
     }
-  }, [currentInstanceID, provider.id, provider.instanceId, t]);
+  }, [currentInstanceID, provider.instanceId, t, usesQRCodeAuth]);
 
   const handleConnect = useCallback(async () => {
+	  // This function owns the QR-only flow. Never let a reauthentication action
+	  // route Google Messages through it, even if a stale modal callback fires.
+	  if (!usesQRCodeAuth) {
+		setIsPollingQR(false);
+		return;
+	  }
     setConnectState("connecting");
     setPollError(null);
     try {
@@ -182,23 +202,23 @@ export function ProviderConfigForm({
       const existingInstanceID = mode === "edit" && provider.instanceId ? provider.instanceId : "";
       const instanceID = await CreateProvider(provider.id, values, instanceName, existingInstanceID);
       console.log(`ProviderConfigForm.handleConnect: Created provider, instanceID=${instanceID}`);
-      
+
       // Update currentInstanceID BEFORE onRefresh to ensure it's available for any callbacks
       setCurrentInstanceID(instanceID);
       console.log(`ProviderConfigForm.handleConnect: Updated currentInstanceID to ${instanceID}`);
-      
+
       // Use a small delay to ensure state is updated before onRefresh triggers re-render
       await new Promise(resolve => setTimeout(resolve, 0));
-      
+
       await onRefresh();
       console.log(`ProviderConfigForm.handleConnect: Refreshed providers list`);
-      
+
       await ConnectProvider(instanceID);
       console.log(`ProviderConfigForm.handleConnect: Connected provider ${instanceID}`);
-      
+
       setConnectState("connected");
       setIsPollingQR(true);
-      
+
       // Fetch QR code directly with the new instanceID (don't use fetchQRCode from closure)
       try {
         console.log(`ProviderConfigForm.handleConnect: Fetching QR code for instanceID: ${instanceID}`);
@@ -215,7 +235,14 @@ export function ProviderConfigForm({
       setConnectState("idle");
       setPollError(t("provider_connect_error"));
     }
-  }, [provider.id, provider.instanceId, values, instanceName, mode, onRefresh, t]);
+  }, [provider.id, provider.instanceId, values, instanceName, mode, onRefresh, t, usesQRCodeAuth]);
+
+  useEffect(() => {
+	if (!usesQRCodeAuth) {
+		setIsPollingQR(false);
+		setQrCode("");
+	}
+  }, [usesQRCodeAuth]);
 
   useEffect(() => {
     if (!isPollingQR) {
@@ -230,12 +257,28 @@ export function ProviderConfigForm({
   // Auto-trigger the connect flow when opened via "Re-authenticate" for QR-based providers.
   // Only fires once on mount (guarded by ref) to avoid re-triggering on re-renders.
   useEffect(() => {
-    if (!autoConnect || autoConnectFiredRef.current || Object.keys(schema).length > 0) return;
+    if (!autoConnect || !usesQRCodeAuth || autoConnectFiredRef.current || Object.keys(schema).length > 0) return;
     autoConnectFiredRef.current = true;
     handleConnect();
-  }, [autoConnect, handleConnect, schema]);
+  }, [autoConnect, handleConnect, schema, usesQRCodeAuth]);
 
   const hasFields = Object.keys(schema).length > 0;
+
+  const handleRefresh = useCallback(async () => {
+    const instanceID = provider.instanceId || currentInstanceID;
+    if (!instanceID) return;
+
+    setIsRefreshing(true);
+    try {
+      await SyncProvider(instanceID);
+      showToast(t("providers_modal_sync"), "success");
+    } catch (error) {
+      console.error("Failed to refresh provider:", error);
+      showToast(t("providers_modal_sync_error_label"), "error");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [currentInstanceID, provider.instanceId, showToast, t]);
 
   return (
     <div className="space-y-4">
@@ -243,8 +286,24 @@ export function ProviderConfigForm({
         <Button variant="ghost" onClick={onBack} className="mb-2 px-0 text-muted-foreground">
           ← {t("back")}
         </Button>
-        <h2 className="text-xl font-semibold">{provider.name}</h2>
-        <p className="text-sm text-muted-foreground">{provider.description}</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">{provider.name}</h2>
+            <p className="text-sm text-muted-foreground">{provider.description}</p>
+          </div>
+          {mode === "edit" && (provider.instanceId || currentInstanceID) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-2"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              {isRefreshing ? t("providers_modal_syncing") : t("providers_modal_sync")}
+            </Button>
+          )}
+        </div>
       </div>
 
       <Card>
@@ -346,6 +405,98 @@ export function ProviderConfigForm({
       </Card>
       )}
 
+      {provider.id === "googlemessages" && (
+      <Card>
+        <CardHeader>
+          <CardTitle>Connexion Google</CardTitle>
+          <CardDescription>
+            Loom ouvre un navigateur Chrome, saisit vos identifiants et récupère automatiquement les cookies de session. Si la validation en deux étapes est activée, complétez-la dans la fenêtre Chrome qui apparaît.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!pairingEmoji ? (
+            <>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Adresse e-mail Google</label>
+                <Input
+                  type="email"
+                  value={googleEmail}
+                  onChange={(e) => setGoogleEmail(e.target.value)}
+                  placeholder="exemple@gmail.com"
+                  autoComplete="email"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Mot de passe</label>
+                <Input
+                  type="password"
+                  value={googlePassword}
+                  onChange={(e) => setGooglePassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                />
+              </div>
+              <Button
+                disabled={isSaving || !googleEmail.trim() || !googlePassword.trim()}
+                onClick={async () => {
+                  setIsSaving(true);
+                  try {
+                    let instanceID = provider.instanceId || currentInstanceID;
+                    if (!instanceID) {
+                      instanceID = await CreateProviderWithOptions(provider.id, {}, instanceName, "", true);
+                      setCurrentInstanceID(instanceID);
+                    }
+                    const emoji = await AutoPairGoogleMessages(instanceID, googleEmail, googlePassword);
+                    setPairingEmoji(emoji);
+                    setGoogleEmail("");
+                    setGooglePassword("");
+                  } catch (error) {
+                    console.error("Failed to start Google Messages pairing:", error);
+                    showToast(String(error) || "Impossible de démarrer l’appairage Google Messages", "error");
+                  } finally {
+                    setIsSaving(false);
+                  }
+                }}
+              >
+                {isSaving ? "Ouverture du navigateur…" : "Démarrer l’appairage"}
+              </Button>
+            </>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-center text-5xl" aria-label="Pairing emoji">{pairingEmoji}</p>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <ol className="list-decimal space-y-1 pl-5">
+                  <li>Déverrouillez le téléphone Android et ouvrez Google Messages.</li>
+                  <li>Dans la demande d’appairage de compte Google, sélectionnez <strong className="text-foreground">{pairingEmoji}</strong>.</li>
+                  <li>Revenez ici puis cliquez sur « J’ai confirmé l’emoji ».</li>
+                </ol>
+                <p>Si aucune demande n’apparaît, laissez Google Messages ouvert quelques secondes puis recommencez l’appairage.</p>
+              </div>
+              <Button
+                disabled={isSaving}
+                onClick={async () => {
+                  setIsSaving(true);
+                  try {
+                    const instanceID = provider.instanceId || currentInstanceID;
+                    await CompleteGoogleMessagesLogin(instanceID);
+                    setPairingEmoji("");
+                    await onRefresh();
+                    SyncProvider(instanceID).catch((error) => console.error("Failed to sync Google Messages:", error));
+                    if (onClose) onClose();
+                  } catch (error) {
+                    console.error("Failed to complete Google Messages pairing:", error);
+                    showToast("Google Messages pairing was not completed", "error");
+                  } finally {
+                    setIsSaving(false);
+                  }
+                }}
+              >J’ai confirmé l’emoji</Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      )}
+
       {provider.id === "slack" && (
         <Card>
           <CardHeader>
@@ -355,11 +506,11 @@ export function ProviderConfigForm({
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Button 
+            <Button
               onClick={async () => {
                 // Disable button immediately to prevent double-clicks
                 setIsSaving(true);
-                
+
                 try {
                   // Filter out empty values - only save fields that have been filled
                   const filteredValues: Record<string, string> = {};
@@ -368,27 +519,27 @@ export function ProviderConfigForm({
                       filteredValues[key] = value;
                     }
                   }
-                  
+
                   // Use existing instanceID if available (from provider or from currentInstanceID if we just saved)
                   // This prevents creating duplicate instances when clicking "Connect" after "Save"
                   const existingInstanceID = provider.instanceId || currentInstanceID || "";
                   const instanceID = await CreateProvider(provider.id, filteredValues, instanceName, existingInstanceID);
-                  
+
                   // Update currentInstanceID so handleSave can use it if called later
                   setCurrentInstanceID(instanceID);
-                  
+
                   // Connect the provider
                   await ConnectProvider(instanceID);
-                  
+
                   // Refresh to update the UI
                   await onRefresh();
-                  
+
                   // Close the modal IMMEDIATELY after connecting
                   // This prevents double-clicks and shows the sync footer
                   if (onClose) {
                     onClose();
                   }
-                  
+
                   // Start initial sync AFTER closing the modal
                   // This runs in the background and the footer will show the progress
                   // Note: The sync-status event listener in ChatLayout will set isSyncing=true
@@ -414,4 +565,3 @@ export function ProviderConfigForm({
     </div>
   );
 }
-

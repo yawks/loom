@@ -1,4 +1,6 @@
 import { MessageCircle, TestTube } from "lucide-react";
+import googleChatIcon from "@/assets/google-chat.svg";
+import googleMessagesIcon from "@/assets/google-messages.svg";
 
 interface ProtocolIconProps {
   protocol: string;
@@ -38,6 +40,14 @@ export function ProtocolIcon({ protocol, className = "", size = 20 }: ProtocolIc
         <path fill="#E01E5A" d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
       </svg>
     );
+  }
+
+  if (protocolLower === "googlemessages") {
+    return <img src={googleMessagesIcon} alt="Google Messages" className={className} width={size} height={size} />;
+  }
+
+  if (protocolLower === "googlechat") {
+    return <img src={googleChatIcon} alt="Google Chat" className={className} width={size} height={size} />;
   }
 
   if (protocolLower === "mock") {
