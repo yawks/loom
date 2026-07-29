@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -456,6 +457,24 @@ func (a *App) startup(ctx context.Context) {
 		},
 	}, func() core.Provider {
 		return providers.NewGoogleMessagesProvider()
+	})
+
+	a.providerManager.RegisterProvider("teams", core.ProviderInfo{
+		ID:          "teams",
+		Name:        "Microsoft Teams",
+		Description: "Microsoft Teams for work and school accounts",
+		ConfigSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"tenant": map[string]interface{}{
+					"type":        "string",
+					"title":       "Tenant (optional)",
+					"description": "Tenant GUID or verified domain. Leave empty to use your default organization.",
+				},
+			},
+		},
+	}, func() core.Provider {
+		return providers.NewTeamsProvider()
 	})
 
 	// Load and restore providers
@@ -1792,6 +1811,36 @@ func (a *App) CompleteGoogleMessagesLogin(instanceID string) error {
 	return nil
 }
 
+type teamsBrowserLogin interface {
+	LoginWithBrowser(context.Context, string) error
+}
+
+// AutoLoginTeams opens Chrome on Microsoft's first-party device login page.
+// Microsoft handles credentials, MFA and Conditional Access in the browser;
+// Loom receives OAuth tokens only after the user approves the login.
+func (a *App) AutoLoginTeams(instanceID, tenant string) error {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return err
+	}
+	login, ok := provider.(teamsBrowserLogin)
+	if !ok {
+		return fmt.Errorf("provider %s does not support Microsoft browser login", instanceID)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+	defer cancel()
+	if err := login.LoginWithBrowser(ctx, tenant); err != nil {
+		return err
+	}
+	if err := a.SetActiveProvider(instanceID); err != nil {
+		return fmt.Errorf("activate Microsoft Teams provider: %w", err)
+	}
+	if a.ctx != nil {
+		a.startEventListenerForProvider(a.ctx, instanceID, provider)
+	}
+	return nil
+}
+
 // SyncProvider triggers a synchronization for a specific provider.
 // If providerID is empty, syncs the active provider.
 func (a *App) SyncProvider(providerID string) error {
@@ -2144,15 +2193,28 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 		}
 	}
 
-	// 3. For missing IDs, try to fetch from provider API using GetContactName
-	// This uses the centralized function in each provider (lookupDisplayName for WhatsApp, resolveSlackUserName for Slack)
-	if len(missingIDs) > 0 && a.getActiveProvider() != nil {
+	// 3. For missing IDs, try every connected provider. A conversation can be
+	// displayed while another provider is active, notably for Teams reactions.
+	if len(missingIDs) > 0 {
 		for _, userID := range missingIDs {
 			if _, exists := result[userID]; !exists {
-				// Use the provider's GetContactName method which uses the centralized lookup function
-				name, err := a.getActiveProvider().GetContactName(userID)
-				if err == nil && name != "" && name != userID {
-					result[userID] = name
+				instanceIDs := a.providerManager.GetAllInstanceIDs()
+				if strings.HasPrefix(strings.ToLower(userID), "8:") {
+					sort.SliceStable(instanceIDs, func(i, j int) bool {
+						return strings.HasPrefix(instanceIDs[i], "teams-") &&
+							!strings.HasPrefix(instanceIDs[j], "teams-")
+					})
+				}
+				for _, instanceID := range instanceIDs {
+					provider, err := a.providerManager.GetProvider(instanceID)
+					if err != nil || !provider.IsAuthenticated() {
+						continue
+					}
+					name, err := provider.GetContactName(userID)
+					if err == nil && name != "" && name != userID {
+						result[userID] = name
+						break
+					}
 				}
 			}
 		}
@@ -2212,6 +2274,33 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 			return "", fmt.Errorf("googlechat file unavailable: %w", lastErr)
 		}
 		return "", fmt.Errorf("no googlechat provider available for %s", path)
+	}
+
+	// Teams and SharePoint file URLs require the authenticated Teams client.
+	type teamsFileDataProvider interface {
+		GetTeamsFileData(string) (string, error)
+	}
+	var teamsErr error
+	for _, instanceID := range a.providerManager.GetAllInstanceIDs() {
+		p, err := a.providerManager.GetProvider(instanceID)
+		if err != nil {
+			continue
+		}
+		teamsProvider, ok := p.(teamsFileDataProvider)
+		if !ok {
+			continue
+		}
+		data, err := teamsProvider.GetTeamsFileData(path)
+		if err == nil && data != "" {
+			return data, nil
+		}
+		teamsErr = err
+	}
+	if teamsErr != nil && (strings.Contains(path, "teams.microsoft.com") ||
+		strings.Contains(path, ".skype.com") ||
+		strings.Contains(path, ".sharepoint.com") ||
+		strings.Contains(path, ".sharepoint-df.com")) {
+		return "", fmt.Errorf("teams file unavailable: %w", teamsErr)
 	}
 
 	// Check if it's a URL (starts with http/https)

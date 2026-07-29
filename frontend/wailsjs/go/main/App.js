@@ -6,6 +6,10 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
+export function AutoLoginTeams(arg1, arg2) {
+  return window['go']['main']['App']['AutoLoginTeams'](arg1, arg2);
+}
+
 export function AutoPairGoogleMessages(arg1) {
   return window['go']['main']['App']['AutoPairGoogleMessages'](arg1);
 }

@@ -1,0 +1,4 @@
+[submodule "teams/mautrix-teams"]
+	path = teams/mautrix-teams
+	url = https://github.com/yawks/mautrix-teams.git
+	branch = main

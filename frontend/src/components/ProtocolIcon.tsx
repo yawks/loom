@@ -50,6 +50,18 @@ export function ProtocolIcon({ protocol, className = "", size = 20 }: ProtocolIc
     return <img src={googleChatIcon} alt="Google Chat" className={className} width={size} height={size} />;
   }
 
+  if (protocolLower === "teams") {
+    return (
+      <svg viewBox="0 0 24 24" className={className} width={size} height={size} aria-label="Microsoft Teams">
+        <path fill="#5059C9" d="M9.5 6.5h8A2.5 2.5 0 0 1 20 9v7.5a4.5 4.5 0 0 1-9 0V8a1.5 1.5 0 0 0-1.5-1.5Z" />
+        <circle cx="16.5" cy="3.5" r="2.5" fill="#7B83EB" />
+        <path fill="#7B83EB" d="M13 8h8.5A2.5 2.5 0 0 1 24 10.5V16a4 4 0 0 1-4 4h-.7c.45-1.05.7-2.24.7-3.5V9c0-.35-.04-.68-.13-1H13Z" />
+        <rect x="0" y="5" width="14" height="14" rx="2" fill="#4B53BC" />
+        <path fill="white" d="M3 8h8v2H8v6H6v-6H3Z" />
+      </svg>
+    );
+  }
+
   if (protocolLower === "mock") {
     return (
       <TestTube

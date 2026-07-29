@@ -1,8 +1,6 @@
 module Loom
 
-go 1.26
-
-toolchain go1.26.2
+go 1.26.2
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
@@ -16,6 +14,7 @@ require (
 	github.com/slack-go/slack v0.17.3
 	github.com/wailsapp/wails/v2 v2.13.0
 	go.mau.fi/mautrix-gmessages v0.2605.1-0.20260719133510-b8c77b3deec1
+	go.mau.fi/mautrix-teams v0.0.0
 	go.mau.fi/whatsmeow v0.0.0-20260416104156-3ff20cd3462a
 	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0
@@ -49,8 +48,8 @@ require (
 	github.com/leaanthony/gosod v1.0.4 // indirect
 	github.com/leaanthony/slicer v1.6.0 // indirect
 	github.com/leaanthony/u v1.1.1 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.21 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
@@ -75,6 +74,8 @@ require (
 )
 
 replace go.mau.fi/mautrix-googlechat => ./third_party/mautrix-googlechat
+
+replace go.mau.fi/mautrix-teams => ./teams/mautrix-teams
 
 // Whatsmeow currently requires the pre-0.9.12 UpgradeTable API. Keep this
 // version until both upstream dependencies converge on a compatible release.

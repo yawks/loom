@@ -1,0 +1,1011 @@
+// Package teams adapts the Microsoft Teams web protocol for Loom.
+package teams
+
+import (
+	"Loom/pkg/core"
+	"Loom/pkg/db"
+	"Loom/pkg/models"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html"
+	"mime"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog"
+	"go.mau.fi/mautrix-teams/pkg/msteams"
+)
+
+const providerID = "teams"
+
+type session struct {
+	TenantID     string `json:"tenant_id"`
+	UserMRI      string `json:"user_mri"`
+	DisplayName  string `json:"display_name,omitempty"`
+	RefreshToken string `json:"refresh_token"`
+	AuthToken    string `json:"auth_token,omitempty"`
+	SkypeToken   string `json:"skype_token,omitempty"`
+	ChatSvcBase  string `json:"chat_service_base,omitempty"`
+}
+
+type Provider struct {
+	unsupportedProvider
+
+	mu             sync.RWMutex
+	fileMu         sync.RWMutex
+	config         core.ProviderConfig
+	instance       string
+	session        *session
+	client         *msteams.Client
+	cancel         context.CancelFunc
+	eventChan      chan core.ProviderEvent
+	sharedFiles    map[string]msteams.SharedFile
+	attachmentURLs map[string]struct{}
+	avatarFailures map[string]struct{}
+}
+
+var _ core.Provider = (*Provider)(nil)
+
+func NewProvider() *Provider {
+	return &Provider{
+		config:         make(core.ProviderConfig),
+		eventChan:      make(chan core.ProviderEvent, 500),
+		sharedFiles:    make(map[string]msteams.SharedFile),
+		attachmentURLs: make(map[string]struct{}),
+		avatarFailures: make(map[string]struct{}),
+	}
+}
+
+func (p *Provider) Init(config core.ProviderConfig) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = config
+	p.instance, _ = config.GetString("_instance_id")
+	if p.instance == "" {
+		p.instance = providerID + "-1"
+	}
+	return p.loadSessionLocked()
+}
+
+func (p *Provider) GetConfig() core.ProviderConfig {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(core.ProviderConfig, len(p.config))
+	for key, value := range p.config {
+		out[key] = value
+	}
+	return out
+}
+
+func (p *Provider) SetConfig(config core.ProviderConfig) error {
+	if config == nil {
+		return fmt.Errorf("%s: configuration cannot be nil", providerID)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = config
+	if instance, ok := config.GetString("_instance_id"); ok && instance != "" {
+		p.instance = instance
+	}
+	return nil
+}
+
+func (p *Provider) IsAuthenticated() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.session != nil && p.session.TenantID != "" && p.session.UserMRI != "" && p.session.RefreshToken != ""
+}
+
+func (p *Provider) Connect() error {
+	p.mu.Lock()
+	if p.session == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("%s: Microsoft login is required", providerID)
+	}
+	if p.client != nil && p.client.IsLoggedIn() {
+		p.mu.Unlock()
+		return nil
+	}
+	s := *p.session
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID:     s.TenantID,
+		UserMRI:      s.UserMRI,
+		RefreshToken: s.RefreshToken,
+		AuthToken:    s.AuthToken,
+		SkypeToken:   s.SkypeToken,
+		Endpoints:    msteams.Endpoints{ChatSvcBase: s.ChatSvcBase},
+		Logger:       zerolog.Nop(),
+	})
+	if err != nil {
+		p.mu.Unlock()
+		return fmt.Errorf("%s: create client: %w", providerID, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.client = client
+	p.cancel = cancel
+	p.mu.Unlock()
+
+	if err := client.Connect(ctx); err != nil {
+		cancel()
+		_ = client.Close()
+		p.mu.Lock()
+		if p.client == client {
+			p.client = nil
+			p.cancel = nil
+		}
+		p.mu.Unlock()
+		return fmt.Errorf("%s: connect: %w", providerID, err)
+	}
+
+	p.mu.Lock()
+	p.updateSessionFromClientLocked(client)
+	err = p.saveSessionLocked()
+	p.mu.Unlock()
+	if err != nil {
+		_ = p.Disconnect()
+		return fmt.Errorf("%s: save refreshed session: %w", providerID, err)
+	}
+	go p.forwardEvents(ctx, client)
+	return nil
+}
+
+func (p *Provider) Disconnect() error {
+	p.mu.Lock()
+	client, cancel := p.client, p.cancel
+	p.client, p.cancel = nil, nil
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		return client.Close()
+	}
+	return nil
+}
+
+func (p *Provider) StreamEvents() (<-chan core.ProviderEvent, error) {
+	return p.eventChan, nil
+}
+
+func (p *Provider) SyncHistory(since time.Time) error {
+	client, instance, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingContacts, Message: "Fetching Microsoft Teams conversations", Progress: 0})
+	chats, err := client.ListChats(context.Background())
+	if err != nil {
+		p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusError, Message: "Unable to fetch Microsoft Teams conversations", Progress: -1})
+		return fmt.Errorf("%s: list chats: %w", providerID, err)
+	}
+	if err := p.removeVirtualConversations(); err != nil {
+		return err
+	}
+	skipped := 0
+	for index, chat := range chats {
+		if chat.ID == "" || isVirtualTeamsThread(chat.ID) {
+			continue
+		}
+		// Resolve the roster before converting history so stored messages get
+		// human sender names on the first pass, not only after the chat is saved.
+		account := p.linkedAccount(client, chat)
+		p.emit(core.SyncStatusEvent{
+			InstanceID: instance, Status: core.SyncStatusFetchingHistory,
+			ConversationID: chat.ID, Message: "Syncing Microsoft Teams history",
+			Progress: (index * 100) / max(1, len(chats)),
+		})
+		messages, err := p.GetConversationHistory(chat.ID, 0, nil, &since)
+		if err != nil {
+			if isSkippableHistoryError(err) {
+				skipped++
+				continue
+			}
+			return err
+		}
+		account = p.linkedAccount(client, chat)
+		if isTechnicalConversationName(account.Username, chat.ID) {
+			if historyName := participantNamesFromMessages(messages, client.UserMRI()); historyName != "" {
+				account.Username = historyName
+			} else if storedName := participantNamesFromStoredMessages(chat.ID, client.UserMRI()); storedName != "" {
+				account.Username = storedName
+			}
+		}
+		if err := p.storeConversation(account); err != nil {
+			return err
+		}
+		if err := p.repairStoredSenderNames(client, chat.ID, chat.Members); err != nil {
+			return err
+		}
+		if err := p.storeMessages(messages); err != nil {
+			return err
+		}
+		if len(messages) > 0 {
+			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: messages})
+		}
+	}
+	completionMessage := "Microsoft Teams sync completed"
+	if skipped > 0 {
+		completionMessage = fmt.Sprintf("Microsoft Teams sync completed (%d inaccessible conversation(s) skipped)", skipped)
+	}
+	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: completionMessage, Progress: 100})
+	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
+	return nil
+}
+
+func isSkippableHistoryError(err error) bool {
+	return errors.Is(err, msteams.ErrForbidden) || errors.Is(err, msteams.ErrNotFound)
+}
+
+func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	chats, err := client.ListChats(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("%s: list chats: %w", providerID, err)
+	}
+	out := make([]models.LinkedAccount, 0, len(chats))
+	for _, chat := range chats {
+		if isVirtualTeamsThread(chat.ID) {
+			continue
+		}
+		out = append(out, p.linkedAccount(client, chat))
+	}
+	return out, nil
+}
+
+func (p *Provider) GetConversationHistory(conversationID string, limit int, before, since *time.Time) ([]models.Message, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	if limit < 0 {
+		return nil, fmt.Errorf("%s: limit must not be negative", providerID)
+	}
+	maxMessages := limit
+	if maxMessages == 0 {
+		maxMessages = 2000
+	}
+	var cursor string
+	var beforeValue time.Time
+	if before != nil {
+		beforeValue = *before
+	}
+	out := make([]models.Message, 0, min(maxMessages, 200))
+	for len(out) < maxMessages {
+		pageSize := min(100, maxMessages-len(out))
+		result, err := client.FetchHistory(context.Background(), conversationID, msteams.HistoryOptions{
+			Before: beforeValue, Limit: pageSize, Cursor: cursor,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%s: fetch history for %s: %w", providerID, conversationID, err)
+		}
+		senders := make([]string, 0, len(result.Messages))
+		for _, remote := range result.Messages {
+			if remote.From != "" && remote.From != client.UserMRI() && client.CachedDisplayName(remote.From) == "" {
+				senders = append(senders, remote.From)
+			}
+		}
+		p.cacheDisplayNames(client, senders)
+		for _, remote := range result.Messages {
+			message := p.toModelMessage(client, remote, conversationID)
+			if before != nil && !message.Timestamp.Before(*before) {
+				continue
+			}
+			if since != nil && message.Timestamp.Before(*since) {
+				continue
+			}
+			out = append(out, message)
+		}
+		if !result.HasMore || result.Next == "" || result.Next == cursor || len(result.Messages) == 0 {
+			break
+		}
+		if since != nil {
+			oldest := result.Messages[len(result.Messages)-1].Created
+			if !oldest.IsZero() && oldest.Before(*since) {
+				break
+			}
+		}
+		cursor = result.Next
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
+	p.enrichReplyMetadata(out)
+	return out, nil
+}
+
+func (p *Provider) SendMessage(conversationID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	if file != nil {
+		return nil, unsupported("SendMessage with attachment")
+	}
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	opts := msteams.SendOptions{}
+	if threadID != nil {
+		opts.ParentID = *threadID
+	}
+	id, err := client.SendMessage(context.Background(), conversationID, msteams.MatrixToTeamsHTML(text), opts)
+	if err != nil {
+		return nil, fmt.Errorf("%s: send message: %w", providerID, err)
+	}
+	now := time.Now()
+	message := &models.Message{
+		ProtocolConvID: conversationID, ProtocolMsgID: id,
+		SenderID: client.UserMRI(), SenderName: p.displayName(),
+		Body: text, Timestamp: now, IsFromMe: true,
+	}
+	if threadID != nil {
+		message.ThreadID = threadID
+	}
+	if err := p.storeMessages([]models.Message{*message}); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
+func (p *Provider) SendReply(conversationID, text, quotedMessageID string) (*models.Message, error) {
+	if quotedMessageID == "" {
+		return nil, fmt.Errorf("%s: quoted message ID is empty", providerID)
+	}
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	id, err := client.SendMessage(context.Background(), conversationID, msteams.MatrixToTeamsHTML(text), msteams.SendOptions{ParentID: quotedMessageID})
+	if err != nil {
+		return nil, fmt.Errorf("%s: send reply: %w", providerID, err)
+	}
+	now := time.Now()
+	message := &models.Message{
+		ProtocolConvID: conversationID, ProtocolMsgID: id,
+		SenderID: client.UserMRI(), SenderName: p.displayName(), Body: text,
+		Timestamp: now, IsFromMe: true, QuotedMessageID: &quotedMessageID,
+	}
+	replies := []models.Message{*message}
+	p.enrichReplyMetadata(replies)
+	*message = replies[0]
+	if err := p.storeMessages(replies); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
+func (p *Provider) SendThreadReply(conversationID, text, threadID, quotedMessageID string) (*models.Message, error) {
+	message, err := p.SendReply(conversationID, text, quotedMessageID)
+	if message != nil {
+		message.ThreadID = &threadID
+	}
+	return message, err
+}
+
+func (p *Provider) EditMessage(conversationID, messageID, newText string) (*models.Message, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	if err := client.EditMessage(context.Background(), conversationID, messageID, msteams.MatrixToTeamsHTML(newText), msteams.SendOptions{}); err != nil {
+		return nil, fmt.Errorf("%s: edit message: %w", providerID, err)
+	}
+	now := time.Now()
+	return &models.Message{ProtocolConvID: conversationID, ProtocolMsgID: messageID, Body: newText, IsEdited: true, EditedTimestamp: &now}, nil
+}
+
+func (p *Provider) DeleteMessage(conversationID, messageID string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	return client.DeleteMessage(context.Background(), conversationID, messageID)
+}
+
+func (p *Provider) AddReaction(conversationID, messageID, emoji string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	return client.AddReaction(context.Background(), conversationID, messageID, emoji)
+}
+
+func (p *Provider) RemoveReaction(conversationID, messageID, emoji string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	return client.RemoveReaction(context.Background(), conversationID, messageID, emoji)
+}
+
+func (p *Provider) SendTypingIndicator(conversationID string, isTyping bool) error {
+	if !isTyping {
+		return nil
+	}
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	return client.SendTyping(context.Background(), conversationID)
+}
+
+func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	return client.MarkRead(context.Background(), conversationID, messageID)
+}
+
+func (p *Provider) MarkConversationAsRead(conversationID string) error {
+	if db.DB == nil {
+		return nil
+	}
+	var message models.Message
+	if err := db.DB.Where("protocol_conv_id = ?", conversationID).Order("timestamp DESC").First(&message).Error; err != nil {
+		return err
+	}
+	return p.MarkMessageAsRead(conversationID, message.ProtocolMsgID)
+}
+
+func (p *Provider) GetContactName(contactID string) (string, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return "", err
+	}
+	if cached := client.CachedDisplayName(contactID); cached != "" {
+		return cached, nil
+	}
+	user, err := client.GetUser(context.Background(), contactID)
+	if err != nil {
+		return "", err
+	}
+	return user.DisplayName, nil
+}
+
+func (p *Provider) RefreshContact(contactID string) error {
+	_, err := p.GetContactName(contactID)
+	return err
+}
+
+func (p *Provider) GetCapabilities() core.Capabilities {
+	return core.Capabilities{
+		SupportsThreads: true, SupportsReactions: true,
+		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
+		SupportsEditMessage: true, SupportsReadReceipts: true,
+		NativeEmojiReactions: true,
+	}
+}
+
+func (p *Provider) Cleanup() error {
+	_ = p.Disconnect()
+	path := p.sessionPath()
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (p *Provider) connectedClient() (*msteams.Client, string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.client == nil || !p.client.IsLoggedIn() {
+		return nil, p.instance, fmt.Errorf("%s: not connected", providerID)
+	}
+	return p.client, p.instance, nil
+}
+
+func (p *Provider) linkedAccount(client *msteams.Client, chat msteams.Chat) models.LinkedAccount {
+	name := strings.TrimSpace(chat.Topic)
+	isGroup := chat.Type != msteams.ChatType1on1
+	if name == "" || isTechnicalConversationName(name, chat.ID) {
+		name = p.participantDisplayName(client, chat)
+	}
+	if name == "" {
+		if isGroup {
+			name = "Group conversation"
+		} else {
+			name = chat.ID
+		}
+	}
+	return models.LinkedAccount{
+		Protocol: providerID, ProviderInstanceID: p.instance,
+		UserID: chat.ID, Username: name, AvatarURL: p.conversationAvatar(client, chat), IsGroup: isGroup,
+		Status: "offline", ConversationID: chat.ID,
+	}
+}
+
+func isVirtualTeamsThread(threadID string) bool {
+	switch strings.ToLower(strings.TrimSpace(threadID)) {
+	case "48:calllogs", "48:mentions", "48:notifications", "48:notes":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTechnicalConversationName(name, threadID string) bool {
+	name = strings.TrimSpace(name)
+	return name == "" || strings.EqualFold(name, strings.TrimSpace(threadID)) ||
+		strings.HasPrefix(strings.ToLower(name), "19:")
+}
+
+func participantNamesFromMessages(messages []models.Message, selfMRI string) string {
+	names := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, message := range messages {
+		name := strings.TrimSpace(message.SenderName)
+		if name == "" || strings.EqualFold(message.SenderID, selfMRI) || isTechnicalConversationName(name, message.SenderID) {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func participantNamesFromStoredMessages(conversationID, selfMRI string) string {
+	if db.DB == nil || conversationID == "" {
+		return ""
+	}
+	var rows []struct {
+		SenderID   string
+		SenderName string
+	}
+	if err := db.DB.Model(&models.Message{}).
+		Select("sender_id, sender_name").
+		Where("protocol_conv_id = ? AND sender_name <> ''", conversationID).
+		Group("sender_id, sender_name").
+		Scan(&rows).Error; err != nil {
+		return ""
+	}
+	messages := make([]models.Message, 0, len(rows))
+	for _, row := range rows {
+		messages = append(messages, models.Message{SenderID: row.SenderID, SenderName: row.SenderName})
+	}
+	return participantNamesFromMessages(messages, selfMRI)
+}
+
+func (p *Provider) participantDisplayName(client *msteams.Client, chat msteams.Chat) string {
+	members := chat.Members
+	if len(members) == 0 {
+		if detailed, err := client.GetChat(context.Background(), chat.ID); err == nil {
+			members = detailed.Members
+		}
+	}
+	mris := make([]string, 0, len(members))
+	for _, member := range members {
+		if member.MRI != "" && !strings.EqualFold(member.MRI, client.UserMRI()) {
+			mris = append(mris, member.MRI)
+			if member.DisplayName != "" {
+				client.CacheDisplayName(member.MRI, member.DisplayName)
+			}
+		}
+	}
+	if len(mris) == 0 {
+		return ""
+	}
+
+	p.cacheDisplayNames(client, mris)
+
+	names := make([]string, 0, len(mris))
+	seen := make(map[string]struct{}, len(mris))
+	for _, mri := range mris {
+		name := strings.TrimSpace(client.CachedDisplayName(mri))
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func (p *Provider) cacheDisplayNames(client *msteams.Client, mris []string) {
+	if len(mris) == 0 {
+		return
+	}
+	unique := make([]string, 0, len(mris))
+	seen := make(map[string]struct{}, len(mris))
+	for _, mri := range mris {
+		key := mriLookupKey(mri)
+		if key == "" || client.CachedDisplayName(mri) != "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, mri)
+	}
+	if len(unique) == 0 {
+		return
+	}
+	profiles, err := client.FetchShortProfiles(context.Background(), unique)
+	if err != nil {
+		return
+	}
+	byMRI := make(map[string]*msteams.User, len(profiles))
+	for index := range profiles {
+		profile := &profiles[index]
+		if profile.DisplayName == "" {
+			continue
+		}
+		byMRI[mriLookupKey(profile.MRI)] = profile
+		if profile.ObjectID != "" {
+			byMRI[mriLookupKey(profile.ObjectID)] = profile
+		}
+		client.CacheUserProfile(profile)
+	}
+	for index, mri := range unique {
+		profile := byMRI[mriLookupKey(mri)]
+		// Some tenant variants omit the MRI and preserve request order.
+		if profile == nil && len(profiles) == len(unique) && profiles[index].DisplayName != "" {
+			profile = &profiles[index]
+		}
+		if profile != nil {
+			client.CacheDisplayName(mri, profile.DisplayName)
+			continue
+		}
+		// Guests and federated users are sometimes omitted from the batch
+		// response but can still be resolved through their detailed people card.
+		if detailed, err := client.GetUser(context.Background(), mri); err == nil && detailed.DisplayName != "" {
+			client.CacheUserProfile(detailed)
+			client.CacheDisplayName(mri, detailed.DisplayName)
+		}
+	}
+}
+
+func mriLookupKey(mri string) string {
+	value := strings.ToLower(strings.TrimSpace(mri))
+	value = strings.TrimPrefix(value, "8:orgid:")
+	return strings.ReplaceAll(value, "-", "")
+}
+
+func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message, conversationID string) models.Message {
+	if isTeamsCallMessage(remote) {
+		return p.toCallModelMessage(client, remote, conversationID)
+	}
+	body := remote.Content
+	embeddedAttachments := msteams.ExtractAMSAttachments(remote.Content)
+	if remote.ContentType == "html" || strings.Contains(strings.ToLower(remote.MessageType), "richtext") {
+		if remote.ParentID == "" {
+			remote.ParentID = msteams.ExtractReplyParent(remote.Content)
+		}
+		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(remote.Content))
+		body = teamsHTMLToMarkdown(cleanContent)
+	}
+	timestamp := remote.Created
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	senderName := strings.TrimSpace(remote.DisplayName)
+	if senderName != "" && !isTechnicalConversationName(senderName, remote.From) {
+		client.CacheDisplayName(remote.From, senderName)
+	} else {
+		senderName = client.CachedDisplayName(remote.From)
+	}
+	message := models.Message{
+		ProtocolConvID: conversationID, ProtocolMsgID: remote.ID,
+		SenderID: remote.From, SenderName: senderName,
+		SenderAvatarURL: p.cachedAvatar(client, remote.From),
+		Body:            body, Timestamp: timestamp, IsFromMe: remote.From == client.UserMRI(),
+	}
+	if remote.ParentID != "" {
+		parent := remote.ParentID
+		message.QuotedMessageID = &parent
+	}
+	attachments := make([]models.Attachment, 0, len(remote.Attachments)+len(remote.SharedFiles))
+	seenAttachmentURLs := make(map[string]struct{})
+	for _, attachment := range remote.Attachments {
+		p.rememberAttachmentURL(attachment.URL)
+		seenAttachmentURLs[attachment.URL] = struct{}{}
+		attachmentType, contentType := teamsAttachmentType(attachment.Name, attachment.ContentType)
+		attachments = append(attachments, models.Attachment{
+			Type: attachmentType, URL: attachment.URL, FileName: attachment.Name,
+			FileSize: attachment.Size, MimeType: contentType,
+		})
+	}
+	for _, file := range remote.SharedFiles {
+		fileURL := firstNonEmpty(file.ShareURL, file.FileURL)
+		p.rememberSharedFile(fileURL, file)
+		seenAttachmentURLs[fileURL] = struct{}{}
+		attachmentType, contentType := teamsAttachmentType(file.Name, "")
+		attachments = append(attachments, models.Attachment{
+			Type: attachmentType, URL: fileURL, FileName: file.Name,
+			FileSize: file.Size, MimeType: contentType,
+		})
+	}
+	for _, embedded := range embeddedAttachments {
+		if embedded.URL == "" {
+			continue
+		}
+		if _, exists := seenAttachmentURLs[embedded.URL]; exists {
+			continue
+		}
+		p.rememberAttachmentURL(embedded.URL)
+		attachmentType, contentType := teamsAttachmentType(embedded.AltText, "")
+		if embedded.IsImage {
+			attachmentType = "image"
+		}
+		if embedded.IsVideo {
+			attachmentType = "video"
+		}
+		attachments = append(attachments, models.Attachment{
+			Type: attachmentType, URL: embedded.URL, FileName: embedded.AltText,
+			MimeType: contentType, Duration: uint32(embedded.Duration.Seconds()),
+		})
+	}
+	if len(attachments) > 0 {
+		if raw, err := json.Marshal(attachments); err == nil {
+			message.Attachments = string(raw)
+		}
+	}
+	for _, reaction := range remote.Reactions {
+		message.Reactions = append(message.Reactions, models.Reaction{
+			UserID: reaction.UserID, Emoji: msteams.DecodeReactionKey(reaction.Type),
+			CreatedAt: reaction.Time, UpdatedAt: reaction.Time,
+		})
+	}
+	return message
+}
+
+func teamsAttachmentType(name, contentType string) (string, string) {
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if contentType == "" {
+		contentType = mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	}
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+		return "image", contentType
+	case strings.HasPrefix(contentType, "video/"):
+		return "video", contentType
+	case strings.HasPrefix(contentType, "audio/"):
+		return "audio", contentType
+	default:
+		return "document", contentType
+	}
+}
+
+var (
+	callEventTypePattern   = regexp.MustCompile(`(?is)<callEventType>\s*([^<]+)\s*</callEventType>`)
+	callDisplayNamePattern = regexp.MustCompile(`(?is)<displayName>\s*([^<]+)\s*</displayName>`)
+	callDurationPattern    = regexp.MustCompile(`(?is)<duration>\s*(\d+)\s*</duration>`)
+	teamsMeetingURLPattern = regexp.MustCompile(`https://teams\.microsoft\.com/meet/[^\s<"'\\]+`)
+)
+
+func isTeamsCallMessage(message msteams.Message) bool {
+	if message.CallLog != nil {
+		return true
+	}
+	switch message.MessageType {
+	case "Event/Call", "RichText/Media_Call", "ThreadActivity/CallStarted",
+		"ThreadActivity/CallEnded", "ThreadActivity/CallRecordingFinished":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Provider) toCallModelMessage(client *msteams.Client, remote msteams.Message, conversationID string) models.Message {
+	message := models.Message{
+		ProtocolConvID: conversationID, ProtocolMsgID: remote.ID,
+		SenderID: remote.From, SenderName: client.CachedDisplayName(remote.From),
+		Timestamp: remote.Created, IsFromMe: remote.From == client.UserMRI(),
+		CallType: "scheduled_start", Body: "Call started",
+	}
+	if message.Timestamp.IsZero() {
+		message.Timestamp = time.Now()
+	}
+	eventType := strings.ToLower(remote.MessageType)
+	if match := callEventTypePattern.FindStringSubmatch(remote.Content); len(match) > 1 {
+		eventType = strings.ToLower(strings.TrimSpace(match[1]))
+	}
+	if strings.Contains(eventType, "ended") || strings.Contains(remote.Content, "<ended") {
+		message.CallType = "call_ended"
+		message.CallOutcome = "CONNECTED"
+		message.Body = "Call ended"
+	}
+	if remote.CallLog != nil {
+		message.CallOutcome = strings.ToUpper(remote.CallLog.State)
+		if remote.CallLog.State == "missed" {
+			message.CallType = "missed_voice"
+			message.CallOutcome = "MISSED"
+			message.Body = "Missed call"
+		}
+		if !remote.CallLog.EndTime.IsZero() && !remote.CallLog.ConnectTime.IsZero() {
+			seconds := int32(remote.CallLog.EndTime.Sub(remote.CallLog.ConnectTime).Seconds())
+			if seconds > 0 {
+				message.CallDurationSecs = &seconds
+			}
+		}
+	}
+	maxDuration := int64(0)
+	for _, match := range callDurationPattern.FindAllStringSubmatch(remote.Content, -1) {
+		if len(match) > 1 {
+			if seconds, err := strconv.ParseInt(match[1], 10, 32); err == nil && seconds > maxDuration {
+				maxDuration = seconds
+			}
+		}
+	}
+	if maxDuration > 0 {
+		seconds := int32(maxDuration)
+		message.CallDurationSecs = &seconds
+	}
+	participants := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, match := range callDisplayNamePattern.FindAllStringSubmatch(remote.Content, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(html.UnescapeString(match[1]))
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		participants = append(participants, name)
+	}
+	if len(participants) > 0 {
+		raw, _ := json.Marshal(participants)
+		message.CallParticipants = string(raw)
+	}
+	decodedContent := html.UnescapeString(remote.Content)
+	if match := teamsMeetingURLPattern.FindString(decodedContent); match != "" {
+		message.CallUrl = match
+	}
+	return message
+}
+
+func (p *Provider) forwardEvents(ctx context.Context, client *msteams.Client) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-client.Events():
+			if !ok {
+				return
+			}
+			p.handleRemoteEvent(client, event)
+		}
+	}
+}
+
+func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event) {
+	switch event.Type {
+	case msteams.EventTypeNewMessage, msteams.EventTypeEditMessage, msteams.EventTypeDeleteMessage, msteams.EventTypeCall:
+		if event.Message == nil {
+			return
+		}
+		message := p.toModelMessage(client, *event.Message, event.ThreadID)
+		messages := []models.Message{message}
+		p.enrichReplyMetadata(messages)
+		message = messages[0]
+		if event.Type == msteams.EventTypeEditMessage {
+			message.IsEdited = true
+			edited := event.Timestamp
+			message.EditedTimestamp = &edited
+		}
+		if event.Type == msteams.EventTypeDeleteMessage {
+			message.IsDeleted = true
+			deleted := event.Timestamp
+			message.DeletedTimestamp = &deleted
+		}
+		_ = p.storeMessages([]models.Message{message})
+		p.emit(core.MessageEvent{InstanceID: p.instance, Message: message})
+	case msteams.EventTypeTyping:
+		p.emit(core.TypingEvent{
+			InstanceID: p.instance, ConversationID: event.ThreadID,
+			UserID: event.TypingFrom, UserName: client.CachedDisplayName(event.TypingFrom),
+			IsTyping: !event.TypingStop,
+		})
+	case msteams.EventTypeChatUpdate:
+		p.emit(core.ContactStatusEvent{InstanceID: p.instance, UserID: "refresh", Status: "new_conversations_discovered"})
+	}
+}
+
+func (p *Provider) emit(event core.ProviderEvent) {
+	select {
+	case p.eventChan <- event:
+	default:
+	}
+}
+
+func (p *Provider) displayName() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.session == nil {
+		return ""
+	}
+	return p.session.DisplayName
+}
+
+func (p *Provider) updateSessionFromClientLocked(client *msteams.Client) {
+	if p.session == nil {
+		return
+	}
+	p.session.RefreshToken = client.SnapshotRefresh()
+	auth, skype := client.SnapshotTokens()
+	if auth != nil {
+		p.session.AuthToken = auth.Value
+	}
+	if skype != nil {
+		p.session.SkypeToken = skype.Value
+	}
+	p.session.ChatSvcBase = client.ChatSvcBase()
+}
+
+func (p *Provider) sessionPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "Loom", p.instance, "teams-session.json")
+}
+
+func (p *Provider) loadSessionLocked() error {
+	path := p.sessionPath()
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: read session: %w", providerID, err)
+	}
+	var stored session
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return fmt.Errorf("%s: decode session: %w", providerID, err)
+	}
+	p.session = &stored
+	return nil
+}
+
+func (p *Provider) saveSessionLocked() error {
+	if p.session == nil {
+		return fmt.Errorf("%s: no session to save", providerID)
+	}
+	path := p.sessionPath()
+	if path == "" {
+		return fmt.Errorf("%s: user configuration directory is unavailable", providerID)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(p.session)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0600)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}

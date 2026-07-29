@@ -59,6 +59,15 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   const getCallInfo = () => {
     const callType = message.callType || "";
     const hasSummary = message.callDurationSecs != null || message.callOutcome || participants.length > 0;
+
+    if (callType === "call_ended") {
+      return {
+        icon: message.callIsVideo ? Video : Phone,
+        text: t("call.ended"),
+        duration: message.callDurationSecs != null ? formatDuration(message.callDurationSecs) : null,
+        participantCount: participants.length,
+      };
+    }
     
     // If we have call summary, show more detailed information
     if (hasSummary) {
@@ -237,4 +246,3 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
     );
   }
 }
-

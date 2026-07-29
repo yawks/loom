@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  AutoLoginTeams,
   AutoPairGoogleMessages,
   CompleteGoogleMessagesLogin,
   ConnectProvider,
@@ -122,7 +123,7 @@ export function ProviderConfigForm({
   };
 
   // Providers with a dedicated connection flow in this form (they handle connect themselves).
-  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack" || provider.id === "googlemessages";
+  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack" || provider.id === "googlemessages" || provider.id === "teams";
   const usesQRCodeAuth = provider.id === "whatsapp";
 
   const handleSave = useCallback(async () => {
@@ -467,6 +468,49 @@ export function ProviderConfigForm({
               >J’ai confirmé l’emoji</Button>
             </div>
           )}
+        </CardContent>
+      </Card>
+      )}
+
+      {provider.id === "teams" && (
+      <Card>
+        <CardHeader>
+          <CardTitle>Connexion Microsoft Teams</CardTitle>
+          <CardDescription>
+            Loom ouvre Chrome sur la page Microsoft officielle. Microsoft gère votre mot de passe, la MFA et les règles de sécurité de votre entreprise ; Loom ne lit jamais les cookies du navigateur.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Utilisez votre compte professionnel ou scolaire. Si votre organisation impose un appareil conforme, Microsoft peut refuser la connexion.
+          </p>
+          <Button
+            className="w-full"
+            disabled={isSaving}
+            onClick={async () => {
+              setIsSaving(true);
+              try {
+                let instanceID = provider.instanceId || currentInstanceID;
+                if (!instanceID) {
+                  const config = values.tenant?.trim() ? { tenant: values.tenant.trim() } : {};
+                  instanceID = await CreateProviderWithOptions(provider.id, config, instanceName, "", true);
+                  setCurrentInstanceID(instanceID);
+                }
+                await AutoLoginTeams(instanceID, values.tenant?.trim() || "");
+                await onRefresh();
+                SyncProvider(instanceID).catch((error) => console.error("Failed to sync Microsoft Teams:", error));
+                showToast("Microsoft Teams connecté", "success");
+                if (onClose) onClose();
+              } catch (error) {
+                console.error("Failed to log into Microsoft Teams:", error);
+                showToast(String(error) || "Impossible de se connecter à Microsoft Teams", "error");
+              } finally {
+                setIsSaving(false);
+              }
+            }}
+          >
+            {isSaving ? "Connexion Microsoft en cours…" : "Se connecter avec Microsoft"}
+          </Button>
         </CardContent>
       </Card>
       )}
