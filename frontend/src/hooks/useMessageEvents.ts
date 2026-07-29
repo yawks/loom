@@ -45,9 +45,6 @@ export function useMessageEvents() {
   const registerBatchMessages = useMessageReadStore(
     (state) => state.registerBatchMessages
   );
-  const markAsReadByProtocolId = useMessageReadStore(
-    (state) => state.markAsReadByProtocolId
-  );
   const markAsReadSilently = useMessageReadStore(
     (state) => state.markAsReadSilently
   );
@@ -214,16 +211,18 @@ export function useMessageEvents() {
       
       try {
         const receipt: ReceiptEvent = JSON.parse(receiptJSON);
-        if (receipt.receiptType === "read") {
-          markAsReadByProtocolId(receipt.conversationId, receipt.messageId);
-        } else if (receipt.receiptType === "self_read") {
+        if (receipt.receiptType === "self_read") {
           // Read on another device — mark locally without sending a receipt back.
           markAsReadSilently(receipt.conversationId, receipt.messageId);
         }
 
         if (selectedContact) {
           const conversationId = selectedContact.linkedAccounts[0]?.conversationId ?? selectedContact.linkedAccounts[0]?.userId;
-          if (receipt.conversationId === conversationId && conversationId) {
+          if (conversationId) {
+            // WhatsApp can emit the receipt chat as a LID while Loom's selected
+            // conversation uses the equivalent phone-number JID. The protocol
+            // message ID is the stable identity, so update the selected cache
+            // whenever that message is actually present in it.
             queryClient.setQueryData<InfiniteData<models.Message[]>>(
               ["messages", conversationId],
               (oldData) => {
@@ -281,7 +280,7 @@ export function useMessageEvents() {
       isMounted = false;
       if (unsubscribeReceipt) unsubscribeReceipt();
     };
-  }, [queryClient, markAsReadByProtocolId, markAsReadSilently, selectedContact]);
+  }, [queryClient, markAsReadSilently, selectedContact]);
 
   // Listen for reaction events
   useEffect(() => {

@@ -212,6 +212,9 @@ const (
 	SyncStatusCompleted SyncStatusType = "completed"
 	// SyncStatusError indicates an error occurred during synchronization.
 	SyncStatusError SyncStatusType = "error"
+	// SyncStatusNeedsReauth indicates the provider session was revoked and the
+	// user must re-pair. The provider has already cleared its local auth state.
+	SyncStatusNeedsReauth SyncStatusType = "needs_reauth"
 )
 
 // SyncStatusEvent represents a synchronization status update.

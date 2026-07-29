@@ -10,6 +10,7 @@
   "back_to_threads": "Back to threads",
   "type_a_message": "Type a message...",
   "send": "Send",
+  "send_failed": "Failed to send message",
   "participants": "Participants",
   "contact": "Contact",
   "switch_protocol": "Switch to {{protocol}}",

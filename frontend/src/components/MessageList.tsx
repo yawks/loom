@@ -184,7 +184,7 @@ export function MessageList({
     handleFileUpload,
     handleRetrySend,
     handleDeleteLocalMessage,
-  } = useFileUpload(conversationId);
+  } = useFileUpload(conversationId, showToast);
 
   const {
     editingMessageId,
@@ -409,7 +409,7 @@ export function MessageList({
   const handleReaction = useCallback(async (message: models.Message, emoji: string) => {
     const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
     const messageReactions = message.reactions || [];
-    const useNativeEmoji = protocol === "googlechat" || protocol === "whatsapp";
+    const useNativeEmoji = protocol === "googlechat" || protocol === "googlemessages" || protocol === "whatsapp";
 
     // Helper to get canonical name without colons (e.g. "thumbsup")
     const getCleanName = (emojiStr: string): string => {

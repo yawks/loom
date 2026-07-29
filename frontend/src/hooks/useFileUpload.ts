@@ -57,7 +57,7 @@ export interface UploadState {
   error?: string | null;
 }
 
-export function useFileUpload(conversationId: string) {
+export function useFileUpload(conversationId: string, showToast?: (message: string, type?: "error" | "info" | "success") => void) {
   const queryClient = useQueryClient();
   const [isDragging, setIsDragging] = useState(false);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
@@ -361,7 +361,12 @@ export function useFileUpload(conversationId: string) {
           error: null,
         });
       } catch (error) {
-        console.error("Failed to send file:", file.name, error);
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error("Failed to send file:", file.name, errorMsg);
+        setUploadState(prev => ({ ...prev, isUploading: false, error: errorMsg }));
+        if (showToast) showToast(errorMsg, "error");
+        refreshMessages();
+        return;
       }
     }
 

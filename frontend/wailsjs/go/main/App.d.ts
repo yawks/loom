@@ -7,6 +7,10 @@ import {time} from '../models';
 
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function AutoPairGoogleMessages(arg1:string):Promise<string>;
+
+export function CompleteGoogleMessagesLogin(arg1:string):Promise<void>;
+
 export function ConfigureProvider(arg1:string):Promise<void>;
 
 export function ConnectProvider(arg1:string):Promise<void>;
@@ -100,6 +104,8 @@ export function SendThreadReply(arg1:string,arg2:string,arg3:string,arg4:string)
 export function SetActiveProvider(arg1:string):Promise<void>;
 
 export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
+
+export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 
 export function SyncProvider(arg1:string):Promise<void>;
 
