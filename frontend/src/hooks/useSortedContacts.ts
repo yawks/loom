@@ -73,10 +73,11 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     if (allLastMessageTimestamps) {
       for (const [conversationId, timestamp] of Object.entries(allLastMessageTimestamps)) {
         if (timestamp) {
-          // Backend returns Unix timestamps (seconds), optimistic updates use ISO strings
+          // Newer backends return Unix milliseconds; accept legacy Unix seconds
+          // as well as ISO strings kept by optimistic updates.
           dates[conversationId] =
             typeof timestamp === "number"
-              ? new Date(timestamp * 1000)
+              ? new Date(timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
               : timeToDate(timestamp);
         }
       }
@@ -150,4 +151,3 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
   return { sortedContacts, lastMessages };
 }
-

@@ -660,6 +660,7 @@ func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
 		SupportsPinConversation:  true,
 		SupportsMuteConversation: true,
 		SupportsQRCodeAuth:       true,
+		NativeEmojiReactions:     true,
 	}
 }
 

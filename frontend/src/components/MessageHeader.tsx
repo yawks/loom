@@ -36,9 +36,7 @@ export function MessageHeader({
   );
 
   const instanceId = linkedAccounts[0]?.providerInstanceId;
-  const isTeams = linkedAccounts[0]?.protocol?.toLowerCase() === "teams";
-  const supportsThreads =
-    !isTeams && (instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true);
+  const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
 
   const { data: configuredProviders = [] } = useQuery({
     queryKey: ["configuredProviders"],

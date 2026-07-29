@@ -1012,7 +1012,8 @@ func (w *WhatsAppProvider) formatMentions(body string, mentionedJIDs []string) s
 		// Escape the characters that could otherwise alter the surrounding
 		// Markdown document when a contact has them in their profile name.
 		displayName = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(displayName)
-		link := "[@" + displayName + "](loom://conversation?jid=" + url.QueryEscape(targetJID) + ")"
+		link := "[@" + displayName + "](loom://conversation?accountId=" + url.QueryEscape(targetJID) +
+			"&instanceId=" + url.QueryEscape(w.getInstanceId()) + ")"
 		body = strings.ReplaceAll(body, "@"+jid.User, link)
 	}
 	return body

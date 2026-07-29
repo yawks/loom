@@ -36,6 +36,21 @@ interface TypingEvent {
   isTyping: boolean;
 }
 
+const messageTime = (message: models.Message): number =>
+  timeToDate(message.timestamp).getTime();
+
+const activityTime = (timestamp: unknown): number => {
+  if (typeof timestamp === "number") {
+    return timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
+  }
+  return timestamp ? timeToDate(timestamp as string).getTime() : 0;
+};
+
+const keepLatestMessage = (
+  current: models.Message | null | undefined,
+  candidate: models.Message
+): models.Message => !current || messageTime(candidate) >= messageTime(current) ? candidate : current;
+
 export function useMessageEvents() {
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
@@ -84,11 +99,14 @@ export function useMessageEvents() {
         if (conversationId) {
           queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
             ...(old || {}),
-            [conversationId]: message,
+            [conversationId]: keepLatestMessage(old?.[conversationId], message),
           }));
           queryClient.setQueryData<Record<string, any>>(["allLastMessageTimestamps"], (old) => ({
             ...(old || {}),
-            [conversationId]: Math.floor(timeToDate(message.timestamp).getTime() / 1000),
+            [conversationId]: Math.max(
+              activityTime(old?.[conversationId]),
+              messageTime(message)
+            ),
           }));
         }
 
@@ -178,18 +196,24 @@ export function useMessageEvents() {
         for (const message of batch.messages) {
           const convId = message.protocolConvId;
           if (convId) {
-            lastMessageByConv[convId] = message;
-            lastTSByConv[convId] = Math.floor(timeToDate(message.timestamp).getTime() / 1000);
+            lastMessageByConv[convId] = keepLatestMessage(lastMessageByConv[convId], message);
+            lastTSByConv[convId] = Math.max(lastTSByConv[convId] || 0, messageTime(message));
           }
         }
-        queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
-          ...(old || {}),
-          ...lastMessageByConv,
-        }));
-        queryClient.setQueryData<Record<string, number>>(["allLastMessageTimestamps"], (old) => ({
-          ...(old || {}),
-          ...lastTSByConv,
-        }));
+        queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => {
+          const updated = { ...(old || {}) };
+          for (const [convId, message] of Object.entries(lastMessageByConv)) {
+            updated[convId] = keepLatestMessage(updated[convId], message);
+          }
+          return updated;
+        });
+        queryClient.setQueryData<Record<string, unknown>>(["allLastMessageTimestamps"], (old) => {
+          const updated = { ...(old || {}) };
+          for (const [convId, timestamp] of Object.entries(lastTSByConv)) {
+            updated[convId] = Math.max(activityTime(updated[convId]), timestamp);
+          }
+          return updated;
+        });
       } catch (error) {
         console.error("useMessageEvents: Failed to parse batch message event:", error);
       }
@@ -339,6 +363,22 @@ export function useMessageEvents() {
             return { ...oldData, pages: updatedPages };
           }
         );
+        if (reaction.added && reaction.conversationId) {
+          const reactionTime = reaction.timestamp * 1000;
+          queryClient.setQueryData<Record<string, unknown>>(
+            ["allLastMessageTimestamps"],
+            (old) => ({
+              ...(old || {}),
+              [reaction.conversationId]: Math.max(
+                activityTime(old?.[reaction.conversationId]),
+                reactionTime
+              ),
+            })
+          );
+        } else {
+          // Removing the latest reaction can reveal an older activity date.
+          queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        }
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
       } catch (error) {
         console.error("useMessageEvents: Failed to parse reaction event:", error);

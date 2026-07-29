@@ -204,6 +204,49 @@ func ParseTime(v interface{}) int64 {
 	return 0
 }
 
+// ParseTimeMillis converts the SQLite time representations accepted by ParseTime
+// to Unix milliseconds. Conversation ordering needs the extra precision: using
+// whole seconds makes messages sent close together compare equal after restart.
+func ParseTimeMillis(v interface{}) int64 {
+	if v == nil {
+		return 0
+	}
+
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return 0
+		}
+		return ParseTimeMillis(rv.Elem().Interface())
+	}
+
+	switch val := v.(type) {
+	case time.Time:
+		return val.UnixMilli()
+	case string:
+		formats := []string{
+			time.RFC3339Nano,
+			"2006-01-02 15:04:05.999999999-07:00",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05",
+			time.DateTime,
+		}
+		for _, f := range formats {
+			if t, err := time.Parse(f, val); err == nil {
+				return t.UnixMilli()
+			}
+		}
+	case []byte:
+		return ParseTimeMillis(string(val))
+	}
+
+	// Numeric database values historically represent Unix seconds.
+	if seconds := ParseTime(v); seconds > 0 {
+		return seconds * 1000
+	}
+	return 0
+}
+
 // migrateProviderConfiguration handles the migration of ProviderConfiguration table
 // to add instance_id and instance_name columns for existing data
 func migrateProviderConfiguration(db *gorm.DB) error {
@@ -311,33 +354,6 @@ func migrateLinkedAccount(db *gorm.DB) error {
 		} else {
 			fmt.Println("Migration: Unique index created successfully")
 		}
-	}
-
-	// Fix WhatsApp group entries that were incorrectly saved with is_group = 0.
-	// WhatsApp group JIDs always end with @g.us — use that to detect them.
-	if err := db.Exec(`
-		UPDATE linked_accounts
-		SET is_group = 1
-		WHERE protocol = 'whatsapp'
-		  AND user_id LIKE '%@g.us'
-		  AND is_group = 0
-	`).Error; err != nil {
-		fmt.Printf("Migration: Warning - Could not fix WhatsApp group is_group: %v\n", err)
-	} else {
-		fmt.Println("Migration: WhatsApp group is_group correction applied")
-	}
-
-	// Fix WhatsApp DM entries incorrectly saved with status = 'active'.
-	// 'active' is an internal conversation-cache marker, not a valid presence status.
-	if err := db.Exec(`
-		UPDATE linked_accounts
-		SET status = 'offline'
-		WHERE protocol = 'whatsapp'
-		  AND status = 'active'
-	`).Error; err != nil {
-		fmt.Printf("Migration: Warning - Could not fix WhatsApp active status: %v\n", err)
-	} else {
-		fmt.Println("Migration: WhatsApp 'active' status correction applied")
 	}
 
 	return nil
