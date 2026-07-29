@@ -365,7 +365,7 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 
 			avatarURL := w.getProfilePictureURL(j)
 			if avatarURL != "" {
-			// fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
+				// fmt.Printf("WhatsApp: Loaded avatar for %s: %s\n", account.UserID, avatarURL)
 				// Update the cached conversation if it exists
 				w.mu.Lock()
 				if cached, exists := w.conversations[account.UserID]; exists {
@@ -392,7 +392,10 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 				// Persist avatar to database
 				if db.DB != nil {
 					var existing models.LinkedAccount
-					err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", account.UserID).First(&existing).Error
+					err := db.DB.Where(
+						"protocol = ? AND provider_instance_id = ? AND user_id = ?",
+						"whatsapp", instanceID, account.UserID,
+					).First(&existing).Error
 					if err == nil {
 						// Update existing
 						existing.AvatarURL = avatarURL

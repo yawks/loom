@@ -956,7 +956,11 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 
 		// Batch update existing messages
 		for _, msg := range updateMessages {
-			if err := db.DB.Save(&msg).Error; err != nil {
+			// Reactions returned by Slack have no local IDs. Letting GORM save this
+			// association recreates every existing reaction on each history sync,
+			// assigns it a fresh CreatedAt, and falsely makes the conversation recent.
+			// Reaction add/remove events are persisted through their dedicated path.
+			if err := db.DB.Omit("Reactions").Save(&msg).Error; err != nil {
 				p.log("SlackProvider.storeMessagesForConversation: Failed to update message %s: %v\n", msg.ProtocolMsgID, err)
 			}
 		}

@@ -278,10 +278,20 @@ func createMissingConversations() {
 	for _, protocolConvID := range protocolConvIDs {
 		// Strip namespace prefix to get raw user ID for LinkedAccount lookup
 		rawConvID := core.StripConvID(protocolConvID)
+		instanceID := ""
+		if idx := strings.Index(protocolConvID, "::"); idx > 0 {
+			instanceID = protocolConvID[:idx]
+		}
 
-		// Find LinkedAccount for this ProtocolConvID (try all provider instances)
+		// A raw WhatsApp JID can exist in several provider instances. Always use
+		// the namespace carried by ProtocolConvID instead of selecting the first
+		// matching LinkedAccount from another SIM/account.
 		var linkedAccount models.LinkedAccount
-		err := db.DB.Where("user_id = ?", rawConvID).First(&linkedAccount).Error
+		accountQuery := db.DB.Where("user_id = ?", rawConvID)
+		if instanceID != "" {
+			accountQuery = accountQuery.Where("provider_instance_id = ?", instanceID)
+		}
+		err := accountQuery.First(&linkedAccount).Error
 
 		if err != nil {
 			// LinkedAccount doesn't exist, skip this conversation for now
@@ -1741,6 +1751,7 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 	if db.DB != nil {
 		db.DB.Where("protocol_msg_id = ? OR (protocol_msg_id = ? AND protocol_conv_id = ?)", messageID, messageID, conversationID).Delete(&models.Message{})
 	}
+	a.invalidateMessageCaches()
 	// Notify frontend
 	if a.ctx != nil {
 		type deletedPayload struct {
@@ -2094,14 +2105,18 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 	a.lastMessagesCache.mu.RUnlock()
 
 	var messages []models.Message
-	// ROW_NUMBER() window function does a single pass over the partial index
-	// (protocol_conv_id, timestamp DESC WHERE deleted_at IS NULL), avoiding the
-	// double-scan of the previous self-join. ID makes equal timestamps deterministic.
+	// Providers persist timestamps with different UTC offsets. julianday normalizes
+	// them before comparison; ordering the raw TEXT values would compare wall-clock
+	// times and put e.g. 21:00+02:00 after 20:00+00:00 incorrectly.
+	// ID makes equal timestamps deterministic.
 	// Thread replies intentionally participate: activity in a thread makes its
 	// conversation recent too. GORM silently ignores the rn column.
 	err := db.DB.Raw(`
 		SELECT * FROM (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS rn
+			SELECT *, ROW_NUMBER() OVER (
+				PARTITION BY protocol_conv_id
+				ORDER BY julianday(timestamp) DESC, id DESC
+			) AS rn
 			FROM messages
 			WHERE deleted_at IS NULL
 		) WHERE rn = 1
@@ -2140,11 +2155,14 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 
 	result := make(map[string]int64)
 
-	rows, err := db.DB.Model(&models.Message{}).
-		Select("protocol_conv_id, MAX(timestamp) as max_time").
-		Where("deleted_at IS NULL").
-		Group("protocol_conv_id").
-		Rows()
+	rows, err := db.DB.Raw(`
+		SELECT
+			protocol_conv_id,
+			CAST(ROUND(MAX(julianday(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS max_time_ms
+		FROM messages
+		WHERE deleted_at IS NULL
+		GROUP BY protocol_conv_id
+	`).Rows()
 	if err != nil {
 		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
 		return map[string]int64{}, err
@@ -2153,13 +2171,13 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 
 	for rows.Next() {
 		var protocolConvID string
-		var maxTime interface{}
-		if err := rows.Scan(&protocolConvID, &maxTime); err != nil {
+		var maxTimeMillis int64
+		if err := rows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
 			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning message row: %v\n", err)
 			continue
 		}
-		if ts := db.ParseTimeMillis(maxTime); ts > 0 {
-			result[protocolConvID] = ts
+		if maxTimeMillis > 0 {
+			result[protocolConvID] = maxTimeMillis
 		}
 	}
 
@@ -2167,7 +2185,10 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 	// surviving reaction date so the ordering is identical after a restart.
 	reactionRows, err := db.DB.Table("reactions").
 		Joins("JOIN messages ON messages.id = reactions.message_id").
-		Select("messages.protocol_conv_id, MAX(reactions.created_at) as max_time").
+		Select(`
+			messages.protocol_conv_id,
+			CAST(ROUND(MAX(julianday(reactions.created_at)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS max_time_ms
+		`).
 		Where("messages.deleted_at IS NULL").
 		Group("messages.protocol_conv_id").
 		Rows()
@@ -2179,13 +2200,13 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 
 	for reactionRows.Next() {
 		var protocolConvID string
-		var maxTime interface{}
-		if err := reactionRows.Scan(&protocolConvID, &maxTime); err != nil {
+		var maxTimeMillis int64
+		if err := reactionRows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
 			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning reaction row: %v\n", err)
 			continue
 		}
-		if ts := db.ParseTimeMillis(maxTime); ts > result[protocolConvID] {
-			result[protocolConvID] = ts
+		if maxTimeMillis > result[protocolConvID] {
+			result[protocolConvID] = maxTimeMillis
 		}
 	}
 

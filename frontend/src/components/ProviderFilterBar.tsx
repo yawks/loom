@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { AlertTriangle, Layers, Plus, Settings } from "lucide-react";
+import { AlertTriangle, Layers, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -20,12 +20,10 @@ const COLOR_VARIATIONS = [
 ];
 
 interface ProviderFilterBarProps {
-  onOpenProviders: () => void;
   onOpenSettings: () => void;
 }
 
 export function ProviderFilterBar({
-  onOpenProviders,
   onOpenSettings,
 }: ProviderFilterBarProps) {
   const { t } = useTranslation();
@@ -48,20 +46,25 @@ export function ProviderFilterBar({
 
   const unreadByInstance = useMemo(() => {
     const counts: Record<string, number> = {};
+    const countedConversations = new Set<string>();
     metaContacts.forEach((contact) => {
-      const account = contact.linkedAccounts[0];
-      if (!account) return;
-      const conversationId = account.conversationId ?? account.userId;
-      if (!conversationId) return;
-      const conversationState = readStateByConversation[conversationId];
-      if (!conversationState) return;
-      const unread = Object.entries(conversationState).filter(
-        ([key, isRead]) => !key.startsWith("_") && !isRead
-      ).length;
-      if (unread > 0) {
-        counts[account.providerInstanceId] =
-          (counts[account.providerInstanceId] ?? 0) + unread;
-      }
+      contact.linkedAccounts.forEach((account) => {
+        // A userId identifies a contact, not a conversation. In particular the
+        // same WhatsApp JID can exist in two instances. Only a namespaced
+        // conversationId is valid for unread state.
+        const conversationId = account.conversationId;
+        if (!conversationId || countedConversations.has(conversationId)) return;
+        const conversationState = readStateByConversation[conversationId];
+        if (!conversationState) return;
+        const unread = Object.entries(conversationState).filter(
+          ([key, isRead]) => !key.startsWith("_") && !isRead
+        ).length;
+        if (unread > 0) {
+          countedConversations.add(conversationId);
+          counts[account.providerInstanceId] =
+            (counts[account.providerInstanceId] ?? 0) + unread;
+        }
+      });
     });
     return counts;
   }, [metaContacts, readStateByConversation]);
@@ -238,14 +241,6 @@ export function ProviderFilterBar({
       <div className="flex-1" />
 
       {/* Bottom actions */}
-      <button
-        className={cn(railButtonClass, "provider-filter-bar__providers-button")}
-        onClick={onOpenProviders}
-        title={t("providers") || "Providers"}
-      >
-        <Plus className="h-4 w-4" />
-      </button>
-
       <button
         className={cn(railButtonClass, "provider-filter-bar__settings-button")}
         onClick={onOpenSettings}

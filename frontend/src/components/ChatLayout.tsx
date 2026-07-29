@@ -16,9 +16,8 @@ import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
 import { ProviderFilterBar } from "./ProviderFilterBar";
-import { ProvidersModal } from "./ProvidersModal";
 import { SearchModal } from "./SearchModal";
-import { SettingsModal } from "./SettingsModal";
+import { SettingsModal, type SettingsSection } from "./SettingsModal";
 import { SyncStatusFooter } from "./SyncStatusFooter";
 import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
@@ -43,9 +42,9 @@ export function ChatLayout() {
   const theme = useAppStore((state) => state.theme);
 
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [showProvidersModal, setShowProvidersModal] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [isSyncing, setIsSyncing] = useState(false);
 
   const checkProviders = useCallback(async () => {
@@ -116,8 +115,8 @@ export function ChatLayout() {
     };
   }, [checkProviders]);
 
-  const handleProvidersModalClose = async (open: boolean) => {
-    setShowProvidersModal(open);
+  const handleSettingsOpenChange = async (open: boolean) => {
+    setIsSettingsOpen(open);
     if (!open) {
       setIsSyncing(true);
       setTimeout(async () => {
@@ -127,7 +126,8 @@ export function ChatLayout() {
   };
 
   const handleConfigureProvider = () => {
-    setShowProvidersModal(true);
+    setSettingsSection("providers");
+    setIsSettingsOpen(true);
   };
 
   const shouldShowThreadsOverlay = showThreads;
@@ -187,8 +187,10 @@ export function ChatLayout() {
           <div className="flex flex-1 min-h-0">
             {/* Column 1: Icon rail */}
             <ProviderFilterBar
-              onOpenProviders={handleConfigureProvider}
-              onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenSettings={() => {
+                setSettingsSection("general");
+                setIsSettingsOpen(true);
+              }}
             />
 
             {/* Columns 2+3: Sidebar + Messages */}
@@ -276,13 +278,14 @@ export function ChatLayout() {
         </>
       )}
 
-      <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+      <SettingsModal
+        key={settingsSection}
+        open={isSettingsOpen}
+        onOpenChange={handleSettingsOpenChange}
+        initialSection={settingsSection}
+      />
       <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <AvatarModal />
-      <ProvidersModal
-        open={showProvidersModal}
-        onOpenChange={handleProvidersModalClose}
-      />
     </div>
   );
 }

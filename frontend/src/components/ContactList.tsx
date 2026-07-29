@@ -256,36 +256,34 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
     (state) => state.readByConversation
   );
 
+  const accountConversationId = (account: models.LinkedAccount) =>
+    account.conversationId ?? account.userId ?? "";
+  const accountUnreadConversationId = (account: models.LinkedAccount) =>
+    account.conversationId ?? "";
+
   const unreadCountsByConversation = useMemo(() => {
     const counts: Record<string, number> = {};
+    const visited = new Set<string>();
     sortedContacts.forEach((contact) => {
-      const conversationId =
-        contact.linkedAccounts[0]?.conversationId ??
-        contact.linkedAccounts[0]?.userId;
-      if (!conversationId) {
-        return;
-      }
-      const conversationState = readStateByConversation[conversationId];
-      if (!conversationState) {
-        counts[conversationId] = 0;
-        return;
-      }
-      const unreadCount = Object.values(conversationState).filter(
-        (isRead) => !isRead
-      ).length;
-      counts[conversationId] = unreadCount;
-
-      // Log pour déboguer les compteurs incorrects
-      if (unreadCount > 0) {
-        const unreadMessageIds = Object.entries(conversationState)
-          .filter(([_, isRead]) => !isRead)
-          .map(([msgId, _]) => msgId)
-          .slice(0, 5); // Limiter à 5 pour ne pas surcharger les logs
-        console.log(`ContactList: Conversation ${conversationId} has ${unreadCount} unread messages. Sample IDs:`, unreadMessageIds);
-      }
+      const accounts = selectedProviderFilter
+        ? contact.linkedAccounts.filter(
+            (account) => account.providerInstanceId === selectedProviderFilter
+          )
+        : contact.linkedAccounts;
+      accounts.forEach((account) => {
+        const conversationId = accountUnreadConversationId(account);
+        if (!conversationId || visited.has(conversationId)) return;
+        visited.add(conversationId);
+        const conversationState = readStateByConversation[conversationId];
+        counts[conversationId] = conversationState
+          ? Object.entries(conversationState).filter(
+              ([key, isRead]) => !key.startsWith("_") && !isRead
+            ).length
+          : 0;
+      });
     });
     return counts;
-  }, [readStateByConversation, sortedContacts]);
+  }, [readStateByConversation, selectedProviderFilter, sortedContacts]);
 
   const totalUnreadCount = useMemo(
     () => Object.values(unreadCountsByConversation).reduce((sum, n) => sum + n, 0),
@@ -333,16 +331,18 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const messageCountByConversation = useMemo(() => {
     const counts: Record<string, number> = {};
     sortedContacts.forEach((contact) => {
-      const conversationId =
-        contact.linkedAccounts[0]?.conversationId ??
-        contact.linkedAccounts[0]?.userId ??
-        "";
-      if (conversationId) {
-        counts[conversationId] = allMessageCounts[conversationId] ?? 0;
-      }
+      const accounts = selectedProviderFilter
+        ? contact.linkedAccounts.filter(
+            (account) => account.providerInstanceId === selectedProviderFilter
+          )
+        : contact.linkedAccounts;
+      accounts.forEach((account) => {
+        const conversationId = accountConversationId(account);
+        if (conversationId) counts[conversationId] = allMessageCounts[conversationId] ?? 0;
+      });
     });
     return counts;
-  }, [sortedContacts, allMessageCounts]);
+  }, [sortedContacts, allMessageCounts, selectedProviderFilter]);
 
   // Initialize sort order based on whether there are messages
   // If no messages and providers are configured, default to alphabetical
@@ -381,12 +381,15 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const filteredContacts = useMemo(() => {
     if (sortBy === "unread") {
       return sortedContacts.filter((contact) => {
-        const conversationId =
-          contact.linkedAccounts[0]?.conversationId ??
-          contact.linkedAccounts[0]?.userId ??
-          "";
-        const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
-        return unreadCount > 0;
+        const accounts = selectedProviderFilter
+          ? contact.linkedAccounts.filter(
+              (account) => account.providerInstanceId === selectedProviderFilter
+            )
+          : contact.linkedAccounts;
+        return accounts.some(
+          (account) =>
+            (unreadCountsByConversation[accountUnreadConversationId(account)] ?? 0) > 0
+        );
       });
     }
     // For other sort options, show all
@@ -482,12 +485,23 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             </div>
           )}
           {filteredContacts.map((contact) => {
-            const accountConversationId = (account: models.LinkedAccount) =>
-              account.conversationId ?? account.userId ?? "";
+            const providerAccount = selectedProviderFilter
+              ? contact.linkedAccounts.find(
+                  (account) => account.providerInstanceId === selectedProviderFilter
+                )
+              : undefined;
+            const unreadAccount = contact.linkedAccounts.find(
+              (account) =>
+                (unreadCountsByConversation[accountUnreadConversationId(account)] ?? 0) > 0
+            );
+            const activeAccount =
+              providerAccount ??
+              (sortBy === "unread" ? unreadAccount : undefined) ??
+              contact.linkedAccounts[0];
             const typingAccount = contact.linkedAccounts.find(
               (account) => (typingByConversation[accountConversationId(account)]?.length ?? 0) > 0
             );
-            const conversationId = accountConversationId(contact.linkedAccounts[0]);
+            const conversationId = activeAccount ? accountConversationId(activeAccount) : "";
             const typingConversationId = typingAccount ? accountConversationId(typingAccount) : "";
             const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
             const displayUnreadCount =
@@ -495,9 +509,23 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             const isSelected = selectedContact?.id === contact.id;
             const isTyping = typingConversationId !== "";
             const messageCount = messageCountByConversation[conversationId] ?? 0;
-            const isEmptyDuringSync = syncStatus === "syncing" && messageCount === 0;
+            // A real-time unread message can reach the read store before the
+            // debounced database count refresh. Do not present that active
+            // conversation as an empty, disabled-looking sync placeholder.
+            const isEmptyDuringSync =
+              syncStatus === "syncing" && messageCount === 0 && unreadCount === 0;
 
-            const isGroup = contact.linkedAccounts[0]?.isGroup;
+            const isGroup = activeAccount?.isGroup;
+            const selectedContactForAccount =
+              activeAccount && contact.linkedAccounts[0] !== activeAccount
+                ? {
+                    ...contact,
+                    linkedAccounts: [
+                      activeAccount,
+                      ...contact.linkedAccounts.filter((account) => account !== activeAccount),
+                    ],
+                  } as models.MetaContact
+                : contact;
 
             const checkPresenceMatch = () => {
               if (isGroup) return false;
@@ -524,7 +552,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                   isEmptyDuringSync && "opacity-50",
                   !isSelected && unreadCount > 0 && "bg-sidebar-hover/60"
                 )}
-                onClick={() => setSelectedContact(contact)}
+                onClick={() => setSelectedContact(selectedContactForAccount)}
               >
                 <div className="relative">
                   <Avatar>

@@ -9,14 +9,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   GetAvailableProviders,
   GetConfiguredProviders,
   RemoveProvider,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
-import { AlertTriangle, MessageCircle, RefreshCw, Settings, Trash2, Wine } from "lucide-react";
+import { AlertTriangle, RefreshCw, Settings, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -27,7 +26,7 @@ import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 
-interface ProvidersModalProps {
+interface ProviderSettingsProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -39,7 +38,7 @@ interface SyncStatusPayload {
   message: string;
 }
 
-export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
+export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) {
   const { t } = useTranslation();
   const [view, setView] = useState<ViewState>("list");
   const [availableProviders, setAvailableProviders] = useState<core.ProviderInfo[]>([]);
@@ -143,7 +142,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [open]);
+  }, [open, refreshProviders]);
 
   useEffect(() => {
     if (!open || view !== "config" || !selectedProvider) {
@@ -280,31 +279,13 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
       : null;
   };
 
-  // Get provider icon component
+  // Keep all provider branding in one component so official colors stay
+  // consistent everywhere in the application.
   const getProviderIcon = (provider: core.ProviderInfo) => {
     const colorVariation = getColorVariation(provider);
-    const iconContent = (() => {
-      switch (provider.id) {
-        case "mock":
-          return <Wine className="h-5 w-5" />;
-        case "whatsapp":
-          return (
-            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
-            </svg>
-          );
-        case "googlemessages":
-          return <ProtocolIcon protocol="googlemessages" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-        case "googlechat":
-          return <ProtocolIcon protocol="googlechat" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-        case "slack":
-          return <ProtocolIcon protocol="slack" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-        case "teams":
-          return <ProtocolIcon protocol="teams" className="h-5 w-5" size={20} />;
-        default:
-          return <MessageCircle className="h-5 w-5" />;
-      }
-    })();
+    const iconContent = (
+      <ProtocolIcon protocol={provider.id} className="h-5 w-5" size={20} />
+    );
 
     if (colorVariation) {
       return <div style={colorVariation}>{iconContent}</div>;
@@ -340,16 +321,15 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {view === "list" && (
           <>
-            <DialogHeader className="flex-shrink-0">
-              <DialogTitle>{t("providers_modal_title")}</DialogTitle>
-              <DialogDescription>
+            <div className="mb-4 flex-shrink-0 space-y-1">
+              <h2 className="text-lg font-semibold">{t("providers_modal_title")}</h2>
+              <p className="text-sm text-muted-foreground">
                 {t("providers_modal_description")}
-              </DialogDescription>
-            </DialogHeader>
+              </p>
+            </div>
             <div className="space-y-6 overflow-y-auto pr-2 flex-1 min-h-0">
 
             {error && <p className="text-sm text-destructive">{error}</p>}
@@ -451,28 +431,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                   >
                     <CardHeader>
                       <CardTitle className="flex items-center gap-3">
-                        {(() => {
-                          switch (provider.id) {
-                            case "mock":
-                              return <Wine className="h-5 w-5" />;
-                            case "whatsapp":
-                              return (
-                                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
-                                </svg>
-                              );
-                            case "googlemessages":
-                              return <ProtocolIcon protocol="googlemessages" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-                            case "googlechat":
-                              return <ProtocolIcon protocol="googlechat" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-                            case "slack":
-                              return <ProtocolIcon protocol="slack" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
-                            case "teams":
-                              return <ProtocolIcon protocol="teams" className="h-5 w-5" size={20} />;
-                            default:
-                              return <MessageCircle className="h-5 w-5" />;
-                          }
-                        })()}
+                        <ProtocolIcon protocol={provider.id} className="h-5 w-5" size={20} />
                         <span className="flex-1">{provider.name}</span>
                         {configuredIds.has(provider.id) && (
                           <span className="text-xs text-muted-foreground">{t("providers_modal_configured_badge")}</span>
@@ -523,8 +482,7 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
             }}>Back</Button>
           </div>
         )}
-      </DialogContent>
-    </Dialog>
+      </div>
     </>
   );
 }

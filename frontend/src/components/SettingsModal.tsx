@@ -1,9 +1,10 @@
-import { ChevronDown, MessageSquare, Monitor, Moon, Sun, Terminal, Trash2, Type } from "lucide-react";
+import { ChevronDown, MessageSquare, Monitor, Moon, Settings, Sun, Terminal, Trash2, Type, Waypoints } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ProviderSettings } from "@/components/ProvidersModal";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import i18n from "@/i18n";
@@ -14,7 +15,10 @@ import { useTranslation } from "react-i18next";
 interface SettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialSection?: SettingsSection;
 }
+
+export type SettingsSection = "general" | "providers";
 
 const languages = [
   { code: "fr", name: "Français", flag: "🇫🇷" },
@@ -32,7 +36,11 @@ const themes = [
   { code: "dark", name: "Dark Theme", icon: Moon },
 ] as const;
 
-export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
+export function SettingsModal({
+  open,
+  onOpenChange,
+  initialSection = "general",
+}: SettingsModalProps) {
   const { t } = useTranslation();
   const theme = useAppStore((state) => state.theme);
   const setTheme = useAppStore((state) => state.setTheme);
@@ -45,6 +53,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
   const [isLanguagePopoverOpen, setIsLanguagePopoverOpen] = useState(false);
   const [isMessageLayoutPopoverOpen, setIsMessageLayoutPopoverOpen] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
 
   // Font size options: 50%, 75%, 100%, 125%, 150%
   const fontSizeOptions = [50, 75, 100, 125, 150] as const;
@@ -78,11 +87,51 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] flex flex-col">
-        <DialogHeader>
+      <DialogContent className="h-[min(90vh,760px)] max-w-5xl gap-0 overflow-hidden p-0 flex flex-col">
+        <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>{t("settings") || "Settings"}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-6 py-4 overflow-y-auto flex-1 min-h-0 scroll-area">
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <nav
+            aria-label={t("settings") || "Settings"}
+            className="flex shrink-0 gap-1 overflow-x-auto border-b bg-muted/20 p-2 md:w-48 md:flex-col md:overflow-visible md:border-b-0 md:border-r md:p-3"
+          >
+            <button
+              type="button"
+              onClick={() => setActiveSection("providers")}
+              className={cn(
+                "flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
+                activeSection === "providers"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+              aria-current={activeSection === "providers" ? "page" : undefined}
+            >
+              <Waypoints className="h-4 w-4" />
+              {t("providers")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSection("general")}
+              className={cn(
+                "flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
+                activeSection === "general"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+              aria-current={activeSection === "general" ? "page" : undefined}
+            >
+              <Settings className="h-4 w-4" />
+              {t("settings_general")}
+            </button>
+          </nav>
+
+          {activeSection === "providers" ? (
+            <div className="flex min-h-0 flex-1 p-6">
+              <ProviderSettings open={open} onOpenChange={onOpenChange} />
+            </div>
+          ) : (
+          <div className="space-y-6 overflow-y-auto flex-1 min-h-0 scroll-area p-6">
           <div className="space-y-3">
             <div className="text-sm font-semibold">
               {t("message_layout")}
@@ -281,7 +330,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_history_back") || "Previous conversation in history"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌃" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">⇧</span>
                   <span className="text-xs">+</span>
                   <span className="text-xs">←</span>
                 </kbd>
@@ -291,7 +342,9 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_history_forward") || "Next conversation in history"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌃" : "Ctrl"}
+                  <span className="text-xs">+</span>
+                  <span className="text-xs">⇧</span>
                   <span className="text-xs">+</span>
                   <span className="text-xs">→</span>
                 </kbd>
@@ -350,6 +403,8 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
               {t("clear_read_state_description") || "Reset all message read states. This will not delete your messages."}
             </p>
           </div>
+          </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

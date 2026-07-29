@@ -71,7 +71,10 @@ func (w *WhatsAppProvider) resolveContactID(contactID string) (string, error) {
 		// Strategy 3: Check LinkedAccount.Extra for stored mappings
 		if db.DB != nil {
 			var accounts []models.LinkedAccount
-			err := db.DB.Where("protocol = ? AND extra LIKE ?", "whatsapp", "%"+contactID+"%").Find(&accounts).Error
+			err := db.DB.Where(
+				"protocol = ? AND provider_instance_id = ? AND extra LIKE ?",
+				"whatsapp", w.getInstanceId(), "%"+contactID+"%",
+			).Find(&accounts).Error
 			if err == nil {
 				for _, acc := range accounts {
 					if acc.Extra != "" {
@@ -138,7 +141,10 @@ func (w *WhatsAppProvider) updateLinkedAccountExtra(userID string, extraData Wha
 	}
 
 	var account models.LinkedAccount
-	err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", userID).First(&account).Error
+	err := db.DB.Where(
+		"protocol = ? AND provider_instance_id = ? AND user_id = ?",
+		"whatsapp", w.getInstanceId(), userID,
+	).First(&account).Error
 	if err != nil {
 		// Account doesn't exist yet, that's okay
 		return nil
@@ -205,11 +211,18 @@ func (w *WhatsAppProvider) storeContactMapping(lid, phoneNumber string) error {
 
 	// Try to find existing account by phone number (canonical ID)
 	var account models.LinkedAccount
-	err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", phoneNumber).First(&account).Error
+	instanceID := w.getInstanceId()
+	err := db.DB.Where(
+		"protocol = ? AND provider_instance_id = ? AND user_id = ?",
+		"whatsapp", instanceID, phoneNumber,
+	).First(&account).Error
 	if err != nil {
 		// Account doesn't exist by phone number, try by LID in Extra field
 		var accounts []models.LinkedAccount
-		if err := db.DB.Where("protocol = ? AND extra != ''", "whatsapp").Find(&accounts).Error; err == nil {
+		if err := db.DB.Where(
+			"protocol = ? AND provider_instance_id = ? AND extra != ''",
+			"whatsapp", instanceID,
+		).Find(&accounts).Error; err == nil {
 			for _, acc := range accounts {
 				if acc.Extra != "" {
 					var existingExtra WhatsAppExtraData
@@ -229,7 +242,10 @@ func (w *WhatsAppProvider) storeContactMapping(lid, phoneNumber string) error {
 		}
 		// If still no account found, try by LID as UserID
 		if account.ID == 0 {
-			if err := db.DB.Where("protocol = ? AND user_id = ?", "whatsapp", lid).First(&account).Error; err == nil {
+			if err := db.DB.Where(
+				"protocol = ? AND provider_instance_id = ? AND user_id = ?",
+				"whatsapp", instanceID, lid,
+			).First(&account).Error; err == nil {
 				// Found account by LID! Update to use phone number as canonical ID
 				fmt.Printf("WhatsApp: Found account by LID %s, updating to canonical ID %s\n", lid, phoneNumber)
 

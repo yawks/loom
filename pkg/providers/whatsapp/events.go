@@ -1637,8 +1637,14 @@ func (w *WhatsAppProvider) loadConversationsFromDatabaseLocked() {
 		return
 	}
 
+	// The caller already holds w.mu. Reading the config directly is required
+	// here: getInstanceId() takes RLock and would deadlock during Init.
+	instanceID, _ := w.config["_instance_id"].(string)
 	var linkedAccounts []models.LinkedAccount
-	if err := db.DB.Where("protocol = ?", "whatsapp").Find(&linkedAccounts).Error; err == nil {
+	if err := db.DB.Where(
+		"protocol = ? AND provider_instance_id = ?",
+		"whatsapp", instanceID,
+	).Find(&linkedAccounts).Error; err == nil {
 		// w.mu is already locked, so we can directly access w.conversations
 		if w.conversations == nil {
 			w.conversations = make(map[string]models.LinkedAccount)

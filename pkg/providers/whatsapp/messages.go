@@ -1762,9 +1762,6 @@ func (w *WhatsAppProvider) loadMessagesFromDatabaseLocked() {
 
 	// Still load conversations from database to populate the cache
 	w.loadConversationsFromDatabaseLocked()
-
-	// Also load conversations from database
-	w.loadConversationsFromDatabaseLocked()
 }
 
 func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
