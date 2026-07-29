@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -9,12 +9,43 @@ export function useKeyboardShortcuts() {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const navigateHistoryBack = useAppStore((state) => state.navigateHistoryBack);
   const navigateHistoryForward = useAppStore((state) => state.navigateHistoryForward);
+  const contactSortBy = useAppStore((state) => state.contactSortBy);
+  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
 
-  // Get sorted contacts using the same logic as ContactList
-  const { sortedContacts } = useSortedContacts("last_message");
+  // Build the same sorted and filtered list as ContactList.
+  const { sortedContacts: sortedContactsBase } = useSortedContacts(contactSortBy);
+  const sortedContacts = useMemo(() => {
+    const providerContacts = selectedProviderFilter
+      ? sortedContactsBase.filter((contact) =>
+          (contact.linkedAccounts ?? []).some(
+            (account) => account.providerInstanceId === selectedProviderFilter
+          )
+        )
+      : sortedContactsBase;
+
+    if (contactSortBy !== "unread") {
+      return providerContacts;
+    }
+
+    return providerContacts.filter((contact) => {
+      const conversationId =
+        contact.linkedAccounts[0]?.conversationId ??
+        contact.linkedAccounts[0]?.userId;
+      if (!conversationId) return false;
+      const conversationState = readStateByConversation[conversationId];
+      return conversationState
+        ? Object.values(conversationState).some((isRead) => !isRead)
+        : false;
+    });
+  }, [
+    contactSortBy,
+    readStateByConversation,
+    selectedProviderFilter,
+    sortedContactsBase,
+  ]);
 
   const navigateToUnreadConversation = useCallback((direction: "up" | "down") => {
     if (!selectedContact || sortedContacts.length === 0) {
@@ -160,6 +191,8 @@ export function useKeyboardShortcuts() {
       const optionKey = e.altKey; // Alt on both Mac and PC
       const commandKey = isMac ? e.metaKey : e.ctrlKey;
       const shiftKey = e.shiftKey;
+      const isArrowLeft = e.key === "ArrowLeft" || e.code === "ArrowLeft";
+      const isArrowRight = e.key === "ArrowRight" || e.code === "ArrowRight";
 
       // For arrow keys without modifiers, check if we're in a textarea to avoid conflicts
       // with message history navigation
@@ -187,9 +220,10 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Command/Ctrl + ArrowLeft: Navigate to previous conversation in history
-      if (commandKey && !shiftKey && e.key === "ArrowLeft") {
+      // Option/Alt + ArrowLeft: Navigate to previous conversation in history
+      if (optionKey && !shiftKey && isArrowLeft) {
         e.preventDefault();
+        e.stopPropagation();
         const previousContact = navigateHistoryBack();
         if (previousContact) {
           setSelectedContact(previousContact, true); // Skip history to avoid duplicates
@@ -197,9 +231,10 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Command/Ctrl + ArrowRight: Navigate to next conversation in history
-      if (commandKey && !shiftKey && e.key === "ArrowRight") {
+      // Option/Alt + ArrowRight: Navigate to next conversation in history
+      if (optionKey && !shiftKey && isArrowRight) {
         e.preventDefault();
+        e.stopPropagation();
         const nextContact = navigateHistoryForward();
         if (nextContact) {
           setSelectedContact(nextContact, true); // Skip history to avoid duplicates
@@ -207,25 +242,24 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Command/Ctrl + ArrowDown: Navigate to conversation below in list
-      if (commandKey && !shiftKey && e.key === "ArrowDown") {
+      // Option/Alt + ArrowDown: Navigate to conversation below in list
+      if (optionKey && !shiftKey && e.key === "ArrowDown") {
         e.preventDefault();
         navigateInList("down");
         return;
       }
 
-      // Command/Ctrl + ArrowUp: Navigate to conversation above in list
-      if (commandKey && !shiftKey && e.key === "ArrowUp") {
+      // Option/Alt + ArrowUp: Navigate to conversation above in list
+      if (optionKey && !shiftKey && e.key === "ArrowUp") {
         e.preventDefault();
         navigateInList("up");
         return;
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [selectedContact, sortedContacts, readStateByConversation, setSelectedContact, navigateHistoryBack, navigateHistoryForward, navigateToUnreadConversation, navigateInList]);
 }
-

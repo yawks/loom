@@ -19,9 +19,6 @@ import { useSortedContacts } from "@/hooks/useSortedContacts";
 import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
 
-type SortOption = "alphabetical" | "last_message" | "unread";
-
-
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
   return GetMetaContacts();
@@ -34,7 +31,8 @@ export function ContactList() {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
   const setCapabilities = useAppStore((state) => state.setCapabilities);
-  const [sortBy, setSortBy] = useState<SortOption>("last_message");
+  const sortBy = useAppStore((state) => state.contactSortBy);
+  const setSortBy = useAppStore((state) => state.setContactSortBy);
   const [hasInitializedSort, setHasInitializedSort] = useState(false);
 
   // Check if this is the first provider configuration (no messages yet)
