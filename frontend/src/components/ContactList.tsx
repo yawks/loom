@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone } from "lucide-react";
+import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,7 +24,7 @@ const fetchMetaContacts = async () => {
   return GetMetaContacts();
 };
 
-export function ContactList() {
+export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
@@ -392,31 +392,31 @@ export function ContactList() {
     return sortedContacts;
   }, [sortedContacts, sortBy, unreadCountsByConversation]);
 
-  if (contacts.length === 0) {
-    return (
-      <div className="contact-list flex flex-col h-full bg-sidebar text-sidebar-foreground">
-        <div className="contact-list__header px-3 py-3 border-b border-sidebar-border">
-          <h2 className="text-sm font-semibold text-sidebar-foreground">{t("conversations")}</h2>
-        </div>
-        <div className="flex-1"></div>
-      </div>
-    );
-  }
-
   return (
     <div className="contact-list flex flex-col h-full bg-sidebar text-sidebar-foreground">
       <div className="contact-list__header px-3 pt-3 pb-2 border-b border-sidebar-border space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-sidebar-foreground">{t("conversations")}</h2>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
-            onClick={() => setIsNewConversationModalOpen(true)}
-            title={t("new_conversation")}
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-          </Button>
+          <div className="contact-list__header-actions flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="contact-list__search-button h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
+              onClick={onOpenSearch}
+              title={t("search_placeholder")}
+            >
+              <Search className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="contact-list__new-conversation-button h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
+              onClick={() => setIsNewConversationModalOpen(true)}
+              title={t("new_conversation")}
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
         {/* Sort tabs — icon only */}
         <div className="contact-list__sort-tabs flex gap-1">

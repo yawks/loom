@@ -29,6 +29,8 @@ interface AppState {
   setMetaContacts: (contacts: models.MetaContact[]) => void;
   selectedProviderFilter: string | null;
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
+  messageSearchTargetId: string | null;
+  setMessageSearchTargetId: (messageId: string | null) => void;
   contactSortBy: ContactSortOption;
   setContactSortBy: (sortBy: ContactSortOption) => void;
   selectedUserId: string | null;
@@ -132,6 +134,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedProviderFilter: providerInstanceId });
     saveToStorage("selectedProviderFilter", providerInstanceId);
   },
+  messageSearchTargetId: null,
+  setMessageSearchTargetId: (messageId) => set({ messageSearchTargetId: messageId }),
   contactSortBy: loadFromStorage<ContactSortOption>("contactSortBy", "last_message"),
   setContactSortBy: (sortBy) => {
     set({ contactSortBy: sortBy });

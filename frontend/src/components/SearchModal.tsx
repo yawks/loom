@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { Emoji } from "./Emoji";
 import { ProtocolIcon } from "./ProtocolIcon";
+import { MessageSearchResults } from "./MessageSearchResults";
 import { cn, timeToDate } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -53,6 +54,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
   const [recentlyViewedIndex, setRecentlyViewedIndex] = useState<number>(0);
   const [recentSearchesIndex, setRecentSearchesIndex] = useState<number>(0);
   const [searchResultsIndex, setSearchResultsIndex] = useState<number>(0);
+  const [showAllContactResults, setShowAllContactResults] = useState(false);
 
   const [recentSearchIds, setRecentSearchIds] = useState<number[]>([]);
   const [recentlyViewedIds, setRecentlyViewedIds] = useState<number[]>([]);
@@ -132,6 +134,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
         setRecentlyViewedIndex(0);
         setRecentSearchesIndex(0);
         setSearchResultsIndex(0);
+        setShowAllContactResults(false);
       }, 100);
     }
   }, [open]);
@@ -254,36 +257,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
       return { score: 700 - index, tier: 2 };
     }
 
-    // Tier 1: Fuzzy matching
-    const distance = levenshteinDistance(lowerName, lowerQuery);
-    const maxLength = Math.max(lowerName.length, lowerQuery.length);
-    if (maxLength === 0) return { score: 0, tier: 0 };
-    const similarity = 1 - distance / maxLength;
-    return { score: 600 * similarity, tier: 1 };
-  };
-
-  const levenshteinDistance = (str1: string, str2: string): number => {
-    const matrix: number[][] = [];
-    for (let i = 0; i <= str2.length; i++) {
-      matrix[i] = [i];
-    }
-    for (let j = 0; j <= str1.length; j++) {
-      matrix[0][j] = j;
-    }
-    for (let i = 1; i <= str2.length; i++) {
-      for (let j = 1; j <= str1.length; j++) {
-        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          );
-        }
-      }
-    }
-    return matrix[str2.length][str1.length];
+    return { score: 0, tier: 0 };
   };
 
   // Filter and sort contacts based on search query
@@ -325,6 +299,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
     return matching;
   }, [contacts, searchQuery, lastMessageDates, recentlyViewedIds]);
+  const displayedContacts = useMemo(
+    () => showAllContactResults ? filteredContacts : filteredContacts.slice(0, 5),
+    [filteredContacts, showAllContactResults]
+  );
 
   // Scroll horizontal items into view when navigated
   useEffect(() => {
@@ -361,24 +339,36 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
     // Navigation when search query is typed
     if (searchQuery.trim() !== "") {
+      const navigationItems = Array.from(
+        scrollContainerRef.current?.querySelectorAll<HTMLElement>("[data-search-nav-item]") ?? []
+      );
+      const focusedIndex = navigationItems.findIndex((item) => item === document.activeElement);
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setNavSection("search_results");
-        setSearchResultsIndex((prev) =>
-          prev < filteredContacts.length - 1 ? prev + 1 : prev
-        );
+        const nextIndex = Math.min(focusedIndex + 1, navigationItems.length - 1);
+        if (nextIndex >= 0) {
+          setSearchResultsIndex(nextIndex);
+          navigationItems[nextIndex]?.focus();
+          navigationItems[nextIndex]?.scrollIntoView({ block: "nearest" });
+        }
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        if (searchResultsIndex > 0) {
-          setSearchResultsIndex((prev) => prev - 1);
+        if (focusedIndex > 0) {
+          const previousIndex = focusedIndex - 1;
+          setSearchResultsIndex(previousIndex);
+          navigationItems[previousIndex]?.focus();
+          navigationItems[previousIndex]?.scrollIntoView({ block: "nearest" });
         } else {
           setNavSection("input");
           inputRef.current?.focus();
         }
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (filteredContacts[searchResultsIndex]) {
-          handleSelectContact(filteredContacts[searchResultsIndex]);
+        if (focusedIndex >= 0) {
+          navigationItems[focusedIndex]?.click();
+        } else if (navigationItems.length > 0) {
+          navigationItems[0]?.click();
         }
       }
       return;
@@ -469,7 +459,19 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0 overflow-hidden">
+      <DialogContent
+        className="search-modal__content !top-[10vh] !translate-y-0 max-w-2xl max-h-[80vh] flex flex-col p-0 overflow-hidden"
+        onKeyDown={handleKeyDown}
+        onFocusCapture={(event) => {
+          const navigationItem = (event.target as HTMLElement).closest<HTMLElement>("[data-search-nav-item]");
+          if (!navigationItem) return;
+          const navigationItems = Array.from(
+            scrollContainerRef.current?.querySelectorAll<HTMLElement>("[data-search-nav-item]") ?? []
+          );
+          setNavSection("search_results");
+          setSearchResultsIndex(navigationItems.indexOf(navigationItem));
+        }}
+      >
         <DialogHeader className="px-6 pt-6 pb-4 border-b">
           <DialogTitle>{t("search_modal_title")}</DialogTitle>
         </DialogHeader>
@@ -484,6 +486,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
               onChange={(e) => {
                 const val = e.target.value;
                 setSearchQuery(val);
+                setShowAllContactResults(false);
                 if (val.trim() !== "") {
                   setNavSection("search_results");
                   setSearchResultsIndex(0);
@@ -491,7 +494,6 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                   setNavSection("input");
                 }
               }}
-              onKeyDown={handleKeyDown}
               className="pl-10"
               autoCorrect="off"
               autoComplete="off"
@@ -670,18 +672,26 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
               <div className="py-8 text-center text-muted-foreground">
                 {t("loading")}
               </div>
-            ) : filteredContacts.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground">
-                {t("search_modal_no_results")}
-              </div>
             ) : (
-              <div className="space-y-1 pt-1">
-                {filteredContacts.map((contact, index) => {
+              <div className="space-y-4 pt-1">
+                {filteredContacts.length === 0 && searchQuery.trim().length < 3 && (
+                  <div className="py-8 text-center text-muted-foreground">
+                    {t("search_modal_no_results")}
+                  </div>
+                )}
+                {filteredContacts.length > 0 && (
+                  <div className="search-modal__conversation-results space-y-1">
+                    <h3 className="search-modal__conversation-results-title pb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      {t("conversations")}
+                    </h3>
+                {displayedContacts.map((contact, index) => {
                   const isSelected =
                     navSection === "search_results" && index === searchResultsIndex;
                   return (
                     <div
                       key={contact.id}
+                      data-search-nav-item
+                      tabIndex={-1}
                       ref={isSelected ? selectedSearchResultRef : null}
                       className={cn(
                         "search-modal__result flex items-center space-x-3 p-3 rounded-lg cursor-pointer transition-colors",
@@ -738,6 +748,24 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                     </div>
                   );
                 })}
+                {filteredContacts.length > 5 && (
+                  <button
+                    type="button"
+                    data-search-nav-item
+                    className="search-modal__show-more-contacts w-full rounded-lg border border-transparent px-3 py-2 text-center text-xs font-medium text-primary transition-colors hover:border-border hover:bg-muted focus:border-border focus:bg-muted focus:outline-none focus:ring-2 focus:ring-primary"
+                    onClick={() => setShowAllContactResults((showAll) => !showAll)}
+                  >
+                    {showAllContactResults
+                      ? t("show_less")
+                      : t("show_more_results", { count: filteredContacts.length - 5 })}
+                  </button>
+                )}
+                  </div>
+                )}
+                <MessageSearchResults
+                  query={searchQuery}
+                  onResultSelected={() => onOpenChange(false)}
+                />
               </div>
             )
           )}

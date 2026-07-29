@@ -90,6 +90,8 @@ export function MessageList({
   const { toasts, showToast, closeToast } = useToast();
 
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
+  const messageSearchTargetId = useAppStore((state) => state.messageSearchTargetId);
+  const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
 
   // When a provider filter is active, prefer the linked account from that provider.
   // Falls back to [0] when no filter is set or the contact has a single account.
@@ -152,6 +154,21 @@ export function MessageList({
     isFetching,
     data,
   } = useMessageData(conversationId, isGroupFromProvider);
+
+  useEffect(() => {
+    if (!messageSearchTargetId || isFetchingNextPage) return;
+    const index = mainMessages.findIndex((message) => message.protocolMsgId === messageSearchTargetId);
+    if (index >= 0) {
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "auto" });
+        setMessageSearchTargetId(null);
+      });
+    } else if (hasNextPage) {
+      void fetchNextPage();
+    } else {
+      setMessageSearchTargetId(null);
+    }
+  }, [messageSearchTargetId, mainMessages, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
 
   const currentUserName = useMemo(() => {
     if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);

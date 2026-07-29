@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { AlertTriangle, Layers, Plus, Search, Settings } from "lucide-react";
+import { AlertTriangle, Layers, Plus, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -20,13 +20,11 @@ const COLOR_VARIATIONS = [
 ];
 
 interface ProviderFilterBarProps {
-  onOpenSearch: () => void;
   onOpenProviders: () => void;
   onOpenSettings: () => void;
 }
 
 export function ProviderFilterBar({
-  onOpenSearch,
   onOpenProviders,
   onOpenSettings,
 }: ProviderFilterBarProps) {
@@ -240,14 +238,6 @@ export function ProviderFilterBar({
       <div className="flex-1" />
 
       {/* Bottom actions */}
-      <button
-        className={cn(railButtonClass, "provider-filter-bar__search-button")}
-        onClick={onOpenSearch}
-        title={t("search_placeholder") || "Search"}
-      >
-        <Search className="h-4 w-4" />
-      </button>
-
       <button
         className={cn(railButtonClass, "provider-filter-bar__providers-button")}
         onClick={onOpenProviders}

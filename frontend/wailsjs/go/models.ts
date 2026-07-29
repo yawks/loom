@@ -450,6 +450,79 @@ export namespace models {
 	}
 	
 	
+	export class MessageSearchResult {
+	    message: Message;
+	    metaContactId: number;
+	    conversationName: string;
+	    conversationAvatar: string;
+	    protocol: string;
+	    providerInstanceId: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MessageSearchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.message = this.convertValues(source["message"], Message);
+	        this.metaContactId = source["metaContactId"];
+	        this.conversationName = source["conversationName"];
+	        this.conversationAvatar = source["conversationAvatar"];
+	        this.protocol = source["protocol"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MessageSearchPage {
+	    items: MessageSearchResult[];
+	    hasMore: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MessageSearchPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.items = this.convertValues(source["items"], MessageSearchResult);
+	        this.hasMore = source["hasMore"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class MetaContact {
 	    id: number;
 	    displayName: string;
