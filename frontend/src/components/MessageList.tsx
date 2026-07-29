@@ -128,6 +128,10 @@ export function MessageList({
     typeof document === "undefined" ? true : document.hasFocus()
   );
   const focusStateRef = useRef<boolean>(hasWindowFocus);
+  // True for 5 seconds after regaining focus: prevents marking messages as read
+  // before the user has had a chance to see them.
+  const [isInFocusGracePeriod, setIsInFocusGracePeriod] = useState(false);
+  const focusGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [separatorDismissed, setSeparatorDismissed] = useState(false);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
@@ -248,17 +252,48 @@ export function MessageList({
   useEffect(() => { focusStateRef.current = hasWindowFocus; }, [hasWindowFocus]);
 
   useEffect(() => {
-    const handleFocus = () => setHasWindowFocus(true);
-    const handleBlur = () => setHasWindowFocus(false);
+    const handleFocus = () => {
+      setHasWindowFocus(true);
+      setIsInFocusGracePeriod(true);
+      if (focusGraceTimerRef.current) clearTimeout(focusGraceTimerRef.current);
+      focusGraceTimerRef.current = setTimeout(() => {
+        setIsInFocusGracePeriod(false);
+        focusGraceTimerRef.current = null;
+      }, 5000);
+    };
+    const handleBlur = () => {
+      setHasWindowFocus(false);
+      setIsInFocusGracePeriod(false);
+      if (focusGraceTimerRef.current) {
+        clearTimeout(focusGraceTimerRef.current);
+        focusGraceTimerRef.current = null;
+      }
+    };
     window.addEventListener("focus", handleFocus);
     window.addEventListener("blur", handleBlur);
     return () => { window.removeEventListener("focus", handleFocus); window.removeEventListener("blur", handleBlur); };
   }, []);
 
+  // When the conversation changes, cancel any pending grace period so the newly
+  // selected conversation is marked read immediately (the user actively chose it).
+  // The previous conversation stays unread since the mark-as-read effect never
+  // fired for it while isInFocusGracePeriod was true.
+  useEffect(() => {
+    if (focusGraceTimerRef.current) {
+      clearTimeout(focusGraceTimerRef.current);
+      focusGraceTimerRef.current = null;
+    }
+    setIsInFocusGracePeriod(false);
+  }, [conversationId]);
+
   // Mark conversation as read — only for main messages, not thread replies.
   // Thread reply messages are only marked read when the thread panel is displayed.
+  // Skipped when the window lacks focus or is in the 5-second grace period after
+  // regaining focus, so messages received while Loom was in the background are
+  // not silently marked as read before the user has seen them.
   useEffect(() => {
     if (!conversationId) return;
+    if (!hasWindowFocus || isInFocusGracePeriod) return;
     const unreadMessages = Object.entries(conversationReadState)
       .filter(([msgId, isRead]) => !isRead && !msgId.startsWith("_") && !threadReplyIds.has(msgId))
       .map(([msgId]) => msgId);
@@ -276,7 +311,7 @@ export function MessageList({
     markConversationAsReadOnServer(conversationId)
       .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
       .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, threadReplyIds]);
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, threadReplyIds, hasWindowFocus, isInFocusGracePeriod]);
 
   // Snapshot the first unread message ID once per conversation (when messages first arrive).
   // A live useMemo on conversationReadState would recompute every time a message is
