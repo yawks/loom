@@ -686,22 +686,23 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	// Check if this is a call message
 	var callType string
 	if callMsg := msg.GetCall(); callMsg != nil {
-		// Extract call type from the call message
-		// Determine if it's a group or individual call
+		_ = callMsg
 		isGroup := chatJID.Server == types.GroupServer
-
-		// Check if it's a video call (CallMessage has a VideoCall field)
-		// For now, we'll determine the type based on the call message structure
-		// Most call messages are missed calls, so we'll default to that
-		if isGroup {
-			// For group calls, we need to check if it's video or voice
-			// Since we can't easily determine this from the Call message alone,
-			// we'll use a generic type and let the frontend handle display
-			callType = "missed_group_voice" // Default, can be refined later
+		// isFromMe is determined later but we need it here — use evt.Info.IsFromMe directly
+		if evt.Info.IsFromMe {
+			if isGroup {
+				callType = "outgoing_group_voice"
+			} else {
+				callType = "outgoing_voice"
+			}
 		} else {
-			callType = "missed_voice" // Default for individual calls
+			if isGroup {
+				callType = "missed_group_voice"
+			} else {
+				callType = "missed_voice"
+			}
 		}
-		fmt.Printf("WhatsApp: Detected call message type: %s for message %s (group: %v)\n", callType, evt.Info.ID, isGroup)
+		fmt.Printf("WhatsApp: Detected call message type: %s for message %s (group: %v, isFromMe: %v)\n", callType, evt.Info.ID, isGroup, evt.Info.IsFromMe)
 	}
 
 	// Track groups from messages
@@ -1022,6 +1023,10 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 		return 0
 	}
 
+	// Always store under the namespaced key so that two WhatsApp instances talking
+	// to the same contact produce distinct ProtocolConvID values in the database.
+	convID = core.BuildConvID(w.getInstanceId(), core.StripConvID(convID))
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1292,10 +1297,15 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 		return []models.Message{}, fmt.Errorf("conversation ID is required")
 	}
 
-	fmt.Printf("WhatsApp: [HISTORY] GetConversationHistory called for conversation %s\n", conversationID)
+	// Split namespaced ID into its two parts: raw JID for WhatsApp API calls,
+	// namespaced key for DB queries and in-memory cache.
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
+	fmt.Printf("WhatsApp: [HISTORY] GetConversationHistory called for conversation %s\n", nsConvID)
 
 	// Parse conversation ID to determine if it's a group
-	chatJID, err := types.ParseJID(conversationID)
+	chatJID, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return []models.Message{}, fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -1309,7 +1319,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 	// If not in cache or beforeTimestamp is specified, load from database
 	if beforeTimestamp != nil || db.DB != nil {
 		var dbMessages []models.Message
-		query := db.DB.Where("protocol_conv_id = ?", conversationID)
+		query := db.DB.Where("protocol_conv_id = ?", nsConvID)
 
 		// If beforeTimestamp is specified, only get messages before that timestamp
 		if beforeTimestamp != nil {
@@ -1320,29 +1330,30 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 		// Preload receipts and reactions to include delivery and read receipts, and reactions
 		query = query.Preload("Receipts").Preload("Reactions").Order("timestamp DESC").Limit(limit)
 
-		fmt.Printf("WhatsApp: [HISTORY] Querying messages for conversation %s (limit=%d, beforeTimestamp=%v)\n", conversationID, limit, beforeTimestamp != nil)
+		fmt.Printf("WhatsApp: [HISTORY] Querying messages for conversation %s (limit=%d, beforeTimestamp=%v)\n", nsConvID, limit, beforeTimestamp != nil)
 
 		// First, check if there are any call messages in the database for this conversation
 		var callMsgCount int64
-		if err := db.DB.Model(&models.Message{}).Where("protocol_conv_id = ? AND call_type != ''", conversationID).Count(&callMsgCount).Error; err == nil {
-			fmt.Printf("WhatsApp: [HISTORY] Found %d call messages in database for conversation %s\n", callMsgCount, conversationID)
+		if err := db.DB.Model(&models.Message{}).Where("protocol_conv_id = ? AND call_type != ''", nsConvID).Count(&callMsgCount).Error; err == nil {
+			fmt.Printf("WhatsApp: [HISTORY] Found %d call messages in database for conversation %s\n", callMsgCount, nsConvID)
 		}
 
 		// Also check if there are call messages with LID or other variations
 		// Try to resolve the conversation ID to see if there might be LID versions
-		resolvedConvID, err := w.resolveContactID(conversationID)
-		if err == nil && resolvedConvID != conversationID {
+		resolvedRawConvID, err := w.resolveContactID(rawConvID)
+		if err == nil && resolvedRawConvID != rawConvID {
+			resolvedNsConvID := core.BuildConvID(w.getInstanceId(), resolvedRawConvID)
 			var lidCallMsgCount int64
-			if err := db.DB.Model(&models.Message{}).Where("protocol_conv_id = ? AND call_type != ''", resolvedConvID).Count(&lidCallMsgCount).Error; err == nil {
-				fmt.Printf("WhatsApp: [HISTORY] Found %d call messages in database for resolved conversation ID %s\n", lidCallMsgCount, resolvedConvID)
+			if err := db.DB.Model(&models.Message{}).Where("protocol_conv_id = ? AND call_type != ''", resolvedNsConvID).Count(&lidCallMsgCount).Error; err == nil {
+				fmt.Printf("WhatsApp: [HISTORY] Found %d call messages in database for resolved conversation ID %s\n", lidCallMsgCount, resolvedNsConvID)
 			}
 		}
 
 		// Also search for any call messages that might have this phone number in sender_id
 		var senderCallMsgCount int64
-		if err := db.DB.Model(&models.Message{}).Where("sender_id = ? AND call_type != ''", conversationID).Count(&senderCallMsgCount).Error; err == nil {
+		if err := db.DB.Model(&models.Message{}).Where("sender_id = ? AND call_type != ''", rawConvID).Count(&senderCallMsgCount).Error; err == nil {
 			if senderCallMsgCount > 0 {
-				fmt.Printf("WhatsApp: [HISTORY] Found %d call messages with sender_id = %s\n", senderCallMsgCount, conversationID)
+				fmt.Printf("WhatsApp: [HISTORY] Found %d call messages with sender_id = %s\n", senderCallMsgCount, rawConvID)
 			}
 		}
 
@@ -1350,26 +1361,27 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 			fmt.Printf("WhatsApp: [HISTORY] ERROR querying messages: %v\n", err)
 			return []models.Message{}, err
 		}
-		fmt.Printf("WhatsApp: [HISTORY] Query returned %d messages for conversation %s\n", len(dbMessages), conversationID)
+		fmt.Printf("WhatsApp: [HISTORY] Query returned %d messages for conversation %s\n", len(dbMessages), nsConvID)
 
 		// If no messages in DB and this is the initial load (beforeTimestamp is nil), try to resolve conversation ID
 		// Messages might be stored with a different conversation ID (LID vs phone number)
 		if len(dbMessages) == 0 && beforeTimestamp == nil {
-			fmt.Printf("WhatsApp: [HISTORY] No messages found with conversation ID %s, trying to resolve...\n", conversationID)
+			fmt.Printf("WhatsApp: [HISTORY] No messages found with conversation ID %s, trying to resolve...\n", nsConvID)
 			// Try to resolve the conversation ID (LID -> phone number or vice versa)
-			resolvedConvID, err := w.resolveContactID(conversationID)
-			if err == nil && resolvedConvID != conversationID {
-				fmt.Printf("WhatsApp: [HISTORY] Resolved conversation ID %s to %s, querying again...\n", conversationID, resolvedConvID)
+			resolvedRaw, err := w.resolveContactID(rawConvID)
+			if err == nil && resolvedRaw != rawConvID {
+				resolvedNs := core.BuildConvID(w.getInstanceId(), resolvedRaw)
+				fmt.Printf("WhatsApp: [HISTORY] Resolved conversation ID %s to %s, querying again...\n", nsConvID, resolvedNs)
 				// Query again with resolved ID
 				var resolvedMessages []models.Message
-				resolvedQuery := db.DB.Where("protocol_conv_id = ?", resolvedConvID).
+				resolvedQuery := db.DB.Where("protocol_conv_id = ?", resolvedNs).
 					Preload("Receipts").Preload("Reactions").
 					Order("timestamp DESC").Limit(limit)
 				if err := resolvedQuery.Find(&resolvedMessages).Error; err == nil && len(resolvedMessages) > 0 {
-					fmt.Printf("WhatsApp: [HISTORY] Found %d messages with resolved conversation ID %s\n", len(resolvedMessages), resolvedConvID)
+					fmt.Printf("WhatsApp: [HISTORY] Found %d messages with resolved conversation ID %s\n", len(resolvedMessages), resolvedNs)
 					// Update protocol_conv_id to match the requested conversation ID
 					for i := range resolvedMessages {
-						resolvedMessages[i].ProtocolConvID = conversationID
+						resolvedMessages[i].ProtocolConvID = nsConvID
 					}
 					// Reverse to get oldest first
 					for i, j := 0, len(resolvedMessages)-1; i < j; i, j = i+1, j-1 {
@@ -1382,12 +1394,12 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 					if w.conversationMessages == nil {
 						w.conversationMessages = make(map[string][]models.Message)
 					}
-					w.conversationMessages[conversationID] = resolvedMessages
+					w.conversationMessages[nsConvID] = resolvedMessages
 					w.mu.Unlock()
 					return resolvedMessages, nil
 				}
 			}
-			fmt.Printf("WhatsApp: [HISTORY] No messages found in DB for conversation %s (resolved or not)\n", conversationID)
+			fmt.Printf("WhatsApp: [HISTORY] No messages found in DB for conversation %s (resolved or not)\n", nsConvID)
 		}
 
 		if len(dbMessages) > 0 {
@@ -1400,13 +1412,13 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 						msg.ProtocolMsgID, msg.CallType, msg.Timestamp.Format("2006-01-02 15:04:05"))
 				}
 			}
-			fmt.Printf("WhatsApp: [HISTORY] Found %d total messages (%d call messages) for conversation %s\n", len(dbMessages), callMsgCountInResult, conversationID)
+			fmt.Printf("WhatsApp: [HISTORY] Found %d total messages (%d call messages) for conversation %s\n", len(dbMessages), callMsgCountInResult, nsConvID)
 
 			// If we found call messages in DB but not in result, there might be a filtering issue
 			if callMsgCount > 0 && callMsgCountInResult == 0 {
 				fmt.Printf("WhatsApp: [HISTORY] WARNING - Found %d call messages in DB but 0 in query result. Checking why...\n", callMsgCount)
 				var allCallMsgs []models.Message
-				if err := db.DB.Where("protocol_conv_id = ? AND call_type != ''", conversationID).
+				if err := db.DB.Where("protocol_conv_id = ? AND call_type != ''", nsConvID).
 					Order("timestamp DESC").Limit(10).Find(&allCallMsgs).Error; err == nil {
 					for _, msg := range allCallMsgs {
 						fmt.Printf("WhatsApp: [HISTORY] Call message in DB: ProtocolMsgID=%s, CallType=%s, Timestamp=%s, ProtocolConvID=%s\n",
@@ -1429,7 +1441,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 					w.conversationMessages = make(map[string][]models.Message)
 				}
 				// Merge with existing cache, avoiding duplicates
-				existing := w.conversationMessages[conversationID]
+				existing := w.conversationMessages[nsConvID]
 				existingMap := make(map[string]bool)
 				for _, msg := range existing {
 					existingMap[msg.ProtocolMsgID] = true
@@ -1443,7 +1455,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 				sort.SliceStable(existing, func(i, j int) bool {
 					return existing[i].Timestamp.Before(existing[j].Timestamp)
 				})
-				w.conversationMessages[conversationID] = existing
+				w.conversationMessages[nsConvID] = existing
 				w.mu.Unlock()
 			}
 
@@ -1453,7 +1465,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 
 	// Fallback to cache if available
 	w.mu.RLock()
-	messages, ok := w.conversationMessages[conversationID]
+	messages, ok := w.conversationMessages[nsConvID]
 	w.mu.RUnlock()
 
 	if ok && len(messages) > 0 {
@@ -1761,8 +1773,11 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 
 	markUnused(file, threadID)
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -1787,7 +1802,7 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
 
 	sentMessage := &models.Message{
-		ProtocolConvID:  conversationID,
+		ProtocolConvID:  nsConvID,
 		ProtocolMsgID:   resp.ID,
 		SenderID:        senderID,
 		SenderName:      senderName,
@@ -1817,8 +1832,11 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 		return nil, fmt.Errorf("client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -1826,7 +1844,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	// Find the quoted message
 	var quotedMessage *models.Message
 	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for _, msg := range msgs {
 			if msg.ProtocolMsgID == quotedMessageID {
 				quotedMessage = &msg
@@ -1923,7 +1941,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
 
 	sentMessage := &models.Message{
-		ProtocolConvID:   conversationID,
+		ProtocolConvID:   nsConvID,
 		ProtocolMsgID:    resp.ID,
 		SenderID:         senderID,
 		SenderName:       senderName,
@@ -1974,8 +1992,11 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 		return nil, fmt.Errorf("client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		fmt.Printf("WhatsApp: EditMessage error: invalid conversation ID: %v\n", err)
 		return nil, fmt.Errorf("invalid conversation ID: %w", err)
@@ -1984,7 +2005,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 	// Find the original message
 	var originalMsg *models.Message
 	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for _, msg := range msgs {
 			if msg.ProtocolMsgID == messageID {
 				originalMsg = &msg
@@ -2035,7 +2056,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 	protocolMsg := &waProto.ProtocolMessage{
 		Type: waProto.ProtocolMessage_MESSAGE_EDIT.Enum(),
 		Key: &waProto.MessageKey{
-			RemoteJID: proto.String(conversationID),
+			RemoteJID: proto.String(rawConvID),
 			ID:        proto.String(messageID),
 		},
 		EditedMessage: editedContent,
@@ -2063,11 +2084,11 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 	updatedMessage.EditedTimestamp = &editedAt
 
 	w.mu.Lock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for idx := range msgs {
 			if msgs[idx].ProtocolMsgID == messageID {
 				msgs[idx] = updatedMessage
-				w.conversationMessages[conversationID][idx] = msgs[idx]
+				w.conversationMessages[nsConvID][idx] = msgs[idx]
 				break
 			}
 		}
@@ -2106,8 +2127,11 @@ func (w *WhatsAppProvider) DeleteMessage(conversationID string, messageID string
 		return fmt.Errorf("client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		fmt.Printf("WhatsApp: DeleteMessage error: invalid conversation ID: %v\n", err)
 		return fmt.Errorf("invalid conversation ID: %w", err)
@@ -2116,7 +2140,7 @@ func (w *WhatsAppProvider) DeleteMessage(conversationID string, messageID string
 	// Find the message to verify it exists and get its details
 	var message *models.Message
 	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for _, msg := range msgs {
 			if msg.ProtocolMsgID == messageID {
 				message = &msg
@@ -2158,7 +2182,7 @@ func (w *WhatsAppProvider) DeleteMessage(conversationID string, messageID string
 	}
 	deletedAt := time.Now()
 
-	updated := w.markMessageAsDeleted(conversationID, messageID, deletedBy, "deleted", deletedAt)
+	updated := w.markMessageAsDeleted(nsConvID, messageID, deletedBy, "deleted", deletedAt)
 	if updated == nil {
 		fmt.Printf("WhatsApp: Warning - Message %s was revoked but not found in cache\n", messageID)
 	}
@@ -2187,8 +2211,11 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 
 	markUnused(threadID)
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -2333,7 +2360,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 			senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
 
 			sentMessage := &models.Message{
-				ProtocolConvID:  conversationID,
+				ProtocolConvID:  nsConvID,
 				ProtocolMsgID:   resp.ID,
 				SenderID:        senderID,
 				SenderName:      senderName,
@@ -2368,7 +2395,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	senderAvatarURL := w.getProfilePictureURL(*w.client.Store.ID)
 
 	sentMessage := &models.Message{
-		ProtocolConvID:  conversationID,
+		ProtocolConvID:  nsConvID,
 		ProtocolMsgID:   resp.ID,
 		SenderID:        senderID,
 		SenderName:      senderName,

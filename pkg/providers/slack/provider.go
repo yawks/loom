@@ -48,9 +48,9 @@ type SlackProvider struct {
 	eventStreamCtx     context.Context         // Context for event stream
 	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
 	eventStreamStarted bool                    // Whether event stream has been started
-	dmChannelCache     map[string]string        // Cache: DM channel ID (D...) -> User ID (U...)
-	dmChannelCacheMu   sync.RWMutex             // Mutex for DM channel cache
-	selfUserID         string                   // Cached authenticated user ID (from AuthTest)
+	dmChannelCache     map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
+	dmChannelCacheMu   sync.RWMutex            // Mutex for DM channel cache
+	selfUserID         string                  // Cached authenticated user ID (from AuthTest)
 }
 
 // userStatus represents the cached status information for a user
@@ -251,7 +251,8 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			AND protocol_conv_id != ''
 			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
 			AND protocol_conv_id NOT LIKE '%@%'
-			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%')
+			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%'
+				OR protocol_conv_id LIKE '%::C%' OR protocol_conv_id LIKE '%::D%' OR protocol_conv_id LIKE '%::G%' OR protocol_conv_id LIKE '%::U%')
 		GROUP BY protocol_conv_id
 		ORDER BY MAX(timestamp) DESC
 		LIMIT 50
@@ -341,7 +342,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		// Skip conversations where Slack confirms no new messages since our last stored one.
 		// contactLatestTS holds the timestamp of the most recent message in the channel
 		// as returned by GetConversations — no API call needed to know there's nothing new.
-		if slackLatestStr, ok := contactLatestTS[conv.ProtocolConvID]; ok && slackLatestStr != "" {
+		if slackLatestStr, ok := contactLatestTS[core.StripConvID(conv.ProtocolConvID)]; ok && slackLatestStr != "" {
 			slackLatestF, err := strconv.ParseFloat(slackLatestStr, 64)
 			dbLatestF := float64(conv.LastTimestamp.UnixNano()) / 1e9
 			if err == nil && slackLatestF <= dbLatestF {
@@ -357,7 +358,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		// Fix orphaned messages saved by pollGlobalUpdates (ConversationID=0).
 		// Uses the pre-fetched orphanSet to avoid per-conversation SQL queries.
 		if orphanSet[conv.ProtocolConvID] && db.DB != nil {
-			normalizedConvID := p.normalizeDMConversationID(conv.ProtocolConvID)
+			normalizedConvID := p.normalizeDMConversationID(core.StripConvID(conv.ProtocolConvID))
 			convDBID, ensureErr := p.ensureConversation(normalizedConvID)
 			if ensureErr != nil {
 				p.log("SlackProvider.incrementalSyncExistingConversations: Failed to ensure conversation for %s (normalized: %s): %v\n",
@@ -532,7 +533,8 @@ func (p *SlackProvider) refreshThreadReplies(convID string) int {
 	actualChannelID := convID
 	if len(convID) > 0 && convID[0] == 'U' {
 		ch, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{convID},
+			Users:    []string{convID},
+			ReturnIM: true,
 		})
 		if err != nil || ch == nil || ch.ID == "" {
 			p.log("SlackProvider.refreshThreadReplies: failed to open DM for %s: %v\n", convID, err)
@@ -1134,7 +1136,6 @@ func (p *SlackProvider) checkStatusChanges() {
 	}
 }
 
-
 // Disconnect disconnects from the Slack API.
 func (p *SlackProvider) Disconnect() error {
 	p.log("Slack: Disconnecting...\n")
@@ -1252,7 +1253,7 @@ func (p *SlackProvider) GetAuthQRCode() (string, error) {
 
 func (p *SlackProvider) RefreshContact(contactID string) error {
 	// For Slack, we can just resolve the user name again which updates the cache
-	p.ResolveUserNames([]string{contactID})
+	p.ResolveUserNames([]string{core.StripConvID(contactID)})
 	return nil
 }
 

@@ -851,10 +851,14 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 		return 0, fmt.Errorf("instance ID missing, cannot ensure conversation")
 	}
 
+	// rawConvID is used for Slack API calls; nsConvID is stored in the database.
+	rawConvID := core.StripConvID(protocolConvID)
+	nsConvID := core.BuildConvID(instanceID, rawConvID)
+
 	// IMPORTANT: For DM channels, we need to resolve to UserID first
 	// Slack DM channels have IDs like "DEHFWSQF6", but LinkedAccount should use UserID like "UDY7N2D2L"
-	actualUserID := protocolConvID
-	if len(protocolConvID) > 0 && protocolConvID[0] == 'D' {
+	actualUserID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'D' {
 		// This might be a DM channel. Try to get the UserID from the channel info
 		p.mu.RLock()
 		client := p.client
@@ -862,12 +866,12 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 
 		if client != nil {
 			convInfo, err := client.GetConversationInfo(&slack.GetConversationInfoInput{
-				ChannelID: protocolConvID,
+				ChannelID: rawConvID,
 			})
 			if err == nil && convInfo != nil && convInfo.IsIM && convInfo.User != "" {
 				// This is a DM, use the UserID instead of channel ID
 				actualUserID = convInfo.User
-				p.log("SlackProvider.ensureConversation: Resolved DM channel %s to user %s\n", protocolConvID, actualUserID)
+				p.log("SlackProvider.ensureConversation: Resolved DM channel %s to user %s\n", rawConvID, actualUserID)
 			}
 		}
 	}
@@ -878,25 +882,25 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 	if err != nil {
 		// LinkedAccount doesn't exist, create it
 		// Try to get a display name for the conversation
-		displayName := p.resolveConversationName(protocolConvID, "")
+		displayName := p.resolveConversationName(rawConvID, "")
 		if displayName == "" {
-			displayName = protocolConvID // Fallback to ID if we can't resolve name
+			displayName = rawConvID // Fallback to ID if we can't resolve name
 		}
 
 		// Create LinkedAccount via ensureConversationContact (which will also resolve DM → UserID)
-		if err = p.ensureConversationContact(protocolConvID, displayName); err != nil {
-			return 0, fmt.Errorf("failed to create linked account for protocolConvID %s: %w", protocolConvID, err)
+		if err = p.ensureConversationContact(rawConvID, displayName); err != nil {
+			return 0, fmt.Errorf("failed to create linked account for protocolConvID %s: %w", rawConvID, err)
 		}
 
 		// Try again to find the LinkedAccount (using actualUserID)
 		if err = db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, actualUserID).First(&linkedAccount).Error; err != nil {
-			return 0, fmt.Errorf("linked account still not found after creation for protocolConvID %s (resolved to %s): %w", protocolConvID, actualUserID, err)
+			return 0, fmt.Errorf("linked account still not found after creation for protocolConvID %s (resolved to %s): %w", rawConvID, actualUserID, err)
 		}
 	}
 
 	// Check if Conversation already exists
 	var conversation models.Conversation
-	err = db.DB.Where("protocol_conv_id = ?", protocolConvID).First(&conversation).Error
+	err = db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation).Error
 	if err == nil {
 		// Conversation exists, update LinkedAccountID if needed
 		if conversation.LinkedAccountID != linkedAccount.ID {
@@ -910,7 +914,7 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 
 	// Conversation doesn't exist, create it
 	// Determine if it's a group (channels start with C, groups with G, MPIMs with D, DMs with D)
-	isGroup := strings.HasPrefix(protocolConvID, "C") || strings.HasPrefix(protocolConvID, "G")
+	isGroup := strings.HasPrefix(rawConvID, "C") || strings.HasPrefix(rawConvID, "G")
 	groupName := ""
 	if isGroup {
 		// Try to get group name from LinkedAccount
@@ -919,7 +923,7 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 
 	conversation = models.Conversation{
 		LinkedAccountID: linkedAccount.ID,
-		ProtocolConvID:  protocolConvID,
+		ProtocolConvID:  nsConvID,
 		IsGroup:         isGroup,
 		GroupName:       groupName,
 		IsPinned:        false,
@@ -933,6 +937,6 @@ func (p *SlackProvider) ensureConversation(protocolConvID string) (uint, error) 
 	}
 	db.ContactStore.UpsertConversation(conversation.LinkedAccountID, conversation.ProtocolConvID)
 
-	p.log("SlackProvider.ensureConversation: Created conversation %d for ProtocolConvID %s\n", conversation.ID, protocolConvID)
+	p.log("SlackProvider.ensureConversation: Created conversation %d for ProtocolConvID %s\n", conversation.ID, nsConvID)
 	return conversation.ID, nil
 }

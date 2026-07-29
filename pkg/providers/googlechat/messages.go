@@ -20,6 +20,8 @@ func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, be
 	if p.getHTTPClient() == nil {
 		return nil, fmt.Errorf("not connected")
 	}
+	// Strip namespace prefix for Google Chat API calls; convertMessage/storeMessages will re-add it.
+	convID = core.StripConvID(convID)
 	if limit <= 0 {
 		limit = 50
 	}
@@ -57,10 +59,11 @@ func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, be
 	threadRoots := buildThreadRoots(rawMsgs)
 
 	// Fix any stale DB records that stored the thread name instead of the parent ID.
+	nsConvID := core.BuildConvID(p.getInstanceID(), convID)
 	if db.DB != nil {
 		for threadName, parentID := range threadRoots {
 			db.DB.Model(&models.Message{}).
-				Where("thread_id = ? AND protocol_conv_id = ?", threadName, convID).
+				Where("thread_id = ? AND protocol_conv_id = ?", threadName, nsConvID).
 				Update("thread_id", parentID)
 		}
 	}
@@ -91,6 +94,9 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		return nil, fmt.Errorf("not connected")
 	}
 
+	// Strip namespace prefix before using the ID in Google Chat API paths.
+	rawConvID := core.StripConvID(convID)
+
 	type threadRef struct {
 		Name string `json:"name"`
 	}
@@ -100,7 +106,7 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 	}
 
 	body := msgBody{Text: text}
-	path := "/" + convID + "/messages"
+	path := "/" + rawConvID + "/messages"
 	// canonicalThreadID is the parent message's ProtocolMsgID (used as ThreadID in the model).
 	// It stays empty when threadID is a thread resource name (e.g. from SendReply).
 	var canonicalThreadID string
@@ -124,7 +130,7 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 	}
 
 	selfID := p.getSelfID()
-	m := p.convertMessage(result, convID, selfID)
+	m := p.convertMessage(result, rawConvID, selfID)
 	// We know we sent this message — enforce correct identity regardless of API response.
 	m.IsFromMe = true
 	if m.SenderID == "" && selfID != "" {
@@ -139,7 +145,7 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		m.ThreadID = &canonicalThreadID
 	}
 	if db.DB != nil {
-		convDBID, _ := p.ensureConversation(convID)
+		convDBID, _ := p.ensureConversation(rawConvID)
 		m.ConversationID = convDBID
 		db.DB.Create(&m)
 	}
@@ -353,6 +359,8 @@ func (p *GoogleChatProvider) RemoveReaction(convID, messageID, emoji string) err
 }
 
 func (p *GoogleChatProvider) convertMessage(m ChatMessage, convID, selfID string) models.Message {
+	// convID may be a raw space name; namespace it for consistent storage.
+	convID = core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
 	senderID := ""
 	senderName := ""
 	senderAvatarURL := ""
@@ -453,24 +461,27 @@ func (p *GoogleChatProvider) ensureConversation(convID string) (uint, error) {
 		return 0, fmt.Errorf("invalid params")
 	}
 
+	instanceID := p.getInstanceID()
+	rawConvID := core.StripConvID(convID)
+	nsConvID := core.BuildConvID(instanceID, rawConvID)
+
 	var conv models.Conversation
-	if err := db.DB.Where("protocol_conv_id = ?", convID).First(&conv).Error; err == nil {
+	if err := db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conv).Error; err == nil {
 		return conv.ID, nil
 	}
 
-	instanceID := p.getInstanceID()
-	isGroup := p.isGroupSpace(convID)
-	displayName := convID
+	isGroup := p.isGroupSpace(rawConvID)
+	displayName := rawConvID
 
 	var linkedAccount models.LinkedAccount
-	if db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, convID).First(&linkedAccount).Error != nil {
+	if db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, rawConvID).First(&linkedAccount).Error != nil {
 		meta := models.MetaContact{DisplayName: displayName}
 		db.DB.Create(&meta)
 		linkedAccount = models.LinkedAccount{
 			MetaContactID:      meta.ID,
 			Protocol:           "googlechat",
 			ProviderInstanceID: instanceID,
-			UserID:             convID,
+			UserID:             rawConvID,
 			Username:           displayName,
 			IsGroup:            isGroup,
 		}
@@ -483,14 +494,14 @@ func (p *GoogleChatProvider) ensureConversation(convID string) (uint, error) {
 	}
 	conv = models.Conversation{
 		LinkedAccountID: linkedAccount.ID,
-		ProtocolConvID:  convID,
+		ProtocolConvID:  nsConvID,
 		IsGroup:         isGroup,
 		GroupName:       groupName,
 	}
 	if err := db.DB.Create(&conv).Error; err != nil {
 		return 0, err
 	}
-	db.ContactStore.UpsertConversation(linkedAccount.ID, convID)
+	db.ContactStore.UpsertConversation(linkedAccount.ID, nsConvID)
 	return conv.ID, nil
 }
 
@@ -512,7 +523,8 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		return
 	}
 
-	convDBID, err := p.ensureConversation(convID)
+	nsConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	convDBID, err := p.ensureConversation(nsConvID)
 	if err != nil {
 		p.log("GoogleChatProvider.storeMessages: ensureConversation: %v\n", err)
 		return
@@ -559,7 +571,7 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 			}
 			continue
 		}
-		m.ProtocolConvID = convID
+		m.ProtocolConvID = nsConvID
 		m.ConversationID = convDBID
 		toCreate = append(toCreate, m)
 	}

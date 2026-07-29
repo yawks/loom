@@ -231,6 +231,9 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: messages})
 		}
 	}
+	if err := p.repairStoredHTMLFormatting(); err != nil {
+		return err
+	}
 	completionMessage := "Microsoft Teams sync completed"
 	if skipped > 0 {
 		completionMessage = fmt.Sprintf("Microsoft Teams sync completed (%d inaccessible conversation(s) skipped)", skipped)
@@ -264,6 +267,7 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 }
 
 func (p *Provider) GetConversationHistory(conversationID string, limit int, before, since *time.Time) ([]models.Message, error) {
+	conversationID = core.StripConvID(conversationID)
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return nil, err
@@ -323,29 +327,50 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 }
 
 func (p *Provider) SendMessage(conversationID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
-	if file != nil {
-		return nil, unsupported("SendMessage with attachment")
+	if threadID != nil {
+		return nil, unsupported("threads")
 	}
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return nil, err
 	}
 	opts := msteams.SendOptions{}
-	if threadID != nil {
-		opts.ParentID = *threadID
+	content := msteams.MatrixToTeamsHTML(text)
+	var modelAttachment *models.Attachment
+	if file != nil {
+		if len(file.Data) == 0 {
+			return nil, fmt.Errorf("%s: attachment is empty", providerID)
+		}
+		mimeType := teamsUploadMimeType(file.FileName, file.MimeType)
+		uploaded, err := client.UploadAttachment(context.Background(), file.FileName, mimeType, file.Data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: upload attachment: %w", providerID, err)
+		}
+		p.rememberAttachmentURL(uploaded.URL)
+		content = teamsAttachmentHTML(uploaded, content)
+		opts.ContentType = "html"
+		attachmentType, _ := teamsAttachmentType(uploaded.Name, uploaded.ContentType)
+		modelAttachment = &models.Attachment{
+			Type: attachmentType, URL: uploaded.URL, FileName: uploaded.Name,
+			FileSize: uploaded.Size, MimeType: uploaded.ContentType,
+		}
 	}
-	id, err := client.SendMessage(context.Background(), conversationID, msteams.MatrixToTeamsHTML(text), opts)
+	id, err := client.SendMessage(context.Background(), rawConvID, content, opts)
 	if err != nil {
 		return nil, fmt.Errorf("%s: send message: %w", providerID, err)
 	}
 	now := time.Now()
 	message := &models.Message{
-		ProtocolConvID: conversationID, ProtocolMsgID: id,
+		ProtocolConvID: nsConvID, ProtocolMsgID: id,
 		SenderID: client.UserMRI(), SenderName: p.displayName(),
 		Body: text, Timestamp: now, IsFromMe: true,
 	}
-	if threadID != nil {
-		message.ThreadID = threadID
+	if modelAttachment != nil {
+		if raw, err := json.Marshal([]models.Attachment{*modelAttachment}); err == nil {
+			message.Attachments = string(raw)
+		}
 	}
 	if err := p.storeMessages([]models.Message{*message}); err != nil {
 		return nil, err
@@ -353,21 +378,75 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 	return message, nil
 }
 
+func (p *Provider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	if file == nil {
+		return nil, fmt.Errorf("%s: no attachment provided", providerID)
+	}
+	return p.SendMessage(conversationID, "", file, threadID)
+}
+
+func teamsUploadMimeType(name, contentType string) string {
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if contentType == "" || contentType == "application/octet-stream" {
+		if inferred := mime.TypeByExtension(strings.ToLower(filepath.Ext(name))); inferred != "" {
+			return strings.Split(inferred, ";")[0]
+		}
+	}
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	return contentType
+}
+
+func teamsAttachmentHTML(attachment *msteams.Attachment, caption string) string {
+	if attachment == nil {
+		return caption
+	}
+	name := html.EscapeString(attachment.Name)
+	fileURL := html.EscapeString(attachment.URL)
+	var attachmentHTML string
+	switch {
+	case strings.HasPrefix(attachment.ContentType, "image/"):
+		attachmentHTML = fmt.Sprintf(
+			`<img src="%s" itemtype="http://schema.skype.com/AMSImage" alt="%s">`,
+			fileURL, name,
+		)
+	case strings.HasPrefix(attachment.ContentType, "video/"):
+		attachmentHTML = fmt.Sprintf(
+			`<video src="%s" itemtype="http://schema.skype.com/AMSVideo">%s</video>`,
+			fileURL, name,
+		)
+	default:
+		attachmentHTML = fmt.Sprintf(
+			`<URIObject type="File.1" uri="%s"><Title>%s</Title><Description/>`+
+				`<OriginalName v="%s"/><FileSize v="%d"/></URIObject>`,
+			fileURL, name, name, attachment.Size,
+		)
+	}
+	if strings.TrimSpace(caption) == "" {
+		return attachmentHTML
+	}
+	return caption + "<br>" + attachmentHTML
+}
+
 func (p *Provider) SendReply(conversationID, text, quotedMessageID string) (*models.Message, error) {
 	if quotedMessageID == "" {
 		return nil, fmt.Errorf("%s: quoted message ID is empty", providerID)
 	}
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return nil, err
 	}
-	id, err := client.SendMessage(context.Background(), conversationID, msteams.MatrixToTeamsHTML(text), msteams.SendOptions{ParentID: quotedMessageID})
+	content := p.inlineReplyHTML(nsConvID, quotedMessageID) + msteams.MatrixToTeamsHTML(text)
+	id, err := client.SendMessage(context.Background(), rawConvID, content, msteams.SendOptions{ContentType: "html"})
 	if err != nil {
 		return nil, fmt.Errorf("%s: send reply: %w", providerID, err)
 	}
 	now := time.Now()
 	message := &models.Message{
-		ProtocolConvID: conversationID, ProtocolMsgID: id,
+		ProtocolConvID: nsConvID, ProtocolMsgID: id,
 		SenderID: client.UserMRI(), SenderName: p.displayName(), Body: text,
 		Timestamp: now, IsFromMe: true, QuotedMessageID: &quotedMessageID,
 	}
@@ -381,23 +460,57 @@ func (p *Provider) SendReply(conversationID, text, quotedMessageID string) (*mod
 }
 
 func (p *Provider) SendThreadReply(conversationID, text, threadID, quotedMessageID string) (*models.Message, error) {
-	message, err := p.SendReply(conversationID, text, quotedMessageID)
-	if message != nil {
-		message.ThreadID = &threadID
+	return nil, unsupported("threads")
+}
+
+func (p *Provider) inlineReplyHTML(conversationID, quotedMessageID string) string {
+	senderID := ""
+	senderName := ""
+	preview := "…"
+	if db.DB != nil {
+		var quoted models.Message
+		if err := db.DB.Where(
+			"protocol_msg_id = ? AND protocol_conv_id = ?",
+			quotedMessageID, conversationID,
+		).First(&quoted).Error; err == nil {
+			senderID = quoted.SenderID
+			senderName = quoted.SenderName
+			if senderName == "" {
+				senderName = senderID
+			}
+			if strings.TrimSpace(quoted.Body) != "" {
+				preview = quoted.Body
+				if looksLikeTeamsHTML(preview) {
+					preview = teamsHTMLToMarkdown(
+						msteams.StripAMSAttachments(msteams.StripReplyBlockquote(preview)),
+					)
+				}
+			}
+		}
 	}
-	return message, err
+	return fmt.Sprintf(
+		`<blockquote itemscope="" itemtype="http://schema.skype.com/Reply" itemid=%q>`+
+			`<strong itemprop="mri" itemid=%q>%s</strong>`+
+			`<span itemprop="time" itemid=%q></span><p itemprop="preview">%s</p></blockquote>`,
+		quotedMessageID,
+		senderID,
+		html.EscapeString(senderName),
+		quotedMessageID,
+		html.EscapeString(preview),
+	)
 }
 
 func (p *Provider) EditMessage(conversationID, messageID, newText string) (*models.Message, error) {
+	rawConvID := core.StripConvID(conversationID)
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return nil, err
 	}
-	if err := client.EditMessage(context.Background(), conversationID, messageID, msteams.MatrixToTeamsHTML(newText), msteams.SendOptions{}); err != nil {
+	if err := client.EditMessage(context.Background(), rawConvID, messageID, msteams.MatrixToTeamsHTML(newText), msteams.SendOptions{}); err != nil {
 		return nil, fmt.Errorf("%s: edit message: %w", providerID, err)
 	}
 	now := time.Now()
-	return &models.Message{ProtocolConvID: conversationID, ProtocolMsgID: messageID, Body: newText, IsEdited: true, EditedTimestamp: &now}, nil
+	return &models.Message{ProtocolConvID: core.BuildConvID(p.instance, rawConvID), ProtocolMsgID: messageID, Body: newText, IsEdited: true, EditedTimestamp: &now}, nil
 }
 
 func (p *Provider) DeleteMessage(conversationID, messageID string) error {
@@ -405,7 +518,7 @@ func (p *Provider) DeleteMessage(conversationID, messageID string) error {
 	if err != nil {
 		return err
 	}
-	return client.DeleteMessage(context.Background(), conversationID, messageID)
+	return client.DeleteMessage(context.Background(), core.StripConvID(conversationID), messageID)
 }
 
 func (p *Provider) AddReaction(conversationID, messageID, emoji string) error {
@@ -413,7 +526,7 @@ func (p *Provider) AddReaction(conversationID, messageID, emoji string) error {
 	if err != nil {
 		return err
 	}
-	return client.AddReaction(context.Background(), conversationID, messageID, emoji)
+	return client.AddReaction(context.Background(), core.StripConvID(conversationID), messageID, emoji)
 }
 
 func (p *Provider) RemoveReaction(conversationID, messageID, emoji string) error {
@@ -421,7 +534,7 @@ func (p *Provider) RemoveReaction(conversationID, messageID, emoji string) error
 	if err != nil {
 		return err
 	}
-	return client.RemoveReaction(context.Background(), conversationID, messageID, emoji)
+	return client.RemoveReaction(context.Background(), core.StripConvID(conversationID), messageID, emoji)
 }
 
 func (p *Provider) SendTypingIndicator(conversationID string, isTyping bool) error {
@@ -432,7 +545,7 @@ func (p *Provider) SendTypingIndicator(conversationID string, isTyping bool) err
 	if err != nil {
 		return err
 	}
-	return client.SendTyping(context.Background(), conversationID)
+	return client.SendTyping(context.Background(), core.StripConvID(conversationID))
 }
 
 func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
@@ -440,7 +553,7 @@ func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
 	if err != nil {
 		return err
 	}
-	return client.MarkRead(context.Background(), conversationID, messageID)
+	return client.MarkRead(context.Background(), core.StripConvID(conversationID), messageID)
 }
 
 func (p *Provider) MarkConversationAsRead(conversationID string) error {
@@ -476,7 +589,7 @@ func (p *Provider) RefreshContact(contactID string) error {
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads: true, SupportsReactions: true,
+		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		NativeEmojiReactions: true,
@@ -680,12 +793,15 @@ func mriLookupKey(mri string) string {
 }
 
 func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message, conversationID string) models.Message {
+	conversationID = core.BuildConvID(p.instance, core.StripConvID(conversationID))
 	if isTeamsCallMessage(remote) {
 		return p.toCallModelMessage(client, remote, conversationID)
 	}
 	body := remote.Content
 	embeddedAttachments := msteams.ExtractAMSAttachments(remote.Content)
-	if remote.ContentType == "html" || strings.Contains(strings.ToLower(remote.MessageType), "richtext") {
+	if remote.ContentType == "html" ||
+		strings.Contains(strings.ToLower(remote.MessageType), "richtext") ||
+		looksLikeTeamsHTML(remote.Content) {
 		if remote.ParentID == "" {
 			remote.ParentID = msteams.ExtractReplyParent(remote.Content)
 		}
@@ -765,6 +881,12 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		})
 	}
 	return message
+}
+
+var teamsHTMLContentPattern = regexp.MustCompile(`(?i)<(?:p|div|br|ul|ol|li|table|blockquote|span|strong|em|i|b|a)\b`)
+
+func looksLikeTeamsHTML(content string) bool {
+	return teamsHTMLContentPattern.MatchString(content)
 }
 
 func teamsAttachmentType(name, contentType string) (string, string) {

@@ -1,6 +1,21 @@
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "./utils";
 
+export const htmlFragmentToText = (text: string): string => {
+  // Do not treat Slack links such as <https://example.com|label> as HTML.
+  if (!/<\/?(?:a|b|blockquote|br|div|em|i|li|ol|p|span|strong|u|ul)\b[^>]*>/i.test(text)) {
+    return text;
+  }
+  const documentNode = new DOMParser().parseFromString(text, "text/html");
+  documentNode.querySelectorAll("br").forEach((element) => element.replaceWith("\n"));
+  documentNode.querySelectorAll("li").forEach((element) => {
+    element.prepend("• ");
+    element.append("\n");
+  });
+  documentNode.querySelectorAll("p, div, blockquote").forEach((element) => element.append("\n"));
+  return documentNode.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() ?? text;
+};
+
 export const getMessageDomId = (message: models.Message): string => {
   if (message.protocolMsgId?.trim()) return message.protocolMsgId;
   if (message.id) return `message-${message.id}`;

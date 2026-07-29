@@ -78,13 +78,34 @@ func TestReplyParentIsExtractedFromTeamsHTML(t *testing.T) {
 func TestCapabilities(t *testing.T) {
 	got := NewProvider().GetCapabilities()
 	want := core.Capabilities{
-		SupportsThreads: true, SupportsReactions: true,
+		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		NativeEmojiReactions: true,
 	}
 	if got != want {
 		t.Fatalf("capabilities=%+v, want %+v", got, want)
+	}
+}
+
+func TestThreadsAreUnsupported(t *testing.T) {
+	provider := NewProvider()
+	threadID := "parent"
+	if _, err := provider.SendMessage("conversation", "body", nil, &threadID); err == nil {
+		t.Fatal("SendMessage with a thread ID should be rejected")
+	}
+	if _, err := provider.SendThreadReply("conversation", "body", threadID, "quoted"); err == nil {
+		t.Fatal("SendThreadReply should be rejected")
+	}
+}
+
+func TestInlineReplyHTMLUsesQuoteWithoutThreadParent(t *testing.T) {
+	body := NewProvider().inlineReplyHTML("conversation", "message-1")
+	if parent := msteams.ExtractReplyParent(body); parent != "message-1" {
+		t.Fatalf("inline reply parent=%q, want message-1", parent)
+	}
+	if !strings.Contains(body, `itemtype="http://schema.skype.com/Reply"`) {
+		t.Fatalf("inline reply HTML=%q", body)
 	}
 }
 
@@ -212,5 +233,53 @@ func TestParticipantNamesFromMessagesIgnoresSelfAndTechnicalIDs(t *testing.T) {
 	}, "8:orgid:self")
 	if got != "Marco CORVINI" {
 		t.Fatalf("participant name=%q, want Marco CORVINI", got)
+	}
+}
+
+func TestTeamsAttachmentHTML(t *testing.T) {
+	image := teamsAttachmentHTML(&msteams.Attachment{
+		Name: "photo.jpg", URL: "https://api.asm.skype.com/image", ContentType: "image/jpeg", Size: 12,
+	}, "")
+	if !strings.Contains(image, "AMSImage") || !strings.Contains(image, "photo.jpg") {
+		t.Fatalf("image HTML=%q", image)
+	}
+	document := teamsAttachmentHTML(&msteams.Attachment{
+		Name: "report.pdf", URL: "https://api.asm.skype.com/file", ContentType: "application/pdf", Size: 42,
+	}, "<strong>Report</strong>")
+	for _, expected := range []string{"URIObject", "OriginalName", `FileSize v="42"`, "<strong>Report</strong><br>"} {
+		if !strings.Contains(document, expected) {
+			t.Fatalf("document HTML %q does not contain %q", document, expected)
+		}
+	}
+}
+
+func TestTeamsHTMLListAndReplyWithIncorrectContentType(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := NewProvider()
+
+	list := provider.toModelMessage(client, msteams.Message{
+		ID: "list", From: "8:orgid:imed", ContentType: "text",
+		Content: `<p>Remarques :</p><ul><li>Premier point</li><li>Second point</li></ul>`,
+	}, "conversation")
+	if !strings.Contains(list.Body, "Remarques :\n- Premier point\n- Second point") {
+		t.Fatalf("list body=%q", list.Body)
+	}
+
+	reply := provider.toModelMessage(client, msteams.Message{
+		ID: "reply", From: "8:orgid:nadia", ContentType: "text",
+		Content: `<div><blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="list">` +
+			`<p itemprop="preview">Remarques : • Premier point</p></blockquote><p>Ma réponse</p></div>`,
+	}, "conversation")
+	if reply.QuotedMessageID == nil || *reply.QuotedMessageID != "list" {
+		t.Fatalf("reply parent=%v", reply.QuotedMessageID)
+	}
+	if strings.Contains(reply.Body, "Premier point") || reply.Body != "Ma réponse" {
+		t.Fatalf("reply body=%q", reply.Body)
 	}
 }

@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Phone, Video, VideoOff, X } from "lucide-react";
+import { Clock, ExternalLink, Phone, PhoneOutgoing, Video, VideoOff, X } from "lucide-react";
 
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
@@ -27,7 +27,7 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  
+
   if (hours > 0) {
     if (minutes > 0) {
       return `${hours}h ${minutes}m`;
@@ -58,26 +58,82 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   // Determine call type and icon
   const getCallInfo = () => {
     const callType = message.callType || "";
-    const hasSummary = message.callDurationSecs != null || message.callOutcome || participants.length > 0;
+    const isOutgoing = callType.startsWith("outgoing_");
+    const isVideo = message.callIsVideo || callType.includes("video");
+    const duration = message.callDurationSecs;
+    const outcome = message.callOutcome;
+    const hasSummary = duration != null || outcome || participants.length > 0;
 
     if (callType === "call_ended") {
       return {
-        icon: message.callIsVideo ? Video : Phone,
+        icon: isVideo ? Video : Phone,
         text: t("call.ended"),
-        duration: message.callDurationSecs != null ? formatDuration(message.callDurationSecs) : null,
+        duration: duration != null ? formatDuration(duration) : null,
         participantCount: participants.length,
       };
     }
-    
-    // If we have call summary, show more detailed information
+
+    // Outgoing calls
+    if (isOutgoing) {
+      const baseIcon = isVideo ? Video : PhoneOutgoing;
+
+      if (outcome === "CONNECTED" && duration != null && duration > 0) {
+        return {
+          icon: baseIcon,
+          text: t("call.outgoingConnected", { duration: formatDuration(duration) }),
+          duration: null, // already in text
+          participantCount: participants.length,
+        };
+      }
+      if (outcome === "CONNECTED") {
+        return {
+          icon: baseIcon,
+          text: t("call.connectedShort"),
+          duration: null,
+          participantCount: participants.length,
+        };
+      }
+      if (outcome === "MISSED") {
+        return {
+          icon: isVideo ? VideoOff : PhoneOutgoing,
+          text: t("call.outgoingNoAnswer"),
+          duration: null,
+          participantCount: participants.length,
+        };
+      }
+      if (outcome === "REJECTED") {
+        return {
+          icon: PhoneWithX,
+          text: t("call.rejected"),
+          duration: null,
+          participantCount: participants.length,
+        };
+      }
+      if (outcome === "FAILED") {
+        return {
+          icon: PhoneWithX,
+          text: t("call.failed"),
+          duration: null,
+          participantCount: participants.length,
+        };
+      }
+      // No outcome yet (live / just placed)
+      const textKey = isVideo
+        ? (callType.includes("group") ? "call.outgoingGroupVideo" : "call.outgoingVideo")
+        : (callType.includes("group") ? "call.outgoingGroupVoice" : "call.outgoingVoice");
+      return {
+        icon: baseIcon,
+        text: t(textKey),
+        duration: duration != null ? formatDuration(duration) : null,
+        participantCount: participants.length,
+      };
+    }
+
+    // Incoming calls — use hasSummary to pick between summary and basic display
     if (hasSummary) {
-      const isVideo = message.callIsVideo;
-      const duration = message.callDurationSecs;
-      const outcome = message.callOutcome;
-      
-      // Determine outcome text and icon
       let outcomeText = "";
       let iconComponent: React.ComponentType<{ className?: string }> = Phone;
+
       if (outcome === "CONNECTED") {
         if (duration != null && duration > 0) {
           outcomeText = t("call.connected", { duration: formatDuration(duration) });
@@ -86,7 +142,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         }
         iconComponent = isVideo ? Video : Phone;
       } else if (outcome === "MISSED") {
-        outcomeText = isVideo 
+        outcomeText = isVideo
           ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
           : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
         iconComponent = isVideo ? VideoOff : PhoneWithX;
@@ -99,7 +155,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       } else {
         // Fallback to call type
         if (callType.includes("missed")) {
-          outcomeText = isVideo 
+          outcomeText = isVideo
             ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
             : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
           iconComponent = isVideo ? VideoOff : PhoneWithX;
@@ -108,7 +164,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
           iconComponent = PhoneWithX;
         }
       }
-      
+
       return {
         icon: iconComponent,
         text: outcomeText,
@@ -116,68 +172,44 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         participantCount: participants.length,
       };
     }
-    
-    // No summary available, use basic call type
+
+    // No summary — use basic call type
     if (callType === "incoming_call" || callType === "incoming_group_call") {
-      // Incoming call (ringing) - show as active call
       return {
         icon: Phone,
         text: callType === "incoming_group_call" ? t("call.incomingGroupCall") : t("call.incomingCall"),
         duration: null,
         participantCount: 0,
       };
-    } else if (callType.includes("missed")) {
-      if (callType.includes("video")) {
-        return {
-          icon: VideoOff,
-          text: isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"),
-          duration: null,
-          participantCount: 0,
-        };
-      } else {
-        // For missed calls, use PhoneWithX (phone with X overlay)
-        return {
-          icon: PhoneWithX,
-          text: isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"),
-          duration: null,
-          participantCount: 0,
-        };
-      }
-    } else if (callType === "scheduled_start") {
+    }
+    if (callType.includes("missed")) {
       return {
-        icon: Phone,
-        text: t("call.scheduledStart"),
-        duration: null,
-        participantCount: 0,
-      };
-    } else if (callType === "scheduled_cancel") {
-      return {
-        icon: Phone,
-        text: t("call.scheduledCancel"),
-        duration: null,
-        participantCount: 0,
-      };
-    } else if (callType === "linked_group_start") {
-      return {
-        icon: Video,
-        text: t("call.linkedGroupStart"),
+        icon: callType.includes("video") ? VideoOff : PhoneWithX,
+        text: isVideo
+          ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+          : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
         duration: null,
         participantCount: 0,
       };
     }
-    
+    if (callType === "scheduled_start") {
+      return { icon: Phone, text: t("call.scheduledStart"), duration: null, participantCount: 0 };
+    }
+    if (callType === "scheduled_cancel") {
+      return { icon: Phone, text: t("call.scheduledCancel"), duration: null, participantCount: 0 };
+    }
+    if (callType === "linked_group_start") {
+      return { icon: Video, text: t("call.linkedGroupStart"), duration: null, participantCount: 0 };
+    }
+
     // Default fallback
-    return {
-      icon: Phone,
-      text: t("call.missedVoice"),
-      duration: null,
-      participantCount: 0,
-    };
+    return { icon: Phone, text: t("call.missedVoice"), duration: null, participantCount: 0 };
   };
 
   const callInfo = getCallInfo();
   const Icon = callInfo.icon;
-  const hasSummary = message.callDurationSecs != null || message.callOutcome || participants.length > 0;
+  const hasDuration = callInfo.duration != null;
+  const hasParticipants = callInfo.participantCount > 0 && isGroup;
 
   if (layout === "bubble") {
     return (
@@ -196,15 +228,15 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
               </button>
             )}
           </div>
-          {hasSummary && (
+          {(hasDuration || hasParticipants) && (
             <div className="flex items-center gap-3 text-xs opacity-80">
-              {callInfo.duration && (
+              {hasDuration && (
                 <div className="flex items-center gap-1">
                   <Clock className="h-3 w-3" />
                   <span>{callInfo.duration}</span>
                 </div>
               )}
-              {callInfo.participantCount > 0 && isGroup && (
+              {hasParticipants && (
                 <span>{t("call.participants", { count: callInfo.participantCount })}</span>
               )}
             </div>
@@ -213,7 +245,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       </div>
     );
   } else {
-    // IRC layout: information message style (like system messages in IRC)
+    // IRC layout
     return (
       <div className="flex flex-col gap-1 px-2 py-1 text-xs text-muted-foreground italic">
         <div className="flex items-center gap-2">
@@ -229,15 +261,15 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
             </button>
           )}
         </div>
-        {hasSummary && (
+        {(hasDuration || hasParticipants) && (
           <div className="flex items-center gap-3 ml-5 text-muted-foreground/70">
-            {callInfo.duration && (
+            {hasDuration && (
               <div className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />
                 <span>{callInfo.duration}</span>
               </div>
             )}
-            {callInfo.participantCount > 0 && isGroup && (
+            {hasParticipants && (
               <span>{t("call.participants", { count: callInfo.participantCount })}</span>
             )}
           </div>

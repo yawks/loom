@@ -276,9 +276,12 @@ func createMissingConversations() {
 
 	// For each ProtocolConvID, try to find or create the LinkedAccount and Conversation
 	for _, protocolConvID := range protocolConvIDs {
+		// Strip namespace prefix to get raw user ID for LinkedAccount lookup
+		rawConvID := core.StripConvID(protocolConvID)
+
 		// Find LinkedAccount for this ProtocolConvID (try all provider instances)
 		var linkedAccount models.LinkedAccount
-		err := db.DB.Where("user_id = ?", protocolConvID).First(&linkedAccount).Error
+		err := db.DB.Where("user_id = ?", rawConvID).First(&linkedAccount).Error
 
 		if err != nil {
 			// LinkedAccount doesn't exist, skip this conversation for now
@@ -287,7 +290,7 @@ func createMissingConversations() {
 			continue
 		}
 
-		// Check if Conversation already exists
+		// Check if Conversation already exists (use the namespaced ID as stored)
 		var conversation models.Conversation
 		err = db.DB.Where("protocol_conv_id = ?", protocolConvID).First(&conversation).Error
 		if err == nil {
@@ -299,7 +302,7 @@ func createMissingConversations() {
 		}
 
 		// Create Conversation
-		isGroup := strings.HasPrefix(protocolConvID, "C") || strings.HasPrefix(protocolConvID, "G")
+		isGroup := strings.HasPrefix(rawConvID, "C") || strings.HasPrefix(rawConvID, "G")
 		groupName := ""
 		if isGroup {
 			groupName = linkedAccount.Username
@@ -344,6 +347,14 @@ func (a *App) getActiveProvider() core.Provider {
 // It looks up the conversation's LinkedAccount in the DB to find the correct provider
 // instance, falling back to the active provider when the conversation isn't in the DB yet.
 func (a *App) getProviderForConversation(conversationID string) core.Provider {
+	// A namespaced ID carries its provider instance even when the conversation
+	// has not been persisted yet (for example, a brand-new Slack DM).
+	if idx := strings.Index(conversationID, "::"); idx > 0 && a.providerManager != nil {
+		if p, err := a.providerManager.GetProvider(conversationID[:idx]); err == nil {
+			return p
+		}
+	}
+
 	if db.DB != nil && conversationID != "" {
 		var conv models.Conversation
 		if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conv).Error; err == nil {
@@ -351,6 +362,38 @@ func (a *App) getProviderForConversation(conversationID string) core.Provider {
 			if err := db.DB.Where("id = ?", conv.LinkedAccountID).First(&la).Error; err == nil && la.ProviderInstanceID != "" {
 				if p, err := a.providerManager.GetProvider(la.ProviderInstanceID); err == nil {
 					return p
+				}
+			}
+		}
+
+		// Contacts without any loaded message do not have a Conversation row
+		// yet. Resolve their provider directly from the LinkedAccount instead
+		// of incorrectly falling back to whichever provider is currently active.
+		var accounts []models.LinkedAccount
+		if a.providerManager != nil {
+			if err := db.DB.
+				Where("user_id = ?", core.StripConvID(conversationID)).
+				Find(&accounts).Error; err == nil {
+				var matchedProvider core.Provider
+				matchedInstanceID := ""
+				for _, account := range accounts {
+					if account.ProviderInstanceID == "" || account.ProviderInstanceID == matchedInstanceID {
+						continue
+					}
+					p, err := a.providerManager.GetProvider(account.ProviderInstanceID)
+					if err != nil {
+						continue
+					}
+					// Do not guess when the same raw account ID exists in several
+					// configured provider instances.
+					if matchedProvider != nil {
+						return nil
+					}
+					matchedProvider = p
+					matchedInstanceID = account.ProviderInstanceID
+				}
+				if matchedProvider != nil {
+					return matchedProvider
 				}
 			}
 		}

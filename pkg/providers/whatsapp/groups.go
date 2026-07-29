@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"Loom/pkg/core"
 	"Loom/pkg/models"
 	"fmt"
 	"strings"
@@ -93,8 +94,8 @@ func (w *WhatsAppProvider) CreateGroup(groupName string, participantIDs []string
 		return nil, fmt.Errorf("failed to create group: %w", err)
 	}
 
-	// Format conversation ID
-	conversationID := resp.JID.String()
+	// Format conversation ID (namespaced so it is globally unique across instances)
+	conversationID := core.BuildConvID(w.getInstanceId(), resp.JID.String())
 
 	// Create conversation model
 	conversation := &models.Conversation{
@@ -174,7 +175,7 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 	}
 
 	// Parse conversation ID (JID)
-	groupJID, err := types.ParseJID(conversationID)
+	groupJID, err := types.ParseJID(core.StripConvID(conversationID))
 	if err != nil {
 		return nil, fmt.Errorf("invalid conversation ID: %w", err)
 	}

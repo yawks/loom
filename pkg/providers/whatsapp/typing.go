@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"Loom/pkg/core"
 	"fmt"
 	"go.mau.fi/whatsmeow/types"
 )
@@ -14,7 +15,7 @@ func (w *WhatsAppProvider) SendTypingIndicator(conversationID string, isTyping b
 	}
 
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(core.StripConvID(conversationID))
 	if err != nil {
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}

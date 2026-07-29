@@ -24,7 +24,8 @@ var huddleURLRegex = regexp.MustCompile(`<(https://[^|>]*slack\.com/huddle[^|>]*
 // SendMessage sends a text message to a given conversation.
 func (p *SlackProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	// Normalize conversation ID early to ensure consistency
-	normalizedConversationID := p.normalizeDMConversationID(conversationID)
+	normalizedConversationID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	nsConvID := core.BuildConvID(p.getInstanceId(), normalizedConversationID)
 
 	p.mu.RLock()
 	client := p.client
@@ -44,14 +45,16 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	if len(normalizedConversationID) > 0 && normalizedConversationID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{normalizedConversationID},
+			Users:    []string{normalizedConversationID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open DM conversation: %w", err)
 		}
-		if channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
+		if channel == nil || channel.ID == "" {
+			return nil, fmt.Errorf("failed to get DM channel ID for user %s", normalizedConversationID)
 		}
+		actualChannelID = channel.ID
 	}
 
 	opts := []slack.MsgOption{
@@ -83,7 +86,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 
 	sentMessage := &models.Message{
 		ProtocolMsgID:   timestamp,
-		ProtocolConvID:  normalizedConversationID, // Use normalized ID
+		ProtocolConvID:  nsConvID,
 		SenderID:        senderID,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
@@ -117,7 +120,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 
 		// Check if message already exists (shouldn't, but just in case)
 		var existingMsg models.Message
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", timestamp, normalizedConversationID).First(&existingMsg).Error; err != nil {
+		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", timestamp, nsConvID).First(&existingMsg).Error; err != nil {
 			// Message doesn't exist, create it
 			if err := db.DB.Create(sentMessage).Error; err != nil {
 				p.log("SlackProvider.SendMessage: Failed to store message in database: %v\n", err)
@@ -339,7 +342,8 @@ func (p *SlackProvider) SendThreadReply(conversationID string, text string, thre
 // SendFile sends a file to a given conversation without text.
 func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	// Normalize conversation ID early to ensure consistency
-	normalizedConversationID := p.normalizeDMConversationID(conversationID)
+	normalizedConversationID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	nsConvID := core.BuildConvID(p.getInstanceId(), normalizedConversationID)
 
 	p.mu.RLock()
 	client := p.client
@@ -355,14 +359,16 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	if len(normalizedConversationID) > 0 && normalizedConversationID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{normalizedConversationID},
+			Users:    []string{normalizedConversationID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open DM conversation: %w", err)
 		}
-		if channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
+		if channel == nil || channel.ID == "" {
+			return nil, fmt.Errorf("failed to get DM channel ID for user %s", normalizedConversationID)
 		}
+		actualChannelID = channel.ID
 	}
 
 	params := slack.UploadFileV2Parameters{
@@ -470,7 +476,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 
 	sentMessage := &models.Message{
 		ProtocolMsgID:   protocolMsgID,
-		ProtocolConvID:  normalizedConversationID,
+		ProtocolConvID:  nsConvID,
 		SenderID:        senderID,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
@@ -494,7 +500,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 		}
 
 		var existing models.Message
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, normalizedConversationID).First(&existing).Error; err != nil {
+		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, nsConvID).First(&existing).Error; err != nil {
 			// Not yet stored — create it.
 			if err := db.DB.Create(sentMessage).Error; err != nil {
 				p.log("SlackProvider.SendFile: Failed to store message in database: %v\n", err)
@@ -534,6 +540,10 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		return []models.Message{}, fmt.Errorf("conversation ID is required")
 	}
 
+	// rawConvID is used for Slack API calls; nsConvID is used for DB queries.
+	rawConvID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	nsConvID := core.BuildConvID(p.getInstanceId(), rawConvID)
+
 	// Default limit to 20 if not specified
 	if limit <= 0 {
 		limit = 20
@@ -542,7 +552,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	// First, try to load from database
 	if db.DB != nil {
 		var dbMessages []models.Message
-		query := db.DB.Where("protocol_conv_id = ?", conversationID)
+		query := db.DB.Where("protocol_conv_id = ?", nsConvID)
 
 		// IMPORTANT: Only get main messages (not thread replies)
 		// In Slack:
@@ -601,32 +611,33 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	}
 
 	// Handle different ID types for Slack conversations
-	actualChannelID := conversationID
+	actualChannelID := rawConvID
 
-	// If conversationID is a user ID (starts with "U"), we need to open the DM conversation
+	// If rawConvID is a user ID (starts with "U"), we need to open the DM conversation
 	// to get the actual channel ID (which starts with "D")
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		// Open the DM conversation with this user to get the channel ID
 		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{rawConvID},
+			ReturnIM: true,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to open DM conversation with user %s: %w", conversationID, err)
+			return nil, fmt.Errorf("failed to open DM conversation with user %s: %w", rawConvID, err)
 		}
 		if channel == nil || channel.ID == "" {
-			return nil, fmt.Errorf("failed to get DM channel ID for user %s", conversationID)
+			return nil, fmt.Errorf("failed to get DM channel ID for user %s", rawConvID)
 		}
 		actualChannelID = channel.ID
-		p.log("SlackProvider.GetConversationHistory: Opened DM conversation, user ID %s -> channel ID %s\n", conversationID, actualChannelID)
-	} else if len(conversationID) > 0 && conversationID[0] == 'D' {
+		p.log("SlackProvider.GetConversationHistory: Opened DM conversation, user ID %s -> channel ID %s\n", rawConvID, actualChannelID)
+	} else if len(rawConvID) > 0 && rawConvID[0] == 'D' {
 		// For DM channel IDs, ensure the conversation is open
 		// This is required before we can retrieve message history
 		_, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			ChannelID: conversationID,
+			ChannelID: rawConvID,
 		})
 		if err != nil {
 			// Log but don't fail - the conversation might already be open
-			p.log("SlackProvider.GetConversationHistory: Warning - failed to open DM conversation %s: %v (may already be open)\n", conversationID, err)
+			p.log("SlackProvider.GetConversationHistory: Warning - failed to open DM conversation %s: %v (may already be open)\n", rawConvID, err)
 		}
 	}
 
@@ -728,18 +739,18 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	// Store main messages in database
 	if len(messages) > 0 {
 		if sinceTimestamp != nil {
-			p.log("SlackProvider.GetConversationHistory: Storing %d new messages for %s (sync mode)\n", len(messages), conversationID)
+			p.log("SlackProvider.GetConversationHistory: Storing %d new messages for %s (sync mode)\n", len(messages), nsConvID)
 		}
-		p.storeMessagesForConversation(conversationID, messages)
+		p.storeMessagesForConversation(nsConvID, messages)
 	} else if sinceTimestamp != nil {
 		p.log("SlackProvider.GetConversationHistory: No messages to store for %s (sync mode, last timestamp: %s)\n",
-			conversationID, sinceTimestamp.Format(time.RFC3339Nano))
+			nsConvID, sinceTimestamp.Format(time.RFC3339Nano))
 	}
 
 	// Store thread messages separately (they won't be returned in main list)
 	if len(threadMessages) > 0 {
-		p.log("SlackProvider.GetConversationHistory: Storing %d thread messages for conversation %s\n", len(threadMessages), conversationID)
-		p.storeMessagesForConversation(conversationID, threadMessages)
+		p.log("SlackProvider.GetConversationHistory: Storing %d thread messages for conversation %s\n", len(threadMessages), nsConvID)
+		p.storeMessagesForConversation(nsConvID, threadMessages)
 	}
 
 	return messages, nil
@@ -808,7 +819,8 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 	}
 
 	// Normalize DM conversation IDs to ensure consistency (resolve channel IDs to User IDs)
-	normalizedConvID := p.normalizeDMConversationID(convID)
+	rawConvID := p.normalizeDMConversationID(core.StripConvID(convID))
+	normalizedConvID := core.BuildConvID(p.getInstanceId(), rawConvID)
 	if normalizedConvID != convID {
 		p.log("SlackProvider.storeMessagesForConversation: Normalized conversation ID from %s to %s\n", convID, normalizedConvID)
 	}
@@ -816,7 +828,7 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 	// Persist messages to database
 	if db.DB != nil {
 		// Ensure Conversation exists and get ConversationID
-		conversationID, err := p.ensureConversation(normalizedConvID)
+		conversationID, err := p.ensureConversation(rawConvID)
 		if err != nil {
 			p.log("SlackProvider.storeMessagesForConversation: Failed to ensure conversation: %v\n", err)
 			// Continue anyway, ConversationID will be 0
@@ -1124,8 +1136,8 @@ func (p *SlackProvider) GetThreads(parentMessageID string) ([]models.Message, er
 	if db.DB != nil {
 		var parentMsg models.Message
 		if err := db.DB.Where("protocol_msg_id = ?", parentMessageID).First(&parentMsg).Error; err == nil {
-			convID = parentMsg.ProtocolConvID
-			actualChannelID = parentMsg.ProtocolConvID
+			convID = parentMsg.ProtocolConvID // namespaced — used for storeMessagesForConversation
+			actualChannelID = core.StripConvID(parentMsg.ProtocolConvID)
 		}
 	}
 
@@ -1136,7 +1148,8 @@ func (p *SlackProvider) GetThreads(parentMessageID string) ([]models.Message, er
 	// Resolve user ID → actual DM channel ID
 	if len(actualChannelID) > 0 && actualChannelID[0] == 'U' {
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{actualChannelID},
+			Users:    []string{actualChannelID},
+			ReturnIM: true,
 		})
 		if err == nil && channel != nil && channel.ID != "" {
 			actualChannelID = channel.ID
@@ -1166,12 +1179,16 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(rawConvID))
+
 	// Handle different ID types for Slack conversations (user ID -> channel ID for DMs)
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
+	actualChannelID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{rawConvID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open DM conversation: %w", err)
@@ -1194,7 +1211,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 			ts := parseSlackTimestamp(timestamp)
 			existingMsg = models.Message{
 				ProtocolMsgID:  messageID,
-				ProtocolConvID: conversationID,
+				ProtocolConvID: nsConvID,
 				Body:           newText,
 				Timestamp:      ts,
 				IsFromMe:       true,
@@ -1212,7 +1229,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 		ts := parseSlackTimestamp(timestamp)
 		existingMsg = models.Message{
 			ProtocolMsgID:  messageID,
-			ProtocolConvID: conversationID,
+			ProtocolConvID: nsConvID,
 			Body:           newText,
 			Timestamp:      ts,
 			IsFromMe:       true,
@@ -1264,11 +1281,15 @@ func (p *SlackProvider) DeleteMessage(conversationID string, messageID string) e
 		}
 	}
 
+	// Strip namespace prefix before making Slack API calls
+	rawConvID := core.StripConvID(conversationID)
+
 	// Resolve user ID → actual DM channel ID (same pattern as SendMessage)
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
+	actualChannelID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{rawConvID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to open DM conversation: %w", err)
@@ -1294,8 +1315,9 @@ func (p *SlackProvider) DeleteMessage(conversationID string, messageID string) e
 }
 
 func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string) models.Message {
-	// Normalize conversation ID to ensure consistency
-	normalizedConversationID := p.normalizeDMConversationID(conversationID)
+	// Normalize conversation ID to ensure consistency, then namespace it for storage.
+	// conversationID here is always a raw Slack channel/user ID (callers pass API-returned values).
+	normalizedConversationID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(conversationID))
 
 	ts := parseSlackTimestamp(msg.Timestamp)
 
@@ -1966,7 +1988,8 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 	actualChannelID := conversationID
 	if len(conversationID) > 0 && conversationID[0] == 'U' {
 		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{conversationID},
+			ReturnIM: true,
 		})
 		if err == nil && channel != nil && channel.ID != "" {
 			actualChannelID = channel.ID
@@ -2029,7 +2052,8 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 	actualChannelID := conversationID
 	if len(conversationID) > 0 && conversationID[0] == 'U' {
 		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{conversationID},
+			ReturnIM: true,
 		})
 		if err == nil && channel != nil && channel.ID != "" {
 			actualChannelID = channel.ID

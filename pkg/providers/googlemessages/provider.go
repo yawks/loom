@@ -298,10 +298,11 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 		}
 	}
 	db.ContactStore.UpsertLinkedAccount(storedAccount)
+	nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
 	var conversation models.Conversation
-	result = db.DB.Where("protocol_conv_id = ?", remote.GetConversationID()).First(&conversation)
+	result = db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
 	if result.Error != nil {
-		conversation = models.Conversation{LinkedAccountID: storedAccount.ID, ProtocolConvID: remote.GetConversationID(), IsGroup: remote.GetIsGroupChat(), GroupName: remote.GetName(), IsPinned: remote.GetPinned()}
+		conversation = models.Conversation{LinkedAccountID: storedAccount.ID, ProtocolConvID: nsConvID, IsGroup: remote.GetIsGroupChat(), GroupName: remote.GetName(), IsPinned: remote.GetPinned()}
 		if err := db.DB.Create(&conversation).Error; err != nil {
 			return err
 		}
@@ -395,10 +396,11 @@ func storeGoogleMessagesReceipts(messageID uint, receipts []models.MessageReceip
 }
 
 func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationID string) models.Message {
-	conversationID := remote.GetConversationID()
-	if conversationID == "" {
-		conversationID = fallbackConversationID
+	rawConvID := remote.GetConversationID()
+	if rawConvID == "" {
+		rawConvID = core.StripConvID(fallbackConversationID)
 	}
+	conversationID := core.BuildConvID(p.instance, rawConvID)
 	parts := make([]string, 0, len(remote.GetMessageInfo()))
 	for _, info := range remote.GetMessageInfo() {
 		if content := info.GetMessageContent().GetContent(); content != "" {
@@ -633,13 +635,15 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	if strings.TrimSpace(text) == "" && file == nil {
 		return nil, fmt.Errorf("%s: message text or attachment is required", providerID)
 	}
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
 	if client == nil || !p.IsAuthenticated() {
 		return nil, fmt.Errorf("%s: not authenticated", providerID)
 	}
-	conversation, err := client.GetConversation(conversationID)
+	conversation, err := client.GetConversation(rawConvID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: get conversation for sending: %w", providerID, err)
 	}
@@ -660,9 +664,9 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 		infos = append(infos, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: media}})
 	}
 	request := &gmproto.SendMessageRequest{
-		ConversationID: conversationID,
+		ConversationID: rawConvID,
 		MessagePayload: &gmproto.MessagePayload{
-			TmpID: tmpID, TmpID2: tmpID, ConversationID: conversationID,
+			TmpID: tmpID, TmpID2: tmpID, ConversationID: rawConvID,
 			ParticipantID: conversation.GetDefaultOutgoingID(), MessageInfo: infos,
 		},
 		SIMPayload: conversation.GetSimCard().GetSIMData().GetSIMPayload(),
@@ -680,7 +684,7 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	}
 	// Google confirms delivery asynchronously and does not return the final ID.
 	// Return a local echo; the event stream later provides the canonical message.
-	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: conversationID, SenderID: conversation.GetDefaultOutgoingID(), Body: text, Timestamp: time.Now(), IsFromMe: true}
+	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: nsConvID, SenderID: conversation.GetDefaultOutgoingID(), Body: text, Timestamp: time.Now(), IsFromMe: true}
 	if quotedMessageID != "" {
 		message.QuotedMessageID = ptr(quotedMessageID)
 	}

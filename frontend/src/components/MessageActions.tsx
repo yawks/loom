@@ -49,7 +49,9 @@ export function MessageActions({
   const [internalOpen, setInternalOpen] = useState(false);
 
   const supportsReactions = instanceId ? capabilities[instanceId]?.supportsReactions ?? true : true;
-  const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true;
+  const supportsThreads =
+    provider?.toLowerCase() !== "teams" &&
+    (instanceId ? capabilities[instanceId]?.supportsThreads ?? true : true);
 
   // Only allow popover to be open if this message is being hovered
   const canBeOpen = !messageId || openActionsMessageId === messageId;
@@ -168,4 +170,3 @@ export function MessageActions({
     </div>
   );
 }
-

@@ -11,22 +11,12 @@ import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
+import { htmlFragmentToText } from "@/lib/messageUtils";
 
 interface SlackInlineQuote {
   sender: string;
   quotedText: string;
   body: string;
-}
-
-function htmlFragmentToText(text: string): string {
-  // Do not treat Slack links such as <https://example.com|label> as HTML.
-  if (!/<\/?(?:a|b|br|div|em|i|p|span|strong|u)\b[^>]*>/i.test(text)) {
-    return text;
-  }
-  const documentNode = new DOMParser().parseFromString(text, "text/html");
-  documentNode.querySelectorAll("br").forEach((element) => element.replaceWith("\n"));
-  documentNode.querySelectorAll("p, div").forEach((element) => element.append("\n"));
-  return documentNode.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() ?? text;
 }
 
 // Slack serializes Loom's quoted replies as a Markdown block quote. Parse it

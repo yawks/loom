@@ -3,8 +3,32 @@ package core
 
 import (
 	"Loom/pkg/models"
+	"strings"
 	"time"
 )
+
+// BuildConvID returns a namespaced conversation ID: "instanceID::rawConvID".
+// If rawConvID is already namespaced it is returned unchanged.
+// This ensures that the same contact JID from two different provider instances
+// produces distinct ProtocolConvID values in the database.
+func BuildConvID(instanceID, rawConvID string) string {
+	if rawConvID == "" || instanceID == "" {
+		return rawConvID
+	}
+	if strings.Contains(rawConvID, "::") {
+		return rawConvID // already namespaced
+	}
+	return instanceID + "::" + rawConvID
+}
+
+// StripConvID extracts the raw provider conversation ID from a namespaced ID.
+// Returns the input unchanged when it contains no "::" separator.
+func StripConvID(namespacedConvID string) string {
+	if idx := strings.Index(namespacedConvID, "::"); idx >= 0 {
+		return namespacedConvID[idx+2:]
+	}
+	return namespacedConvID
+}
 
 // Attachment represents a file attached to a message.
 type Attachment struct {
