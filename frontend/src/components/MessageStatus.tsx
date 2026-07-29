@@ -131,7 +131,7 @@ function StatusIcon({ status, className }: { status: MessageStatusType; classNam
   if (status === "read") {
     return (
       <CheckCheck
-        className={cn("h-3 w-3 text-blue-500 dark:text-blue-400", className)}
+        className={cn("h-3 w-3 text-green-500 dark:text-green-400", className)}
         aria-hidden="true"
       />
     );
@@ -361,4 +361,3 @@ export function MessageStatus({
     </div>
   );
 }
-

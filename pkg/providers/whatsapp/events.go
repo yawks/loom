@@ -593,24 +593,37 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 		var receiptType core.ReceiptType
 		switch v.Type {
-		case types.ReceiptTypeRead:
+		case types.ReceiptTypeRead, types.ReceiptTypePlayed:
 			receiptType = core.ReceiptTypeRead
-		case types.ReceiptTypeReadSelf:
+		case types.ReceiptTypeReadSelf, types.ReceiptTypePlayedSelf:
 			// Current user read these messages on another device — mark locally without
 			// looping a receipt back to the server.
 			receiptType = core.ReceiptTypeSelfRead
-		default:
+		case types.ReceiptTypeDelivered:
 			receiptType = core.ReceiptTypeDelivery
+		default:
+			// "sender" comes from one of our own linked devices, while retry/error
+			// receipts do not confirm delivery to the remote recipient.
+			fmt.Printf("WhatsApp: Ignoring non-recipient receipt type %s for messages %v\n", v.Type, v.MessageIDs)
+			break
+		}
+		if receiptType == "" {
+			break
 		}
 		fmt.Printf("WhatsApp: Processing receipt event for chat %s, type: %s, message IDs: %v\n", v.Chat.String(), receiptType, v.MessageIDs)
 		// Emit a ReceiptEvent for each message ID
 		for _, msgID := range v.MessageIDs {
+			userID := v.Sender.String()
+			if userID == "" {
+				// In a direct chat the chat JID is the remote participant.
+				userID = v.Chat.String()
+			}
 			select {
 			case w.eventChan <- core.ReceiptEvent{InstanceID: w.getInstanceId(),
 				ConversationID: v.Chat.String(),
 				MessageID:      msgID,
 				ReceiptType:    receiptType,
-				UserID:         v.Sender.String(),
+				UserID:         userID,
 				Timestamp:      v.Timestamp.Unix(),
 			}:
 				fmt.Printf("WhatsApp: ReceiptEvent emitted successfully for message %s\n", msgID)

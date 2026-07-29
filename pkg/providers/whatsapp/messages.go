@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -834,6 +835,8 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 
 	if contextInfo != nil {
+		body = w.formatMentions(body, contextInfo.GetMentionedJID())
+
 		// Get quoted message ID (StanzaID)
 		if contextInfo.GetStanzaID() != "" {
 			stanzaID := contextInfo.GetStanzaID()
@@ -983,6 +986,35 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		QuotedBody:      quotedBody,
 		CallType:        callType,
 	}
+}
+
+// formatMentions turns WhatsApp's wire representation (@<JID user>) into a
+// Markdown link with the contact's display name. The loom:// URL is handled by
+// MessageText in the frontend and opens the corresponding local conversation.
+func (w *WhatsAppProvider) formatMentions(body string, mentionedJIDs []string) string {
+	for _, mentionedJID := range mentionedJIDs {
+		jid, err := types.ParseJID(mentionedJID)
+		if err != nil || jid.IsEmpty() || jid.User == "" {
+			continue
+		}
+
+		targetJID := mentionedJID
+		if resolvedJID, err := w.resolveContactID(mentionedJID); err == nil && resolvedJID != "" {
+			targetJID = resolvedJID
+		}
+
+		displayName := w.lookupDisplayName(jid, "")
+		if displayName == "" {
+			displayName = jid.User
+		}
+
+		// Escape the characters that could otherwise alter the surrounding
+		// Markdown document when a contact has them in their profile name.
+		displayName = strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(displayName)
+		link := "[@" + displayName + "](loom://conversation?jid=" + url.QueryEscape(targetJID) + ")"
+		body = strings.ReplaceAll(body, "@"+jid.User, link)
+	}
+	return body
 }
 
 func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages []models.Message) int {
