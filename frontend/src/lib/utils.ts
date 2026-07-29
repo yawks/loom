@@ -30,14 +30,29 @@ export function timeToDate(time: any): Date {
 export function transformUrls(text: string): string {
   if (!text) return text;
 
+  // Repair messages that were previously transformed twice, resulting in
+  // `[label]([URL](URL))`. This runs at display time, so it also fixes
+  // already-cached history.
+  const repairedText = text.replace(
+    /\[([^\]\n]+)\]\(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)\)/g,
+    (_match, label, _nestedLabel, url) => `[${label}](${url})`,
+  );
+
   // Pattern to match <URL|text> or <URL>
   // This regex matches:
   // - <https://example.com|Link Text> -> [Link Text](https://example.com)
   // - <https://example.com> -> [https://example.com](https://example.com)
-  return text.replace(/<([^|>]+)(?:\|([^>]+))?>/g, (_match, url, text) => {
+  return repairedText.replace(/<([^|>]+)(?:\|([^>]+))?>/g, (match, url, linkText, offset, source) => {
+    // Markdown permits a link destination to be enclosed in angle brackets:
+    // `[label](<https://example.com/...>)`. It is already valid Markdown, so
+    // do not apply the provider-format conversion a second time.
+    if (source.slice(0, offset).endsWith("](")) {
+      return match;
+    }
+
     // If text is provided, use it; otherwise use the URL as text
-    const linkText = text || url;
-    return `[${linkText}](${url})`;
+    const displayText = linkText || url;
+    return `[${displayText}](${url})`;
   });
 }
 

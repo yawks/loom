@@ -299,6 +299,8 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
           return <ProtocolIcon protocol="googlechat" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
         case "slack":
           return <ProtocolIcon protocol="slack" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
+        case "teams":
+          return <ProtocolIcon protocol="teams" className="h-5 w-5" size={20} />;
         default:
           return <MessageCircle className="h-5 w-5" />;
       }
@@ -465,6 +467,8 @@ export function ProvidersModal({ open, onOpenChange }: ProvidersModalProps) {
                               return <ProtocolIcon protocol="googlechat" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
                             case "slack":
                               return <ProtocolIcon protocol="slack" className="h-5 w-5 grayscale brightness-0 opacity-60 dark:invert" size={20} />;
+                            case "teams":
+                              return <ProtocolIcon protocol="teams" className="h-5 w-5" size={20} />;
                             default:
                               return <MessageCircle className="h-5 w-5" />;
                           }

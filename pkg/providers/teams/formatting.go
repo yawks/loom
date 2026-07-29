@@ -1,0 +1,154 @@
+package teams
+
+import (
+	"net/url"
+	"strings"
+
+	"golang.org/x/net/html"
+)
+
+// teamsHTMLToMarkdown preserves the formatting understood by Loom's Markdown
+// renderer while discarding Teams-specific HTML wrappers and attributes.
+func teamsHTMLToMarkdown(input string) string {
+	root, err := html.Parse(strings.NewReader("<body>" + input + "</body>"))
+	if err != nil {
+		return input
+	}
+	var out strings.Builder
+	var render func(*html.Node)
+	render = func(node *html.Node) {
+		if node.Type == html.TextNode {
+			out.WriteString(node.Data)
+			return
+		}
+		tag := strings.ToLower(node.Data)
+		if tag == "table" {
+			out.WriteString(tableToMarkdown(node))
+			out.WriteByte('\n')
+			return
+		}
+		switch tag {
+		case "br":
+			out.WriteByte('\n')
+			return
+		case "strong", "b":
+			out.WriteString("**")
+		case "em", "i":
+			out.WriteByte('*')
+		case "code":
+			out.WriteByte('`')
+		case "li":
+			out.WriteString("- ")
+		case "a":
+			if htmlAttribute(node, "href") != "" {
+				out.WriteByte('[')
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			render(child)
+		}
+		switch tag {
+		case "strong", "b":
+			out.WriteString("**")
+		case "em", "i":
+			out.WriteByte('*')
+		case "code":
+			out.WriteByte('`')
+		case "p", "div", "li":
+			out.WriteByte('\n')
+		case "a":
+			if href := htmlAttribute(node, "href"); href != "" {
+				out.WriteString("](")
+				out.WriteString(href)
+				out.WriteByte(')')
+			}
+		}
+	}
+	render(root)
+	return strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
+}
+
+func tableToMarkdown(table *html.Node) string {
+	rows := make([][]string, 0)
+	var walkRows func(*html.Node)
+	walkRows = func(node *html.Node) {
+		if node.Type == html.ElementNode && strings.EqualFold(node.Data, "tr") {
+			cells := make([]string, 0)
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if child.Type == html.ElementNode &&
+					(strings.EqualFold(child.Data, "th") || strings.EqualFold(child.Data, "td")) {
+					value := strings.ReplaceAll(strings.TrimSpace(tableCellText(child)), "|", `\|`)
+					cells = append(cells, value)
+				}
+			}
+			if len(cells) > 0 {
+				rows = append(rows, cells)
+			}
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walkRows(child)
+		}
+	}
+	walkRows(table)
+	if len(rows) == 0 {
+		return ""
+	}
+	width := 0
+	for _, row := range rows {
+		width = max(width, len(row))
+	}
+	var out strings.Builder
+	writeRow := func(row []string) {
+		out.WriteString("| ")
+		for index := 0; index < width; index++ {
+			if index < len(row) {
+				out.WriteString(row[index])
+			}
+			out.WriteString(" | ")
+		}
+		out.WriteByte('\n')
+	}
+	writeRow(rows[0])
+	separator := make([]string, width)
+	for index := range separator {
+		separator[index] = "---"
+	}
+	writeRow(separator)
+	for _, row := range rows[1:] {
+		writeRow(row)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func tableCellText(node *html.Node) string {
+	var out strings.Builder
+	var walk func(*html.Node)
+	walk = func(current *html.Node) {
+		if current.Type == html.TextNode {
+			out.WriteString(current.Data)
+			return
+		}
+		if current.Type == html.ElementNode && strings.EqualFold(current.Data, "br") {
+			out.WriteString("<br>")
+			return
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.TrimSpace(out.String())
+}
+
+func htmlAttribute(node *html.Node, key string) string {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			if parsed, err := url.Parse(attr.Val); err == nil &&
+				(parsed.Scheme == "http" || parsed.Scheme == "https") {
+				return attr.Val
+			}
+		}
+	}
+	return ""
+}

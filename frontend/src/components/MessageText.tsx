@@ -120,6 +120,14 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
     ul: ({ ...props }) => <ul className="list-disc pl-5 my-1 space-y-0.5" {...props} />,
     ol: ({ ...props }) => <ol className="list-decimal pl-5 my-1 space-y-0.5" {...props} />,
     li: ({ ...props }) => <li className="leading-snug" {...props} />,
+    table: ({ ...props }) => (
+      <div className="my-2 max-w-full overflow-x-auto">
+        <table className="border-collapse text-sm" {...props} />
+      </div>
+    ),
+    thead: ({ ...props }) => <thead className="bg-black/5 dark:bg-white/10" {...props} />,
+    th: ({ ...props }) => <th className="border border-current/20 px-2 py-1 text-left font-semibold" {...props} />,
+    td: ({ ...props }) => <td className="border border-current/20 px-2 py-1 align-top" {...props} />,
   };
 }
 
@@ -165,6 +173,14 @@ export const MessageText = memo(function MessageText({
     }
 
     const textWithoutSkinTones = cleanEmoji(processedText);
+
+    // Splitting around custom emoji shortcodes breaks Markdown delimiters when
+    // an emoji appears between **...** or *...*. In formatted messages,
+    // preserve the complete Markdown document; rendering the emphasis takes
+    // precedence over replacing colon shortcodes.
+    if (/(\*\*|__|~~|`|\[[^\]]+\]\()/.test(textWithoutSkinTones)) {
+      return textWithoutSkinTones;
+    }
 
     // Skip emoji parsing inside code blocks
     const hasCodeBlocks = /```[\s\S]*?```/g.test(textWithoutSkinTones);

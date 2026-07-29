@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { VoiceMessage } from "./VoiceMessage";
 
 // Module-level cache for small previews. It is deliberately byte-bounded: data
@@ -248,6 +249,15 @@ export function MessageAttachments({
       });
     } catch (error) {
       console.error("Failed to download attachment:", error);
+      if (/^https?:\/\//i.test(attachment.url)) {
+        try {
+          await BrowserOpenURL(attachment.url);
+          showToast?.(t("file_opened_in_browser"), "success");
+          return;
+        } catch (browserError) {
+          console.error("Failed to open attachment URL:", browserError);
+        }
+      }
       showToast?.(t("file_save_error"), "error");
     }
   };
@@ -304,6 +314,13 @@ export function MessageAttachments({
         }
       } catch (error) {
         console.error("Failed to load PDF:", error);
+        if (/^https?:\/\//i.test(url)) {
+          try {
+            BrowserOpenURL(url);
+          } catch (browserError) {
+            console.error("Failed to open PDF URL:", browserError);
+          }
+        }
       }
     }
   };
@@ -465,9 +482,9 @@ export function MessageAttachments({
                       <p className="text-sm font-medium truncate">
                         {attachment.fileName || `Audio.${getFileExtension(attachment.fileName)}`}
                       </p>
-                      <p className="text-xs opacity-70">
-                        {formatFileSize(attachment.fileSize)}
-                      </p>
+                      {attachment.fileSize > 0 && (
+                        <p className="text-xs opacity-70">{formatFileSize(attachment.fileSize)}</p>
+                      )}
                     </div>
                   </div>
                   {audioUrl ? (
@@ -497,9 +514,9 @@ export function MessageAttachments({
                     <p className="text-sm font-medium truncate">
                       {attachment.fileName || `File.${getFileExtension(attachment.fileName)}`}
                     </p>
-                    <p className="text-xs opacity-70">
-                      {formatFileSize(attachment.fileSize)}
-                    </p>
+                    {attachment.fileSize > 0 && (
+                      <p className="text-xs opacity-70">{formatFileSize(attachment.fileSize)}</p>
+                    )}
                   </div>
                   {hoveredIndex === index && (
                     <Download className="h-5 w-5 shrink-0" />
@@ -518,9 +535,9 @@ export function MessageAttachments({
                     <p className="text-sm font-medium truncate">
                       {attachment.fileName || `File.${getFileExtension(attachment.fileName)}`}
                     </p>
-                    <p className="text-xs opacity-70">
-                      {formatFileSize(attachment.fileSize)}
-                    </p>
+                    {attachment.fileSize > 0 && (
+                      <p className="text-xs opacity-70">{formatFileSize(attachment.fileSize)}</p>
+                    )}
                   </div>
                   {hoveredIndex === index && (
                     <Download className="h-5 w-5 shrink-0" />
