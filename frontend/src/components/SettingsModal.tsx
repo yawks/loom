@@ -281,7 +281,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_history_back") || "Previous conversation in history"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
                   <span className="text-xs">+</span>
                   <span className="text-xs">←</span>
                 </kbd>
@@ -291,7 +291,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_history_forward") || "Next conversation in history"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
                   <span className="text-xs">+</span>
                   <span className="text-xs">→</span>
                 </kbd>
@@ -301,7 +301,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_list_up") || "Navigate to conversation above in list"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
                   <span className="text-xs">+</span>
                   <span className="text-xs">↑</span>
                 </kbd>
@@ -311,7 +311,7 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
                   {t("shortcut_navigate_list_down") || "Navigate to conversation below in list"}
                 </span>
                 <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
-                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌘" : "Ctrl"}
+                  {navigator.platform.toUpperCase().indexOf("MAC") >= 0 ? "⌥" : "Alt"}
                   <span className="text-xs">+</span>
                   <span className="text-xs">↓</span>
                 </kbd>
@@ -355,4 +355,3 @@ export function SettingsModal({ open, onOpenChange }: SettingsModalProps) {
     </Dialog>
   );
 }
-

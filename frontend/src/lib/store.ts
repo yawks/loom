@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { core, models } from "../../wailsjs/go/models";
 
 export type Theme = "light" | "dark" | "system";
+export type ContactSortOption = "alphabetical" | "last_message" | "unread";
 
 interface AppState {
   selectedContact: models.MetaContact | null;
@@ -28,6 +29,8 @@ interface AppState {
   setMetaContacts: (contacts: models.MetaContact[]) => void;
   selectedProviderFilter: string | null;
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
+  contactSortBy: ContactSortOption;
+  setContactSortBy: (sortBy: ContactSortOption) => void;
   selectedUserId: string | null;
   setSelectedUserId: (userId: string | null) => void;
   capabilities: Record<string, core.Capabilities>;
@@ -128,6 +131,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSelectedProviderFilter: (providerInstanceId) => {
     set({ selectedProviderFilter: providerInstanceId });
     saveToStorage("selectedProviderFilter", providerInstanceId);
+  },
+  contactSortBy: loadFromStorage<ContactSortOption>("contactSortBy", "last_message"),
+  setContactSortBy: (sortBy) => {
+    set({ contactSortBy: sortBy });
+    saveToStorage("contactSortBy", sortBy);
   },
   selectedUserId: null,
   setSelectedUserId: (userId) => set({ selectedUserId: userId }),
