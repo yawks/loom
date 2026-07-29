@@ -71,7 +71,7 @@ export function ChatLayout() {
       const isMac = navigator.platform.toUpperCase().includes("MAC");
       if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setIsSearchOpen((prev) => !prev);
+        setIsSearchOpen((previous) => !previous);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -187,7 +187,6 @@ export function ChatLayout() {
           <div className="flex flex-1 min-h-0">
             {/* Column 1: Icon rail */}
             <ProviderFilterBar
-              onOpenSearch={() => setIsSearchOpen(true)}
               onOpenProviders={handleConfigureProvider}
               onOpenSettings={() => setIsSettingsOpen(true)}
             />
@@ -203,7 +202,7 @@ export function ChatLayout() {
                 minSize={15}
               >
                 <Suspense fallback={<ContactListSkeleton />}>
-                  <ContactList />
+                  <ContactList onOpenSearch={() => setIsSearchOpen(true)} />
                 </Suspense>
               </ResizablePanel>
               <ResizableHandle withHandle />
@@ -277,8 +276,8 @@ export function ChatLayout() {
         </>
       )}
 
-      <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+      <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <AvatarModal />
       <ProvidersModal
         open={showProvidersModal}

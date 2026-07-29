@@ -174,6 +174,10 @@ export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
+export function SearchMessages(arg1, arg2) {
+  return window['go']['main']['App']['SearchMessages'](arg1, arg2);
+}
+
 export function SendFile(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['SendFile'](arg1, arg2, arg3, arg4);
 }

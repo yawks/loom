@@ -91,6 +91,8 @@ export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
 
+export function SearchMessages(arg1:string,arg2:number):Promise<models.MessageSearchPage>;
+
 export function SendFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function SendMessage(arg1:string,arg2:string):Promise<models.Message>;

@@ -1311,6 +1311,88 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	return messages, err
 }
 
+// SearchMessages searches persisted message bodies, newest first. Offset-based
+// pagination is sufficient here because search pages are deliberately small.
+func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage, error) {
+	const pageSize = 15
+	page := models.MessageSearchPage{Items: []models.MessageSearchResult{}}
+	query = strings.TrimSpace(query)
+	if db.DB == nil || len([]rune(query)) < 3 {
+		return page, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var messages []models.Message
+	escapedQuery := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	).Replace(strings.ToLower(query))
+	pattern := "%" + escapedQuery + "%"
+	err := db.DB.
+		Where(`deleted_at IS NULL AND is_deleted = ? AND LOWER(body) LIKE ? ESCAPE '\'`, false, pattern).
+		Order("timestamp DESC").
+		Limit(pageSize + 1).
+		Offset(offset).
+		Find(&messages).Error
+	if err != nil {
+		return page, err
+	}
+	if len(messages) > pageSize {
+		page.HasMore = true
+		messages = messages[:pageSize]
+	}
+
+	type conversationMeta struct {
+		ConversationID     uint
+		MetaContactID      uint
+		ConversationName   string
+		ConversationAvatar string
+		Protocol           string
+		ProviderInstanceID string
+	}
+	var metadata []conversationMeta
+	conversationIDs := make([]uint, 0, len(messages))
+	for _, message := range messages {
+		conversationIDs = append(conversationIDs, message.ConversationID)
+	}
+	err = db.DB.Table("conversations AS c").
+		Select(`c.id AS conversation_id,
+			mc.id AS meta_contact_id,
+			mc.display_name AS conversation_name,
+			mc.avatar_url AS conversation_avatar,
+			la.protocol,
+			la.provider_instance_id`).
+		Joins("JOIN linked_accounts AS la ON la.id = c.linked_account_id").
+		Joins("JOIN meta_contacts AS mc ON mc.id = la.meta_contact_id").
+		Where("c.id IN ?", conversationIDs).
+		Scan(&metadata).Error
+	if err != nil {
+		return page, err
+	}
+	byConversation := make(map[uint]conversationMeta, len(metadata))
+	for _, meta := range metadata {
+		byConversation[meta.ConversationID] = meta
+	}
+	for _, message := range messages {
+		meta, ok := byConversation[message.ConversationID]
+		if !ok {
+			continue
+		}
+		page.Items = append(page.Items, models.MessageSearchResult{
+			Message:            message,
+			MetaContactID:      meta.MetaContactID,
+			ConversationName:   meta.ConversationName,
+			ConversationAvatar: meta.ConversationAvatar,
+			Protocol:           meta.Protocol,
+			ProviderInstanceID: meta.ProviderInstanceID,
+		})
+	}
+	return page, nil
+}
+
 // GetMessagesForConversationBefore returns messages before a specific timestamp for pagination
 // GetThreadMessages retrieves all messages in a thread
 func (a *App) GetThreadMessages(conversationID string, threadID string) ([]models.Message, error) {

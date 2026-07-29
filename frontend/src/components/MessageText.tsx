@@ -18,6 +18,17 @@ interface SlackInlineQuote {
   body: string;
 }
 
+function htmlFragmentToText(text: string): string {
+  // Do not treat Slack links such as <https://example.com|label> as HTML.
+  if (!/<\/?(?:a|b|br|div|em|i|p|span|strong|u)\b[^>]*>/i.test(text)) {
+    return text;
+  }
+  const documentNode = new DOMParser().parseFromString(text, "text/html");
+  documentNode.querySelectorAll("br").forEach((element) => element.replaceWith("\n"));
+  documentNode.querySelectorAll("p, div").forEach((element) => element.append("\n"));
+  return documentNode.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() ?? text;
+}
+
 // Slack serializes Loom's quoted replies as a Markdown block quote. Parse it
 // before generic Markdown rendering so replies remain readable even when the
 // cached message has lost its quotedMessageId/quotedBody metadata.
@@ -140,7 +151,7 @@ export const MessageText = memo(function MessageText({
     if (!text) return null;
 
     // Preprocessing
-    let processedText = transformUrls(text);
+    let processedText = transformUrls(htmlFragmentToText(text));
     // Last-resort compatibility for cached Slack replies that reach this
     // component without reply metadata. Do this before emoji splitting and
     // Markdown parsing so neither stage can expose the protocol's `>` syntax.
