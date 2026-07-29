@@ -355,7 +355,7 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	if len(normalizedConversationID) > 0 && normalizedConversationID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users: []string{normalizedConversationID},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open DM conversation: %w", err)
@@ -470,11 +470,11 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 
 	sentMessage := &models.Message{
 		ProtocolMsgID:   protocolMsgID,
-		ProtocolConvID:  normalizedConversationID, // Use normalized ID
+		ProtocolConvID:  normalizedConversationID,
 		SenderID:        senderID,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
-		Body:            fmt.Sprintf("Sent file: %s", file.FileName),
+		Body:            "",
 		Attachments:     string(attachmentsJSON),
 		Timestamp:       timestamp,
 		IsFromMe:        true,
@@ -483,9 +483,9 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 		sentMessage.ThreadID = threadID
 	}
 
-	// Store message in database
+	// Store message in database — use upsert to avoid duplicating a record that
+	// the RTM event handler may have already inserted concurrently.
 	if db.DB != nil {
-		// Ensure Conversation exists and get ConversationID (using normalized ID)
 		convID, err := p.ensureConversation(normalizedConversationID)
 		if err != nil {
 			p.log("SlackProvider.SendFile: Failed to ensure conversation: %v\n", err)
@@ -493,10 +493,22 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 			sentMessage.ConversationID = convID
 		}
 
-		if err := db.DB.Create(sentMessage).Error; err != nil {
-			p.log("SlackProvider.SendFile: Failed to store message in database: %v\n", err)
+		var existing models.Message
+		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, normalizedConversationID).First(&existing).Error; err != nil {
+			// Not yet stored — create it.
+			if err := db.DB.Create(sentMessage).Error; err != nil {
+				p.log("SlackProvider.SendFile: Failed to store message in database: %v\n", err)
+			}
 		} else {
-			p.log("SlackProvider.SendFile: Stored sent file message %s in database\n", fileUpload.ID)
+			// RTM already stored a record with this ID — merge our attachment data in.
+			sentMessage.ID = existing.ID
+			if existing.Attachments == "" {
+				existing.Attachments = string(attachmentsJSON)
+			}
+			if err := db.DB.Save(&existing).Error; err != nil {
+				p.log("SlackProvider.SendFile: Failed to update existing message: %v\n", err)
+			}
+			sentMessage.ID = existing.ID
 		}
 	}
 

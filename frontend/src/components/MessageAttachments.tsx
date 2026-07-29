@@ -170,29 +170,31 @@ export function MessageAttachments({
     return uniqueAttachments;
   }, [attachments]);
 
-  // Preload only compact display previews. Full images, video and audio are
-  // loaded after an explicit user action.
+  // WhatsApp's embedded JPEG thumbnails are often too compressed for the
+  // conversation view. Images therefore use their original file; the bounded
+  // cache prevents a long conversation from retaining unlimited media.
+  // Video, audio and other attachments are still loaded on demand.
   useEffect(() => {
     if (parsedAttachments.length === 0) return;
 
-    const urlsToLoad: string[] = [];
+    const urlsToLoad: Array<{ url: string; fallbackUrl?: string }> = [];
 
     for (const attachment of parsedAttachments) {
       if (attachment.type === "image" || attachment.mimeType?.startsWith("image/")) {
-        const url = attachment.thumbnail || attachment.url;
+        const url = attachment.url;
         if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
-          urlsToLoad.push(url);
+          urlsToLoad.push({ url, fallbackUrl: attachment.thumbnail });
         }
       } else if (attachment.type === "video") {
         if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
-          urlsToLoad.push(attachment.thumbnail);
+          urlsToLoad.push({ url: attachment.thumbnail });
         }
       }
     }
 
     if (urlsToLoad.length === 0) return;
 
-    urlsToLoad.forEach((url) => {
+    urlsToLoad.forEach(({ url, fallbackUrl }) => {
       _attachmentLoadingUrls.add(url);
       GetAttachmentData(url)
         .then((dataUrl) => {
@@ -202,7 +204,27 @@ export function MessageAttachments({
         .catch((error) => {
           console.error(`Failed to load attachment ${url}:`, error);
           _attachmentFailedUrls.add(url);
-          bumpCache(url, false);
+          if (!fallbackUrl || _attachmentDataCache.has(fallbackUrl) || _attachmentLoadingUrls.has(fallbackUrl)) {
+            bumpCache(url, false);
+            return;
+          }
+
+          // Some older messages no longer have their original media locally.
+          // Preserve their existing low-resolution thumbnail as a fallback.
+          _attachmentLoadingUrls.add(fallbackUrl);
+          GetAttachmentData(fallbackUrl)
+            .then((dataUrl) => {
+              cacheAttachment(fallbackUrl, dataUrl);
+              bumpCache(fallbackUrl, true);
+            })
+            .catch((fallbackError) => {
+              console.error(`Failed to load attachment fallback ${fallbackUrl}:`, fallbackError);
+              _attachmentFailedUrls.add(fallbackUrl);
+              bumpCache(fallbackUrl, false);
+            })
+            .finally(() => {
+              _attachmentLoadingUrls.delete(fallbackUrl);
+            });
         })
         .finally(() => {
           _attachmentLoadingUrls.delete(url);
@@ -233,8 +255,9 @@ export function MessageAttachments({
   const handleImageClick = async (attachment: Attachment) => {
     if (attachment.type === "image" && attachment.url) {
       const url = attachment.url;
-      // Prefer the full-res URL; fall back to the already-loaded thumbnail.
-      const cached = getCachedAttachment(url) ?? getCachedAttachment(attachment.thumbnail ?? "");
+      // The conversation view preloads the thumbnail to keep scrolling light.
+      // Do not use it here: opening an image must show the original file.
+      const cached = getCachedAttachment(url);
       if (cached) {
         setSelectedImage(cached);
         return;
@@ -243,9 +266,16 @@ export function MessageAttachments({
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
           setSelectedImage(dataUrl);
+          return;
         }
       } catch (error) {
         console.error("Failed to load image:", error);
+      }
+
+      // Retain a usable preview when the original is no longer available.
+      const thumbnail = getCachedAttachment(attachment.thumbnail ?? "");
+      if (thumbnail) {
+        setSelectedImage(thumbnail);
       }
     }
   };
@@ -327,8 +357,12 @@ export function MessageAttachments({
           const thumbnail = attachment.thumbnail || attachment.url;
           const audioUrl = getCachedAttachment(attachment.url);
           const videoThumbnailDataUrl = attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
-          const imageDataUrl = getCachedAttachment(thumbnail);
-          const imageFailed = _attachmentFailedUrls.has(thumbnail);
+          const imageDataUrl = isImage
+            ? getCachedAttachment(attachment.url) ?? getCachedAttachment(attachment.thumbnail ?? "")
+            : getCachedAttachment(thumbnail);
+          const imageFailed = isImage
+            ? _attachmentFailedUrls.has(attachment.url) && _attachmentFailedUrls.has(attachment.thumbnail ?? "")
+            : _attachmentFailedUrls.has(thumbnail);
 
           return (
             <div

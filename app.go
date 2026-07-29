@@ -4,10 +4,10 @@ package main
 import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
-	"sync"
 	"Loom/pkg/models"
 	"Loom/pkg/providers"
 	"Loom/pkg/providers/googlechat"
+	googlemessages "Loom/pkg/providers/googlemessages"
 	"Loom/pkg/providers/slack"
 	"context"
 	"encoding/base64"
@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -69,14 +70,14 @@ type linkPreviewEntry struct {
 
 // App struct
 type App struct {
-	ctx              context.Context
-	provider         core.Provider // Active provider (for UI actions)
-	providerManager  *core.ProviderManager
-	eventCancels     map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
-	systemTray       *menu.Menu
-	pendingSyncs     []pendingSyncInfo // syncs deferred until domReady
+	ctx               context.Context
+	provider          core.Provider // Active provider (for UI actions)
+	providerManager   *core.ProviderManager
+	eventCancels      map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
+	systemTray        *menu.Menu
+	pendingSyncs      []pendingSyncInfo // syncs deferred until domReady
 	metaContactsCache metaContactsCache
-	mu               sync.RWMutex
+	mu                sync.RWMutex
 
 	// Short-lived server-side caches for expensive full-table-scan queries.
 	// The frontend has 30s staleTime but mounts multiple components simultaneously
@@ -99,6 +100,11 @@ type App struct {
 	syncingProviders   map[string]bool
 	syncingProvidersMu sync.Mutex
 
+	// syncInProgress prevents a wake-up, a manual refresh, and a startup catch-up
+	// from running the same provider sync concurrently.
+	syncInProgress   map[string]bool
+	syncInProgressMu sync.Mutex
+
 	// providerErrors holds the last startup error per provider instance (instanceID → message).
 	// Populated in startup() when a provider fails IsAuthenticated or Connect.
 	// Exposed via GetConfiguredProviders so the sidebar can show a warning badge without
@@ -114,7 +120,8 @@ type App struct {
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		eventCancels: make(map[string]context.CancelFunc),
+		eventCancels:   make(map[string]context.CancelFunc),
+		syncInProgress: make(map[string]bool),
 	}
 }
 
@@ -143,6 +150,54 @@ func cleanupSelfReceipts() {
 		} else {
 			log.Printf("Successfully cleaned up %d self receipts", len(receiptsToDelete))
 		}
+	}
+}
+
+// persistMessageReceipt stores remote delivery/read acknowledgements so message
+// status survives navigation and application restarts.
+func persistMessageReceipt(event core.ReceiptEvent) {
+	if db.DB == nil || (event.ReceiptType != core.ReceiptTypeDelivery && event.ReceiptType != core.ReceiptTypeRead) {
+		return
+	}
+
+	var message models.Message
+	err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", event.MessageID, event.ConversationID).First(&message).Error
+	if err == gorm.ErrRecordNotFound {
+		// WhatsApp may emit the chat as a LID while the message was normalized to
+		// its phone-number JID. ProtocolMsgID is globally unique in Loom.
+		err = db.DB.Where("protocol_msg_id = ?", event.MessageID).First(&message).Error
+	}
+	if err != nil {
+		log.Printf("Warning: receipt for unknown message %s in %s: %v", event.MessageID, event.ConversationID, err)
+		return
+	}
+
+	timestamp := time.Unix(event.Timestamp, 0)
+	if event.Timestamp <= 0 {
+		timestamp = time.Now()
+	}
+	var receipt models.MessageReceipt
+	result := db.DB.Where(
+		"message_id = ? AND user_id = ? AND receipt_type = ?",
+		message.ID, event.UserID, string(event.ReceiptType),
+	).First(&receipt)
+	if result.Error == nil {
+		if timestamp.After(receipt.Timestamp) {
+			db.DB.Model(&receipt).Updates(map[string]interface{}{"timestamp": timestamp, "updated_at": time.Now()})
+		}
+		return
+	}
+	if result.Error != gorm.ErrRecordNotFound {
+		log.Printf("Warning: failed to query receipt for message %s: %v", event.MessageID, result.Error)
+		return
+	}
+	if err := db.DB.Create(&models.MessageReceipt{
+		MessageID:   message.ID,
+		UserID:      event.UserID,
+		ReceiptType: string(event.ReceiptType),
+		Timestamp:   timestamp,
+	}).Error; err != nil {
+		log.Printf("Warning: failed to persist %s receipt for message %s: %v", event.ReceiptType, event.MessageID, err)
 	}
 }
 
@@ -391,6 +446,18 @@ func (a *App) startup(ctx context.Context) {
 		return providers.NewGoogleChatProvider()
 	})
 
+	a.providerManager.RegisterProvider("googlemessages", core.ProviderInfo{
+		ID:          "googlemessages",
+		Name:        "Google Messages",
+		Description: "Google Messages via a paired Android phone",
+		ConfigSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	}, func() core.Provider {
+		return providers.NewGoogleMessagesProvider()
+	})
+
 	// Load and restore providers
 	configs, err := a.providerManager.LoadProviderConfigs()
 	if err != nil {
@@ -477,9 +544,9 @@ func (a *App) startWakeDetector() {
 			// the computer was likely asleep or the system was heavily throttled.
 			if now.Sub(lastTick) > 30*time.Second {
 				log.Printf("[WakeDetector] System wake detected (gap: %v). Triggering resync...", now.Sub(lastTick))
-				// Wait a few seconds for network to stabilize
-				time.Sleep(5 * time.Second)
-				a.resyncAllProviders()
+				// Do not block the detector: the catch-up routine waits for the
+				// network and retries transient failures in the background.
+				go a.resyncAllProviders()
 			}
 			lastTick = now
 		case <-a.ctx.Done():
@@ -497,17 +564,102 @@ func (a *App) resyncAllProviders() {
 	log.Printf("[App] Resyncing %d configured providers after system wake", len(providers))
 
 	for _, pInfo := range providers {
-		provider, err := a.providerManager.GetProvider(pInfo.InstanceID)
-		if err != nil {
+		if _, err := a.providerManager.GetProvider(pInfo.InstanceID); err != nil {
 			continue
 		}
 
-		// Sync history since 24 hours ago to catch up on missed messages
-		since := time.Now().Add(-24 * time.Hour)
-		go func(p core.Provider, sid string, t time.Time) {
-			log.Printf("[App] Triggering catch-up sync for %s", sid)
-			p.SyncHistory(t)
-		}(provider, pInfo.InstanceID, since)
+		log.Printf("[App] Triggering catch-up sync for %s", pInfo.InstanceID)
+		go a.syncProviderHistory(pInfo.InstanceID, a.syncSince(pInfo.InstanceID, 24*time.Hour), "system wake")
+	}
+}
+
+// syncSince returns the last successful sync with a small overlap. The overlap makes
+// sync idempotent while covering messages delivered around a sleep or network loss.
+func (a *App) syncSince(instanceID string, fallback time.Duration) time.Time {
+	since := time.Now().Add(-fallback)
+	if db.DB == nil {
+		return since
+	}
+
+	var config models.ProviderConfiguration
+	if err := db.DB.Where("instance_id = ?", instanceID).First(&config).Error; err == nil && config.LastSyncAt != nil {
+		candidate := config.LastSyncAt.Add(-5 * time.Minute)
+		if candidate.After(since) {
+			return candidate
+		}
+	}
+	return since
+}
+
+// syncProviderHistory serializes syncs per provider and retries a failed sync after
+// reconnecting. A laptop often resumes before its network is usable; treating that
+// first error as final used to leave the provider permanently stale or in error.
+func (a *App) syncProviderHistory(instanceID string, since time.Time, reason string) {
+	a.syncInProgressMu.Lock()
+	if a.syncInProgress[instanceID] {
+		a.syncInProgressMu.Unlock()
+		log.Printf("[App] Ignoring %s sync for %s: one is already running", reason, instanceID)
+		return
+	}
+	a.syncInProgress[instanceID] = true
+	a.syncInProgressMu.Unlock()
+	defer func() {
+		a.syncInProgressMu.Lock()
+		delete(a.syncInProgress, instanceID)
+		a.syncInProgressMu.Unlock()
+	}()
+
+	// Give the operating system a moment to restore Wi-Fi/VPN after waking.
+	if reason == "system wake" {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-a.ctx.Done():
+			return
+		}
+	}
+
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		a.setProviderError(instanceID, fmt.Sprintf("Sync unavailable: %v", err))
+		return
+	}
+
+	var lastErr error
+	for attempt, delay := range []time.Duration{0, 5 * time.Second, 15 * time.Second} {
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-a.ctx.Done():
+				return
+			}
+			// Reset stale network sessions before retrying. Providers own their
+			// connection lifecycle; restarting the event listener keeps Wails
+			// attached to the restored event stream.
+			_ = provider.Disconnect()
+			if err := provider.Connect(); err != nil {
+				lastErr = fmt.Errorf("reconnect: %w", err)
+				log.Printf("[App] %s reconnect attempt %d for %s failed: %v", reason, attempt+1, instanceID, err)
+				continue
+			}
+			a.startEventListenerForProvider(a.ctx, instanceID, provider)
+		}
+
+		if err := provider.SyncHistory(since); err == nil {
+			if db.DB != nil {
+				db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("last_sync_at", time.Now())
+			}
+			a.clearProviderError(instanceID)
+			return
+		} else {
+			lastErr = err
+			log.Printf("[App] %s sync attempt %d for %s failed: %v", reason, attempt+1, instanceID, err)
+		}
+	}
+
+	if lastErr != nil {
+		message := fmt.Sprintf("Synchronization failed: %v", lastErr)
+		a.setProviderError(instanceID, message)
+		a.emitSyncStatusCoordinated(core.SyncStatusEvent{InstanceID: instanceID, Status: core.SyncStatusError, Message: message, Progress: -1})
 	}
 }
 
@@ -538,12 +690,7 @@ func (a *App) domReady(ctx context.Context) {
 			// Small delay to let React mount and register EventsOn("sync-status") listener.
 			time.Sleep(500 * time.Millisecond)
 			fmt.Printf("App.domReady: starting sync for %s since %s\n", syncInfo.instanceID, syncInfo.since.Format(time.RFC3339))
-			syncInfo.provider.SyncHistory(syncInfo.since)
-			if db.DB != nil {
-				db.DB.Model(&models.ProviderConfiguration{}).
-					Where("instance_id = ?", syncInfo.instanceID).
-					Update("last_sync_at", time.Now())
-			}
+			a.syncProviderHistory(syncInfo.instanceID, syncInfo.since, "startup")
 		}(si)
 	}
 }
@@ -661,6 +808,8 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "group-change", string(groupChangeJSON))
 					}
 				case core.ReceiptEvent:
+					persistMessageReceipt(e)
+					a.invalidateMessageCaches()
 					receiptJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "receipt", string(receiptJSON))
@@ -719,6 +868,13 @@ func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 	case core.SyncStatusError:
 		delete(a.syncingProviders, e.InstanceID)
 		a.syncingProvidersMu.Unlock()
+
+	case core.SyncStatusNeedsReauth:
+		delete(a.syncingProviders, e.InstanceID)
+		a.syncingProvidersMu.Unlock()
+		// Persist the error so the orange badge appears in the providers list
+		// immediately (picked up by GetConfiguredProviders on next call).
+		a.setProviderError(e.InstanceID, e.Message)
 
 	default:
 		a.syncingProvidersMu.Unlock()
@@ -848,13 +1004,7 @@ func (a *App) ConfigureProvider(config string) error {
 	capturedID := instanceID
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		since := time.Now().Add(-30 * 24 * time.Hour)
-		provider.SyncHistory(since)
-		if db.DB != nil {
-			db.DB.Model(&models.ProviderConfiguration{}).
-				Where("instance_id = ?", capturedID).
-				Update("last_sync_at", time.Now())
-		}
+		a.syncProviderHistory(capturedID, a.syncSince(capturedID, 30*24*time.Hour), "initial")
 	}()
 
 	return nil
@@ -1122,6 +1272,7 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	}
 	var messages []models.Message
 	err := db.DB.Where("protocol_conv_id = ?", conversationID).
+		Preload("Receipts").
 		Preload("Reactions").
 		Order("timestamp desc").
 		Limit(50).
@@ -1205,6 +1356,7 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 
 	if db.DB != nil {
 		err = db.DB.Where("protocol_conv_id = ? AND timestamp < ?", conversationID, beforeTimestamp).
+			Preload("Receipts").
 			Preload("Reactions").
 			Order("timestamp desc").
 			Limit(limit).
@@ -1280,10 +1432,6 @@ func (a *App) SendThreadReply(conversationID string, content string, threadID st
 }
 
 func (a *App) SendFile(conversationID string, base64Data string, filename string, mimeType string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
-	}
-
 	if idx := strings.Index(base64Data, ","); idx != -1 {
 		base64Data = base64Data[idx+1:]
 	}
@@ -1495,34 +1643,100 @@ func (a *App) GetProviderQRCode(instanceID string) (string, error) {
 	return provider.GetAuthQRCode()
 }
 
+type googleMessagesAccountPairer interface {
+	StartGoogleAccountPairing(cookieJSON string) (string, error)
+	CompleteGoogleAccountPairing() error
+}
+
+// StartGoogleMessagesLogin starts Google account pairing without storing the
+// submitted browser cookies in the provider configuration database.
+func (a *App) StartGoogleMessagesLogin(instanceID string, cookieJSON string) (string, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return "", err
+	}
+	pairer, ok := provider.(googleMessagesAccountPairer)
+	if !ok {
+		return "", fmt.Errorf("provider %s does not support Google account pairing", instanceID)
+	}
+	return pairer.StartGoogleAccountPairing(cookieJSON)
+}
+
+// AutoPairGoogleMessages opens a Chrome window, logs in with the provided
+// credentials, extracts the Google session cookies, and starts the Gaia pairing
+// flow. The browser window is visible so the user can complete 2FA.
+// Returns the pairing emoji to confirm on the phone.
+func (a *App) AutoPairGoogleMessages(instanceID string, email string, password string) (string, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return "", err
+	}
+	pairer, ok := provider.(googleMessagesAccountPairer)
+	if !ok {
+		return "", fmt.Errorf("provider %s does not support Google account pairing", instanceID)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+	defer cancel()
+
+	cookies, err := googlemessages.FetchGoogleCookiesViaLogin(ctx, email, password)
+	if err != nil {
+		return "", err
+	}
+
+	cookiesJSON, err := json.Marshal(cookies)
+	if err != nil {
+		return "", err
+	}
+
+	return pairer.StartGoogleAccountPairing(string(cookiesJSON))
+}
+
+func (a *App) CompleteGoogleMessagesLogin(instanceID string) error {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return err
+	}
+	pairer, ok := provider.(googleMessagesAccountPairer)
+	if !ok {
+		return fmt.Errorf("provider %s does not support Google account pairing", instanceID)
+	}
+	if err := pairer.CompleteGoogleAccountPairing(); err != nil {
+		return err
+	}
+	if a.ctx != nil {
+		a.startEventListenerForProvider(a.ctx, instanceID, provider)
+	}
+	return nil
+}
+
 // SyncProvider triggers a synchronization for a specific provider.
 // If providerID is empty, syncs the active provider.
 func (a *App) SyncProvider(providerID string) error {
-	var provider core.Provider
-	var err error
-
 	if providerID == "" {
-		// Sync active provider
-		if a.getActiveProvider() == nil {
+		provider := a.getActiveProvider()
+		if provider == nil {
 			return fmt.Errorf("no active provider to sync")
 		}
-		provider = a.getActiveProvider()
+		for _, info := range a.providerManager.GetConfiguredProviders() {
+			candidate, err := a.providerManager.GetProvider(info.InstanceID)
+			if err == nil && candidate == provider {
+				providerID = info.InstanceID
+				break
+			}
+		}
+		if providerID == "" {
+			return fmt.Errorf("active provider is not configured")
+		}
 	} else {
-		// Sync specific provider
-		provider, err = a.providerManager.GetProvider(providerID)
-		if err != nil {
+		if _, err := a.providerManager.GetProvider(providerID); err != nil {
 			return err
 		}
 	}
 
-	// Run sync in a background goroutine so the frontend call returns immediately.
-	// A 500ms delay ensures the SyncStatusFooter's EventsOn("sync-status") listener
-	// has time to register before the first sync event is emitted.
-	since := time.Now().Add(-30 * 24 * time.Hour)
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		provider.SyncHistory(since)
-	}()
+	// Return immediately to the frontend while retaining a five-minute overlap from
+	// the last successful sync, so manual refreshes also recover missed messages.
+	go a.syncProviderHistory(providerID, a.syncSince(providerID, 30*24*time.Hour), "manual")
 	return nil
 }
 
