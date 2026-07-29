@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 const chatAPIBase = "https://chat.googleapis.com/v1"
+const chatUploadBase = "https://chat.googleapis.com/upload/v1"
 
 // --- API types ---
 
@@ -39,20 +44,23 @@ type ChatThread struct {
 }
 
 type AttachmentDataRef struct {
-	ResourceName string `json:"resourceName"`
+	ResourceName          string `json:"resourceName,omitempty"`
+	AttachmentUploadToken string `json:"attachmentUploadToken,omitempty"`
 }
 
 type ChatAttachment struct {
-	Name              string             `json:"name"`
-	ContentName       string             `json:"contentName"`
-	ContentType       string             `json:"contentType"`
-	DownloadUri       string             `json:"downloadUri"`
-	AttachmentDataRef *AttachmentDataRef `json:"attachmentDataRef"`
+	Name              string             `json:"name,omitempty"`
+	ContentName       string             `json:"contentName,omitempty"`
+	ContentType       string             `json:"contentType,omitempty"`
+	DownloadUri       string             `json:"downloadUri,omitempty"`
+	AttachmentDataRef *AttachmentDataRef `json:"attachmentDataRef,omitempty"`
 }
 
 type EmojiReactionSummary struct {
-	Emoji         *struct{ Unicode string `json:"unicode"` } `json:"emoji"`
-	ReactionCount int                                        `json:"reactionCount"`
+	Emoji *struct {
+		Unicode string `json:"unicode"`
+	} `json:"emoji"`
+	ReactionCount int `json:"reactionCount"`
 }
 
 type ChatMessage struct {
@@ -139,6 +147,83 @@ func (p *GoogleChatProvider) apiGet(path string, params url.Values, out interfac
 
 func (p *GoogleChatProvider) apiPost(path string, payload interface{}, out interface{}) error {
 	return p.apiMethod(http.MethodPost, path, "", payload, out)
+}
+
+func (p *GoogleChatProvider) apiUploadAttachment(spaceName, filename, mimeType string, data []byte) (*ChatAttachment, error) {
+	client := p.getHTTPClient()
+	if client == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	filename = filepath.Base(filename)
+	if filename == "." || filename == "" {
+		return nil, fmt.Errorf("googlechat: attachment filename is required")
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("googlechat: attachment is empty")
+	}
+	if len(data) > 200*1024*1024 {
+		return nil, fmt.Errorf("googlechat: attachment exceeds the 200 MB limit")
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	metadataHeader := make(textproto.MIMEHeader)
+	metadataHeader.Set("Content-Type", "application/json; charset=UTF-8")
+	metadataPart, err := writer.CreatePart(metadataHeader)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewEncoder(metadataPart).Encode(struct {
+		Filename string `json:"filename"`
+	}{Filename: filename}); err != nil {
+		return nil, err
+	}
+
+	mediaHeader := make(textproto.MIMEHeader)
+	mediaHeader.Set("Content-Type", mimeType)
+	mediaPart, err := writer.CreatePart(mediaHeader)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := mediaPart.Write(data); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	uploadURL := chatUploadBase + "/" + strings.TrimPrefix(spaceName, "/") +
+		"/attachments:upload?uploadType=multipart"
+	req, err := http.NewRequest(http.MethodPost, uploadURL, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", fmt.Sprintf("multipart/related; boundary=%q", writer.Boundary()))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("googlechat: attachment upload HTTP %d: %s", resp.StatusCode, string(responseBody))
+	}
+
+	var uploaded ChatAttachment
+	if err := json.Unmarshal(responseBody, &uploaded); err != nil {
+		return nil, err
+	}
+	if uploaded.AttachmentDataRef == nil || uploaded.AttachmentDataRef.AttachmentUploadToken == "" {
+		return nil, fmt.Errorf("googlechat: attachment upload returned no upload token")
+	}
+	return &uploaded, nil
 }
 
 func (p *GoogleChatProvider) apiPatch(path string, updateMask string, payload interface{}, out interface{}) error {

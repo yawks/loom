@@ -2,9 +2,8 @@ import { Layers, Search, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { ProvidersModal } from "@/components/ProvidersModal";
 import { SearchModal } from "@/components/SearchModal";
-import { SettingsModal } from "@/components/SettingsModal";
+import { SettingsModal, type SettingsSection } from "@/components/SettingsModal";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 import { WindowToggleMaximise } from "../../wailsjs/runtime/runtime";
@@ -16,9 +15,9 @@ interface HeaderProps {
 export function Header({ hasProviders = true }: HeaderProps) {
   const { t } = useTranslation();
   const theme = useAppStore((state) => state.theme);
-  const [isProvidersOpen, setIsProvidersOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
 
   useEffect(() => {
     // Apply theme to document
@@ -59,9 +58,13 @@ export function Header({ hasProviders = true }: HeaderProps) {
         if (event.target === event.currentTarget) WindowToggleMaximise();
       }}
     >
-      <ProvidersModal open={isProvidersOpen} onOpenChange={setIsProvidersOpen} />
       <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
-      <SettingsModal open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+      <SettingsModal
+        key={settingsSection}
+        open={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
+        initialSection={settingsSection}
+      />
       <div className="flex-1 flex justify-center" style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}>
         {hasProviders && (
           <Button
@@ -87,7 +90,10 @@ export function Header({ hasProviders = true }: HeaderProps) {
             variant="ghost"
             size="sm"
             className="flex items-center gap-2"
-            onClick={() => setIsProvidersOpen(true)}
+            onClick={() => {
+              setSettingsSection("providers");
+              setIsSettingsOpen(true);
+            }}
           >
             <Layers className="h-4 w-4" />
             <span className="hidden sm:inline">{t("providers")}</span>
@@ -97,7 +103,10 @@ export function Header({ hasProviders = true }: HeaderProps) {
           variant="ghost"
           size="sm"
           className="flex items-center gap-2"
-          onClick={() => setIsSettingsOpen(true)}
+          onClick={() => {
+            setSettingsSection("general");
+            setIsSettingsOpen(true);
+          }}
         >
           <Settings className="h-4 w-4" />
         </Button>

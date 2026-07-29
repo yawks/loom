@@ -1,11 +1,11 @@
 package whatsapp
 
 import (
+	"Loom/pkg/db"
+	"Loom/pkg/models"
 	"encoding/json"
 	"fmt"
 	"time"
-	"Loom/pkg/db"
-	"Loom/pkg/models"
 )
 
 func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
@@ -97,7 +97,10 @@ func (w *WhatsAppProvider) loadLIDMappingsFromLinkedAccounts() {
 	}
 
 	var accounts []models.LinkedAccount
-	if err := db.DB.Where("protocol = ? AND extra != ''", "whatsapp").Find(&accounts).Error; err != nil {
+	if err := db.DB.Where(
+		"protocol = ? AND provider_instance_id = ? AND extra != ''",
+		"whatsapp", w.getInstanceId(),
+	).Find(&accounts).Error; err != nil {
 		fmt.Printf("WhatsApp: Failed to load LinkedAccounts with extra data: %v\n", err)
 		return
 	}

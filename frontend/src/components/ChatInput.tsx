@@ -133,12 +133,22 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedContact = useAppStore((state) => state.selectedContact);
+  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const theme = useAppStore((state) => state.theme);
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const showThreads = useAppStore((state) => state.showThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const isThreadOpen = !threadId && showThreads && selectedThreadId !== null;
-  const activeAccount = selectedContact?.linkedAccounts[0];
+  const activeAccount = useMemo(() => {
+    const accounts = selectedContact?.linkedAccounts ?? [];
+    return (
+      (selectedProviderFilter
+        ? accounts.find(
+            (account) => account.providerInstanceId === selectedProviderFilter
+          )
+        : undefined) ?? accounts[0]
+    );
+  }, [selectedContact, selectedProviderFilter]);
   const conversationId = activeAccount?.conversationId || activeAccount?.userId;
   const draftStorageKey = useMemo(
     () => getDraftStorageKey(conversationId, activeAccount?.providerInstanceId, threadId),
@@ -429,7 +439,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
       try {
         await sendMessageMutation.mutateAsync({
-          conversationId: selectedContact.linkedAccounts[0].conversationId || selectedContact.linkedAccounts[0].userId,
+          conversationId: activeAccount?.conversationId || activeAccount?.userId,
           text,
           quotedMessageId,
         });
@@ -517,7 +527,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (!isEmojiPickerOpen || !selectedContact) return;
     if (customEmojis.length > 0) return;
 
-    const instanceId = selectedContact.linkedAccounts[0]?.providerInstanceId;
+    const instanceId = activeAccount?.providerInstanceId;
     if (!instanceId) return;
 
     GetCustomEmojis(instanceId)
@@ -533,7 +543,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       .catch(() => {
         // Silently ignore
       });
-  }, [isEmojiPickerOpen, selectedContact, customEmojis.length]);
+  }, [isEmojiPickerOpen, selectedContact, activeAccount, customEmojis.length]);
 
   const handleEmojiClick = (emojiData: any) => {
     const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;

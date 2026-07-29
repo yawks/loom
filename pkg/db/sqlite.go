@@ -105,6 +105,9 @@ func InitDatabase() error {
 	if err := migrateNamespaceProtocolConvID(db); err != nil {
 		fmt.Printf("Warning: Failed to namespace protocol_conv_id: %v\n", err)
 	}
+	if err := repairWhatsAppConversationOwnership(db); err != nil {
+		fmt.Printf("Warning: Failed to repair WhatsApp conversation ownership: %v\n", err)
+	}
 
 	// Performance optimization: ensure crucial indices exist
 	err = ensureIndices(db)
@@ -415,5 +418,38 @@ func migrateNamespaceProtocolConvID(db *gorm.DB) error {
 	}
 
 	fmt.Println("Migration: protocol_conv_id namespacing completed")
+	return nil
+}
+
+// repairWhatsAppConversationOwnership fixes rows created by the old
+// createMissingConversations implementation, which matched only user_id and
+// could attach "whatsapp-B::jid" to the LinkedAccount from whatsapp-A.
+func repairWhatsAppConversationOwnership(db *gorm.DB) error {
+	result := db.Exec(`
+		UPDATE conversations AS c
+		SET linked_account_id = (
+			SELECT la.id
+			FROM linked_accounts AS la
+			WHERE la.protocol = 'whatsapp'
+			  AND la.provider_instance_id = substr(c.protocol_conv_id, 1, instr(c.protocol_conv_id, '::') - 1)
+			  AND la.user_id = substr(c.protocol_conv_id, instr(c.protocol_conv_id, '::') + 2)
+			LIMIT 1
+		)
+		WHERE c.protocol_conv_id LIKE '%::%'
+		  AND EXISTS (
+			SELECT 1
+			FROM linked_accounts AS la
+			WHERE la.protocol = 'whatsapp'
+			  AND la.provider_instance_id = substr(c.protocol_conv_id, 1, instr(c.protocol_conv_id, '::') - 1)
+			  AND la.user_id = substr(c.protocol_conv_id, instr(c.protocol_conv_id, '::') + 2)
+			  AND la.id != c.linked_account_id
+		  )
+	`)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		fmt.Printf("Migration: repaired %d WhatsApp conversation ownership rows\n", result.RowsAffected)
+	}
 	return nil
 }

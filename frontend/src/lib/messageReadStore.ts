@@ -57,6 +57,7 @@ interface MessageReadStore {
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
   registerBatchMessages: (messages: models.Message[]) => void;
+  removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
 }
@@ -134,7 +135,7 @@ const loadPersistedState = (): ReadStateByConversation => {
   return {};
 };
 
-const persistState = (state: ReadStateByConversation) => {
+const persistStateNow = (state: ReadStateByConversation) => {
   if (!canUseStorage) {
     return;
   }
@@ -149,11 +150,21 @@ const persistState = (state: ReadStateByConversation) => {
 // markAsRead is called on every IntersectionObserver entry; batching writes prevents jank.
 let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 let _latestState: ReadStateByConversation | null = null;
+const persistState = (state: ReadStateByConversation) => {
+  // An immediate write supersedes any older debounced snapshot. Without this,
+  // a pending mark-as-read write can restore stale data after a newer update.
+  if (_persistTimer !== null) {
+    clearTimeout(_persistTimer);
+    _persistTimer = null;
+  }
+  _latestState = null;
+  persistStateNow(state);
+};
 const persistStateDebounced = (state: ReadStateByConversation) => {
   _latestState = state;
   if (_persistTimer === null) {
     _persistTimer = setTimeout(() => {
-      if (_latestState !== null) persistState(_latestState);
+      if (_latestState !== null) persistStateNow(_latestState);
       _latestState = null;
       _persistTimer = null;
     }, 500);
@@ -431,13 +442,24 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       const updatedConversation = { ...conversationState };
       let hasChanged = false;
       
-      // Store the lastReadTimestamp
-      (updatedConversation as any)["_lastReadTS"] = lastReadTS;
-      hasChanged = true;
+      // Read markers are monotonic. A provider can deliver an older marker a few
+      // seconds after Loom has already marked the conversation as read.
+      const previousLastReadTS = parseFloat(
+        String((updatedConversation as any)["_lastReadTS"] ?? "")
+      );
+      const effectiveLastReadTimestamp =
+        !isNaN(previousLastReadTS) && previousLastReadTS > lastReadTimestamp
+          ? previousLastReadTS
+          : lastReadTimestamp;
+      const effectiveLastReadTS = String(effectiveLastReadTimestamp);
+      if ((updatedConversation as any)["_lastReadTS"] !== effectiveLastReadTS) {
+        (updatedConversation as any)["_lastReadTS"] = effectiveLastReadTS;
+        hasChanged = true;
+      }
       
       // IMPORTANT: Re-evaluate all messages' read state based on the new lastReadTS
       // This ensures that when we receive the lastReadTS from provider, we update the state
-      const lastReadDate = new Date(lastReadTimestamp * 1000);
+      const lastReadDate = new Date(effectiveLastReadTimestamp * 1000);
       
       Object.keys(updatedConversation).forEach((messageId) => {
         // Skip special keys like _lastReadTS
@@ -469,7 +491,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           
           // Mark as read if message timestamp <= lastReadTimestamp
           const wasRead = updatedConversation[messageId];
-          const shouldBeRead = msgDate <= lastReadDate;
+          // A read message must never become unread because of a delayed or
+          // incomplete provider marker. New messages are classified when they
+          // are registered; this pass only advances unread messages to read.
+          const shouldBeRead = wasRead || msgDate <= lastReadDate;
           
           if (wasRead !== shouldBeRead) {
             updatedConversation[messageId] = shouldBeRead;
@@ -601,6 +626,23 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedReadByConversation };
     });
   },
+  removeMessage: (conversationId, messageId) => {
+    if (!conversationId || !messageId) return;
+    set((state) => {
+      const conversationState = state.readByConversation[conversationId];
+      if (!conversationState || conversationState[messageId] === undefined) {
+        return state;
+      }
+      const updatedConversation = { ...conversationState };
+      delete updatedConversation[messageId];
+      const updatedMap = {
+        ...state.readByConversation,
+        [conversationId]: updatedConversation,
+      };
+      persistState(updatedMap);
+      return { readByConversation: updatedMap };
+    });
+  },
   clearConversation: (conversationId) => {
     if (!conversationId) {
       return;
@@ -657,4 +699,3 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
   },
   };
 });
-

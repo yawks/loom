@@ -66,6 +66,7 @@ export function useMessageEvents() {
   const setLastReadTimestamp = useMessageReadStore(
     (state) => state.setLastReadTimestamp
   );
+  const removeMessage = useMessageReadStore((state) => state.removeMessage);
   const setTyping = useTypingStore((state) => state.setTyping);
   const setNotTyping = useTypingStore((state) => state.setNotTyping);
 
@@ -427,6 +428,7 @@ export function useMessageEvents() {
       if (!isMounted) return;
       try {
         const { conversationId, messageId } = JSON.parse(deletedJSON);
+        removeMessage(conversationId, messageId);
         queryClient.setQueriesData<InfiniteData<models.Message[]>>(
           { queryKey: ["messages"] },
           (oldData) => {
@@ -440,6 +442,16 @@ export function useMessageEvents() {
             };
           }
         );
+        queryClient.setQueryData<Record<string, models.Message | null>>(
+          ["allLastMessages"],
+          (old) => {
+            if (!old || old[conversationId]?.protocolMsgId !== messageId) return old;
+            return { ...old, [conversationId]: null };
+          }
+        );
+        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
+        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
+        queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
       } catch (error) {
         console.error("useMessageEvents: Failed to parse message-deleted event:", error);
       }
@@ -449,7 +461,7 @@ export function useMessageEvents() {
       isMounted = false;
       if (unsubscribeDeleted) unsubscribeDeleted();
     };
-  }, [queryClient]);
+  }, [queryClient, removeMessage]);
 
   // Listen for conversation read status events
   useEffect(() => {

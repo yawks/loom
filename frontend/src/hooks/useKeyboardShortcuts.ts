@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useSortedContacts } from "./useSortedContacts";
+import type { models } from "../../wailsjs/go/models";
 
 export function useKeyboardShortcuts() {
   const selectedContact = useAppStore((state) => state.selectedContact);
@@ -13,6 +14,64 @@ export function useKeyboardShortcuts() {
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
+  );
+  const relevantAccounts = useCallback(
+    (contact: models.MetaContact) =>
+      selectedProviderFilter
+        ? contact.linkedAccounts.filter(
+            (account) => account.providerInstanceId === selectedProviderFilter
+          )
+        : contact.linkedAccounts,
+    [selectedProviderFilter]
+  );
+  const hasUnread = useCallback(
+    (contact: models.MetaContact) =>
+      relevantAccounts(contact).some((account) => {
+        const conversationId = account.conversationId;
+        const state = conversationId
+          ? readStateByConversation[conversationId]
+          : undefined;
+        return state
+          ? Object.entries(state).some(
+              ([key, isRead]) => !key.startsWith("_") && !isRead
+            )
+          : false;
+      }),
+    [readStateByConversation, relevantAccounts]
+  );
+  const selectContactForCurrentProvider = useCallback(
+    (contact: models.MetaContact) => {
+      const activeAccount =
+        relevantAccounts(contact).find((account) => {
+          if (contactSortBy !== "unread") return true;
+          const conversationId = account.conversationId;
+          const state = conversationId
+            ? readStateByConversation[conversationId]
+            : undefined;
+          return state
+            ? Object.entries(state).some(
+                ([key, isRead]) => !key.startsWith("_") && !isRead
+              )
+            : false;
+        }) ?? contact.linkedAccounts[0];
+      if (!activeAccount || contact.linkedAccounts[0] === activeAccount) {
+        setSelectedContact(contact);
+        return;
+      }
+      setSelectedContact({
+        ...contact,
+        linkedAccounts: [
+          activeAccount,
+          ...contact.linkedAccounts.filter((account) => account !== activeAccount),
+        ],
+      } as models.MetaContact);
+    },
+    [
+      contactSortBy,
+      readStateByConversation,
+      relevantAccounts,
+      setSelectedContact,
+    ]
   );
 
   // Build the same sorted and filtered list as ContactList.
@@ -30,19 +89,10 @@ export function useKeyboardShortcuts() {
       return providerContacts;
     }
 
-    return providerContacts.filter((contact) => {
-      const conversationId =
-        contact.linkedAccounts[0]?.conversationId ??
-        contact.linkedAccounts[0]?.userId;
-      if (!conversationId) return false;
-      const conversationState = readStateByConversation[conversationId];
-      return conversationState
-        ? Object.values(conversationState).some((isRead) => !isRead)
-        : false;
-    });
+    return providerContacts.filter(hasUnread);
   }, [
     contactSortBy,
-    readStateByConversation,
+    hasUnread,
     selectedProviderFilter,
     sortedContactsBase,
   ]);
@@ -53,18 +103,7 @@ export function useKeyboardShortcuts() {
     }
 
     // Find conversations with unread messages
-    const unreadConversations = sortedContacts.filter((contact) => {
-      const conversationId =
-        contact.linkedAccounts[0]?.conversationId ??
-        contact.linkedAccounts[0]?.userId;
-      if (!conversationId) return false;
-      const conversationState = readStateByConversation[conversationId];
-      if (!conversationState) return false;
-      const unreadCount = Object.values(conversationState).filter(
-        (isRead) => !isRead
-      ).length;
-      return unreadCount > 0;
-    });
+    const unreadConversations = sortedContacts.filter(hasUnread);
 
     if (unreadConversations.length === 0) {
       return;
@@ -82,7 +121,7 @@ export function useKeyboardShortcuts() {
           ? unreadConversations[unreadConversations.length - 1]
           : unreadConversations[0];
       if (targetContact) {
-        setSelectedContact(targetContact);
+        selectContactForCurrentProvider(targetContact);
       }
       return;
     }
@@ -92,54 +131,32 @@ export function useKeyboardShortcuts() {
       // Look for unread conversations above current
       for (let i = currentIndex - 1; i >= 0; i--) {
         const contact = sortedContacts[i];
-        const conversationId =
-          contact.linkedAccounts[0]?.conversationId ??
-          contact.linkedAccounts[0]?.userId;
-        if (conversationId) {
-          const conversationState = readStateByConversation[conversationId];
-          if (conversationState) {
-            const unreadCount = Object.values(conversationState).filter(
-              (isRead) => !isRead
-            ).length;
-            if (unreadCount > 0) {
-              setSelectedContact(contact);
-              return;
-            }
-          }
+        if (hasUnread(contact)) {
+          selectContactForCurrentProvider(contact);
+          return;
         }
       }
       // Wrap around: go to last unread conversation
       const lastUnread = unreadConversations[unreadConversations.length - 1];
       if (lastUnread && lastUnread.id !== selectedContact.id) {
-        setSelectedContact(lastUnread);
+        selectContactForCurrentProvider(lastUnread);
       }
     } else {
       // Look for unread conversations below current
       for (let i = currentIndex + 1; i < sortedContacts.length; i++) {
         const contact = sortedContacts[i];
-        const conversationId =
-          contact.linkedAccounts[0]?.conversationId ??
-          contact.linkedAccounts[0]?.userId;
-        if (conversationId) {
-          const conversationState = readStateByConversation[conversationId];
-          if (conversationState) {
-            const unreadCount = Object.values(conversationState).filter(
-              (isRead) => !isRead
-            ).length;
-            if (unreadCount > 0) {
-              setSelectedContact(contact);
-              return;
-            }
-          }
+        if (hasUnread(contact)) {
+          selectContactForCurrentProvider(contact);
+          return;
         }
       }
       // Wrap around: go to first unread conversation
       const firstUnread = unreadConversations[0];
       if (firstUnread && firstUnread.id !== selectedContact.id) {
-        setSelectedContact(firstUnread);
+        selectContactForCurrentProvider(firstUnread);
       }
     }
-  }, [selectedContact, sortedContacts, readStateByConversation, setSelectedContact]);
+  }, [selectedContact, sortedContacts, hasUnread, selectContactForCurrentProvider]);
 
   const navigateInList = useCallback((direction: "up" | "down") => {
     if (!selectedContact || sortedContacts.length === 0) {
@@ -220,8 +237,8 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Option/Alt + ArrowLeft: Navigate to previous conversation in history
-      if (optionKey && !shiftKey && isArrowLeft) {
+      // Ctrl + Shift + ArrowLeft: Navigate to previous conversation in history
+      if (e.ctrlKey && shiftKey && isArrowLeft) {
         e.preventDefault();
         e.stopPropagation();
         const previousContact = navigateHistoryBack();
@@ -231,8 +248,8 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Option/Alt + ArrowRight: Navigate to next conversation in history
-      if (optionKey && !shiftKey && isArrowRight) {
+      // Ctrl + Shift + ArrowRight: Navigate to next conversation in history
+      if (e.ctrlKey && shiftKey && isArrowRight) {
         e.preventDefault();
         e.stopPropagation();
         const nextContact = navigateHistoryForward();

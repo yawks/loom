@@ -101,12 +101,23 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		Name string `json:"name"`
 	}
 	type msgBody struct {
-		Text   string     `json:"text,omitempty"`
-		Thread *threadRef `json:"thread,omitempty"`
+		Text       string           `json:"text,omitempty"`
+		Thread     *threadRef       `json:"thread,omitempty"`
+		Attachment []ChatAttachment `json:"attachment,omitempty"`
 	}
 
 	body := msgBody{Text: text}
 	path := "/" + rawConvID + "/messages"
+	if file != nil {
+		uploaded, err := p.apiUploadAttachment(spaceName(rawConvID), file.FileName, file.MimeType, file.Data)
+		if err != nil {
+			return nil, fmt.Errorf("googlechat: upload attachment: %w", err)
+		}
+		body.Attachment = []ChatAttachment{*uploaded}
+	}
+	if body.Text == "" && len(body.Attachment) == 0 {
+		return nil, fmt.Errorf("googlechat: message text or attachment is required")
+	}
 	// canonicalThreadID is the parent message's ProtocolMsgID (used as ThreadID in the model).
 	// It stays empty when threadID is a thread resource name (e.g. from SendReply).
 	var canonicalThreadID string
@@ -192,8 +203,7 @@ func (p *GoogleChatProvider) SendFile(convID string, file *core.Attachment, thre
 	if file == nil {
 		return nil, fmt.Errorf("no file provided")
 	}
-	text := fmt.Sprintf("[file: %s]", file.FileName)
-	return p.SendMessage(convID, text, nil, threadID)
+	return p.SendMessage(convID, "", file, threadID)
 }
 
 func (p *GoogleChatProvider) EditMessage(convID, messageID, newText string) (*models.Message, error) {

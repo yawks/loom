@@ -104,7 +104,7 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 			message.ConversationID = conversation.ID
 
 			var stored models.Message
-			err := tx.Where(
+			err := tx.Unscoped().Where(
 				"protocol_msg_id = ? AND protocol_conv_id = ?",
 				message.ProtocolMsgID, message.ProtocolConvID,
 			).First(&stored).Error
@@ -139,6 +139,17 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				}
 				message.ID = stored.ID
 			case gorm.ErrRecordNotFound:
+				// protocol_msg_id has a global unique index. A soft-deleted row
+				// or an exceptional Teams ID reused in another conversation
+				// must not make the whole synchronization fail.
+				var conflicting models.Message
+				if err := tx.Unscoped().
+					Where("protocol_msg_id = ?", message.ProtocolMsgID).
+					First(&conflicting).Error; err == nil {
+					continue
+				} else if err != gorm.ErrRecordNotFound {
+					return err
+				}
 				if message.Timestamp.IsZero() {
 					message.Timestamp = time.Now()
 				}
