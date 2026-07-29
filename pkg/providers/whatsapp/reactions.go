@@ -19,8 +19,11 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 		return fmt.Errorf("client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -28,7 +31,7 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 	// Find the message to get its key
 	var message *models.Message
 	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for _, msg := range msgs {
 			if msg.ProtocolMsgID == messageID {
 				message = &msg
@@ -52,7 +55,7 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 
 	// Parse the message ID to get the key
 	msgKey := &waProto.MessageKey{
-		RemoteJID: proto.String(conversationID),
+		RemoteJID: proto.String(rawConvID),
 		FromMe:    proto.Bool(message.IsFromMe),
 		ID:        proto.String(messageID),
 	}
@@ -83,7 +86,7 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 	// Emit reaction event
 	select {
 	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceId(),
-		ConversationID: conversationID,
+		ConversationID: nsConvID,
 		MessageID:      messageID,
 		UserID:         currentUserID,
 		Emoji:          emoji,
@@ -103,8 +106,11 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 		return fmt.Errorf("client not initialized")
 	}
 
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+
 	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(conversationID)
+	jid, err := types.ParseJID(rawConvID)
 	if err != nil {
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -112,7 +118,7 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 	// Find the message to get its key
 	var message *models.Message
 	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[conversationID]; ok {
+	if msgs, ok := w.conversationMessages[nsConvID]; ok {
 		for _, msg := range msgs {
 			if msg.ProtocolMsgID == messageID {
 				message = &msg
@@ -136,7 +142,7 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 
 	// Parse the message ID to get the key
 	msgKey := &waProto.MessageKey{
-		RemoteJID: proto.String(conversationID),
+		RemoteJID: proto.String(rawConvID),
 		FromMe:    proto.Bool(message.IsFromMe),
 		ID:        proto.String(messageID),
 	}
@@ -166,7 +172,7 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 	// Emit reaction event
 	select {
 	case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceId(),
-		ConversationID: conversationID,
+		ConversationID: nsConvID,
 		MessageID:      messageID,
 		UserID:         currentUserID,
 		Emoji:          emoji,

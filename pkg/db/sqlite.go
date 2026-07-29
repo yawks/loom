@@ -101,6 +101,11 @@ func InitDatabase() error {
 		return fmt.Errorf("failed to migrate linked account: %w", err)
 	}
 
+	// Namespace protocol_conv_id values with the provider instance ID
+	if err := migrateNamespaceProtocolConvID(db); err != nil {
+		fmt.Printf("Warning: Failed to namespace protocol_conv_id: %v\n", err)
+	}
+
 	// Performance optimization: ensure crucial indices exist
 	err = ensureIndices(db)
 	if err != nil {
@@ -335,5 +340,64 @@ func migrateLinkedAccount(db *gorm.DB) error {
 		fmt.Println("Migration: WhatsApp 'active' status correction applied")
 	}
 
+	return nil
+}
+
+// migrateNamespaceProtocolConvID prefixes existing protocol_conv_id values in
+// conversations and messages with the provider instance ID (e.g. "whatsapp-1::").
+// This ensures conversations from different instances of the same provider are
+// never conflated in the unique index.
+func migrateNamespaceProtocolConvID(db *gorm.DB) error {
+	// Check if any conversations already have the '::' separator — if so, the
+	// migration has already been applied (at least partially).
+	var already int64
+	if err := db.Raw("SELECT COUNT(*) FROM conversations WHERE protocol_conv_id LIKE '%::%'").Scan(&already).Error; err != nil {
+		return fmt.Errorf("namespace migration probe: %w", err)
+	}
+	if already > 0 {
+		fmt.Println("Migration: protocol_conv_id already namespaced, skipping")
+		return nil
+	}
+
+	// Prefix conversations: instanceID::rawConvID
+	if err := db.Exec(`
+		UPDATE conversations
+		SET protocol_conv_id = (
+			SELECT la.provider_instance_id || '::' || conversations.protocol_conv_id
+			FROM linked_accounts la
+			WHERE la.id = conversations.linked_account_id
+			  AND la.provider_instance_id != ''
+		)
+		WHERE protocol_conv_id NOT LIKE '%::%'
+		  AND EXISTS (
+			SELECT 1 FROM linked_accounts la
+			WHERE la.id = linked_account_id AND la.provider_instance_id != ''
+		  )
+	`).Error; err != nil {
+		return fmt.Errorf("namespace conversations: %w", err)
+	}
+
+	// Prefix messages that are linked to a conversation (conversation_id > 0)
+	if err := db.Exec(`
+		UPDATE messages
+		SET protocol_conv_id = (
+			SELECT la.provider_instance_id || '::' || messages.protocol_conv_id
+			FROM conversations c
+			JOIN linked_accounts la ON la.id = c.linked_account_id
+			WHERE c.id = messages.conversation_id
+			  AND la.provider_instance_id != ''
+		)
+		WHERE protocol_conv_id NOT LIKE '%::%'
+		  AND conversation_id > 0
+		  AND EXISTS (
+			SELECT 1 FROM conversations c
+			JOIN linked_accounts la ON la.id = c.linked_account_id
+			WHERE c.id = conversation_id AND la.provider_instance_id != ''
+		  )
+	`).Error; err != nil {
+		return fmt.Errorf("namespace messages: %w", err)
+	}
+
+	fmt.Println("Migration: protocol_conv_id namespacing completed")
 	return nil
 }

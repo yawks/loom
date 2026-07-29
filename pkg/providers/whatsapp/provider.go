@@ -673,7 +673,7 @@ func (w *WhatsAppProvider) GetAuthQRCode() (string, error) {
 
 func (w *WhatsAppProvider) RefreshContact(contactID string) error {
 	// Implementation in avatars.go
-	return w.refreshContactMetadata(contactID)
+	return w.refreshContactMetadata(core.StripConvID(contactID))
 }
 
 func (w *WhatsAppProvider) getInstanceId() string {

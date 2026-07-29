@@ -27,7 +27,8 @@ func (p *SlackProvider) MarkMessageAsRead(conversationID string, messageID strin
 	if len(conversationID) > 0 && conversationID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{conversationID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to open DM conversation: %w", err)
@@ -76,7 +77,8 @@ func (p *SlackProvider) MarkConversationAsRead(conversationID string) error {
 	if len(conversationID) > 0 && conversationID[0] == 'U' {
 		// Open DM to get channel ID
 		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users: []string{conversationID},
+			Users:    []string{conversationID},
+			ReturnIM: true,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to open DM conversation: %w", err)

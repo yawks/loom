@@ -9,6 +9,8 @@
  * Last updated: 2025-12-09T13:55:49.232Z
  */
 export const unicodeEmojiMap: Record<string, string> = {
+  "acks": "✅",
+  "handsinair-tone2": "🙌🏼",
   "-_-": "😑",
   "-1": "👎",
   ";)": "😉",
@@ -6257,6 +6259,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "yen_banknote": "💴",
   "yerba": "🧉",
   "yes": "👍",
+  "yes-tone3": "👍🏽",
   "yin_yang": "☯️",
   "yo_yo": "🪀",
   "yoga": "🧘",

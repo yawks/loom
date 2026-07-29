@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"fmt"
@@ -18,7 +19,7 @@ func (w *WhatsAppProvider) MarkMessageAsRead(conversationID string, messageID st
 	}
 
 	// Parse conversation ID (JID)
-	chatJID, err := types.ParseJID(conversationID)
+	chatJID, err := types.ParseJID(core.StripConvID(conversationID))
 	if err != nil {
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}
@@ -77,7 +78,7 @@ func (w *WhatsAppProvider) MarkMessageAsPlayed(conversationID string, messageID 
 	}
 
 	// Parse conversation ID (JID)
-	chatJID, err := types.ParseJID(conversationID)
+	chatJID, err := types.ParseJID(core.StripConvID(conversationID))
 	if err != nil {
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}

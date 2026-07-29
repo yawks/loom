@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 )
@@ -369,17 +370,18 @@ func (p *GoogleChatProvider) persistContact(acct models.LinkedAccount, convID st
 		expectedGroupName = acct.Username
 	}
 
+	nsConvID := core.BuildConvID(instanceID, core.StripConvID(convID))
 	var conv models.Conversation
-	db.DB.Where("protocol_conv_id = ?", convID).First(&conv)
+	db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conv)
 	if conv.ID == 0 {
 		conv = models.Conversation{
 			LinkedAccountID: linkedAccount.ID,
-			ProtocolConvID:  convID,
+			ProtocolConvID:  nsConvID,
 			IsGroup:         isGroup,
 			GroupName:       expectedGroupName,
 		}
 		db.DB.Create(&conv)
-		db.ContactStore.UpsertConversation(linkedAccount.ID, convID)
+		db.ContactStore.UpsertConversation(linkedAccount.ID, nsConvID)
 	} else {
 		needsSave := false
 		if conv.GroupName != expectedGroupName || conv.IsGroup != isGroup {
@@ -393,7 +395,7 @@ func (p *GoogleChatProvider) persistContact(acct models.LinkedAccount, convID st
 		}
 		if needsSave {
 			db.DB.Save(&conv)
-			db.ContactStore.SetConversation(linkedAccount.ID, convID)
+			db.ContactStore.SetConversation(linkedAccount.ID, nsConvID)
 		}
 	}
 }

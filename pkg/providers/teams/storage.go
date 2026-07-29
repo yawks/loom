@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"fmt"
@@ -56,14 +57,15 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 	}
 	db.ContactStore.UpsertLinkedAccount(stored)
 
+	nsConvID := core.BuildConvID(p.instance, account.ConversationID)
 	var conversation models.Conversation
-	result = db.DB.Where("protocol_conv_id = ?", account.ConversationID).First(&conversation)
+	result = db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
 	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 		return fmt.Errorf("%s: find conversation: %w", providerID, result.Error)
 	}
 	if result.Error == gorm.ErrRecordNotFound {
 		conversation = models.Conversation{
-			LinkedAccountID: stored.ID, ProtocolConvID: account.ConversationID,
+			LinkedAccountID: stored.ID, ProtocolConvID: nsConvID,
 			IsGroup: account.IsGroup,
 		}
 		if account.IsGroup {
@@ -175,11 +177,63 @@ func (p *Provider) enrichReplyMetadata(messages []models.Message) {
 			continue
 		}
 		body := parent.Body
+		if looksLikeTeamsHTML(body) {
+			body = teamsHTMLToMarkdown(
+				msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body)),
+			)
+		}
 		message.QuotedBody = &body
 		senderID := parent.SenderID
 		message.QuotedSenderID = &senderID
 		message.QuotedSenderName = parent.SenderName
 	}
+}
+
+func (p *Provider) repairStoredHTMLFormatting() error {
+	if db.DB == nil {
+		return nil
+	}
+	var stored []models.Message
+	if err := db.DB.Where(
+		"protocol_conv_id LIKE ? AND body LIKE '%<%'",
+		p.instance+"::%",
+	).Find(&stored).Error; err != nil {
+		return fmt.Errorf("%s: find stored HTML messages: %w", providerID, err)
+	}
+	converted := make([]bool, len(stored))
+	for index := range stored {
+		message := &stored[index]
+		if !looksLikeTeamsHTML(message.Body) {
+			continue
+		}
+		converted[index] = true
+		rawBody := message.Body
+		parentID := msteams.ExtractReplyParent(rawBody)
+		cleanBody := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(rawBody))
+		message.Body = teamsHTMLToMarkdown(cleanBody)
+		message.ThreadID = nil
+		if parentID != "" {
+			message.QuotedMessageID = &parentID
+		}
+	}
+	p.enrichReplyMetadata(stored)
+	for index := range stored {
+		if !converted[index] {
+			continue
+		}
+		message := &stored[index]
+		if err := db.DB.Model(&models.Message{}).Where("id = ?", message.ID).Updates(map[string]any{
+			"body":               message.Body,
+			"thread_id":          message.ThreadID,
+			"quoted_message_id":  message.QuotedMessageID,
+			"quoted_sender_id":   message.QuotedSenderID,
+			"quoted_sender_name": message.QuotedSenderName,
+			"quoted_body":        message.QuotedBody,
+		}).Error; err != nil {
+			return fmt.Errorf("%s: repair stored HTML message: %w", providerID, err)
+		}
+	}
+	return nil
 }
 
 func (p *Provider) repairStoredSenderNames(client *msteams.Client, conversationID string, members []msteams.Member) error {

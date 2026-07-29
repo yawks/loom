@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { htmlFragmentToText } from "@/lib/messageUtils";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -213,7 +214,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         isPending: true,
         sendFailed: false,
         quotedMessageId: quotedMessageId,
-        quotedBody: replyingToMessage?.body ?? undefined,
+        quotedBody: replyingToMessage?.body
+          ? htmlFragmentToText(replyingToMessage.body)
+          : undefined,
         quotedSenderName: replyingToMessage?.senderName ?? undefined,
         quotedSenderId: replyingToMessage?.senderId ?? undefined,
         senderId: currentUserInfo.senderId,
@@ -677,7 +680,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               </div>
               <div className="text-sm text-foreground truncate text-left">
                 {(() => {
-                  const body = replyingToMessage.body;
+                  const body = htmlFragmentToText(replyingToMessage.body || "");
                   if (body && body.trim().length > 0) {
                     return body.length > 50 ? `${body.substring(0, 50)}...` : body;
                   }

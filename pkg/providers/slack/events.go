@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -149,7 +150,7 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 
 		// Normalize DM channel IDs ("D...") to User IDs ("U...") for consistency
 		// This ensures messages match the conversationId stored in contacts
-		conversationID = p.normalizeDMConversationID(conversationID)
+		conversationID = core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(conversationID))
 
 		// Check if we know this conversation (users or channels)
 		// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh
@@ -171,6 +172,17 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			SenderName:     match.Username, // Search returns username
 			Timestamp:      ts,
 			IsFromMe:       false, // We'll double check below
+		}
+
+		// Detect thread replies via permalink: thread reply URLs contain ?thread_ts=<parent_ts>
+		// The SearchMessage struct has no ThreadTimestamp field, so the permalink is the only
+		// way to know at search time whether this is a reply (vs a parent that started a thread).
+		if match.Permalink != "" {
+			if u, err := url.Parse(match.Permalink); err == nil {
+				if threadTS := u.Query().Get("thread_ts"); threadTS != "" && threadTS != match.Timestamp {
+					msg.ThreadID = &threadTS
+				}
+			}
 		}
 
 		// Refine Sender Name/Avatar using cache
@@ -536,7 +548,8 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	contactLastRead := make(map[string]string, len(contacts))
 	contactLatestTS := make(map[string]string, len(contacts))
 	for _, contact := range contacts {
-		conversationID := contact.UserID
+		rawConvID := contact.UserID
+		conversationID := core.BuildConvID(p.getInstanceId(), rawConvID)
 
 		if contact.Extra == "" {
 			continue
@@ -548,7 +561,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 		}
 
 		if lastRead, ok := extra["last_read"].(string); ok && lastRead != "" {
-			contactLastRead[conversationID] = lastRead
+			contactLastRead[rawConvID] = lastRead
 			select {
 			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
 				ConversationID: conversationID,
@@ -558,7 +571,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 			}
 		}
 		if latestTS, ok := extra["latest_ts"].(string); ok && latestTS != "" {
-			contactLatestTS[conversationID] = latestTS
+			contactLatestTS[rawConvID] = latestTS
 		}
 	}
 

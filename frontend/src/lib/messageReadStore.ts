@@ -519,6 +519,12 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       console.warn("messageReadStore: registerIncomingMessage - no messageId");
       return;
     }
+    // Thread replies are not tracked at the conversation level — they're only
+    // considered read when the thread panel has been opened. Skip them here so
+    // they don't trigger a conversation-level "mark as read" prematurely.
+    const isThreadReply = message.threadId && message.threadId !== message.protocolMsgId;
+    if (isThreadReply) return;
+
     // Check if conversation already has messages (to determine if this is a new message or existing history)
     set((state) => {
       const existingState = state.readByConversation[conversationId] || {};
@@ -574,6 +580,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         if (!conversationId) continue;
         const messageId = getMessageIdentifier(message);
         if (!messageId) continue;
+
+        // Thread replies are not tracked at the conversation level.
+        const isThreadReply = message.threadId && message.threadId !== message.protocolMsgId;
+        if (isThreadReply) continue;
 
         const existingState = updatedReadByConversation[conversationId] || {};
         if (existingState[messageId] !== undefined) continue;
