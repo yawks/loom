@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { GetCustomEmojis } from "../../wailsjs/go/main/App";
 import { cleanEmoji } from "@/lib/userDisplayNames";
-import { unicodeEmojiMap } from "../lib/emojiMap";
+import { emojiNameToUnicode } from "../lib/emojiMap";
 
 interface EmojiProps {
   emoji: string; // Emoji string (e.g., ":calendar:", "📅", or "calendar")
@@ -50,7 +50,7 @@ export function Emoji({
     }
 
     // Check if this emoji exists in our Unicode mapping
-    const unicodeEmoji = unicodeEmojiMap[emojiName];
+    const unicodeEmoji = emojiNameToUnicode(emojiName);
     
     if (unicodeEmoji) {
       setEmojiUrl(null);
@@ -110,7 +110,7 @@ export function Emoji({
   if (loading) {
     const cleanedEmoji = cleanEmoji(emoji);
     const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
-    const unicodeEmoji = unicodeEmojiMap[emojiName];
+    const unicodeEmoji = emojiNameToUnicode(emojiName);
     
     if (unicodeEmoji) {
       return (
@@ -138,7 +138,7 @@ export function Emoji({
   if (error || !emojiUrl) {
     const cleanedEmoji = cleanEmoji(emoji);
     const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
-    const unicodeEmoji = unicodeEmojiMap[emojiName];
+    const unicodeEmoji = emojiNameToUnicode(emojiName);
     
     if (unicodeEmoji) {
       return (

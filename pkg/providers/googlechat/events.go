@@ -100,6 +100,13 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 			if msg.ThreadReply && m.ThreadID == nil && msg.Thread != nil && msg.Thread.Name != "" {
 				if parentID := p.resolveThreadParentFromAPI(space.Name, msg.Thread.Name); parentID != "" {
 					m.ThreadID = &parentID
+				} else {
+					// API call failed; use the thread name as a temporary marker so the frontend
+					// classifies this as a thread reply and does not clear the unread badge.
+					// GetConversationHistory will patch this to the real parent ID once the parent
+					// message is available in the batch (see the threadRoots DB update there).
+					threadName := msg.Thread.Name
+					m.ThreadID = &threadName
 				}
 			}
 			p.emit(core.MessageEvent{
