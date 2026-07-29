@@ -3,7 +3,6 @@ package googlemessages
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
@@ -12,15 +11,24 @@ import (
 
 const (
 	googleSigninURL = "https://accounts.google.com/signin/v2/identifier?continue=https%3A%2F%2Fmessages.google.com%2Fweb%2Fconfig"
-	messagesHost    = "messages.google.com"
-	browserTimeout  = 3 * time.Minute
+	browserTimeout  = 5 * time.Minute
 )
 
-// FetchGoogleCookiesViaLogin opens a visible Chrome window, fills the provided
-// credentials, then waits (up to 3 minutes) for the user to reach
-// messages.google.com — giving time to complete 2FA or account challenges.
-// Returns the session cookies required for Gaia pairing.
-func FetchGoogleCookiesViaLogin(parentCtx context.Context, email, password string) (map[string]string, error) {
+var requiredCookies = []string{"SID", "HSID", "SSID", "OSID", "APISID", "SAPISID"}
+
+// cookieURLs lists Google domains whose cookies are requested on every poll.
+// Specifying URLs explicitly ensures we get .google.com cookies regardless of
+// which page the browser is currently on (login, 2FA, redirect…).
+var cookieURLs = []string{
+	"https://accounts.google.com",
+	"https://messages.google.com",
+}
+
+// FetchGoogleCookiesViaLogin opens a visible Chrome window on the Google login
+// page and polls every 2 seconds until the session cookies set by Google after
+// a successful authentication are present. The user authenticates entirely
+// inside the browser (credentials, 2FA, account selection…).
+func FetchGoogleCookiesViaLogin(parentCtx context.Context) (map[string]string, error) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", false),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
@@ -34,20 +42,10 @@ func FetchGoogleCookiesViaLogin(parentCtx context.Context, email, password strin
 	chromeCtx, cancelChrome := chromedp.NewContext(allocCtx)
 	defer cancelChrome()
 
-	if err := chromedp.Run(chromeCtx,
-		chromedp.Navigate(googleSigninURL),
-		chromedp.WaitVisible(`input[type="email"]`, chromedp.ByQuery),
-		chromedp.SendKeys(`input[type="email"]`, email, chromedp.ByQuery),
-		chromedp.Click(`#identifierNext`, chromedp.ByID),
-		chromedp.WaitVisible(`input[type="password"]`, chromedp.ByQuery),
-		chromedp.SendKeys(`input[type="password"]`, password, chromedp.ByQuery),
-		chromedp.Click(`#passwordNext`, chromedp.ByID),
-	); err != nil {
-		return nil, fmt.Errorf("browser login: fill credentials: %w", err)
+	if err := chromedp.Run(chromeCtx, chromedp.Navigate(googleSigninURL)); err != nil {
+		return nil, fmt.Errorf("browser login: navigate to Google: %w", err)
 	}
 
-	// Poll until the browser reaches messages.google.com. The user can complete
-	// 2FA or any account challenge in the visible window during this wait.
 	deadline := time.Now().Add(browserTimeout)
 	for {
 		select {
@@ -55,40 +53,36 @@ func FetchGoogleCookiesViaLogin(parentCtx context.Context, email, password strin
 			return nil, parentCtx.Err()
 		case <-time.After(2 * time.Second):
 		}
-		var currentURL string
-		if err := chromedp.Run(chromeCtx, chromedp.Location(&currentURL)); err != nil {
-			return nil, fmt.Errorf("browser login: get current URL: %w", err)
-		}
-		if strings.Contains(currentURL, messagesHost) {
-			break
-		}
+
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("browser login: timed out — complete 2FA in the browser window and try again")
+			return nil, fmt.Errorf("browser login: timed out — please log in within 5 minutes")
+		}
+
+		var rawCookies []*network.Cookie
+		err := chromedp.Run(chromeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			var err error
+			rawCookies, err = network.GetCookies().WithURLs(cookieURLs).Do(ctx)
+			return err
+		}))
+		if err != nil {
+			// Browser might not be ready yet; keep polling.
+			continue
+		}
+
+		result := make(map[string]string, len(rawCookies))
+		for _, c := range rawCookies {
+			result[c.Name] = c.Value
+		}
+
+		allPresent := true
+		for _, name := range requiredCookies {
+			if result[name] == "" {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			return result, nil
 		}
 	}
-
-	// GetCookies without URLs returns all cookies applicable to the current
-	// page — including .google.com domain cookies (SID, HSID, …) since
-	// messages.google.com is a subdomain of google.com.
-	var rawCookies []*network.Cookie
-	if err := chromedp.Run(chromeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		var err error
-		rawCookies, err = network.GetCookies().Do(ctx)
-		return err
-	})); err != nil {
-		return nil, fmt.Errorf("browser login: extract cookies: %w", err)
-	}
-
-	result := make(map[string]string, len(rawCookies))
-	for _, c := range rawCookies {
-		result[c.Name] = c.Value
-	}
-
-	for _, name := range []string{"SID", "HSID", "SSID", "OSID", "APISID", "SAPISID"} {
-		if result[name] == "" {
-			return nil, fmt.Errorf("browser login: missing cookie %q — login did not complete", name)
-		}
-	}
-
-	return result, nil
 }
