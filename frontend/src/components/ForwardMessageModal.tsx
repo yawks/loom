@@ -12,11 +12,12 @@ import { CheckCheck, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MessageText } from "./MessageText";
+import { ProtocolIcon } from "./ProtocolIcon";
 import { cn, timeToDate } from "@/lib/utils";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-import { GetAllLastMessageTimestamps, GetConfiguredProviders, SendMessage } from "../../wailsjs/go/main/App";
+import { GetAllLastMessageTimestamps, GetAttachmentData, GetConfiguredProviders, SendFile, SendMessage } from "../../wailsjs/go/main/App";
 
 interface ForwardMessageModalProps {
   open: boolean;
@@ -30,6 +31,7 @@ interface ConversationEntry {
   account: models.LinkedAccount;
   conversationId: string;
   providerLabel: string;
+  protocolId: string;
   activityTime: number;
 }
 
@@ -83,6 +85,14 @@ export function ForwardMessageModal({
     return map;
   }, [configuredProviders]);
 
+  const providerProtocolById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of configuredProviders) {
+      map.set(p.instanceId || p.id, p.id);
+    }
+    return map;
+  }, [configuredProviders]);
+
   const allEntries = useMemo<ConversationEntry[]>(() => {
     const entries: ConversationEntry[] = [];
     for (const contact of contacts) {
@@ -101,12 +111,13 @@ export function ForwardMessageModal({
           account,
           conversationId: convId,
           providerLabel,
+          protocolId: providerProtocolById.get(account.providerInstanceId) ?? account.protocol ?? "",
           activityTime,
         });
       }
     }
     return entries.sort((a, b) => b.activityTime - a.activityTime);
-  }, [contacts, providerNameById, lastMessageDates]);
+  }, [contacts, providerNameById, providerProtocolById, lastMessageDates]);
 
   const displayedEntries = useMemo(() => {
     if (!searchQuery.trim()) {
@@ -132,11 +143,28 @@ export function ForwardMessageModal({
   }, [open]);
 
   const handleSend = async (entry: ConversationEntry) => {
-    if (!message?.body && !message?.attachments) return;
+    if (!message) return;
     const key = `${entry.account.id}:${entry.conversationId}`;
     setSendingIds((prev) => new Set(prev).add(key));
     try {
-      await SendMessage(entry.conversationId, message.body ?? "");
+      if (message.body) {
+        await SendMessage(entry.conversationId, message.body);
+      }
+      if (message.attachments) {
+        let parsed: Array<{ type: string; url: string; fileName: string; fileSize: number; mimeType: string; thumbnail?: string }> = [];
+        try {
+          parsed = JSON.parse(message.attachments);
+        } catch {
+          // malformed attachments JSON — skip
+        }
+        for (const att of parsed) {
+          const url = att.url || att.thumbnail;
+          if (!url) continue;
+          const base64Data = await GetAttachmentData(url);
+          if (!base64Data) continue;
+          await SendFile(entry.conversationId, base64Data, att.fileName || "file", att.mimeType || "application/octet-stream");
+        }
+      }
       setSentIds((prev) => new Set(prev).add(key));
     } catch (err) {
       console.error("Forward failed:", err);
@@ -238,7 +266,8 @@ export function ForwardMessageModal({
                     <p className="forward-message-modal__item-name font-medium truncate text-sm">
                       {entry.contact.displayName}
                     </p>
-                    <p className="forward-message-modal__item-provider text-xs text-muted-foreground truncate">
+                    <p className="forward-message-modal__item-provider flex items-center gap-1 text-xs text-muted-foreground truncate">
+                      {entry.protocolId && <ProtocolIcon protocol={entry.protocolId} size={12} />}
                       {entry.providerLabel}
                     </p>
                   </div>
