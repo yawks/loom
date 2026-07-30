@@ -117,14 +117,17 @@ export function MessageList({
   const scrollInitializedRef = useRef<string>('');
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
-  // True for ~600ms after a conversation opens. Used both as a ref (for the
-  // scroll re-anchor logic in atBottomStateChange) and as state (to suppress
-  // the scroll-to-bottom button during the measurement oscillation phase).
+  // Whether the list should remain anchored to the bottom while rendered
+  // messages change height (images, audio players, link previews, etc.).
+  // This is an intent, not a timer: it stays true until the user deliberately
+  // moves away from the bottom.
   const isStabilizingRef = useRef(false);
   const [isStabilizing, setIsStabilizing] = useState(false);
   // Direct reference to Virtuoso's scroller DOM element — used for instant
   // scrollTop corrections that bypass Virtuoso's animation system.
   const scrollerElementRef = useRef<HTMLElement | null>(null);
+  const scrollerCleanupRef = useRef<(() => void) | null>(null);
+  const bottomCorrectionFrameRef = useRef<number | null>(null);
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
@@ -231,20 +234,8 @@ export function MessageList({
   const setSelectedAvatarUrl = useAppStore((state) => state.setSelectedAvatarUrl);
 
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
+  const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
   const markMultipleAsRead = useMessageReadStore((state) => state.markMultipleAsRead);
-
-  // IDs of all thread reply messages — excluded from the conversation-level read marking
-  // because thread replies are only considered "read" when the thread panel has been shown.
-  const threadReplyIds = useMemo(() => {
-    const ids = new Set<string>();
-    Object.values(threadsByParent).forEach((msgs) =>
-      msgs.forEach((msg) => {
-        ids.add(getMessageDomId(msg));
-        if (msg.protocolMsgId) ids.add(msg.protocolMsgId);
-      })
-    );
-    return ids;
-  }, [threadsByParent]);
 
   // Effects
   useEffect(() => { setIsTypingInInput(false); }, [selectedConversation?.id, setIsTypingInInput]);
@@ -295,9 +286,12 @@ export function MessageList({
   useEffect(() => {
     if (!conversationId) return;
     if (!hasWindowFocus || isInFocusGracePeriod) return;
-    const unreadMessages = Object.entries(conversationReadState)
-      .filter(([msgId, isRead]) => !isRead && !msgId.startsWith("_") && !threadReplyIds.has(msgId))
-      .map(([msgId]) => msgId);
+    // Only messages already classified as main messages may be consumed here.
+    // A new thread reply reaches the read store just before threadsByParent is
+    // recomputed; scanning every store entry would mark it read in that gap.
+    const unreadMessages = mainMessages
+      .map((message) => getMessageDomId(message))
+      .filter((msgId) => conversationReadState[msgId] === false);
     if (unreadMessages.length === 0) return;
 
     const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
@@ -312,7 +306,26 @@ export function MessageList({
     markConversationAsReadOnServer(conversationId)
       .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
       .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, threadReplyIds, hasWindowFocus, isInFocusGracePeriod]);
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, hasWindowFocus, isInFocusGracePeriod]);
+
+  // Older provider versions could persist an unsupported WhatsApp wrapper as an
+  // empty message. Such a message is deliberately absent from mainMessages, so
+  // the normal "mark visible messages as read" effect can never consume it.
+  // Clear those orphaned unread entries when the conversation is loaded.
+  useEffect(() => {
+    if (!conversationId) return;
+    messages.forEach((message) => {
+      const hasVisibleContent =
+        Boolean(message.body?.trim()) ||
+        Boolean(message.attachments?.trim()) ||
+        Boolean(message.callType?.trim());
+      if (hasVisibleContent || message.isFromMe) return;
+      const messageId = getMessageDomId(message);
+      if (conversationReadState[messageId] === false) {
+        markAsReadSilently(conversationId, messageId);
+      }
+    });
+  }, [conversationId, messages, conversationReadState, markAsReadSilently]);
 
   // Snapshot the first unread message ID once per conversation (when messages first arrive).
   // A live useMemo on conversationReadState would recompute every time a message is
@@ -355,7 +368,9 @@ export function MessageList({
     if (!firstUnreadMessageId) {
       isStabilizingRef.current = true;
       setIsStabilizing(true);
-      setTimeout(() => { isStabilizingRef.current = false; setIsStabilizing(false); }, 600);
+    } else {
+      isStabilizingRef.current = false;
+      setIsStabilizing(false);
     }
 
     // Double rAF: first lets React commit, second lets Virtuoso measure item heights.
@@ -391,6 +406,10 @@ export function MessageList({
     if (scrollInitializedRef.current !== conversationId) return;
     const lastIndex = mainMessages.length - 1;
     if (lastIndex < 0) return;
+    // Sending a message always means returning to the live edge. Keep that
+    // intent through both the optimistic and confirmed render.
+    isStabilizingRef.current = true;
+    setIsStabilizing(true);
     // Double rAF: first lets React commit, second lets Virtuoso measure item heights.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -398,6 +417,78 @@ export function MessageList({
       });
     });
   }, [hasPendingMessage, conversationId, mainMessages.length]);
+
+  const scheduleBottomCorrection = useCallback(() => {
+    if (!isStabilizingRef.current || bottomCorrectionFrameRef.current !== null) return;
+    bottomCorrectionFrameRef.current = requestAnimationFrame(() => {
+      bottomCorrectionFrameRef.current = null;
+      const el = scrollerElementRef.current;
+      if (!el || !isStabilizingRef.current) return;
+      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    });
+  }, []);
+
+  const setScrollerElement = useCallback((ref: HTMLElement | Window | null) => {
+    scrollerCleanupRef.current?.();
+    scrollerCleanupRef.current = null;
+    const el = ref instanceof HTMLElement ? ref : null;
+    scrollerElementRef.current = el;
+    if (!el) return;
+
+    const stopFollowingBottom = () => {
+      isStabilizingRef.current = false;
+      setIsStabilizing(false);
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) stopFollowingBottom();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopFollowingBottom();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      // Pointer events whose target is the scroller itself are scrollbar
+      // interactions. Clicking a message, link, or reaction must not unpin it.
+      if (event.target === el) stopFollowingBottom();
+    };
+
+    // Virtuoso's viewport has a fixed height; its item-list descendant is the
+    // element whose size changes when asynchronous message content resolves.
+    const resizeObserver = new ResizeObserver(scheduleBottomCorrection);
+    const observeContent = () => {
+      resizeObserver.disconnect();
+      resizeObserver.observe(el);
+      el.querySelectorAll<HTMLElement>(
+        '[data-viewport-type], [data-testid="virtuoso-item-list"]'
+      ).forEach((node) => resizeObserver.observe(node));
+    };
+    const mutationObserver = new MutationObserver(() => {
+      observeContent();
+      scheduleBottomCorrection();
+    });
+    observeContent();
+    mutationObserver.observe(el, { childList: true, subtree: true });
+
+    el.addEventListener("wheel", handleWheel, { passive: true });
+    el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
+    el.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    el.addEventListener("keydown", handleKeyDown);
+
+    scrollerCleanupRef.current = () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      el.removeEventListener("wheel", handleWheel);
+      el.removeEventListener("touchmove", stopFollowingBottom);
+      el.removeEventListener("pointerdown", handlePointerDown);
+      el.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [scheduleBottomCorrection]);
+
+  useEffect(() => () => {
+    scrollerCleanupRef.current?.();
+    if (bottomCorrectionFrameRef.current !== null) {
+      cancelAnimationFrame(bottomCorrectionFrameRef.current);
+    }
+  }, []);
 
   // Handlers
   const handleStartReached = useCallback(() => {
@@ -610,25 +701,15 @@ export function MessageList({
               console.log(`[Scroll] atBottomStateChange → ${isAtBottom} stabilizing=${isStabilizingRef.current}`);
               atBottomRef.current = isAtBottom;
               setAtBottom(isAtBottom);
-              // During the stabilization window, Virtuoso's overscan measurements
-              // temporarily push us off the bottom. Correct via direct DOM scrollTop
-              // (no Virtuoso animation → no visible flicker).
-              if (!isAtBottom && isStabilizingRef.current && scrollerElementRef.current) {
-                const el = scrollerElementRef.current;
-                requestAnimationFrame(() => {
-                  el.scrollTop = el.scrollHeight - el.clientHeight;
-                });
+              if (isAtBottom) {
+                isStabilizingRef.current = true;
+                setIsStabilizing(true);
+              } else if (isStabilizingRef.current) {
+                // A measurement or delayed media render moved the live edge.
+                scheduleBottomCorrection();
               }
             }}
-            scrollerRef={(ref) => {
-              scrollerElementRef.current = ref instanceof HTMLElement ? ref : null;
-              if (ref instanceof HTMLElement) {
-                // Stop stabilization as soon as the user intentionally scrolls
-                const stopStabilizing = () => { isStabilizingRef.current = false; setIsStabilizing(false); };
-                ref.addEventListener("wheel", stopStabilizing, { passive: true });
-                ref.addEventListener("touchstart", stopStabilizing, { passive: true });
-              }
-            }}
+            scrollerRef={setScrollerElement}
             rangeChanged={({ startIndex, endIndex }) => {
               if (!focusStateRef.current || !conversationId) return;
               const ids: string[] = [];
@@ -672,7 +753,11 @@ export function MessageList({
             <button
               className="message-list__scroll-to-bottom absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition-opacity hover:opacity-90"
               title={t("scroll_to_bottom")}
-              onClick={() => virtuosoRef.current?.scrollToIndex({ index: mainMessages.length - 1, behavior: "smooth" })}
+              onClick={() => {
+                isStabilizingRef.current = true;
+                setIsStabilizing(true);
+                virtuosoRef.current?.scrollToIndex({ index: mainMessages.length - 1, behavior: "smooth" });
+              }}
             >
               <ChevronDown className="h-5 w-5" />
             </button>

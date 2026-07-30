@@ -666,10 +666,12 @@ func (w *WhatsAppProvider) updateCachedMessageDeletionAcrossConversations(msgID,
 }
 
 func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
-	msg := evt.Message
+	isForwarded := evt.Message.GetBotForwardedMessage().GetMessage() != nil
+	msg := unwrapForwardedMessage(evt.Message)
 	if msg == nil {
 		return nil
 	}
+	evt.Message = msg
 
 	// Skip reaction messages - they are handled separately in eventHandler
 	if msg.GetReactionMessage() != nil {
@@ -836,6 +838,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 
 	if contextInfo != nil {
+		isForwarded = isForwarded || contextInfo.GetIsForwarded() || contextInfo.GetForwardingScore() > 0
 		body = w.formatMentions(body, contextInfo.GetMentionedJID())
 
 		// Get quoted message ID (StanzaID)
@@ -981,12 +984,29 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		Body:            body,
 		Timestamp:       timestamp,
 		IsFromMe:        isFromMe,
+		IsForwarded:     isForwarded,
 		Attachments:     attachmentsJSON,
 		QuotedMessageID: quotedMessageID,
 		QuotedSenderID:  quotedSenderID,
 		QuotedBody:      quotedBody,
 		CallType:        callType,
 	}
+}
+
+// unwrapForwardedMessage handles the bot-forwarded wrapper introduced by
+// WhatsApp. whatsmeow unwraps the older future-proof wrappers (ephemeral,
+// view-once, document-with-caption, etc.), but currently leaves this one in
+// place. Without unwrapping it, the message is persisted with no body or
+// attachment: the frontend hides it while its unread entry remains visible.
+func unwrapForwardedMessage(msg *waE2E.Message) *waE2E.Message {
+	for msg != nil {
+		forwarded := msg.GetBotForwardedMessage()
+		if forwarded == nil || forwarded.GetMessage() == nil {
+			return msg
+		}
+		msg = forwarded.GetMessage()
+	}
+	return nil
 }
 
 // formatMentions turns WhatsApp's wire representation (@<JID user>) into a

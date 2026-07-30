@@ -6,6 +6,10 @@ import (
 	"time"
 
 	"Loom/pkg/models"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestSetCachedConversationMessagesLockedBoundsMessages(t *testing.T) {
@@ -49,5 +53,40 @@ func TestSetCachedConversationMessagesLockedEvictsOldestConversation(t *testing.
 	}
 	if _, exists := provider.conversationMessages["new-conversation"]; !exists {
 		t.Fatal("new conversation was not cached")
+	}
+}
+
+func TestConvertMessageUnwrapsBotForwardedText(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	chat := types.NewJID("33600000000", types.DefaultUserServer)
+	event := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "forwarded-message",
+			Timestamp:     time.Unix(1_700_000_000, 0),
+		},
+		Message: &waE2E.Message{
+			BotForwardedMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{
+					ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+						Text: proto.String("message transféré"),
+					},
+				},
+			},
+		},
+	}
+
+	got := provider.convertMessage(event)
+	if got == nil {
+		t.Fatal("convertMessage returned nil")
+	}
+	if got.Body != "message transféré" {
+		t.Fatalf("body = %q, want %q", got.Body, "message transféré")
+	}
+	if !got.IsForwarded {
+		t.Fatal("forwarded message was not marked as forwarded")
+	}
+	if event.Message.GetExtendedTextMessage() == nil {
+		t.Fatal("event message was not unwrapped for attachment/context processing")
 	}
 }

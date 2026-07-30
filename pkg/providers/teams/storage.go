@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -84,6 +85,67 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 	return nil
 }
 
+func (p *Provider) ensureConversationStored(client *msteams.Client, threadID string) (bool, error) {
+	if db.DB == nil || threadID == "" || isVirtualTeamsThread(threadID) {
+		return false, nil
+	}
+	namespacedID := core.BuildConvID(p.instance, threadID)
+	var count int64
+	if err := db.DB.Model(&models.Conversation{}).
+		Where("protocol_conv_id = ?", namespacedID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return false, nil
+	}
+	chats, err := client.ListChats(context.Background())
+	if err != nil {
+		return false, err
+	}
+	for _, chat := range chats {
+		if chat.ID != threadID {
+			continue
+		}
+		if err := p.storeConversation(p.linkedAccount(client, chat)); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (p *Provider) discoverNewConversations(ctx context.Context, client *msteams.Client) (int, error) {
+	if db.DB == nil {
+		return 0, nil
+	}
+	chats, err := client.ListChats(ctx)
+	if err != nil {
+		return 0, err
+	}
+	discovered := 0
+	for _, chat := range chats {
+		if chat.ID == "" || isVirtualTeamsThread(chat.ID) {
+			continue
+		}
+		namespacedID := core.BuildConvID(p.instance, chat.ID)
+		var count int64
+		if err := db.DB.Model(&models.Conversation{}).
+			Where("protocol_conv_id = ?", namespacedID).
+			Count(&count).Error; err != nil {
+			return discovered, err
+		}
+		if count > 0 {
+			continue
+		}
+		if err := p.storeConversation(p.linkedAccount(client, chat)); err != nil {
+			return discovered, err
+		}
+		discovered++
+	}
+	return discovered, nil
+}
+
 func (p *Provider) storeMessages(messages []models.Message) error {
 	if db.DB == nil {
 		return nil
@@ -159,9 +221,49 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 			default:
 				return err
 			}
+			if len(message.Reactions) > 0 {
+				if err := replaceTeamsReactions(tx, message.ID, message.Reactions); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
+}
+
+func replaceTeamsReactions(tx *gorm.DB, messageID uint, reactions []models.Reaction) error {
+	if err := tx.Where("message_id = ?", messageID).Delete(&models.Reaction{}).Error; err != nil {
+		return err
+	}
+	if len(reactions) == 0 {
+		return nil
+	}
+	for index := range reactions {
+		reactions[index].ID = 0
+		reactions[index].MessageID = messageID
+	}
+	return tx.Create(&reactions).Error
+}
+
+func (p *Provider) replaceStoredReactions(conversationID, protocolMessageID string, reactions []models.Reaction) ([]models.Reaction, error) {
+	if db.DB == nil {
+		return nil, nil
+	}
+	var previous []models.Reaction
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		var message models.Message
+		if err := tx.Where(
+			"protocol_conv_id = ? AND protocol_msg_id = ?",
+			conversationID, protocolMessageID,
+		).First(&message).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("message_id = ?", message.ID).Find(&previous).Error; err != nil {
+			return err
+		}
+		return replaceTeamsReactions(tx, message.ID, reactions)
+	})
+	return previous, err
 }
 
 func (p *Provider) enrichReplyMetadata(messages []models.Message) {

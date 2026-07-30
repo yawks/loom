@@ -202,6 +202,7 @@
   "reply_to_message": "Répondre à",
   "forward_message": "Transférer le message",
   "forward_message_title": "Transférer le message",
+  "forwarded": "Transféré",
   "forward_search_placeholder": "Rechercher des salles ou des personnes",
   "message_preview": "Aperçu du message",
   "sent": "Envoyé",

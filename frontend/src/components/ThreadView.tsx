@@ -334,6 +334,9 @@ export function ThreadView() {
   }, [threadListHasMore, threadListIsFetching, fetchMoreThreadListMessages]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const shouldStickToThreadBottomRef = useRef(true);
+  const threadBottomFrameRef = useRef<number | null>(null);
+  const previousThreadMessageCountRef = useRef(0);
 
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
@@ -462,15 +465,100 @@ export function ThreadView() {
     [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient]
   );
 
+  const scheduleThreadBottomCorrection = useCallback(() => {
+    if (!shouldStickToThreadBottomRef.current || threadBottomFrameRef.current !== null) return;
+    threadBottomFrameRef.current = requestAnimationFrame(() => {
+      threadBottomFrameRef.current = null;
+      const el = scrollContainerRef.current;
+      if (!el || !shouldStickToThreadBottomRef.current) return;
+      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    });
+  }, []);
+
+  // A newly opened thread starts at its live edge. Unlike a fixed timeout, this
+  // intent remains active while media and other asynchronous content settle.
   useEffect(() => {
-    if (!scrollContainerRef.current || sortedThreadMessages.length === 0) return;
+    if (!selectedThreadId) return;
+    shouldStickToThreadBottomRef.current = true;
+    previousThreadMessageCountRef.current = 0;
+    scheduleThreadBottomCorrection();
+  }, [selectedThreadId, scheduleThreadBottomCorrection]);
+
+  useEffect(() => {
     const el = scrollContainerRef.current;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    const lastMsg = sortedThreadMessages[sortedThreadMessages.length - 1];
-    if (isNearBottom || lastMsg?.isFromMe) {
-      el.scrollTop = el.scrollHeight;
+    if (!el || !selectedThreadId) return;
+
+    const stopFollowingBottom = () => {
+      shouldStickToThreadBottomRef.current = false;
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) stopFollowingBottom();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopFollowingBottom();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target === el) stopFollowingBottom();
+    };
+    const handleScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distanceFromBottom <= 2) shouldStickToThreadBottomRef.current = true;
+    };
+
+    // The scroll container has a fixed viewport height, so observe both it and
+    // its direct content wrappers. Their sizes change when images, audio
+    // players, previews, reactions, or edited messages finish rendering.
+    const resizeObserver = new ResizeObserver(scheduleThreadBottomCorrection);
+    const observeContent = () => {
+      resizeObserver.disconnect();
+      resizeObserver.observe(el);
+      Array.from(el.children).forEach((node) => resizeObserver.observe(node));
+    };
+    const mutationObserver = new MutationObserver(() => {
+      observeContent();
+      scheduleThreadBottomCorrection();
+    });
+    observeContent();
+    mutationObserver.observe(el, { childList: true, subtree: true });
+
+    el.addEventListener("wheel", handleWheel, { passive: true });
+    el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
+    el.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    el.addEventListener("keydown", handleKeyDown);
+    el.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      el.removeEventListener("wheel", handleWheel);
+      el.removeEventListener("touchmove", stopFollowingBottom);
+      el.removeEventListener("pointerdown", handlePointerDown);
+      el.removeEventListener("keydown", handleKeyDown);
+      el.removeEventListener("scroll", handleScroll);
+    };
+  }, [selectedThreadId, isLoading, scheduleThreadBottomCorrection]);
+
+  useEffect(() => () => {
+    if (threadBottomFrameRef.current !== null) {
+      cancelAnimationFrame(threadBottomFrameRef.current);
     }
-  }, [sortedThreadMessages]);
+  }, []);
+
+  useEffect(() => {
+    const previousMessageCount = previousThreadMessageCountRef.current;
+    previousThreadMessageCountRef.current = sortedThreadMessages.length;
+    if (sortedThreadMessages.length === 0) return;
+    const lastMsg = sortedThreadMessages[sortedThreadMessages.length - 1];
+    // Sending a reply always returns to the live edge and keeps it pinned
+    // through the optimistic/confirmed transition.
+    if (
+      sortedThreadMessages.length > previousMessageCount &&
+      lastMsg?.isFromMe
+    ) {
+      shouldStickToThreadBottomRef.current = true;
+    }
+    scheduleThreadBottomCorrection();
+  }, [sortedThreadMessages, scheduleThreadBottomCorrection]);
 
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;

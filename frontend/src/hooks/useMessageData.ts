@@ -6,13 +6,17 @@ import { getMessageDomId, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { mergePendingMessages } from "@/lib/pendingMessages";
 
 const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
   try {
     const result = beforeTimestamp
       ? await GetMessagesForConversationBefore(conversationID, beforeTimestamp)
       : await GetMessagesForConversation(conversationID);
-    return Array.isArray(result) ? result : [];
+    const messages = Array.isArray(result) ? result : [];
+    // For first-page fetches, merge any messages received via event that
+    // haven't been committed to the DB yet (avoids a background-refetch race).
+    return beforeTimestamp ? messages : mergePendingMessages(conversationID, messages);
   } catch (error) {
     console.error("Error fetching messages:", error);
     return [];

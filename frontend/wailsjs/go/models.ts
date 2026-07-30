@@ -235,6 +235,7 @@ export namespace models {
 	    deletedTimestamp?: time.Time;
 	    isEdited: boolean;
 	    editedTimestamp?: time.Time;
+	    isForwarded: boolean;
 	    callType?: string;
 	    callDurationSecs?: number;
 	    callParticipants?: string;
@@ -273,6 +274,7 @@ export namespace models {
 	        this.deletedTimestamp = this.convertValues(source["deletedTimestamp"], time.Time);
 	        this.isEdited = source["isEdited"];
 	        this.editedTimestamp = this.convertValues(source["editedTimestamp"], time.Time);
+	        this.isForwarded = source["isForwarded"];
 	        this.callType = source["callType"];
 	        this.callDurationSecs = source["callDurationSecs"];
 	        this.callParticipants = source["callParticipants"];

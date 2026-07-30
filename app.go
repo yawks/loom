@@ -36,6 +36,11 @@ type pendingSyncInfo struct {
 	since      time.Time
 }
 
+// History remains fully persisted in SQLite. The frontend only needs a recent
+// window to refresh previews and read state after a background synchronization.
+// Larger batches create several JSON/JavaScript copies inside WebKit.
+const maxFrontendSyncBatchMessages = 100
+
 // metaContactsCache is a short-lived cache for GetMetaContacts results.
 // Avatar updates and MPIM renames fire dozens of contacts-refresh events per second;
 // without a cache each event would run a full DB scan. 2-second TTL is long enough to
@@ -826,6 +831,9 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					}
 				case core.MessageBatchEvent:
 					a.invalidateMessageCaches()
+					if len(e.Messages) > maxFrontendSyncBatchMessages {
+						e.Messages = e.Messages[len(e.Messages)-maxFrontendSyncBatchMessages:]
+					}
 					batchJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-messages-batch", string(batchJSON))
@@ -1361,6 +1369,11 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 			fetchedMessages, err := provider.GetConversationHistory(conversationID, 50, nil, nil)
 			if err == nil && len(fetchedMessages) > 0 {
 				a.enrichMessagesWithSenderNames(fetchedMessages)
+				go func() {
+					if err := provider.RefreshContact(conversationID); err != nil {
+						fmt.Printf("App.GetMessagesForConversation: failed to refresh contact %s: %v\n", conversationID, err)
+					}
+				}()
 				return fetchedMessages, nil
 			}
 			if err != nil {
@@ -1372,8 +1385,8 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	// Enrich messages with sender names from LinkedAccount
 	a.enrichMessagesWithSenderNames(messages)
 
-	// Trigger contact refresh in background when opening conversation
-	if provider := a.getActiveProvider(); provider != nil {
+	// Trigger avatar/metadata refresh for the conversation's provider when opening a conversation
+	if provider := a.getProviderForConversation(conversationID); provider != nil {
 		go func() {
 			if err := provider.RefreshContact(conversationID); err != nil {
 				fmt.Printf("App.GetMessagesForConversation: failed to refresh contact %s: %v\n", conversationID, err)

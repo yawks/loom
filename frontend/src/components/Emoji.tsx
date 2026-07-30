@@ -27,21 +27,21 @@ export function Emoji({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  // Check if it's a Unicode emoji (doesn't start with : or is a standard Unicode emoji)
-  const isUnicodeEmoji = !emoji.startsWith(":") || emoji.length <= 2;
+  const cleanedEmoji = cleanEmoji(emoji);
+  const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
+  const mappedUnicodeEmoji = emojiNameToUnicode(emojiName);
+  // Reaction grouping can wrap a real Unicode glyph in colons, for example
+  // ":🐐:". Such values must not trigger a custom-emoji provider lookup.
+  const containsUnicodeGlyph = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(emojiName);
+  const unicodeDisplay = mappedUnicodeEmoji || (containsUnicodeGlyph ? emojiName : null);
+  const isUnicodeEmoji = !emoji.startsWith(":") || unicodeDisplay !== null;
 
   useEffect(() => {
-    // Clean the emoji to remove skin-tone modifiers (logic might be provider-specific but harmless for others)
-    const cleanedEmoji = cleanEmoji(emoji);
-    
     if (isUnicodeEmoji) {
       setLoading(false);
       return;
     }
 
-    // Extract emoji name (remove colons)
-    const emojiName = cleanedEmoji.replace(/^:|:$/g, "");    
-    
     // Skip skin-tone modifiers
     if (/^skin-tone-[2-6]$/.test(emojiName)) {
       setLoading(false);
@@ -50,7 +50,7 @@ export function Emoji({
     }
 
     // Check if this emoji exists in our Unicode mapping
-    const unicodeEmoji = emojiNameToUnicode(emojiName);
+    const unicodeEmoji = mappedUnicodeEmoji;
     
     if (unicodeEmoji) {
       setEmojiUrl(null);
@@ -97,12 +97,12 @@ export function Emoji({
         setError(true);
         setLoading(false);
       });
-  }, [emoji, providerInstanceId, isUnicodeEmoji]);
+  }, [emojiName, isUnicodeEmoji, mappedUnicodeEmoji, providerInstanceId]);
 
   if (isUnicodeEmoji) {
     return (
       <span className={className} style={{ fontSize: `${size}px` }}>
-        {emoji}
+        {unicodeDisplay || emoji}
       </span>
     );
   }

@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTypingStore } from "@/lib/typingStore";
 import { timeToDate } from "@/lib/utils";
 import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
+import { addPendingMessage } from "@/lib/pendingMessages";
 
 interface ReceiptEvent {
   instanceId: string;
@@ -114,6 +115,9 @@ export function useMessageEvents() {
         // Optimistically inject the message into the messages cache
         const state = { isNewMessage: false };
         if (conversationId) {
+          // Register in pending store so any concurrent background refetch also
+          // includes this message even if the DB write hasn't committed yet.
+          addPendingMessage(conversationId, message);
           queryClient.setQueryData<InfiniteData<models.Message[]>>(
             ["messages", conversationId],
             (oldData) => {
