@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Info, MessageSquare } from "lucide-react";
+import { Calendar, Info, MessageSquare } from "lucide-react";
 import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import { ProtocolIcon } from "./ProtocolIcon";
 import type { models } from "../../wailsjs/go/models";
@@ -12,6 +12,7 @@ import { useMemo } from "react";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
 import { TypingIndicator } from "./TypingIndicator";
 import { useTypingStore } from "@/lib/typingStore";
+import { usePresenceStore } from "@/lib/presenceStore";
 
 export function MessageHeader({
   displayName,
@@ -34,9 +35,18 @@ export function MessageHeader({
   const isTyping = useTypingStore(
     (state) => (state.typingByConversation[conversationId]?.length ?? 0) > 0
   );
+  const presenceMap = usePresenceStore((state) => state.presenceMap);
 
   const instanceId = linkedAccounts[0]?.providerInstanceId;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
+  const isGroup = linkedAccounts[0]?.isGroup ?? false;
+  const accountStatus = linkedAccounts.find(
+    (account) => account.status && account.status !== "offline"
+  )?.status;
+  const hasOnlinePresence = linkedAccounts.some(
+    (account) => presenceMap[account.userId] === true
+  );
+  const status = accountStatus || (hasOnlinePresence ? "online" : null);
 
   const { data: configuredProviders = [] } = useQuery({
     queryKey: ["configuredProviders"],
@@ -58,10 +68,34 @@ export function MessageHeader({
   return (
     <div className={cn("message-header p-4 border-b flex justify-between items-center shrink-0 transition-opacity duration-200", showThreads && "opacity-20")}>
       <div className="message-header__identity flex items-center gap-3 min-w-0">
-        <Avatar className="message-header__avatar h-9 w-9 shrink-0">
-          <AvatarImage src={avatarUrl} alt={displayName} />
-          <AvatarFallback>{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
-        </Avatar>
+        <div className="relative shrink-0">
+          <Avatar className="message-header__avatar h-9 w-9">
+            <AvatarImage src={avatarUrl} alt={displayName} />
+            <AvatarFallback>{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
+          </Avatar>
+          {!isGroup && !isTyping && status && (
+            status === "meeting" ? (
+              <div
+                className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
+                title={t("meeting") || "En réunion"}
+              >
+                <Calendar className="h-2 w-2 text-white" />
+              </div>
+            ) : (
+              <div
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background",
+                  status === "online" && "bg-green-500",
+                  status === "away" && "bg-yellow-500",
+                  (status === "busy" || status === "dnd") && "bg-red-500",
+                  status === "holiday" && "bg-purple-500",
+                  !["online", "away", "busy", "dnd", "holiday"].includes(status) && "bg-gray-500"
+                )}
+                title={t(status) || status}
+              />
+            )
+          )}
+        </div>
         <div className="message-header__name-block flex flex-col min-w-0">
           <h2 className="message-header__display-name text-lg font-semibold leading-tight truncate">{displayName}</h2>
           {isTyping ? (

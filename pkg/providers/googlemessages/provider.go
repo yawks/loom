@@ -198,6 +198,7 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 	}
 	var cursor *gmproto.Cursor
 	messages := make([]models.Message, 0, min(maxMessages, 200))
+	dmSenderName := p.dmSenderName(conversationID)
 	for len(messages) < maxMessages {
 		response, err := client.FetchMessages(conversationID, pageSize, cursor)
 		if err != nil {
@@ -209,7 +210,7 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 		}
 		oldest := time.Time{}
 		for _, remote := range page {
-			message := p.toModelMessage(remote, conversationID)
+			message := p.toModelMessage(remote, conversationID, dmSenderName)
 			if message.ProtocolMsgID == "" {
 				continue
 			}
@@ -296,6 +297,17 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 				return err
 			}
 			db.ContactStore.UpsertMetaContact(meta)
+		}
+	}
+	// In a DM, the conversation title is Google's authoritative contact name.
+	// SenderParticipant.FullName can be stale or refer to another cached contact,
+	// so also repair messages that were persisted before this metadata arrived.
+	if !storedAccount.IsGroup && storedAccount.Username != "" && storedAccount.Username != storedAccount.UserID {
+		nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ? AND is_from_me = ?", nsConvID, false).
+			Update("sender_name", storedAccount.Username).Error; err != nil {
+			return err
 		}
 	}
 	db.ContactStore.UpsertLinkedAccount(storedAccount)
@@ -396,7 +408,7 @@ func storeGoogleMessagesReceipts(messageID uint, receipts []models.MessageReceip
 	return nil
 }
 
-func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationID string) models.Message {
+func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationID, dmSenderName string) models.Message {
 	rawConvID := remote.GetConversationID()
 	if rawConvID == "" {
 		rawConvID = core.StripConvID(fallbackConversationID)
@@ -415,6 +427,9 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 	}
 	if senderID == "" {
 		senderID = remote.GetParticipantID()
+	}
+	if !fromMe && dmSenderName != "" {
+		senderName = dmSenderName
 	}
 	timestamp := time.UnixMicro(remote.GetTimestamp())
 	if remote.GetTimestamp() == 0 {
@@ -437,6 +452,24 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 		message.QuotedMessageID = ptr(reply.GetMessageID())
 	}
 	return message
+}
+
+// dmSenderName returns the authoritative conversation title only for DMs.
+// Google Messages participant names are still used for groups.
+func (p *Provider) dmSenderName(conversationID string) string {
+	if db.DB == nil {
+		return ""
+	}
+	var account models.LinkedAccount
+	if err := db.DB.
+		Where("provider_instance_id = ? AND user_id = ?", p.instance, core.StripConvID(conversationID)).
+		First(&account).Error; err != nil {
+		return ""
+	}
+	if account.IsGroup || account.Username == "" || account.Username == account.UserID {
+		return ""
+	}
+	return account.Username
 }
 
 func googleMessagesReceipts(status gmproto.MessageStatusType, conversationID string, timestamp time.Time) []models.MessageReceipt {
@@ -834,7 +867,7 @@ func (p *Provider) handleLibGMEvent(event any) {
 		if event.IsOld || event.Message == nil || event.GetMessageID() == "" {
 			return
 		}
-		message := p.toModelMessage(event.Message, event.GetConversationID())
+		message := p.toModelMessage(event.Message, event.GetConversationID(), p.dmSenderName(event.GetConversationID()))
 		previous := p.reactionsForMessage(message.ProtocolMsgID)
 		if err := p.storeMessages([]models.Message{message}); err != nil {
 			p.emit(core.SyncStatusEvent{InstanceID: p.instance, Status: core.SyncStatusError, Message: "Google Messages message could not be stored", Progress: -1})

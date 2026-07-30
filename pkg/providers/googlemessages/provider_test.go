@@ -8,6 +8,43 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
+func TestToModelMessageUsesDMSenderName(t *testing.T) {
+	provider := NewProvider()
+	provider.instance = "googlemessages-1"
+	remote := &gmproto.Message{
+		MessageID:      "message-1",
+		ConversationID: "conversation-1",
+		SenderParticipant: &gmproto.Participant{
+			ID:       &gmproto.SmallInfo{ParticipantID: "participant-1"},
+			FullName: "Wrong cached name",
+		},
+	}
+
+	message := provider.toModelMessage(remote, "", "Correct conversation name")
+	if message.SenderName != "Correct conversation name" {
+		t.Fatalf("sender name = %q, want authoritative DM name", message.SenderName)
+	}
+}
+
+func TestToModelMessageKeepsOwnSenderName(t *testing.T) {
+	provider := NewProvider()
+	provider.instance = "googlemessages-1"
+	remote := &gmproto.Message{
+		MessageID:      "message-1",
+		ConversationID: "conversation-1",
+		SenderParticipant: &gmproto.Participant{
+			ID:       &gmproto.SmallInfo{ParticipantID: "me"},
+			FullName: "My profile name",
+			IsMe:     true,
+		},
+	}
+
+	message := provider.toModelMessage(remote, "", "Contact name")
+	if message.SenderName != "My profile name" {
+		t.Fatalf("sender name = %q, want own profile name", message.SenderName)
+	}
+}
+
 func TestGoogleMessagesReceipts(t *testing.T) {
 	timestamp := time.Unix(123, 0)
 	tests := []struct {

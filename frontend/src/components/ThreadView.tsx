@@ -1057,6 +1057,7 @@ export function ThreadView() {
           replyingToMessage={replyingToMessage}
           onCancelReply={() => setReplyingToMessage(null)}
           threadId={selectedThreadId || undefined}
+          onHeightChange={correctThreadBottomImmediately}
         />
       </div>
 

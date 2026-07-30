@@ -22,6 +22,7 @@ interface ChatInputProps {
   threadId?: string;
   currentUserName?: string;
   currentUserAvatarUrl?: string;
+  onHeightChange?: () => void;
 }
 
 // emoji-picker-react carries a large emoji dataset. Do not retain it in the
@@ -125,7 +126,7 @@ const saveDraft = (key: string | null, value: string): void => {
   }
 };
 
-export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl }: ChatInputProps) {
+export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange }: ChatInputProps) {
   const { t } = useTranslation();
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
@@ -394,29 +395,40 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
 
   // Auto-resize textarea based on content
-  const adjustTextareaHeight = useCallback(() => {
+  const adjustTextareaHeight = useCallback((allowShrink = true) => {
     const textarea = textareaRef.current;
     if (textarea) {
-      textarea.style.height = "auto";
+      const previousHeight = textarea.offsetHeight;
+      // Keeping the current height while text is added lets scrollHeight report
+      // the required larger size without first collapsing the textarea. That
+      // collapse used to move the message viewport up and down on every key.
+      if (allowShrink) textarea.style.height = "auto";
       const maxHeight = 200; // Maximum height in pixels
       const newHeight = Math.min(textarea.scrollHeight, maxHeight);
       textarea.style.height = `${newHeight}px`;
+      if (textarea.offsetHeight !== previousHeight) {
+        // The textarea is resized imperatively, so notify the message viewport
+        // in the same task. Waiting for ResizeObserver exposes one incorrect
+        // frame when the composer crosses a line boundary.
+        onHeightChange?.();
+      }
     }
-  }, []);
+  }, [onHeightChange]);
 
   // Restore the draft associated with the currently displayed conversation/thread.
   useEffect(() => {
     const draft = readDraft(draftStorageKey);
     setMessage(draft);
     setIsTypingInInput(draft.trim().length > 0);
-    requestAnimationFrame(adjustTextareaHeight);
+    requestAnimationFrame(() => adjustTextareaHeight());
   }, [adjustTextareaHeight, draftStorageKey, setIsTypingInInput]);
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
+    const isShrinking = newValue.length < message.length;
     setMessage(newValue);
     saveDraft(draftStorageKey, newValue);
-    adjustTextareaHeight();
+    adjustTextareaHeight(isShrinking);
     
     // Hide unread divider when user starts typing
     if (newValue.trim().length > 0) {
@@ -503,6 +515,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       setIsTypingInInput(false); // Reset typing state after sending
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
+        onHeightChange?.();
       }
       // Clear reply state after sending
       if (onCancelReply) {

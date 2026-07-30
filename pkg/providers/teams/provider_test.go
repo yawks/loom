@@ -140,6 +140,25 @@ func TestVirtualTeamsThreads(t *testing.T) {
 	}
 }
 
+func TestTeamsPresenceStatus(t *testing.T) {
+	for _, test := range []struct {
+		availability string
+		activity     string
+		want         string
+	}{
+		{"Busy", "InAMeeting", "meeting"},
+		{"Busy", "InACall", "busy"},
+		{"DoNotDisturb", "Presenting", "dnd"},
+		{"Available", "Available", "online"},
+		{"Away", "Away", "away"},
+		{"Offline", "OffWork", "offline"},
+	} {
+		if got := teamsPresenceStatus(test.availability, test.activity); got != test.want {
+			t.Errorf("teamsPresenceStatus(%q, %q)=%q, want %q", test.availability, test.activity, got, test.want)
+		}
+	}
+}
+
 func TestCallPayloadIsConvertedToCallMessage(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",

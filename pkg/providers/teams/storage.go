@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 		return fmt.Errorf("%s: find conversation account: %w", providerID, result.Error)
 	}
 	if result.Error == gorm.ErrRecordNotFound {
+		if account.Status == "" {
+			account.Status = "offline"
+		}
 		meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
 		if err := db.DB.Create(&meta).Error; err != nil {
 			return fmt.Errorf("%s: create conversation contact: %w", providerID, err)
@@ -40,7 +44,9 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 		stored.Username = account.Username
 		stored.AvatarURL = account.AvatarURL
 		stored.IsGroup = account.IsGroup
-		stored.Status = account.Status
+		if account.Status != "" {
+			stored.Status = account.Status
+		}
 		if err := db.DB.Save(&stored).Error; err != nil {
 			return fmt.Errorf("%s: update conversation account: %w", providerID, err)
 		}
@@ -83,6 +89,39 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 	}
 	db.ContactStore.UpsertConversation(stored.ID, conversation.ProtocolConvID)
 	return nil
+}
+
+func (p *Provider) updateConversationPresence(chatID, status, activity string) (bool, error) {
+	if db.DB == nil || chatID == "" {
+		return false, nil
+	}
+	var account models.LinkedAccount
+	if err := db.DB.Where(
+		"provider_instance_id = ? AND user_id = ? AND is_group = ?",
+		p.instance, chatID, false,
+	).First(&account).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	extraBytes, _ := json.Marshal(map[string]string{"activity": activity})
+	extra := string(extraBytes)
+	if account.Status == status && account.Extra == extra {
+		return false, nil
+	}
+	account.Status = status
+	// Teams' provider-specific activity remains backend metadata. The
+	// frontend only consumes the generic Status value.
+	account.Extra = extra
+	if err := db.DB.Model(&account).Updates(map[string]any{
+		"status": status,
+		"extra":  extra,
+	}).Error; err != nil {
+		return false, err
+	}
+	db.ContactStore.UpsertLinkedAccount(account)
+	return true, nil
 }
 
 func (p *Provider) ensureConversationStored(client *msteams.Client, threadID string) (bool, error) {

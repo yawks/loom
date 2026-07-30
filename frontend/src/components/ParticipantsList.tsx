@@ -280,6 +280,15 @@ export function ParticipantsList({
             acc => acc.userId === participant.senderId
           );
           if (direct) return direct;
+          // In a DM, some providers key the linked account by conversation ID
+          // while messages identify the peer with a separate user ID. The sole
+          // non-group account still represents that peer's generic status.
+          if (!participant.isFromMe) {
+            const directMessageAccount = selectedConversation.linkedAccounts?.find(
+              acc => !acc.isGroup
+            );
+            if (directMessageAccount) return directMessageAccount;
+          }
           for (const contact of metaContacts) {
             const acc = contact.linkedAccounts?.find(a => a.userId === participant.senderId);
             if (acc) return acc;
@@ -370,7 +379,7 @@ function ParticipantItem({
       return (
         <>
           <span className="h-2 w-2 rounded-full bg-gray-500" />
-          <p className="text-xs text-muted-foreground">{t("inactive")}</p>
+          <p className="text-xs text-muted-foreground">{t("offline")}</p>
         </>
       );
     }
@@ -379,16 +388,18 @@ function ParticipantItem({
       meeting: "bg-blue-500",
       away: "bg-yellow-500",
       busy: "bg-red-500",
+      dnd: "bg-red-500",
       holiday: "bg-purple-500",
     };
     const labelMap: Record<string, string> = {
-      online: t("active"),
+      online: t("online"),
       meeting: t("meeting") || "In a meeting",
       away: t("away") || "Away",
       busy: t("busy") || "Busy",
+      dnd: t("dnd") || "Do not disturb",
       holiday: t("holiday") || "Holiday",
     };
-    const dotColor = colorMap[status] ?? "bg-green-500";
+    const dotColor = colorMap[status] ?? "bg-gray-500";
     const label = labelMap[status] ?? status;
     return (
       <>

@@ -1,16 +1,18 @@
 import { useTranslation } from "react-i18next";
 
-export function MessageUnreadDivider() {
+export function MessageUnreadDivider({ count }: { count: number }) {
   const { t } = useTranslation();
+  const label = t("unread_separator", { count });
+
   return (
     <div
-      className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-primary"
+      className="my-3 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary"
       role="separator"
-      aria-label={t("new_messages_separator")}
+      aria-label={label}
     >
-      <span className="h-px flex-1 bg-border" />
-      {t("new_messages_separator")}
-      <span className="h-px flex-1 bg-border" />
+      <span className="h-px flex-1 bg-primary/70" />
+      <span>{label}</span>
+      <span className="h-px flex-1 bg-primary/70" />
     </div>
   );
 }
