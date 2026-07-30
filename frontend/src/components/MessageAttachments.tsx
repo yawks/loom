@@ -22,7 +22,7 @@ import { VoiceMessage } from "./VoiceMessage";
 const _attachmentDataCache = new Map<string, string>();
 const _attachmentFailedUrls = new Set<string>();
 const _attachmentLoadingUrls = new Set<string>();
-const MAX_ATTACHMENT_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_ATTACHMENT_CACHE_BYTES = 32 * 1024 * 1024;
 let attachmentCacheBytes = 0;
 
 function getCachedAttachment(url: string): string | undefined {

@@ -1,0 +1,53 @@
+package whatsapp
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"Loom/pkg/models"
+)
+
+func TestSetCachedConversationMessagesLockedBoundsMessages(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	messages := make([]models.Message, maxMessagesPerConversation+25)
+	for i := range messages {
+		messages[i] = models.Message{
+			ProtocolMsgID: fmt.Sprintf("message-%d", i),
+			Timestamp:     time.Unix(int64(i), 0),
+		}
+	}
+
+	provider.setCachedConversationMessagesLocked("conversation", messages)
+
+	cached := provider.conversationMessages["conversation"]
+	if len(cached) != maxMessagesPerConversation {
+		t.Fatalf("cached %d messages, want %d", len(cached), maxMessagesPerConversation)
+	}
+	if cached[0].ProtocolMsgID != "message-25" {
+		t.Fatalf("oldest cached message = %q, want %q", cached[0].ProtocolMsgID, "message-25")
+	}
+}
+
+func TestSetCachedConversationMessagesLockedEvictsOldestConversation(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	for i := 0; i < maxCachedConversations; i++ {
+		provider.setCachedConversationMessagesLocked(fmt.Sprintf("conversation-%d", i), []models.Message{{
+			Timestamp: time.Unix(int64(i+1), 0),
+		}})
+	}
+
+	provider.setCachedConversationMessagesLocked("new-conversation", []models.Message{{
+		Timestamp: time.Unix(int64(maxCachedConversations+1), 0),
+	}})
+
+	if len(provider.conversationMessages) != maxCachedConversations {
+		t.Fatalf("cached %d conversations, want %d", len(provider.conversationMessages), maxCachedConversations)
+	}
+	if _, exists := provider.conversationMessages["conversation-0"]; exists {
+		t.Fatal("oldest conversation was not evicted")
+	}
+	if _, exists := provider.conversationMessages["new-conversation"]; !exists {
+		t.Fatal("new conversation was not cached")
+	}
+}

@@ -161,7 +161,7 @@ export function ProviderFilterBar({
   );
 
   const railButtonClass =
-    "provider-filter-bar__rail-btn h-9 w-9 flex items-center justify-center rounded-lg relative transition-colors hover:bg-white/10 text-sidebar-rail-foreground cursor-pointer border-0 bg-transparent";
+    "provider-filter-bar__rail-btn h-9 w-9 flex items-center justify-center rounded-lg relative transition-colors hover:bg-black/5 dark:hover:bg-white/10 text-sidebar-rail-foreground cursor-pointer border-0 bg-transparent";
 
   return (
     <div className="provider-filter-bar w-14 flex-none flex flex-col items-center gap-1 py-3 bg-sidebar-rail border-r border-black/20">
@@ -183,7 +183,7 @@ export function ProviderFilterBar({
             railButtonClass,
             "provider-filter-bar__all-button",
             selectedProviderFilter === null &&
-              "bg-white/15 text-white"
+              "bg-black/10 text-foreground dark:bg-white/15 dark:text-white"
           )}
           onClick={() => setSelectedProviderFilter(null)}
           title={t("all") || "All"}
@@ -212,7 +212,7 @@ export function ProviderFilterBar({
             className={cn(
               railButtonClass,
               "provider-filter-bar__provider-button",
-              isSelected && "bg-white/15 text-white"
+              isSelected && "bg-black/10 text-foreground dark:bg-white/15 dark:text-white"
             )}
             onClick={() => setSelectedProviderFilter(instanceId)}
             title={syncError ? `${displayName} — ${syncError}` : displayName}
