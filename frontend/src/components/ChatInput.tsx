@@ -1,5 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Paperclip, Send, Smile, X } from "lucide-react";
+import { Bold, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -131,6 +131,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [isLinkEditorOpen, setIsLinkEditorOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("https://");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedContact = useAppStore((state) => state.selectedContact);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
@@ -422,6 +425,74 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       setIsTypingInInput(false);
     }
   };
+
+  const updateTextSelection = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || textarea.selectionStart === textarea.selectionEnd) {
+      setTextSelection(null);
+      return;
+    }
+    setTextSelection({ start: textarea.selectionStart, end: textarea.selectionEnd });
+  }, []);
+
+  const replaceSelection = useCallback((before: string, after = before) => {
+    const textarea = textareaRef.current;
+    if (!textarea || !textSelection) return;
+    const { start, end } = textSelection;
+    const selected = message.slice(start, end);
+    const nextMessage = message.slice(0, start) + before + selected + after + message.slice(end);
+    setMessage(nextMessage);
+    saveDraft(draftStorageKey, nextMessage);
+    setIsTypingInInput(nextMessage.trim().length > 0);
+    setTextSelection(null);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + before.length, end + before.length);
+      adjustTextareaHeight();
+    });
+  }, [adjustTextareaHeight, draftStorageKey, message, setIsTypingInInput, textSelection]);
+
+  const formatSelectedLines = useCallback((ordered: boolean) => {
+    const textarea = textareaRef.current;
+    if (!textarea || !textSelection) return;
+    const { start, end } = textSelection;
+    const lineStart = message.lastIndexOf("\n", start - 1) + 1;
+    const nextLineBreak = message.indexOf("\n", end);
+    const lineEnd = nextLineBreak === -1 ? message.length : nextLineBreak;
+    const selectedLines = message.slice(lineStart, lineEnd).split("\n");
+    const formatted = selectedLines
+      .map((line, index) => `${ordered ? `${index + 1}.` : "-"} ${line.replace(/^\s*(?:[-+*]|\d+[.)])\s+/, "")}`)
+      .join("\n");
+    const nextMessage = message.slice(0, lineStart) + formatted + message.slice(lineEnd);
+    setMessage(nextMessage);
+    saveDraft(draftStorageKey, nextMessage);
+    setIsTypingInInput(true);
+    setTextSelection(null);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(lineStart, lineStart + formatted.length);
+      adjustTextareaHeight();
+    });
+  }, [adjustTextareaHeight, draftStorageKey, message, setIsTypingInInput, textSelection]);
+
+  const openLinkEditor = useCallback(() => {
+    if (!textSelection) return;
+    setLinkUrl("https://");
+    setIsLinkEditorOpen(true);
+  }, [textSelection]);
+
+  const addLink = useCallback(() => {
+    const url = linkUrl.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) return;
+    setIsLinkEditorOpen(false);
+    replaceSelection("[", `](${url})`);
+  }, [linkUrl, replaceSelection]);
+  const makeBold = useCallback(() => replaceSelection("**"), [replaceSelection]);
+  const makeItalic = useCallback(() => replaceSelection("*"), [replaceSelection]);
+  const makeUnderline = useCallback(() => replaceSelection("<u>", "</u>"), [replaceSelection]);
+  const makeStrikethrough = useCallback(() => replaceSelection("~~"), [replaceSelection]);
+  const makeBulletedList = useCallback(() => formatSelectedLines(false), [formatSelectedLines]);
+  const makeNumberedList = useCallback(() => formatSelectedLines(true), [formatSelectedLines]);
 
   const handleSendMessage = async () => {
     if (message.trim() && selectedContact) {
@@ -810,20 +881,74 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             </PopoverContent>
           </Popover>
 
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={handleMessageChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            disabled={isThreadOpen}
-            placeholder={t("type_a_message")}
-            className="flex-1 min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-            rows={1}
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck="false"
-          />
+          <div className="relative flex-1">
+            {textSelection && (
+              <div
+                className="absolute bottom-full left-1/2 z-20 mb-1 flex -translate-x-1/2 items-center rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+                onMouseDown={(event) => {
+                  if (!(event.target instanceof HTMLInputElement)) {
+                    event.preventDefault();
+                  }
+                }}
+              >
+                {isLinkEditorOpen ? (
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      addLink();
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      type="url"
+                      value={linkUrl}
+                      aria-label={t("format_link_prompt")}
+                      className="h-7 w-56 rounded border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                      onChange={(event) => setLinkUrl(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          setIsLinkEditorOpen(false);
+                          textareaRef.current?.focus();
+                        }
+                      }}
+                    />
+                    <Button type="submit" size="sm" className="h-7 px-2 text-xs" disabled={!/^https?:\/\/\S+$/i.test(linkUrl.trim())}>
+                      {t("format_link_apply")}
+                    </Button>
+                  </form>
+                ) : (
+                  <>
+                    <button type="button" title={t("format_bold")} aria-label={t("format_bold")} className="rounded p-1.5 hover:bg-accent" onClick={makeBold}><Bold className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_italic")} aria-label={t("format_italic")} className="rounded p-1.5 hover:bg-accent" onClick={makeItalic}><Italic className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_underline")} aria-label={t("format_underline")} className="rounded p-1.5 hover:bg-accent" onClick={makeUnderline}><Underline className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_strikethrough")} aria-label={t("format_strikethrough")} className="rounded p-1.5 hover:bg-accent" onClick={makeStrikethrough}><Strikethrough className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_link")} aria-label={t("format_link")} className="rounded p-1.5 hover:bg-accent" onClick={openLinkEditor}><Link className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_bulleted_list")} aria-label={t("format_bulleted_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeBulletedList}><List className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_numbered_list")} aria-label={t("format_numbered_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeNumberedList}><ListOrdered className="h-4 w-4" /></button>
+                  </>
+                )}
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              value={message}
+              onChange={handleMessageChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onSelect={updateTextSelection}
+              onBlur={() => {
+                if (!isLinkEditorOpen) setTextSelection(null);
+              }}
+              disabled={isThreadOpen}
+              placeholder={t("type_a_message")}
+              className="w-full min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              rows={1}
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck="false"
+            />
+          </div>
         </div>
 
         {hasMessage && (

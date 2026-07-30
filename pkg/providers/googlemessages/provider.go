@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers/messageformat"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -632,6 +633,8 @@ func (p *Provider) SendFile(conversationID string, file *core.Attachment, thread
 }
 
 func (p *Provider) sendMessage(conversationID, text string, file *core.Attachment, quotedMessageID string) (*models.Message, error) {
+	canonicalText := text
+	providerText := messageformat.PlainText(text)
 	if strings.TrimSpace(text) == "" && file == nil {
 		return nil, fmt.Errorf("%s: message text or attachment is required", providerID)
 	}
@@ -649,8 +652,8 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	}
 	tmpID := uuid.NewString()
 	infos := make([]*gmproto.MessageInfo, 0, 2)
-	if text != "" {
-		infos = append(infos, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: text}}})
+	if providerText != "" {
+		infos = append(infos, &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: providerText}}})
 	}
 	if file != nil {
 		mimeType := file.MimeType
@@ -684,7 +687,7 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	}
 	// Google confirms delivery asynchronously and does not return the final ID.
 	// Return a local echo; the event stream later provides the canonical message.
-	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: nsConvID, SenderID: conversation.GetDefaultOutgoingID(), Body: text, Timestamp: time.Now(), IsFromMe: true}
+	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: nsConvID, SenderID: conversation.GetDefaultOutgoingID(), Body: canonicalText, Timestamp: time.Now(), IsFromMe: true}
 	if quotedMessageID != "" {
 		message.QuotedMessageID = ptr(quotedMessageID)
 	}

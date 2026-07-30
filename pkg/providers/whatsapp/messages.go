@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers/messageformat"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1811,6 +1812,8 @@ func (w *WhatsAppProvider) loadMessagesFromDatabaseLocked() {
 }
 
 func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	canonicalText := text
+	providerText := messageformat.WhatsApp(text)
 	if w.client == nil {
 		return nil, fmt.Errorf("client not initialized")
 	}
@@ -1828,7 +1831,7 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 
 	// Create message
 	msg := &waE2E.Message{
-		Conversation: &text,
+		Conversation: &providerText,
 	}
 
 	// Send message
@@ -1851,7 +1854,7 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 		SenderID:        senderID,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
-		Body:            text,
+		Body:            canonicalText,
 		Timestamp:       time.Now(),
 		IsFromMe:        true,
 	}
@@ -1871,6 +1874,8 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 }
 
 func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
+	canonicalText := text
+	providerText := messageformat.WhatsApp(text)
 	fmt.Printf("WhatsApp: SendReply called: conversationID=%s, quotedMessageID=%s\n", conversationID, quotedMessageID)
 	if w.client == nil {
 		return nil, fmt.Errorf("client not initialized")
@@ -1947,7 +1952,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	// Create ExtendedTextMessage with ContextInfo for the quoted message
 	msg := &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-			Text: &text,
+			Text: &providerText,
 			ContextInfo: &waE2E.ContextInfo{
 				StanzaID:    &quotedMessageID,
 				Participant: proto.String(senderJID.String()),
@@ -1990,7 +1995,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 		SenderID:         senderID,
 		SenderName:       senderName,
 		SenderAvatarURL:  senderAvatarURL,
-		Body:             text,
+		Body:             canonicalText,
 		Timestamp:        time.Now(),
 		IsFromMe:         true,
 		QuotedMessageID:  &quotedMessageID,
@@ -2030,6 +2035,8 @@ func (w *WhatsAppProvider) SendThreadReply(conversationID string, text string, t
 }
 
 func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	canonicalText := newText
+	providerText := messageformat.WhatsApp(newText)
 	fmt.Printf("WhatsApp: EditMessage called: conversationID=%s, messageID=%s\n", conversationID, messageID)
 	if w.client == nil {
 		fmt.Printf("WhatsApp: EditMessage error: client not initialized\n")
@@ -2077,7 +2084,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 
 	// Preserve the original quote context. WhatsApp replaces the message content
 	// with EditedMessage, so a plain Conversation payload would remove the reply.
-	editedContent := &waE2E.Message{Conversation: &newText}
+	editedContent := &waE2E.Message{Conversation: &providerText}
 	if originalMsg.QuotedMessageID != nil && *originalMsg.QuotedMessageID != "" {
 		quotedBody := ""
 		if originalMsg.QuotedBody != nil {
@@ -2090,7 +2097,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 		}
 		editedContent = &waE2E.Message{
 			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-				Text:        &newText,
+				Text:        &providerText,
 				ContextInfo: contextInfo,
 			},
 		}
@@ -2122,7 +2129,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 
 	// Update the message in our cache and database
 	updatedMessage := *originalMsg
-	updatedMessage.Body = newText
+	updatedMessage.Body = canonicalText
 	editedAt := time.Now()
 	updatedMessage.IsEdited = true
 	updatedMessage.EditedTimestamp = &editedAt
@@ -2142,7 +2149,7 @@ func (w *WhatsAppProvider) EditMessage(conversationID string, messageID string, 
 	// Update in database
 	if db.DB != nil {
 		updates := map[string]interface{}{
-			"body":             newText,
+			"body":             canonicalText,
 			"is_edited":        true,
 			"edited_timestamp": editedAt,
 		}

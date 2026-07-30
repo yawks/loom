@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers/messageformat"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,8 @@ var huddleURLRegex = regexp.MustCompile(`<(https://[^|>]*slack\.com/huddle[^|>]*
 
 // SendMessage sends a text message to a given conversation.
 func (p *SlackProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	canonicalText := text
+	text = messageformat.Slack(text)
 	// Normalize conversation ID early to ensure consistency
 	normalizedConversationID := p.normalizeDMConversationID(core.StripConvID(conversationID))
 	nsConvID := core.BuildConvID(p.getInstanceId(), normalizedConversationID)
@@ -90,7 +93,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 		SenderID:        senderID,
 		SenderName:      senderName,
 		SenderAvatarURL: senderAvatarURL,
-		Body:            text,
+		Body:            canonicalText,
 		Timestamp:       ts,
 		IsFromMe:        true,
 	}
@@ -1174,6 +1177,8 @@ func (p *SlackProvider) GetThreads(parentMessageID string) ([]models.Message, er
 
 // EditMessage edits an existing message.
 func (p *SlackProvider) EditMessage(conversationID string, messageID string, newText string) (*models.Message, error) {
+	canonicalText := newText
+	providerText := messageformat.Slack(newText)
 	p.mu.RLock()
 	client := p.client
 	eventChan := p.eventChan
@@ -1202,7 +1207,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 		}
 	}
 
-	_, timestamp, _, err := client.UpdateMessage(actualChannelID, messageID, slack.MsgOptionText(newText, false))
+	_, timestamp, _, err := client.UpdateMessage(actualChannelID, messageID, slack.MsgOptionText(providerText, false))
 	if err != nil {
 		return nil, err
 	}
@@ -1216,13 +1221,13 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 			existingMsg = models.Message{
 				ProtocolMsgID:  messageID,
 				ProtocolConvID: nsConvID,
-				Body:           newText,
+				Body:           canonicalText,
 				Timestamp:      ts,
 				IsFromMe:       true,
 			}
 		} else {
 			// Update existing message
-			existingMsg.Body = newText
+			existingMsg.Body = canonicalText
 			existingMsg.IsEdited = true
 			if timestamp != "" {
 				existingMsg.Timestamp = parseSlackTimestamp(timestamp)
@@ -1234,7 +1239,7 @@ func (p *SlackProvider) EditMessage(conversationID string, messageID string, new
 		existingMsg = models.Message{
 			ProtocolMsgID:  messageID,
 			ProtocolConvID: nsConvID,
-			Body:           newText,
+			Body:           canonicalText,
 			Timestamp:      ts,
 			IsFromMe:       true,
 			IsEdited:       true,
@@ -1505,9 +1510,13 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Slack huddles are typically indicated by system messages with specific text patterns
 	// or by checking if the message subtype indicates a huddle
 	callType := ""
-	if msg.SubType != "" {
-		// Check for huddle-related subtypes (if any exist in Slack API)
-		// For now, we'll detect via text patterns
+	if msg.SubType == "sh_room_created" {
+		isGroup := !strings.HasPrefix(normalizedConversationID, "D")
+		if isGroup {
+			callType = "incoming_group_call"
+		} else {
+			callType = "incoming_call"
+		}
 	}
 
 	// Extract and optimize message body

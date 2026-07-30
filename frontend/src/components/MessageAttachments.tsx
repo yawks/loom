@@ -125,8 +125,7 @@ export function MessageAttachments({
   const [playingVideoData, setPlayingVideoData] = useState<string | null>(null);
   // Increment to force a re-render when the module-level cache is updated.
   const [, setCacheVersion] = useState(0);
-  const bumpCache = (url: string, success: boolean) => {
-    console.log(`[Scroll] bumpCache fired: ${success ? "✅" : "❌"} ${url.substring(0, 60)} (msgID: ${messageID})`);
+  const bumpCache = (_url: string, _success: boolean) => {
     setCacheVersion((v) => v + 1);
   };
 
@@ -144,30 +143,18 @@ export function MessageAttachments({
       return [];
     }
 
-    console.log(`[MessageAttachments] Parsed ${parsed.length} attachments from JSON (messageID: ${messageID})`, parsed.map(a => ({ type: a.type, url: a.url, fileName: a.fileName })));
-
     if (parsed.length === 0) {
       return [];
     }
-    
-    // Deduplicate attachments by URL (in case backend didn't catch all duplicates)
+
     const uniqueAttachments: Attachment[] = [];
     const seenAttachmentURLs = new Set<string>();
-    let duplicatesRemoved = 0;
     for (const attachment of parsed) {
       if (!seenAttachmentURLs.has(attachment.url)) {
         seenAttachmentURLs.add(attachment.url);
         uniqueAttachments.push(attachment);
-      } else {
-        duplicatesRemoved++;
-        console.log(`[MessageAttachments] Duplicate detected: ${attachment.url.substring(0, 80)}...`);
       }
     }
-    if (duplicatesRemoved > 0) {
-      console.warn(`[MessageAttachments] ⚠️ Removed ${duplicatesRemoved} duplicate attachments (messageID: ${messageID})`);
-    }
-    
-    console.log(`[MessageAttachments] Returning ${uniqueAttachments.length} unique attachments (messageID: ${messageID})`);
     return uniqueAttachments;
   }, [attachments]);
 

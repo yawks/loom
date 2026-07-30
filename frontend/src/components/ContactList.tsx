@@ -197,25 +197,6 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
     setMetaContacts(contacts);
   }, [contacts, setMetaContacts]);
 
-  // Temporary badge diagnostic — remove after debugging
-  useEffect(() => {
-    const onlinePresenceKeys = Object.entries(presenceMap).filter(([, v]) => v).map(([k]) => k);
-    // Find contacts whose userId matches a presenceMap key
-    const presenceMatches = contacts.flatMap(c =>
-      c.linkedAccounts
-        .filter(a => presenceMap[a.userId] === true)
-        .map(a => `${c.displayName} [userId=${a.userId} isGroup=${a.isGroup}]`)
-    );
-    const nonOffline = contacts.flatMap(c =>
-      c.linkedAccounts
-        .filter(a => a.status && a.status !== "offline")
-        .map(a => `${c.displayName} [${a.protocol}:${a.status}]`)
-    );
-    console.log(`[badge-diag] contacts=${contacts.length} presenceKeys=${onlinePresenceKeys.join(",") || "(none)"}`);
-    console.log(`[badge-diag] presenceMatches:`, presenceMatches.length > 0 ? presenceMatches : "(none)");
-    console.log(`[badge-diag] non-offline-statuses:`, nonOffline.length > 0 ? nonOffline : "(none)");
-  }, [contacts, presenceMap]);
-
   // Use shared hook for sorted contacts
   const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
 
@@ -241,14 +222,6 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
       );
       return hasMatchingAccount;
     });
-    console.log(`[FILTER DEBUG] filter=${selectedProviderFilter} → ${filtered.length}/${sortedContactsBase.length} contacts`);
-    if (filtered.length > 0) {
-      const sample = filtered.slice(0, 3).map(c => ({
-        name: c.displayName,
-        accounts: c.linkedAccounts.map(a => `${a.providerInstanceId}/${a.userId?.slice(0, 12)}`),
-      }));
-      console.log("[FILTER DEBUG] sample:", sample);
-    }
     return filtered;
   }, [sortedContactsBase, selectedProviderFilter]);
 

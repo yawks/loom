@@ -72,14 +72,11 @@ export function useMessageEvents() {
   const setNotTyping = useTypingStore((state) => state.setNotTyping);
 
   useEffect(() => {
-    console.log("useMessageEvents: Setting up event listener for 'new-message'");
-    
     if (typeof window === "undefined" || !window.runtime) return;
-    
+
     let isMounted = true;
     const unsubscribe = EventsOn("new-message", (eventJSON: string) => {
       if (!isMounted) return;
-      console.log("useMessageEvents: Received new-message event");
       
       try {
         const event: { instanceId: string; message: models.Message } = JSON.parse(eventJSON);
@@ -91,6 +88,13 @@ export function useMessageEvents() {
         }
 
         const conversationId = message.protocolConvId;
+
+        // A received message means this sender has finished typing. Some providers
+        // do not emit (or can drop) the matching "typing stopped" event, which
+        // otherwise leaves the header indicator visible until its timeout.
+        if (conversationId && !message.isFromMe && message.senderId) {
+          setNotTyping(conversationId, message.senderId);
+        }
 
         registerIncomingMessage(message);
 
@@ -180,7 +184,7 @@ export function useMessageEvents() {
       isMounted = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [queryClient, registerIncomingMessage]);
+  }, [queryClient, registerIncomingMessage, setNotTyping]);
 
   // Listen for batch message events (emitted during incremental sync instead of N individual events)
   useEffect(() => {
