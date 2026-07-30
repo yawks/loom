@@ -233,6 +233,7 @@
     "outgoingConnected": "Appel émis ({{duration}})",
     "ended": "Appel terminé",
     "scheduledStart": "Appel planifié démarré",
+    "open": "Ouvrir",
     "scheduledCancel": "Appel planifié annulé",
     "linkedGroupStart": "Appel de groupe lié démarré",
     "connected": "Appel ({{duration}})",

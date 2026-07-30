@@ -96,6 +96,7 @@ type Message struct {
 	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
 	CallIsVideo      bool             `json:"callIsVideo"`                                     // Whether the call was a video call (from CallLogMessage)
 	CallUrl          string           `json:"callUrl,omitempty"`                               // URL to join or view the call in a browser (provider-specific)
+	CallLinkAction   string           `json:"callLinkAction,omitempty"`                        // Generic link action: "join" (default) or "open"
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 

@@ -418,15 +418,19 @@ export function MessageList({
     });
   }, [hasPendingMessage, conversationId, mainMessages.length]);
 
+  const correctBottomImmediately = useCallback(() => {
+    const el = scrollerElementRef.current;
+    if (!el || !isStabilizingRef.current) return;
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+  }, []);
+
   const scheduleBottomCorrection = useCallback(() => {
     if (!isStabilizingRef.current || bottomCorrectionFrameRef.current !== null) return;
     bottomCorrectionFrameRef.current = requestAnimationFrame(() => {
       bottomCorrectionFrameRef.current = null;
-      const el = scrollerElementRef.current;
-      if (!el || !isStabilizingRef.current) return;
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      correctBottomImmediately();
     });
-  }, []);
+  }, [correctBottomImmediately]);
 
   const setScrollerElement = useCallback((ref: HTMLElement | Window | null) => {
     scrollerCleanupRef.current?.();
@@ -453,7 +457,10 @@ export function MessageList({
 
     // Virtuoso's viewport has a fixed height; its item-list descendant is the
     // element whose size changes when asynchronous message content resolves.
-    const resizeObserver = new ResizeObserver(scheduleBottomCorrection);
+    // ResizeObserver runs after layout but before paint. Correcting directly in
+    // its callback avoids exposing one frame where a growing textarea has
+    // reduced the viewport while the scroll position is still unchanged.
+    const resizeObserver = new ResizeObserver(correctBottomImmediately);
     const observeContent = () => {
       resizeObserver.disconnect();
       resizeObserver.observe(el);
@@ -481,7 +488,7 @@ export function MessageList({
       el.removeEventListener("pointerdown", handlePointerDown);
       el.removeEventListener("keydown", handleKeyDown);
     };
-  }, [scheduleBottomCorrection]);
+  }, [correctBottomImmediately, scheduleBottomCorrection]);
 
   useEffect(() => () => {
     scrollerCleanupRef.current?.();

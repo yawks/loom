@@ -1495,8 +1495,10 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Extract huddle join URL from the raw text before any preprocessing.
 	// Slack encodes the URL as <https://...slack.com/huddle/...|label>.
 	callUrl := ""
+	callLinkAction := ""
 	if m := huddleURLRegex.FindStringSubmatch(msg.Text); len(m) >= 2 {
 		callUrl = m[1]
+		callLinkAction = "join"
 	}
 
 	// Check if this is a huddle-related message
@@ -1575,6 +1577,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		Attachments:      attachmentsJSON,
 		CallType:         callType,
 		CallUrl:          callUrl,
+		CallLinkAction:   callLinkAction,
 		QuotedMessageID:  quotedMsgID,
 		QuotedSenderName: quotedSenderName,
 		QuotedBody:       quotedBody,

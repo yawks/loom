@@ -233,6 +233,7 @@
     "outgoingConnected": "Call ({{duration}})",
     "ended": "Call ended",
     "scheduledStart": "Scheduled call started",
+    "open": "Open",
     "scheduledCancel": "Scheduled call cancelled",
     "linkedGroupStart": "Linked group call started",
     "connected": "Call ({{duration}})",

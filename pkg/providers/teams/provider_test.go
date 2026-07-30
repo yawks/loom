@@ -170,6 +170,9 @@ func TestCallPayloadIsConvertedToCallMessage(t *testing.T) {
 	if !strings.Contains(message.CallParticipants, "Alice") || message.CallUrl != "https://teams.microsoft.com/meet/123?p=abc&x=1" {
 		t.Fatalf("call metadata was not parsed: %+v", message)
 	}
+	if message.CallLinkAction != "join" {
+		t.Fatalf("call link action=%q, want join", message.CallLinkAction)
+	}
 }
 
 func TestScheduledCallStartIncludesEnterpriseJoinURL(t *testing.T) {
@@ -192,6 +195,32 @@ func TestScheduledCallStartIncludesEnterpriseJoinURL(t *testing.T) {
 	}
 	if message.CallUrl != `https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant%22%7d` {
 		t.Fatalf("call URL=%q", message.CallUrl)
+	}
+	if message.CallLinkAction != "join" {
+		t.Fatalf("call link action=%q, want join", message.CallLinkAction)
+	}
+}
+
+func TestAdHocCallFallsBackToTeamsConversation(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := NewProvider()
+	message := provider.toModelMessage(client, msteams.Message{
+		ID: "call-start", ThreadID: "19:group@thread.v2", From: "8:orgid:alice",
+		MessageType: "ThreadActivity/CallStarted", Created: time.Unix(123, 0),
+		Content: `<conversationUrl>https://api.flightproxy.teams.microsoft.com/api/v2/ep/conv</conversationUrl>`,
+	}, "19:group@thread.v2")
+
+	if message.CallUrl != "https://teams.microsoft.com/l/chat/19:group@thread.v2/conversations" {
+		t.Fatalf("call URL=%q", message.CallUrl)
+	}
+	if message.CallLinkAction != "open" {
+		t.Fatalf("call link action=%q, want open", message.CallLinkAction)
 	}
 }
 

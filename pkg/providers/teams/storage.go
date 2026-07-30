@@ -188,6 +188,7 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				stored.CallOutcome = message.CallOutcome
 				stored.CallIsVideo = message.CallIsVideo
 				stored.CallUrl = message.CallUrl
+				stored.CallLinkAction = message.CallLinkAction
 				stored.IsEdited = stored.IsEdited || message.IsEdited
 				stored.IsDeleted = stored.IsDeleted || message.IsDeleted
 				if message.EditedTimestamp != nil {

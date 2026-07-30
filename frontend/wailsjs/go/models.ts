@@ -242,6 +242,7 @@ export namespace models {
 	    callOutcome?: string;
 	    callIsVideo: boolean;
 	    callUrl?: string;
+	    callLinkAction?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -281,6 +282,7 @@ export namespace models {
 	        this.callOutcome = source["callOutcome"];
 	        this.callIsVideo = source["callIsVideo"];
 	        this.callUrl = source["callUrl"];
+	        this.callLinkAction = source["callLinkAction"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
