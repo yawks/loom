@@ -17,6 +17,47 @@ type MetaContact struct {
 	UpdatedAt      time.Time       `json:"updatedAt"`
 }
 
+// ContactProfile is the provider-neutral contact card exposed to the frontend.
+// ProviderFields contains optional metadata which does not warrant a common column.
+type ContactProfile struct {
+	UserID             string            `json:"userId"`
+	DisplayName        string            `json:"displayName"`
+	AvatarURL          string            `json:"avatarUrl"`
+	Protocol           string            `json:"protocol"`
+	ProviderInstanceID string            `json:"providerInstanceId"`
+	PhoneNumbers       []string          `json:"phoneNumbers"`
+	Emails             []string          `json:"emails"`
+	Address            string            `json:"address,omitempty"`
+	Company            string            `json:"company,omitempty"`
+	JobTitle           string            `json:"jobTitle,omitempty"`
+	Department         string            `json:"department,omitempty"`
+	Timezone           string            `json:"timezone,omitempty"`
+	Presence           string            `json:"presence,omitempty"`
+	StatusText         string            `json:"statusText,omitempty"`
+	StatusEmoji        string            `json:"statusEmoji,omitempty"`
+	LastSeen           *time.Time        `json:"lastSeen,omitempty"`
+	ProviderFields     map[string]string `json:"providerFields"`
+}
+
+// ContactExchangeStats contains aggregates calculated from Loom's persisted history.
+type ContactExchangeStats struct {
+	IsGroup                   bool       `json:"isGroup"`
+	TotalMessages             int64      `json:"totalMessages"`
+	SentMessages              int64      `json:"sentMessages"`
+	ReceivedMessages          int64      `json:"receivedMessages"`
+	ActiveDays                int64      `json:"activeDays"`
+	AttachmentMessages        int64      `json:"attachmentMessages"`
+	ReactionsGiven            int64      `json:"reactionsGiven"`
+	ReactionsReceived         int64      `json:"reactionsReceived"`
+	Calls                     int64      `json:"calls"`
+	MissedCalls               int64      `json:"missedCalls"`
+	TotalCallDurationSecs     int64      `json:"totalCallDurationSecs"`
+	FirstExchange             *time.Time `json:"firstExchange,omitempty"`
+	LastExchange              *time.Time `json:"lastExchange,omitempty"`
+	MedianContactResponseSecs *int64     `json:"medianContactResponseSecs,omitempty"`
+	MedianMyResponseSecs      *int64     `json:"medianMyResponseSecs,omitempty"`
+}
+
 // LinkedAccount represents a protocol-specific account (WhatsApp, Slack, etc.).
 type LinkedAccount struct {
 	ID                 uint           `gorm:"primarykey" json:"id"`

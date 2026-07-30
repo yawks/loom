@@ -103,6 +103,7 @@ export function useMessageEvents() {
         // invalidation via its own new-message EventsOn handler with a 300ms debounce.
         // Doing it here too (without debounce) would cause redundant refetches during bulk sync.
         if (conversationId) {
+          queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", conversationId] });
           queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
             ...(old || {}),
             [conversationId]: keepLatestMessage(old?.[conversationId], message),
@@ -208,6 +209,9 @@ export function useMessageEvents() {
             lastMessageByConv[convId] = keepLatestMessage(lastMessageByConv[convId], message);
             lastTSByConv[convId] = Math.max(lastTSByConv[convId] || 0, messageTime(message));
           }
+        }
+        for (const convId of Object.keys(lastMessageByConv)) {
+          queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", convId] });
         }
         queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => {
           const updated = { ...(old || {}) };
@@ -389,6 +393,9 @@ export function useMessageEvents() {
           queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         }
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        if (reaction.conversationId) {
+          queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", reaction.conversationId] });
+        }
       } catch (error) {
         console.error("useMessageEvents: Failed to parse reaction event:", error);
       }
@@ -460,6 +467,7 @@ export function useMessageEvents() {
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
+        queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", conversationId] });
       } catch (error) {
         console.error("useMessageEvents: Failed to parse message-deleted event:", error);
       }

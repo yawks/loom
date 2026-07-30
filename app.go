@@ -2333,6 +2333,293 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 	return result, nil
 }
 
+// GetContactProfile returns the provider-neutral metadata currently persisted for
+// a participant. Missing provider fields are represented by empty values.
+func (a *App) GetContactProfile(conversationID, userID string) (models.ContactProfile, error) {
+	profile := models.ContactProfile{
+		UserID:         userID,
+		PhoneNumbers:   []string{},
+		Emails:         []string{},
+		ProviderFields: map[string]string{},
+	}
+	if db.DB == nil {
+		return profile, nil
+	}
+
+	var conversation models.Conversation
+	var conversationAccount models.LinkedAccount
+	if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conversation).Error; err == nil {
+		_ = db.DB.First(&conversationAccount, conversation.LinkedAccountID).Error
+	}
+
+	var account models.LinkedAccount
+	query := db.DB.Where("user_id = ?", userID)
+	if conversationAccount.ProviderInstanceID != "" {
+		query = query.Where("provider_instance_id = ?", conversationAccount.ProviderInstanceID)
+	}
+	if err := query.Order("updated_at DESC").First(&account).Error; err != nil {
+		// Direct conversations often use the account itself as their participant.
+		if conversationAccount.ID == 0 || (userID != conversationAccount.UserID && userID != "") {
+			if provider := a.getProviderForConversation(conversationID); provider != nil {
+				if richer, ok := provider.(interface {
+					GetContactProfile(string) (models.ContactProfile, error)
+				}); ok {
+					if remote, remoteErr := richer.GetContactProfile(userID); remoteErr == nil {
+						mergeContactProfile(&profile, remote)
+					}
+				}
+			}
+			return profile, nil
+		}
+		account = conversationAccount
+	}
+
+	profile.DisplayName = account.Username
+	profile.AvatarURL = account.AvatarURL
+	profile.Protocol = account.Protocol
+	profile.ProviderInstanceID = account.ProviderInstanceID
+	profile.Presence = account.Status
+	profile.LastSeen = account.LastSeen
+
+	var extra map[string]interface{}
+	if account.Extra != "" && json.Unmarshal([]byte(account.Extra), &extra) == nil {
+		profile.StatusText = extraString(extra, "statusText", "status_text")
+		profile.StatusEmoji = extraString(extra, "statusEmoji", "status_emoji")
+		profile.Address = extraString(extra, "address", "office")
+		profile.Company = extraString(extra, "company")
+		profile.JobTitle = extraString(extra, "jobTitle", "job_title", "title")
+		profile.Department = extraString(extra, "department")
+		profile.Timezone = extraString(extra, "timezone", "tz")
+		profile.Emails = extraStrings(extra, "emails", "email")
+		profile.PhoneNumbers = extraStrings(extra, "phoneNumbers", "phones", "phone")
+		for _, key := range []string{"activity", "role", "office"} {
+			if value := extraString(extra, key); value != "" {
+				profile.ProviderFields[key] = value
+			}
+		}
+	}
+
+	// A canonical WhatsApp JID is the one provider identifier which safely
+	// contains a phone number. LIDs deliberately do not.
+	if account.Protocol == "whatsapp" && strings.HasSuffix(account.UserID, "@s.whatsapp.net") {
+		local := strings.SplitN(account.UserID, "@", 2)[0]
+		if colon := strings.Index(local, ":"); colon >= 0 {
+			local = local[:colon]
+		}
+		if local != "" {
+			profile.PhoneNumbers = appendUnique(profile.PhoneNumbers, "+"+local)
+		}
+	}
+	if provider := a.getProviderForConversation(conversationID); provider != nil {
+		if richer, ok := provider.(interface {
+			GetContactProfile(string) (models.ContactProfile, error)
+		}); ok {
+			if remote, err := richer.GetContactProfile(userID); err == nil {
+				mergeContactProfile(&profile, remote)
+			}
+		}
+	}
+	return profile, nil
+}
+
+// GetContactExchangeStats calculates complete aggregates over persisted history,
+// independently of the 50-message frontend page.
+func (a *App) GetContactExchangeStats(conversationID, participantID string) (models.ContactExchangeStats, error) {
+	stats := models.ContactExchangeStats{}
+	if db.DB == nil {
+		return stats, nil
+	}
+	var conversation models.Conversation
+	if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conversation).Error; err == nil {
+		stats.IsGroup = conversation.IsGroup
+	}
+	includeOwnMessages := !stats.IsGroup
+	if stats.IsGroup && participantID != "" {
+		var selfMessages int64
+		db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ? AND is_from_me = 1 AND sender_id = ?", conversationID, participantID).
+			Count(&selfMessages)
+		includeOwnMessages = selfMessages > 0
+	}
+
+	type aggregateRow struct {
+		TotalMessages         int64
+		SentMessages          int64
+		ReceivedMessages      int64
+		ActiveDays            int64
+		AttachmentMessages    int64
+		Calls                 int64
+		MissedCalls           int64
+		TotalCallDurationSecs int64
+		FirstExchangeMillis   *int64
+		LastExchangeMillis    *int64
+	}
+	var aggregate aggregateRow
+	err := db.DB.Raw(`
+		SELECT
+			COUNT(*) AS total_messages,
+			COALESCE(SUM(CASE WHEN is_from_me = 1 AND ? = 1 THEN 1 ELSE 0 END), 0) AS sent_messages,
+			COALESCE(SUM(CASE WHEN is_from_me = 0 AND (? = '' OR sender_id = ?) THEN 1 ELSE 0 END), 0) AS received_messages,
+			COUNT(DISTINCT date(timestamp)) AS active_days,
+			COALESCE(SUM(CASE WHEN attachments IS NOT NULL AND TRIM(attachments) NOT IN ('', '[]', 'null') THEN 1 ELSE 0 END), 0) AS attachment_messages,
+			COALESCE(SUM(CASE WHEN call_type <> '' THEN 1 ELSE 0 END), 0) AS calls,
+			COALESCE(SUM(CASE WHEN call_type LIKE 'missed_%' OR UPPER(call_outcome) = 'MISSED' THEN 1 ELSE 0 END), 0) AS missed_calls,
+			COALESCE(SUM(call_duration_secs), 0) AS total_call_duration_secs,
+			CAST(ROUND(julianday(MIN(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS first_exchange_millis,
+			CAST(ROUND(julianday(MAX(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS last_exchange_millis
+		FROM messages
+		WHERE protocol_conv_id = ? AND deleted_at IS NULL AND is_deleted = 0
+			AND ((is_from_me = 1 AND ? = 1) OR (is_from_me = 0 AND (? = '' OR sender_id = ?)))
+	`, includeOwnMessages, participantID, participantID, conversationID, includeOwnMessages, participantID, participantID).Scan(&aggregate).Error
+	if err != nil {
+		return stats, err
+	}
+	stats.TotalMessages = aggregate.TotalMessages
+	stats.SentMessages = aggregate.SentMessages
+	stats.ReceivedMessages = aggregate.ReceivedMessages
+	stats.ActiveDays = aggregate.ActiveDays
+	stats.AttachmentMessages = aggregate.AttachmentMessages
+	stats.Calls = aggregate.Calls
+	stats.MissedCalls = aggregate.MissedCalls
+	stats.TotalCallDurationSecs = aggregate.TotalCallDurationSecs
+	if aggregate.FirstExchangeMillis != nil {
+		value := time.UnixMilli(*aggregate.FirstExchangeMillis)
+		stats.FirstExchange = &value
+	}
+	if aggregate.LastExchangeMillis != nil {
+		value := time.UnixMilli(*aggregate.LastExchangeMillis)
+		stats.LastExchange = &value
+	}
+
+	_ = db.DB.Raw(`
+		SELECT COUNT(*) FROM reactions r
+		JOIN messages m ON m.id = r.message_id
+		WHERE m.protocol_conv_id = ? AND m.deleted_at IS NULL AND r.user_id = ?
+	`, conversationID, participantID).Scan(&stats.ReactionsGiven).Error
+	_ = db.DB.Raw(`
+		SELECT COUNT(*) FROM reactions r
+		JOIN messages m ON m.id = r.message_id
+		WHERE m.protocol_conv_id = ? AND m.deleted_at IS NULL
+			AND m.is_from_me = 0 AND (? = '' OR m.sender_id = ?)
+			AND r.user_id <> ?
+	`, conversationID, participantID, participantID, participantID).Scan(&stats.ReactionsReceived).Error
+
+	type messageTurn struct {
+		IsFromMe  bool
+		Timestamp time.Time
+	}
+	var turns []messageTurn
+	if err := db.DB.Raw(`
+		SELECT is_from_me, timestamp FROM messages
+		WHERE protocol_conv_id = ? AND deleted_at IS NULL AND is_deleted = 0
+			AND ((is_from_me = 1 AND ? = 1) OR (is_from_me = 0 AND (? = '' OR sender_id = ?)))
+		ORDER BY timestamp ASC, id ASC
+	`, conversationID, includeOwnMessages, participantID, participantID).Scan(&turns).Error; err != nil {
+		return stats, err
+	}
+	var contactResponses, myResponses []int64
+	for i := 1; i < len(turns); i++ {
+		if turns[i].IsFromMe == turns[i-1].IsFromMe {
+			continue
+		}
+		seconds := int64(turns[i].Timestamp.Sub(turns[i-1].Timestamp).Seconds())
+		if seconds < 0 {
+			continue
+		}
+		if turns[i].IsFromMe {
+			myResponses = append(myResponses, seconds)
+		} else {
+			contactResponses = append(contactResponses, seconds)
+		}
+	}
+	stats.MedianContactResponseSecs = medianSeconds(contactResponses)
+	stats.MedianMyResponseSecs = medianSeconds(myResponses)
+	return stats, nil
+}
+
+func extraString(extra map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := extra[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func extraStrings(extra map[string]interface{}, keys ...string) []string {
+	result := []string{}
+	for _, key := range keys {
+		switch value := extra[key].(type) {
+		case string:
+			if strings.TrimSpace(value) != "" {
+				result = appendUnique(result, strings.TrimSpace(value))
+			}
+		case []interface{}:
+			for _, item := range value {
+				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+					result = appendUnique(result, strings.TrimSpace(text))
+				}
+			}
+		}
+	}
+	return result
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func mergeContactProfile(target *models.ContactProfile, source models.ContactProfile) {
+	if source.DisplayName != "" {
+		target.DisplayName = source.DisplayName
+	}
+	if source.AvatarURL != "" {
+		target.AvatarURL = source.AvatarURL
+	}
+	if source.Protocol != "" {
+		target.Protocol = source.Protocol
+	}
+	if source.ProviderInstanceID != "" {
+		target.ProviderInstanceID = source.ProviderInstanceID
+	}
+	for _, email := range source.Emails {
+		target.Emails = appendUnique(target.Emails, email)
+	}
+	for _, phone := range source.PhoneNumbers {
+		target.PhoneNumbers = appendUnique(target.PhoneNumbers, phone)
+	}
+	if source.Address != "" {
+		target.Address = source.Address
+	}
+	if source.Company != "" {
+		target.Company = source.Company
+	}
+	if source.JobTitle != "" {
+		target.JobTitle = source.JobTitle
+	}
+	if source.Department != "" {
+		target.Department = source.Department
+	}
+}
+
+func medianSeconds(values []int64) *int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	middle := len(values) / 2
+	value := values[middle]
+	if len(values)%2 == 0 {
+		value = (values[middle-1] + values[middle]) / 2
+	}
+	return &value
+}
+
 // GetAttachmentData reads local file or downloads remote URL and returns base64 data URL
 func (a *App) GetAttachmentData(path string) (string, error) {
 	if strings.HasPrefix(path, "data:") {

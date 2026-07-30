@@ -47,12 +47,16 @@ export function MessageActions({
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const [internalOpen, setInternalOpen] = useState(false);
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
 
   const supportsReactions = instanceId ? capabilities[instanceId]?.supportsReactions ?? true : true;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
+  const usesNamedReactions = instanceId
+    ? !(capabilities[instanceId]?.nativeEmojiReactions ?? false)
+    : provider?.toLowerCase() === "slack";
 
   // Only allow popover to be open if this message is being hovered
-  const canBeOpen = !messageId || openActionsMessageId === messageId;
+  const canBeOpen = reactionPickerOpen || !messageId || openActionsMessageId === messageId;
   // Close popover automatically when message loses focus
   const open = internalOpen && canBeOpen;
 
@@ -122,6 +126,8 @@ export function MessageActions({
           currentReactions={currentReactions}
           provider={provider}
           instanceId={instanceId}
+          usesNamedReactions={usesNamedReactions}
+          onOpenChange={setReactionPickerOpen}
         />
       )}
       {isFromMe && (

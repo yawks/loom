@@ -17,7 +17,7 @@ interface ParticipantsListProps {
   messages: models.Message[];
   selectedConversation: models.MetaContact;
   aliases: Record<string, string>;
-  onAvatarClick: (avatarUrl: string | undefined, displayName: string) => void;
+  onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string) => void;
   onParticipantsCountChange?: (count: number) => void;
 }
 
@@ -339,7 +339,7 @@ interface ParticipantItemProps {
   displayName: string;
   status: string;
   alias?: string;
-  onAvatarClick: (avatarUrl: string | undefined, displayName: string) => void;
+  onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string) => void;
   onAliasChange: (newAlias: string) => Promise<void>;
 }
 
@@ -414,7 +414,7 @@ function ParticipantItem({
     return (
       <div className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition-colors">
         <button
-          onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName)}
+          onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName, participant.senderId)}
           className="shrink-0"
         >
           <Avatar className="h-10 w-10 cursor-pointer hover:opacity-80 transition-opacity">
@@ -450,7 +450,7 @@ function ParticipantItem({
     >
       <div className="shrink-0">
         <button
-          onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName)}
+          onClick={() => onAvatarClick(participant.senderAvatarUrl, displayName, participant.senderId)}
           className="shrink-0"
         >
           <Avatar className="h-10 w-10 cursor-pointer hover:opacity-80 transition-opacity">

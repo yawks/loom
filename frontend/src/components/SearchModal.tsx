@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Input } from "@/components/ui/input";
-import { Search } from "lucide-react";
+import { Calendar, Search } from "lucide-react";
 import { Emoji } from "./Emoji";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { MessageSearchResults } from "./MessageSearchResults";
@@ -17,6 +17,7 @@ import { cn, timeToDate } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { usePresenceStore } from "@/lib/presenceStore";
 import { useTranslation } from "react-i18next";
 import { GetConfiguredProviders, GetAllLastMessageTimestamps } from "../../wailsjs/go/main/App";
 
@@ -68,6 +69,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const contacts = useAppStore((state) => state.metaContacts);
   const conversationHistory = useAppStore((state) => state.conversationHistory);
+  const presenceMap = usePresenceStore((state) => state.presenceMap);
 
   const { data: configuredProviders = [] } = useQuery({
     queryKey: ["configuredProviders"],
@@ -457,6 +459,52 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
     setSearchResultsIndex(0);
   };
 
+  const renderPresenceBadge = (contact: models.MetaContact) => {
+    const dmAccounts = (contact.linkedAccounts ?? []).filter(
+      (account) => !account.isGroup
+    );
+    if (dmAccounts.length === 0) return null;
+
+    const accountStatus = dmAccounts.find(
+      (account) => account.status && account.status !== "offline"
+    )?.status;
+    const isOnline = dmAccounts.some(
+      (account) => presenceMap[account.userId] === true
+    );
+    const status = accountStatus || (isOnline ? "online" : null);
+
+    if (!status) return null;
+
+    if (status === "meeting") {
+      return (
+        <div
+          className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
+          title={t("meeting")}
+        >
+          <Calendar className="h-2 w-2 text-white" />
+        </div>
+      );
+    }
+
+    const statusColor = {
+      online: "bg-green-500",
+      away: "bg-yellow-500",
+      busy: "bg-red-500",
+      dnd: "bg-red-500",
+      holiday: "bg-purple-500",
+    }[status] ?? "bg-gray-500";
+
+    return (
+      <div
+        className={cn(
+          "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background",
+          statusColor
+        )}
+        title={t(status)}
+      />
+    );
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -555,6 +603,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                                 />
                               </div>
                             )}
+                            {renderPresenceBadge(contact)}
                           </div>
                           <span
                             className={cn(
@@ -640,6 +689,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                               }
                               return null;
                             })()}
+                            {renderPresenceBadge(contact)}
                           </div>
                           <div className="search-modal__contact-info flex flex-col min-w-0 flex-1">
                             <span className="search-modal__contact-name font-medium">
@@ -726,6 +776,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                           }
                           return null;
                         })()}
+                        {renderPresenceBadge(contact)}
                       </div>
                       <div className="search-modal__contact-info flex flex-col min-w-0 flex-1">
                         <span className="search-modal__contact-name font-medium">

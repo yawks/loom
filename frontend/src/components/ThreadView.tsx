@@ -742,7 +742,7 @@ export function ThreadView() {
                       <div
                         className={cn(
                           "opacity-0 group-hover/bubble:opacity-100 transition-opacity mb-1",
-                          openActionsMessageId === messageId ? "opacity-100" : "",
+                          openActionsMessageId === messageId ? "opacity-100" : "focus-within:opacity-100",
                           message.isFromMe ? "self-end" : "self-start"
                         )}
                       >
@@ -904,7 +904,7 @@ export function ThreadView() {
                     <div
                       className={cn(
                         "absolute right-2 top-1 z-10 transition-opacity",
-                        openActionsMessageId === messageId ? "opacity-100" : "opacity-0 pointer-events-none"
+                        openActionsMessageId === messageId ? "opacity-100" : "opacity-0 focus-within:opacity-100 focus-within:pointer-events-auto pointer-events-none"
                       )}
                     >
                       <MessageActions

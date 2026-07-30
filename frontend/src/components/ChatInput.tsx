@@ -535,6 +535,24 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (textSelection && (e.metaKey || e.ctrlKey)) {
+      const key = e.key.toLowerCase();
+      const formattingShortcut =
+        (!e.shiftKey && key === "b" && makeBold) ||
+        (!e.shiftKey && key === "i" && makeItalic) ||
+        (!e.shiftKey && key === "u" && makeUnderline) ||
+        (!e.shiftKey && key === "k" && openLinkEditor) ||
+        (e.shiftKey && key === "x" && makeStrikethrough) ||
+        (e.shiftKey && key === "7" && makeNumberedList) ||
+        (e.shiftKey && key === "8" && makeBulletedList);
+
+      if (formattingShortcut) {
+        e.preventDefault();
+        formattingShortcut();
+        return;
+      }
+    }
+
     // Handle navigation to edit previous/next message
     if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       // Only navigate if cursor is at the start of the textarea or textarea is empty

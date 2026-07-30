@@ -69,6 +69,15 @@ func (p *GoogleChatProvider) GetContacts() ([]models.LinkedAccount, error) {
 			displayName = space.Name
 		}
 
+		extra := ""
+		p.userMu.RLock()
+		cached := p.userCache[userID]
+		p.userMu.RUnlock()
+		if cached.Email != "" {
+			if raw, err := json.Marshal(map[string]string{"email": cached.Email}); err == nil {
+				extra = string(raw)
+			}
+		}
 		acct := models.LinkedAccount{
 			Protocol:           "googlechat",
 			ProviderInstanceID: instanceID,
@@ -77,6 +86,7 @@ func (p *GoogleChatProvider) GetContacts() ([]models.LinkedAccount, error) {
 			AvatarURL:          avatarURL,
 			IsGroup:            !isDM,
 			ConversationID:     space.Name,
+			Extra:              extra,
 		}
 		accounts = append(accounts, acct)
 		p.persistContact(acct, space.Name, !isDM)
@@ -121,10 +131,16 @@ func (p *GoogleChatProvider) loadDirectoryPeople() {
 
 		var result struct {
 			People []struct {
-				ResourceName   string `json:"resourceName"`
-				Names          []struct{ DisplayName string `json:"displayName"` } `json:"names"`
-				Photos         []struct{ URL string `json:"url"` }                `json:"photos"`
-				EmailAddresses []struct{ Value string `json:"value"` }            `json:"emailAddresses"`
+				ResourceName string `json:"resourceName"`
+				Names        []struct {
+					DisplayName string `json:"displayName"`
+				} `json:"names"`
+				Photos []struct {
+					URL string `json:"url"`
+				} `json:"photos"`
+				EmailAddresses []struct {
+					Value string `json:"value"`
+				} `json:"emailAddresses"`
 			} `json:"people"`
 			NextPageToken string `json:"nextPageToken"`
 		}
@@ -154,8 +170,12 @@ func (p *GoogleChatProvider) loadDirectoryPeople() {
 			if len(person.Photos) > 0 {
 				avatarURL = person.Photos[0].URL
 			}
+			email := ""
+			if len(person.EmailAddresses) > 0 {
+				email = person.EmailAddresses[0].Value
+			}
 			if name != "" {
-				p.userCache[userID] = cachedUser{Name: name, AvatarURL: avatarURL}
+				p.userCache[userID] = cachedUser{Name: name, AvatarURL: avatarURL, Email: email}
 				loaded++
 			}
 		}
@@ -290,7 +310,11 @@ func (p *GoogleChatProvider) resolveUserInfo(userID string) (name, avatarURL str
 	}
 
 	p.userMu.Lock()
-	p.userCache[userID] = cachedUser{Name: name, AvatarURL: avatarURL}
+	email := ""
+	if len(result.EmailAddresses) > 0 {
+		email = result.EmailAddresses[0].Value
+	}
+	p.userCache[userID] = cachedUser{Name: name, AvatarURL: avatarURL, Email: email}
 	p.userMu.Unlock()
 	return
 }
@@ -343,12 +367,14 @@ func (p *GoogleChatProvider) persistContact(acct models.LinkedAccount, convID st
 			Username:           acct.Username,
 			AvatarURL:          acct.AvatarURL,
 			IsGroup:            isGroup,
+			Extra:              acct.Extra,
 		}
 		db.DB.Create(&linkedAccount)
 		db.ContactStore.UpsertLinkedAccount(linkedAccount)
-	} else if linkedAccount.Username != acct.Username || linkedAccount.AvatarURL != acct.AvatarURL {
+	} else if linkedAccount.Username != acct.Username || linkedAccount.AvatarURL != acct.AvatarURL || linkedAccount.Extra != acct.Extra {
 		linkedAccount.Username = acct.Username
 		linkedAccount.AvatarURL = acct.AvatarURL
+		linkedAccount.Extra = acct.Extra
 		db.DB.Save(&linkedAccount)
 		db.ContactStore.UpsertLinkedAccount(linkedAccount)
 	}

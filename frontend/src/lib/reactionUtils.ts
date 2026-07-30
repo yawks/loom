@@ -15,14 +15,20 @@ export function normalizeReaction(
   emoji: string,
   nativeEmojiReactions: boolean,
 ): NormalizedReaction {
-  const clean = emoji.startsWith(":") && emoji.endsWith(":")
+  const hasNamedForm = emoji.startsWith(":") && emoji.endsWith(":");
+  const clean = hasNamedForm
     ? emoji.slice(1, -1)
     : emoji;
-  const unicode = emojiNameToUnicode(clean) || clean;
+  const resolvedUnicode = emojiNameToUnicode(clean);
+  const unicode = resolvedUnicode || clean;
   const canonicalName = unicodeToEmojiName(unicode) || clean;
+  const namedApiEmoji = hasNamedForm || resolvedUnicode ? clean : canonicalName;
 
   return {
-    apiEmoji: nativeEmojiReactions ? unicode : canonicalName,
+    // A provider picker may already know the exact API shortcode. Preserve it:
+    // converting it to Unicode and back through the generated alias map can
+    // turn Slack's "grinning" into the invalid textual alias ":d".
+    apiEmoji: nativeEmojiReactions ? unicode : namedApiEmoji,
     canonicalName,
     storedEmoji: `:${canonicalName}:`,
   };

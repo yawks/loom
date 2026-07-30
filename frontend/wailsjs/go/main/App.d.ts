@@ -55,6 +55,10 @@ export function GetConfiguredProviders():Promise<Array<core.ProviderInfo>>;
 
 export function GetContactAliases():Promise<Record<string, string>>;
 
+export function GetContactExchangeStats(arg1:string,arg2:string):Promise<models.ContactExchangeStats>;
+
+export function GetContactProfile(arg1:string,arg2:string):Promise<models.ContactProfile>;
+
 export function GetConversationsWithMessages():Promise<Array<string>>;
 
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;

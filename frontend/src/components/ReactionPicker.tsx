@@ -20,6 +20,8 @@ interface ReactionPickerProps {
   className?: string;
   provider?: string;
   instanceId?: string;
+  usesNamedReactions?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
@@ -29,6 +31,8 @@ export function ReactionPicker({
   className,
   provider,
   instanceId,
+  usesNamedReactions = false,
+  onOpenChange,
 }: Readonly<ReactionPickerProps>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -54,15 +58,27 @@ export function ReactionPicker({
       });
   }, [open, provider, instanceId, customEmojis.length]);
 
+  const setPickerOpen = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  };
+
   const handleEmojiClick = (emojiData: EmojiClickData) => {
     if (emojiData.isCustom) {
       // Custom emoji — pass as :name: so handleReaction can strip the colons
       onReactionSelect(`:${emojiData.unified}:`);
+    } else if (usesNamedReactions && emojiData.names[0]) {
+      // Named-reaction APIs such as Slack expect a shortcode, not the Unicode glyph.
+      // emoji-picker-react puts the Slack/GitHub shortcode first (for example
+      // "grinning" for 😀). Reversing our large alias map can instead pick
+      // textual aliases such as ":d", which Slack rejects with invalid_name.
+      const slackName = emojiData.names[0].trim().toLowerCase().replaceAll(" ", "_");
+      onReactionSelect(`:${slackName}:`);
     } else {
       // Standard unicode emoji
       onReactionSelect(emojiData.emoji);
     }
-    setOpen(false);
+    setPickerOpen(false);
   };
 
   const isDark =
@@ -70,7 +86,7 @@ export function ReactionPicker({
     document.documentElement.classList.contains("dark");
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setPickerOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -87,6 +103,8 @@ export function ReactionPicker({
         className="w-auto p-0 border-0 shadow-lg"
         align="start"
         onClick={(e) => e.stopPropagation()}
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <Suspense fallback={<div className="h-[400px] w-[352px]" />}>
           <EmojiPicker
