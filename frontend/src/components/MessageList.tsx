@@ -334,25 +334,31 @@ export function MessageList({
   // one item — changing its height and triggering scroll drift.
   // Using a plain ref avoids any extra renders; the value is stable until the user
   // switches to a different conversation.
-  const firstUnreadSnapshotRef = useRef<{ convId: string; unreadId: string | null } | null>(null);
+  const firstUnreadSnapshotRef = useRef<{ convId: string; unreadId: string | null; count: number } | null>(null);
   if (mainMessages.length > 0 && firstUnreadSnapshotRef.current?.convId !== conversationId) {
     let firstUnread: string | null = null;
+    let count = 0;
     for (const message of mainMessages) {
       const domId = getMessageDomId(message);
-      if (conversationReadState[domId] === false) { firstUnread = domId; break; }
+      if (conversationReadState[domId] === false) {
+        if (!firstUnread) firstUnread = domId;
+        count += 1;
+      }
     }
-    firstUnreadSnapshotRef.current = { convId: conversationId, unreadId: firstUnread };
+    firstUnreadSnapshotRef.current = { convId: conversationId, unreadId: firstUnread, count };
   }
   const firstUnreadMessageId = firstUnreadSnapshotRef.current?.convId === conversationId
     ? (firstUnreadSnapshotRef.current.unreadId ?? null)
     : null;
+  const unreadMessageCount = firstUnreadSnapshotRef.current?.convId === conversationId
+    ? firstUnreadSnapshotRef.current.count
+    : 0;
 
   useEffect(() => {
-    if (hasWindowFocus) { setSeparatorDismissed(false); return; }
     if (!firstUnreadMessageId || separatorDismissed) return;
     const timer = setTimeout(() => setSeparatorDismissed(true), 10000);
     return () => clearTimeout(timer);
-  }, [firstUnreadMessageId, hasWindowFocus, separatorDismissed]);
+  }, [firstUnreadMessageId, separatorDismissed]);
 
   // Correct post-measurement scroll drift: Virtuoso positions based on estimated heights then
   // Scroll to bottom (or first unread) on conversation open, then defend against
@@ -624,6 +630,7 @@ export function MessageList({
     isGroupConversation,
     conversationReadState,
     firstUnreadMessageId,
+    unreadMessageCount,
     isTypingInInput,
     separatorDismissed,
     revealedDeletedMessages,
@@ -795,6 +802,7 @@ export function MessageList({
             onNavigateToEdit={handleNavigateToEdit}
             currentUserName={currentUserName}
             currentUserAvatarUrl={currentUserAvatarUrl}
+            onHeightChange={correctBottomImmediately}
           />
         </div>
         <FileUploadModal

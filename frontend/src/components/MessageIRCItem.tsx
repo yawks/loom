@@ -30,6 +30,7 @@ interface MessageIRCItemProps {
   isGroupConversation: boolean;
   conversationReadState: Record<string, boolean>;
   firstUnreadMessageId: string | null;
+  unreadMessageCount: number;
   isTypingInInput: boolean;
   separatorDismissed: boolean;
   revealedDeletedMessages: Set<string>;
@@ -55,6 +56,7 @@ export function MessageIRCItem({
   isGroupConversation,
   conversationReadState,
   firstUnreadMessageId,
+  unreadMessageCount,
   isTypingInInput,
   separatorDismissed,
   revealedDeletedMessages,
@@ -133,7 +135,7 @@ export function MessageIRCItem({
     return (
       <div className="space-y-1">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
-        {showUnreadDivider && <MessageUnreadDivider />}
+        {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
         <div data-message-id={messageId} className="scroll-mt-28">
           <CallMessage message={message} layout="irc" isGroup={isGroupConversation} />
         </div>
@@ -144,11 +146,10 @@ export function MessageIRCItem({
   return (
     <div>
       {showDateSeparator && <MessageDateSeparator date={messageDate} className="mt-2" />}
-      {showUnreadDivider && <MessageUnreadDivider />}
+      {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
       <div
         className={cn(
           "flex items-start scroll-mt-28 group relative",
-          isUnread && "border border-primary/30 bg-primary/5 px-2",
           isPending && "opacity-70",
           sendFailed && "border-l-2 border-destructive pl-1"
         )}
@@ -299,9 +300,6 @@ export function MessageIRCItem({
               </div>
             )}
           </div>
-          {isUnread && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-primary mt-1">{t("unread_indicator")}</span>
-          )}
           {!isDeleted && editingMessageId !== messageId && (
             <div className={cn("absolute right-4 top-1 z-10 transition-opacity", openActionsMessageId === messageId ? "opacity-100" : "opacity-0 pointer-events-none")}>
               <MessageActions

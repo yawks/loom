@@ -46,6 +46,7 @@ interface MessageBubbleItemProps {
   isGroupConversation: boolean;
   conversationReadState: Record<string, boolean>;
   firstUnreadMessageId: string | null;
+  unreadMessageCount: number;
   isTypingInInput: boolean;
   separatorDismissed: boolean;
   revealedDeletedMessages: Set<string>;
@@ -71,6 +72,7 @@ export function MessageBubbleItem({
   isGroupConversation,
   conversationReadState,
   firstUnreadMessageId,
+  unreadMessageCount,
   isTypingInInput,
   separatorDismissed,
   revealedDeletedMessages,
@@ -128,7 +130,6 @@ export function MessageBubbleItem({
     isDeleted ? (isDeletedRevealed ? deletedRevealedClass : deletedPlaceholderClass) : baseBubbleColorClass,
     isPending && "opacity-70",
     sendFailed && "border border-destructive bg-destructive/10 opacity-80",
-    isUnread && "ring-2 ring-primary/70 bg-primary/10 shadow-lg",
     isDeleted && "border-dashed border-destructive/60 cursor-pointer group"
   );
 
@@ -150,7 +151,7 @@ export function MessageBubbleItem({
     return (
       <div className="space-y-2">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
-        {showUnreadDivider && <MessageUnreadDivider />}
+        {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
         <div data-message-id={messageId} className="scroll-mt-28">
           <CallMessage message={message} layout="bubble" isGroup={isGroupConversation} />
         </div>
@@ -161,7 +162,7 @@ export function MessageBubbleItem({
   return (
     <div className="space-y-2">
       {showDateSeparator && <MessageDateSeparator date={messageDate} />}
-      {showUnreadDivider && <MessageUnreadDivider />}
+      {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
       <div
         data-message-id={messageId}
         className="space-y-2 scroll-mt-28 group"

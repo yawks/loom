@@ -157,6 +157,7 @@ func (p *Provider) Connect() error {
 	}
 	go p.forwardEvents(ctx, client)
 	go p.watchConversationList(ctx, client)
+	go p.watchPresence(ctx, client)
 	return nil
 }
 
@@ -636,7 +637,7 @@ func (p *Provider) linkedAccount(client *msteams.Client, chat msteams.Chat) mode
 	return models.LinkedAccount{
 		Protocol: providerID, ProviderInstanceID: p.instance,
 		UserID: chat.ID, Username: name, AvatarURL: p.conversationAvatar(client, chat), IsGroup: isGroup,
-		Status: "offline", ConversationID: chat.ID,
+		ConversationID: chat.ID,
 	}
 }
 
@@ -1120,6 +1121,89 @@ func (p *Provider) watchConversationList(ctx context.Context, client *msteams.Cl
 				})
 			}
 		}
+	}
+}
+
+func (p *Provider) watchPresence(ctx context.Context, client *msteams.Client) {
+	p.pollPresence(ctx, client)
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.pollPresence(ctx, client)
+		}
+	}
+}
+
+func (p *Provider) pollPresence(ctx context.Context, client *msteams.Client) {
+	chats, err := client.ListChats(ctx)
+	if err != nil {
+		return
+	}
+	chatIDsByMRI := make(map[string][]string)
+	mris := make([]string, 0)
+	for _, chat := range chats {
+		if chat.Type != msteams.ChatType1on1 {
+			continue
+		}
+		for _, member := range chat.Members {
+			if member.MRI == "" || strings.EqualFold(member.MRI, client.UserMRI()) {
+				continue
+			}
+			if _, exists := chatIDsByMRI[member.MRI]; !exists {
+				mris = append(mris, member.MRI)
+			}
+			chatIDsByMRI[member.MRI] = append(chatIDsByMRI[member.MRI], chat.ID)
+		}
+	}
+	changed := false
+	const batchSize = 100
+	for start := 0; start < len(mris); start += batchSize {
+		end := min(start+batchSize, len(mris))
+		presences, err := client.GetPresences(ctx, mris[start:end])
+		if err != nil {
+			return
+		}
+		for _, presence := range presences {
+			status := teamsPresenceStatus(presence.Availability, presence.Activity)
+			for _, chatID := range chatIDsByMRI[presence.MRI] {
+				updated, err := p.updateConversationPresence(chatID, status, presence.Activity)
+				if err == nil && updated {
+					changed = true
+				}
+			}
+		}
+	}
+	if changed {
+		p.emit(core.ContactStatusEvent{
+			InstanceID: p.instance, UserID: "refresh", Status: "message_received",
+		})
+	}
+}
+
+func teamsPresenceStatus(availability, activity string) string {
+	switch strings.ToLower(strings.TrimSpace(activity)) {
+	case "inameeting":
+		return "meeting"
+	case "inacall":
+		return "busy"
+	case "presenting":
+		return "dnd"
+	}
+	switch strings.ToLower(strings.TrimSpace(availability)) {
+	case "available", "availableidle":
+		return "online"
+	case "away", "berightback":
+		return "away"
+	case "busy", "busyidle", "inacall", "inameeting":
+		return "busy"
+	case "donotdisturb", "presenting":
+		return "dnd"
+	default:
+		return "offline"
 	}
 }
 
