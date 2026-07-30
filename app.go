@@ -77,6 +77,7 @@ type linkPreviewEntry struct {
 // App struct
 type App struct {
 	ctx               context.Context
+	mockMode          bool
 	provider          core.Provider // Active provider (for UI actions)
 	providerManager   *core.ProviderManager
 	eventCancels      map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
@@ -420,8 +421,19 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
 	// Initialize the database
-	if err := db.InitDatabase(); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+	var databaseErr error
+	if a.mockMode {
+		databaseErr = db.InitMockDatabase()
+	} else {
+		databaseErr = db.InitDatabase()
+	}
+	if databaseErr != nil {
+		log.Fatalf("Failed to initialize database: %v", databaseErr)
+	}
+	if a.mockMode {
+		if err := seedMockData(); err != nil {
+			log.Fatalf("Failed to seed mock data: %v", err)
+		}
 	}
 
 	cleanupSelfReceipts()
@@ -534,6 +546,11 @@ func (a *App) startup(ctx context.Context) {
 	}, func() core.Provider {
 		return providers.NewTeamsProvider()
 	})
+
+	if a.mockMode {
+		a.setupSystemTray(ctx)
+		return
+	}
 
 	// Load and restore providers
 	configs, err := a.providerManager.LoadProviderConfigs()
@@ -991,7 +1008,7 @@ func (a *App) GetAvatar(path string) string {
 }
 
 func (a *App) GetConfig() map[string]interface{} {
-	return map[string]interface{}{"theme": "dark"}
+	return map[string]interface{}{"theme": "dark", "mockMode": a.mockMode}
 }
 
 func (a *App) SaveConfig(config map[string]interface{}) error { return nil }
@@ -1000,6 +1017,9 @@ func (a *App) SaveConfig(config map[string]interface{}) error { return nil }
 // Each entry's SyncError field is non-empty when the provider failed to authenticate
 // or connect at startup, so the frontend can show a warning badge immediately on mount.
 func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
+	if a.mockMode {
+		return mockProviderInfos(), nil
+	}
 	if a.providerManager == nil {
 		return []core.ProviderInfo{}, nil
 	}
@@ -1018,6 +1038,9 @@ func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 // We might need to wrap it differently, but assuming PM has it based on provider_manager.go
 
 func (a *App) GetAvailableProviders() ([]core.ProviderInfo, error) {
+	if a.mockMode {
+		return []core.ProviderInfo{}, nil
+	}
 	if a.providerManager == nil {
 		return []core.ProviderInfo{}, nil
 	}
@@ -2312,6 +2335,10 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 
 // GetAttachmentData reads local file or downloads remote URL and returns base64 data URL
 func (a *App) GetAttachmentData(path string) (string, error) {
+	if strings.HasPrefix(path, "data:") {
+		return path, nil
+	}
+
 	// Slack files require authentication — only a Slack provider can fetch them.
 	// We iterate ALL registered providers (not just the active one) because the user may be
 	// viewing a WhatsApp conversation while requesting a Slack file attachment.

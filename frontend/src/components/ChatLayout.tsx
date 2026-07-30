@@ -12,7 +12,7 @@ import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
 import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
 import { EventsOn, WindowToggleMaximise } from "../../wailsjs/runtime/runtime";
-import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
+import { GetConfig, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
 import { ProviderFilterBar } from "./ProviderFilterBar";
@@ -23,6 +23,7 @@ import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMessageEvents } from "@/hooks/useMessageEvents";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useSystemTrayBadge } from "@/hooks/useSystemTrayBadge";
 import { useTranslation } from "react-i18next";
 
@@ -33,6 +34,7 @@ export function ChatLayout() {
   useSystemTrayBadge();
 
   const selectedContact = useAppStore((state) => state.selectedContact);
+  const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const showThreads = useAppStore((state) => state.showThreads);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
@@ -60,6 +62,22 @@ export function ChatLayout() {
 
   useEffect(() => {
     checkProviders();
+    void (async () => {
+      const config = await GetConfig();
+      if (config?.mockMode) {
+        const contacts = await GetMetaContacts();
+        if (contacts?.length > 0) {
+          setSelectedContact(contacts[0], true);
+        }
+        const unreadConversation = contacts?.[1]?.linkedAccounts?.[0]?.conversationId;
+        if (unreadConversation) {
+          useMessageReadStore.getState().seedMockUnread(
+            unreadConversation,
+            ["mock-emma-01", "mock-emma-02"]
+          );
+        }
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

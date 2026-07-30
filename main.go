@@ -4,6 +4,8 @@ import (
 	"embed"
 
 	"context"
+	"os"
+	"slices"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -18,6 +20,7 @@ var assets embed.FS
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
+	app.mockMode = slices.Contains(os.Args[1:], "--mock")
 
 	// Create application with options
 	err := wails.Run(&options.App{
@@ -28,7 +31,7 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:  app.startup,
+		OnStartup:        app.startup,
 		OnDomReady: func(ctx context.Context) {
 			app.domReady(ctx)
 			setWindowCornerRadius(6)

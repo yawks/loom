@@ -1,86 +1,156 @@
-# Loom - Messagerie Unifiée
+# Loom — Unified Messaging Desktop App
 
-Loom est une application de bureau de messagerie unifiée construite avec Go, Wails, React et TypeScript. Elle vise à fournir une expérience de chat native, légère et multi-protocoles, en agrégeant des services comme WhatsApp, Slack et Google Messages.
+> **Note:** This is a vibecoded project — built fast, iterated freely, and shaped by experimentation rather than a formal spec.
 
-## Architecture
-
-Le projet suit les principes de la **Clean Architecture** pour une séparation claire des préoccupations et une meilleure maintenabilité.
-
--   **Backend (Go) :**
-    -   `/pkg/core`: Contient la logique métier principale, y compris l'interface `Provider`.
-    -   `/pkg/models`: Définit les structures de données (contacts, messages, etc.).
-    -   `/pkg/db`: Gère l'initialisation de la base de données SQLite.
-    -   `/pkg/providers`: Contient les adaptateurs pour chaque protocole de messagerie. Un `MockProvider` est inclus pour le développement.
--   **Frontend (React) :**
-    -   `/frontend`: Contient l'application React, construite avec Vite et TypeScript.
-    -   `/frontend/src/components`: Contient les composants React de l'interface utilisateur, construits avec **shadcn/ui**.
-    -   `/frontend/src/lib`: Contient la logique partagée, y compris le store **Zustand**.
-    -   `/frontend/src/locales`: Contient les fichiers de traduction pour **react-i18next**.
-
-## Stack Technique
-
--   **Backend :** Go 1.21+
--   **Desktop Runtime :** Wails v2
--   **Base de Données :** SQLite (via `glebarez/sqlite`)
--   **Frontend :** React + TypeScript + Vite
--   **UI :** TailwindCSS + **shadcn/ui**
--   **Gestion d'état :** Zustand
--   **Internationalisation :** react-i18next
+Loom is a desktop application that brings multiple messaging services into a single interface. Connect WhatsApp, Slack, Microsoft Teams, Google Chat, and Google Messages, and manage all your conversations from one place.
 
 ---
 
-## Instructions de Développement et de Compilation
+## How it works
 
-### Prérequis
+Loom runs entirely on your machine. There is **no intermediate server** — unlike bridge-based approaches (such as a Matrix homeserver), the app connects directly to each messaging service using their native protocols or APIs. Your messages are never routed through a third-party relay.
 
-Avant de commencer, assurez-vous d'avoir les outils suivants installés :
+When you add a new account, Loom fetches a few dozen recent messages to give you immediate context. On subsequent launches, it picks up where it left off: messages received since the last session are synced automatically.
 
-1.  **Go (1.21 ou plus récent) :** [https://golang.org/dl/](https://golang.org/dl/)
-2.  **Node.js (LTS) :** [https://nodejs.org/](https://nodejs.org/)
-3.  **Wails CLI v2 :**
-    ```bash
-    go install github.com/wailsapp/wails/v2/cmd/wails@latest
-    ```
+---
 
-### Lancer en Mode Développement
+## Screenshots
 
-Le mode développement est idéal pour travailler sur l'application, car il offre le rechargement à chaud (hot-reloading) pour le frontend et le backend.
+| Dark theme | Light theme |
+|---|---|
+| ![Loom dark theme](pictures/loom-black-theme.png) | ![Loom light theme](pictures/loom-light-theme.png) |
+| ![Thread — dark theme](pictures/loom-thread-black-theme.png) | ![Thread — light theme](pictures/loom-thread-light-theme.png) |
 
-1.  **Installer les dépendances du Frontend :**
-    Naviguez vers le dossier `frontend` et installez les paquets npm.
-    ```bash
-    cd frontend
-    npm install
-    ```
+---
 
-2.  **Lancer l'application :**
-    Revenez au dossier racine du projet et exécutez `wails dev`.
-    ```bash
-    cd ..
-    wails dev
-    ```
-    Cela compilera le backend, démarrera le serveur de développement Vite et lancera l'application de bureau.
+## Supported providers
 
-### Compiler pour la Production
+### WhatsApp
 
-Pour créer un binaire d'application final :
+| Feature | Supported |
+|---|---|
+| Send / receive messages | ✓ |
+| Reactions | ✓ |
+| Typing indicator | ✓ |
+| Group management | ✓ |
+| Edit message | ✓ |
+| Delete message | ✓ |
+| Read receipts | ✓ |
+| Pin / mute conversations | ✓ |
+| QR code authentication | ✓ |
+| Threads | — |
 
-1.  **Installer les dépendances du Frontend (si ce n'est pas déjà fait) :**
-    ```bash
-    cd frontend
-    npm install
-    ```
+### Slack
 
-2.  **Construire le Frontend :**
-    Cette étape génère le dossier `dist` qui sera embarqué dans l'application Go.
-    ```bash
-    npm run build
-    ```
+| Feature | Supported |
+|---|---|
+| Send / receive messages | ✓ |
+| Threads | ✓ |
+| Reactions | ✓ |
+| Custom emoji | ✓ |
+| Typing indicator | ✓ |
+| Channel / group management | ✓ |
+| Edit message | ✓ |
+| Delete message | ✓ |
 
-3.  **Compiler l'application Go :**
-    Revenez au dossier racine et lancez la commande de build de Wails.
-    ```bash
-    cd ..
-    wails build
-    ```
-    L'exécutable final se trouvera dans le dossier `build/bin`.
+### Microsoft Teams
+
+| Feature | Supported |
+|---|---|
+| Send / receive messages | ✓ |
+| Reactions | ✓ |
+| Typing indicator | ✓ |
+| Edit message | ✓ |
+| Delete message | ✓ |
+| Read receipts | ✓ |
+
+### Google Chat
+
+| Feature | Supported |
+|---|---|
+| Send / receive messages | ✓ |
+| Threads | ✓ |
+| Reactions | ✓ |
+| Edit message | ✓ |
+| Delete message | ✓ |
+
+### Google Messages
+
+| Feature | Supported |
+|---|---|
+| Send / receive messages | ✓ |
+| Reactions | ✓ |
+| Delete message | ✓ |
+
+---
+
+## Tech stack
+
+- **Backend:** Go + [Wails v2](https://wails.io/) (no Electron, no Node.js runtime)
+- **Frontend:** React + TypeScript + Vite + TailwindCSS + [shadcn/ui](https://ui.shadcn.com/)
+- **State management:** Zustand
+- **Database:** SQLite (local, on-device)
+- **i18n:** react-i18next
+
+### Protocol libraries
+
+The protocol layer relies on the excellent [mau.fi](https://mau.fi/) libraries:
+
+- [whatsmeow](https://github.com/tulir/whatsmeow) — WhatsApp
+- [mautrix-gmessages](https://github.com/mautrix/gmessages) — Google Messages
+- [mautrix-googlechat](https://github.com/mautrix/googlechat) — Google Chat
+- [mautrix-teams](https://github.com/mautrix/teams) — Microsoft Teams
+
+### UI inspiration
+
+The layout draws heavily from [Element Web](https://github.com/element-hq/element-web), the reference Matrix client, whose three-panel design (sidebar / conversation list / message view) sets the standard for multi-account messaging interfaces.
+
+---
+
+## Development
+
+### Prerequisites
+
+- [Go 1.21+](https://golang.org/dl/)
+- [Node.js LTS](https://nodejs.org/)
+- [Wails CLI v2](https://wails.io/docs/gettingstarted/installation)
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+```
+
+### Run in dev mode
+
+```bash
+cd frontend && npm install
+cd ..
+wails dev
+```
+
+### Mock mode
+
+Launch Loom with a fully isolated, deterministic set of fake accounts,
+conversations and messages:
+
+```bash
+wails dev -appargs "--mock"
+```
+
+For a built application, pass the flag directly:
+
+```bash
+./Loom --mock
+```
+
+Mock mode uses an in-memory database and never loads real accounts or messages.
+The General settings remain usable and Accounts displays fake Slack and WhatsApp
+accounts.
+
+### Build for production
+
+```bash
+cd frontend && npm install && npm run build
+cd ..
+wails build
+# output: build/bin/
+```

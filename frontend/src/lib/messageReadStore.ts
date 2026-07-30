@@ -91,6 +91,7 @@ interface MessageReadStore {
   removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
+  seedMockUnread: (conversationId: ConversationId, messageIds: MessageId[]) => void;
 }
 
 const STORAGE_KEY = "loom-message-read-state";
@@ -252,6 +253,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
   
   return {
     readByConversation: initialState,
+    seedMockUnread: (conversationId, messageIds) => {
+      const unreadState = Object.fromEntries(messageIds.map((messageId) => [messageId, false]));
+      set((state) => {
+        const updatedMap = {
+          ...state.readByConversation,
+          [conversationId]: unreadState,
+        };
+        persistState(updatedMap);
+        return { readByConversation: updatedMap };
+      });
+    },
     syncConversation: (conversationId, messages) => {
       if (!conversationId) {
         return;

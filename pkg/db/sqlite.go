@@ -28,10 +28,19 @@ func InitDatabase() error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return fmt.Errorf("could not create db directory: %w", err)
 	}
+	return initDatabase(dbPath + "?_busy_timeout=30000&_journal_mode=WAL&cache=shared")
+}
 
+// InitMockDatabase initializes an isolated, process-local database. It is used by
+// screenshot mode so the real Loom database and provider sessions are never read.
+func InitMockDatabase() error {
+	return initDatabase("file:loom-screenshot-mock?mode=memory&cache=shared")
+}
+
+func initDatabase(dsn string) error {
 	// Configure SQLite with WAL mode and a long busy timeout.
 	// cache=shared keeps a single shared page cache across the connection pool.
-	db, err := gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=30000&_journal_mode=WAL&cache=shared"), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
 			SlowThreshold: 350 * time.Millisecond,
 			LogLevel:      logger.Warn,
