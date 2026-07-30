@@ -35,6 +35,7 @@ export function ConversationDetailsView({
     userId: string;
     displayName: string;
     avatarUrl?: string;
+    status: string;
   } | null>(null);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
   const [idCopied, setIdCopied] = useState(false);
@@ -84,8 +85,8 @@ export function ConversationDetailsView({
     setShowConversationDetails(false);
   };
 
-  const handleAvatarClick = (avatarUrl: string | undefined, displayName: string, userId: string) => {
-    setSelectedParticipant({ avatarUrl, displayName, userId });
+  const handleAvatarClick = (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => {
+    setSelectedParticipant({ avatarUrl, displayName, userId, status });
   };
 
   return (
