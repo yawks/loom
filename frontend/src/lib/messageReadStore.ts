@@ -594,13 +594,23 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
     if (messages.length === 0) return;
     set((state) => {
       const updatedReadByConversation = { ...state.readByConversation };
+      const changedConversations = new Map<ConversationId, ConversationReadState>();
+      const conversationHasMessages = new Map<ConversationId, boolean>();
+      let hasChanges = false;
+
       for (const message of messages) {
         const conversationId = message.protocolConvId;
         if (!conversationId) continue;
         const messageId = getMessageIdentifier(message);
         if (!messageId) continue;
 
-        const existingState = updatedReadByConversation[conversationId] || {};
+        // Clone a conversation at most once per incoming batch. Cloning it for
+        // every message makes a 2,000-message sync quadratic and causes WebKit
+        // to retain gigabytes of allocator pages after the temporary objects die.
+        const existingState =
+          changedConversations.get(conversationId) ??
+          updatedReadByConversation[conversationId] ??
+          {};
         if (existingState[messageId] !== undefined) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
@@ -613,15 +623,25 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           const messageDate = timeToDate(message.timestamp);
           isRead = !isNaN(lastReadTimestamp) ? messageDate <= new Date(lastReadTimestamp * 1000) : true;
         } else {
-          const hasExisting = Object.keys(existingState).filter(k => !k.startsWith("_")).length > 0;
+          let hasExisting = conversationHasMessages.get(conversationId);
+          if (hasExisting === undefined) {
+            hasExisting = Object.keys(existingState).some((key) => !key.startsWith("_"));
+          }
           isRead = !hasExisting;
         }
 
-        updatedReadByConversation[conversationId] = {
-          ...existingState,
-          [messageId]: isRead,
-        };
+        let updatedConversation = changedConversations.get(conversationId);
+        if (!updatedConversation) {
+          updatedConversation = { ...existingState };
+          changedConversations.set(conversationId, updatedConversation);
+          updatedReadByConversation[conversationId] = updatedConversation;
+        }
+        updatedConversation[messageId] = isRead;
+        conversationHasMessages.set(conversationId, true);
+        hasChanges = true;
       }
+
+      if (!hasChanges) return state;
       persistStateDebounced(updatedReadByConversation);
       return { readByConversation: updatedReadByConversation };
     });

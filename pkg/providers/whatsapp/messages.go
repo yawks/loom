@@ -479,12 +479,12 @@ func (w *WhatsAppProvider) handleEditedProtocolMessage(evt *events.Message, prot
 						}
 					}
 					if !found {
-						w.conversationMessages[convID] = append(msgs, dbMsg)
+						w.setCachedConversationMessagesLocked(convID, append(msgs, dbMsg))
 						fmt.Printf("WhatsApp: Added message %s to cache\n", msgID)
 					}
 				} else {
 					// Create new conversation entry
-					w.conversationMessages[convID] = []models.Message{dbMsg}
+					w.setCachedConversationMessagesLocked(convID, []models.Message{dbMsg})
 					fmt.Printf("WhatsApp: Created new conversation entry for %s with message %s\n", convID, msgID)
 				}
 				w.mu.Unlock()
@@ -1031,10 +1031,6 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.conversationMessages == nil {
-		w.conversationMessages = make(map[string][]models.Message)
-	}
-
 	existing := append([]models.Message{}, w.conversationMessages[convID]...)
 	combined := append(existing, messages...)
 
@@ -1055,11 +1051,7 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 		dedup = append(dedup, msg)
 	}
 
-	if len(dedup) > maxMessagesPerConversation {
-		dedup = dedup[len(dedup)-maxMessagesPerConversation:]
-	}
-
-	w.conversationMessages[convID] = dedup
+	w.setCachedConversationMessagesLocked(convID, dedup)
 
 	// Persist messages to database
 	if db.DB != nil {
@@ -1112,7 +1104,44 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 		}
 	}
 
-	return len(dedup)
+	return len(w.conversationMessages[convID])
+}
+
+// setCachedConversationMessagesLocked stores a bounded slice and evicts the
+// least-recent conversation when the global cache is full. SQLite remains the
+// source of truth, so eviction only trades a future DB read for lower RAM use.
+// The caller must hold w.mu for writing.
+func (w *WhatsAppProvider) setCachedConversationMessagesLocked(convID string, messages []models.Message) {
+	if convID == "" {
+		return
+	}
+	if w.conversationMessages == nil {
+		w.conversationMessages = make(map[string][]models.Message)
+	}
+	if len(messages) > maxMessagesPerConversation {
+		messages = messages[len(messages)-maxMessagesPerConversation:]
+	}
+	// Copy into a right-sized backing array so an evicted prefix cannot remain
+	// referenced by a larger history-sync allocation.
+	boundedMessages := append([]models.Message(nil), messages...)
+
+	if _, exists := w.conversationMessages[convID]; !exists && len(w.conversationMessages) >= maxCachedConversations {
+		var oldestConvID string
+		var oldestTimestamp time.Time
+		for cachedConvID, cachedMessages := range w.conversationMessages {
+			latestTimestamp := time.Time{}
+			if len(cachedMessages) > 0 {
+				latestTimestamp = cachedMessages[len(cachedMessages)-1].Timestamp
+			}
+			if oldestConvID == "" || latestTimestamp.Before(oldestTimestamp) {
+				oldestConvID = cachedConvID
+				oldestTimestamp = latestTimestamp
+			}
+		}
+		delete(w.conversationMessages, oldestConvID)
+	}
+
+	w.conversationMessages[convID] = boundedMessages
 }
 
 func (w *WhatsAppProvider) appendMessageToConversation(msg *models.Message) {
@@ -1392,10 +1421,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 					w.enrichMessagesWithSenderInfo(resolvedMessages, chatJID, isGroup)
 					// Update cache
 					w.mu.Lock()
-					if w.conversationMessages == nil {
-						w.conversationMessages = make(map[string][]models.Message)
-					}
-					w.conversationMessages[nsConvID] = resolvedMessages
+					w.setCachedConversationMessagesLocked(nsConvID, resolvedMessages)
 					w.mu.Unlock()
 					return resolvedMessages, nil
 				}
@@ -1438,9 +1464,6 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 			// If beforeTimestamp is nil (initial load), update cache
 			if beforeTimestamp == nil {
 				w.mu.Lock()
-				if w.conversationMessages == nil {
-					w.conversationMessages = make(map[string][]models.Message)
-				}
 				// Merge with existing cache, avoiding duplicates
 				existing := w.conversationMessages[nsConvID]
 				existingMap := make(map[string]bool)
@@ -1456,7 +1479,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 				sort.SliceStable(existing, func(i, j int) bool {
 					return existing[i].Timestamp.Before(existing[j].Timestamp)
 				})
-				w.conversationMessages[nsConvID] = existing
+				w.setCachedConversationMessagesLocked(nsConvID, existing)
 				w.mu.Unlock()
 			}
 

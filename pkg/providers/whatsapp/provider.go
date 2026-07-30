@@ -21,7 +21,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const maxMessagesPerConversation = 200
+const (
+	maxMessagesPerConversation = 100
+	maxCachedConversations     = 100
+)
 
 type WhatsAppProvider struct {
 	client               *whatsmeow.Client

@@ -174,7 +174,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 						}
 					}
 					if !found {
-						w.conversationMessages[convID] = append(msgs, dbMsg)
+						w.setCachedConversationMessagesLocked(convID, append(msgs, dbMsg))
 					}
 				}
 				w.mu.Unlock()

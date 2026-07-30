@@ -1988,11 +1988,12 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	// For DM conversations stored as user IDs (U...), open the DM channel to get the real channel ID
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
+	// Strip namespace prefix (e.g. "slack-1:C123" → "C123") and resolve DM user IDs to channel IDs
+	rawConvID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	actualChannelID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			Users:    []string{conversationID},
+			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
 		if err == nil && channel != nil && channel.ID != "" {
@@ -2052,11 +2053,12 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	// For DM conversations stored as user IDs (U...), open the DM channel to get the real channel ID
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
+	// Strip namespace prefix (e.g. "slack-1:C123" → "C123") and resolve DM user IDs to channel IDs
+	rawConvID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	actualChannelID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
-			Users:    []string{conversationID},
+			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
 		if err == nil && channel != nil && channel.ID != "" {

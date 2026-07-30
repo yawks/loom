@@ -42,9 +42,9 @@
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 
-    /* Sidebar rail (leftmost dark column) */
-    --sidebar-rail: 215 25% 16%;
-    --sidebar-rail-foreground: 215 20% 65%;
+    /* Sidebar rail (leftmost column) */
+    --sidebar-rail: 214 17% 94%;
+    --sidebar-rail-foreground: 215 20% 40%;
     /* Sidebar nav (conversation list) */
     --sidebar: 210 20% 97%;
     --sidebar-foreground: 215 25% 25%;
