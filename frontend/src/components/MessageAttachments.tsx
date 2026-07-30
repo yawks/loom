@@ -4,6 +4,7 @@ import {
   File,
   FileText,
   Image as ImageIcon,
+  Loader2,
   Music,
   Play,
   Video,
@@ -117,12 +118,9 @@ export function MessageAttachments({
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  // Index of the video attachment the user clicked play on. null = show thumbnail.
-  // Keeping <video> out of the DOM until play-click prevents native controls from
-  // intercepting Virtuoso wheel events and stops ResizeObserver cascades.
-  const [playingVideoIndex, setPlayingVideoIndex] = useState<number | null>(null);
-  const [playingVideoData, setPlayingVideoData] = useState<string | null>(null);
+  const [loadingVideoIndex, setLoadingVideoIndex] = useState<number | null>(null);
   // Increment to force a re-render when the module-level cache is updated.
   const [, setCacheVersion] = useState(0);
   const bumpCache = (_url: string, _success: boolean) => {
@@ -173,7 +171,7 @@ export function MessageAttachments({
         if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
           urlsToLoad.push({ url, fallbackUrl: attachment.thumbnail });
         }
-      } else if (attachment.type === "video") {
+      } else if (attachment.type === "video" || attachment.mimeType?.startsWith("video/")) {
         if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
           urlsToLoad.push({ url: attachment.thumbnail });
         }
@@ -278,16 +276,16 @@ export function MessageAttachments({
   };
 
   const handlePlayVideo = async (attachment: Attachment, index: number) => {
+    setLoadingVideoIndex(index);
     try {
-      // Full video data is intentionally not retained in the shared cache.
-      // It is released when playback ends or the message unmounts.
       const dataUrl = await GetAttachmentData(attachment.url);
-      setPlayingVideoData(dataUrl);
-      setPlayingVideoIndex(index);
+      setSelectedVideo(dataUrl);
     } catch (error) {
       console.error("Failed to load video:", error);
       _attachmentFailedUrls.add(attachment.url);
       bumpCache(attachment.url, false);
+    } finally {
+      setLoadingVideoIndex(null);
     }
   };
 
@@ -409,43 +407,34 @@ export function MessageAttachments({
                   )}
                 </div>
               ) : isVideo ? (
-                // contain:strict isolates the container so Virtuoso's ResizeObserver never
-                // sees internal dimension changes. The <video> element is only mounted after
-                // the user clicks play — keeping it out of the DOM prevents native controls
-                // from intercepting Virtuoso wheel events while browsing the conversation.
                 <div
                   className="message-attachment__video relative rounded-lg overflow-hidden bg-black"
                   style={{ width: "320px", height: "200px", contain: "strict" }}
                 >
-                  {playingVideoIndex === index && playingVideoData ? (
-                    <video
-                      autoPlay
-                      controls
-                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      src={playingVideoData}
-                      onEnded={() => { setPlayingVideoIndex(null); setPlayingVideoData(null); }}
-                    >
-                      <track kind="captions" />
-                    </video>
-                  ) : (
-                    <button
-                      className="w-full h-full flex items-center justify-center relative"
-                      style={
-                        videoThumbnailDataUrl
-                          ? { backgroundImage: `url(${videoThumbnailDataUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
-                          : undefined
-                      }
-                      onClick={() => handlePlayVideo(attachment, index)}
-                      aria-label={`Lire ${attachment.fileName}`}
-                    >
-                      {!videoThumbnailDataUrl && <Video className="h-10 w-10 text-white/60" />}
-                      <div className="absolute inset-0 flex items-center justify-center">
+                  <button
+                    className="w-full h-full flex items-center justify-center relative"
+                    style={
+                      videoThumbnailDataUrl
+                        ? { backgroundImage: `url(${videoThumbnailDataUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
+                        : undefined
+                    }
+                    onClick={() => handlePlayVideo(attachment, index)}
+                    disabled={loadingVideoIndex === index}
+                    aria-label={`Lire ${attachment.fileName}`}
+                  >
+                    {!videoThumbnailDataUrl && <Video className="h-10 w-10 text-white/60" />}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      {loadingVideoIndex === index ? (
+                        <div className="bg-black/40 rounded-full p-3">
+                          <Loader2 className="h-8 w-8 text-white animate-spin" />
+                        </div>
+                      ) : (
                         <div className="bg-black/40 rounded-full p-3 hover:bg-black/60 transition-colors">
                           <Play className="h-8 w-8 text-white fill-white" />
                         </div>
-                      </div>
-                    </button>
-                  )}
+                      )}
+                    </div>
+                  </button>
                   {hoveredIndex === index && (
                     <button
                       className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
@@ -552,6 +541,31 @@ export function MessageAttachments({
                 alt="Preview"
                 className="w-full h-auto max-h-[85vh] object-contain"
               />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedVideo !== null} onOpenChange={() => setSelectedVideo(null)}>
+        <DialogContent className="max-w-5xl max-h-[90vh] p-0 bg-black border-0">
+          <DialogTitle className="sr-only">Video Preview</DialogTitle>
+          {selectedVideo && (
+            <div className="relative">
+              <button
+                onClick={() => setSelectedVideo(null)}
+                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              <video
+                autoPlay
+                controls
+                className="w-full max-h-[90vh] object-contain"
+                src={selectedVideo}
+                onEnded={() => setSelectedVideo(null)}
+              >
+                <track kind="captions" />
+              </video>
             </div>
           )}
         </DialogContent>

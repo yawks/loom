@@ -102,6 +102,14 @@ export function GetContactAliases() {
   return window['go']['main']['App']['GetContactAliases']();
 }
 
+export function GetContactExchangeStats(arg1, arg2) {
+  return window['go']['main']['App']['GetContactExchangeStats'](arg1, arg2);
+}
+
+export function GetContactProfile(arg1, arg2) {
+  return window['go']['main']['App']['GetContactProfile'](arg1, arg2);
+}
+
 export function GetConversationsWithMessages() {
   return window['go']['main']['App']['GetConversationsWithMessages']();
 }

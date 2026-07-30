@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
 import { ParticipantsList } from "./ParticipantsList";
+import { ContactProfileDialog } from "./ContactProfileDialog";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
@@ -30,9 +31,11 @@ export function ConversationDetailsView({
   const setShowConversationDetails = useAppStore(
     (state) => state.setShowConversationDetails
   );
-  const setSelectedAvatarUrl = useAppStore(
-    (state) => state.setSelectedAvatarUrl
-  );
+  const [selectedParticipant, setSelectedParticipant] = useState<{
+    userId: string;
+    displayName: string;
+    avatarUrl?: string;
+  } | null>(null);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
   const [idCopied, setIdCopied] = useState(false);
 
@@ -81,10 +84,8 @@ export function ConversationDetailsView({
     setShowConversationDetails(false);
   };
 
-  const handleAvatarClick = (avatarUrl: string | undefined, displayName: string) => {
-    // Use avatar URL if available, otherwise use a placeholder
-    const urlToShow = avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}`;
-    setSelectedAvatarUrl(urlToShow);
+  const handleAvatarClick = (avatarUrl: string | undefined, displayName: string, userId: string) => {
+    setSelectedParticipant({ avatarUrl, displayName, userId });
   };
 
   return (
@@ -151,7 +152,11 @@ export function ConversationDetailsView({
         uploadState={uploadState}
         onConfirm={handleFileUpload}
       />
+      <ContactProfileDialog
+        conversationId={conversationId}
+        participant={selectedParticipant}
+        onClose={() => setSelectedParticipant(null)}
+      />
     </div>
   );
 }
-

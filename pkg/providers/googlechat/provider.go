@@ -33,6 +33,7 @@ var chatScopes = []string{
 type cachedUser struct {
 	Name      string
 	AvatarURL string
+	Email     string
 }
 
 // GoogleChatProvider implements core.Provider using the Google Chat REST API.
@@ -223,12 +224,12 @@ func (p *GoogleChatProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 
 func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:      true,
-		SupportsReactions:    true,
+		SupportsThreads:       true,
+		SupportsReactions:     true,
 		SupportsDeleteMessage: true,
-		SupportsEditMessage:  true,
-		SupportsQRCodeAuth:   false,
-		NativeEmojiReactions: true,
+		SupportsEditMessage:   true,
+		SupportsQRCodeAuth:    false,
+		NativeEmojiReactions:  true,
 	}
 }
 

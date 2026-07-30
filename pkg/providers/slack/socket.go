@@ -113,8 +113,11 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		go p.resolveMPIMChannelAsync(ev.Channel)
 	}
 
-	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
-	normalizedConvID := p.normalizeDMConversationID(ev.Channel)
+	// Use the same namespaced key as persisted conversations and frontend caches.
+	normalizedConvID := core.BuildConvID(
+		p.getInstanceId(),
+		p.normalizeDMConversationID(ev.Channel),
+	)
 
 	// Extract huddle join URL from raw text before any preprocessing.
 	callUrl := ""

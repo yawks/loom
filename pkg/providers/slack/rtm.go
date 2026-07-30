@@ -173,10 +173,11 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		go p.resolveMPIMChannelAsync(ev.Channel)
 	}
 
-	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
-	// Messages are stored under the normalized ID, so the event key must match to keep
-	// the frontend's optimistic sort-order update in sync with the DB.
-	normalizedConvID := p.normalizeDMConversationID(ev.Channel)
+	// Use the same namespaced key as persisted conversations and frontend caches.
+	normalizedConvID := core.BuildConvID(
+		p.getInstanceId(),
+		p.normalizeDMConversationID(ev.Channel),
+	)
 
 	// Check if this conversation already has messages in DB (to decide if we need an initial sync).
 	// Must use the normalized ID because that is what storeMessagesForConversation persists.

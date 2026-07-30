@@ -2017,8 +2017,20 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
+	emoji = strings.Trim(emoji, ":")
 	if err := p.client.AddReaction(emoji, item); err != nil {
-		return err
+		// emoji-picker-react exposes a few GitHub-style aliases such as
+		// "upside-down_face", while Slack names the same emoji
+		// "upside_down_face". Preserve valid hyphenated Slack names, but retry
+		// with underscores when Slack explicitly rejects the first name.
+		underscoreEmoji := strings.ReplaceAll(emoji, "-", "_")
+		if !strings.Contains(err.Error(), "invalid_name") || underscoreEmoji == emoji {
+			return err
+		}
+		if retryErr := p.client.AddReaction(underscoreEmoji, item); retryErr != nil {
+			return retryErr
+		}
+		emoji = underscoreEmoji
 	}
 
 	// Persist the reaction to DB so it survives query refetches.
@@ -2082,8 +2094,16 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
+	emoji = strings.Trim(emoji, ":")
 	if err := p.client.RemoveReaction(emoji, item); err != nil {
-		return err
+		underscoreEmoji := strings.ReplaceAll(emoji, "-", "_")
+		if !strings.Contains(err.Error(), "invalid_name") || underscoreEmoji == emoji {
+			return err
+		}
+		if retryErr := p.client.RemoveReaction(underscoreEmoji, item); retryErr != nil {
+			return retryErr
+		}
+		emoji = underscoreEmoji
 	}
 
 	// Remove the reaction from DB so refetches reflect the correct state.

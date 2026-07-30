@@ -329,6 +329,18 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			if statusText != "" {
 				extraData["statusText"] = statusText
 			}
+			if user.Profile.Email != "" {
+				extraData["email"] = user.Profile.Email
+			}
+			if user.Profile.Phone != "" {
+				extraData["phone"] = user.Profile.Phone
+			}
+			if user.Profile.Title != "" {
+				extraData["jobTitle"] = user.Profile.Title
+			}
+			if user.TZ != "" {
+				extraData["timezone"] = user.TZ
+			}
 
 			// Add LastRead and LatestTS if available from IM channel check
 			if lastRead, ok := userLastRead[user.ID]; ok && lastRead != "" {
@@ -372,7 +384,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			contacts = append(contacts, models.LinkedAccount{
 				UserID:    user.ID,
 				Username:  displayName, // Use display name instead of username
-				IsGroup:   false, // Individual user
+				IsGroup:   false,       // Individual user
 				AvatarURL: avatarURL,
 				Status:    status,
 				Protocol:  "slack",

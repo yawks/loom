@@ -158,8 +158,20 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
           }
         });
 
+        // Google Messages participant IDs are not contact/conversation IDs.
+        // They can numerically collide with another conversation's user_id
+        // (for example participant 23 in conversation 21), so the global
+        // LinkedAccount lookup above may return an unrelated contact. In DMs,
+        // the backend has already normalized senderName from the authoritative
+        // conversation title; keep that scoped value instead.
+        const preferMessageSenderName =
+          !isGroupFromProvider && conversationId.startsWith("googlemessages");
         messages.forEach((msg) => {
-          if (msg.senderId && msg.senderName?.trim() && !namesMap.has(msg.senderId)) {
+          if (
+            msg.senderId &&
+            msg.senderName?.trim() &&
+            (preferMessageSenderName || !namesMap.has(msg.senderId))
+          ) {
             namesMap.set(msg.senderId, msg.senderName);
           }
         });
@@ -170,7 +182,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       }
     };
     loadParticipantNames();
-  }, [conversationId, messages]);
+  }, [conversationId, isGroupFromProvider, messages]);
 
   useEffect(() => {
     if (!conversationId || messages.length === 0) return;

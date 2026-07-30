@@ -117,9 +117,6 @@ func initDatabase(dsn string) error {
 	if err := repairWhatsAppConversationOwnership(db); err != nil {
 		fmt.Printf("Warning: Failed to repair WhatsApp conversation ownership: %v\n", err)
 	}
-	if err := repairGoogleMessagesDMSenderNames(db); err != nil {
-		fmt.Printf("Warning: Failed to repair Google Messages DM sender names: %v\n", err)
-	}
 
 	// Performance optimization: ensure crucial indices exist
 	err = ensureIndices(db)
@@ -462,44 +459,6 @@ func repairWhatsAppConversationOwnership(db *gorm.DB) error {
 	}
 	if result.RowsAffected > 0 {
 		fmt.Printf("Migration: repaired %d WhatsApp conversation ownership rows\n", result.RowsAffected)
-	}
-	return nil
-}
-
-// repairGoogleMessagesDMSenderNames fixes existing incoming messages whose
-// SenderParticipant.FullName disagrees with Google's authoritative DM title.
-func repairGoogleMessagesDMSenderNames(db *gorm.DB) error {
-	result := db.Exec(`
-		UPDATE messages AS m
-		SET sender_name = (
-			SELECT la.username
-			FROM conversations AS c
-			JOIN linked_accounts AS la ON la.id = c.linked_account_id
-			WHERE c.protocol_conv_id = m.protocol_conv_id
-			  AND la.protocol = 'googlemessages'
-			  AND la.is_group = 0
-			  AND la.username != ''
-			  AND la.username != la.user_id
-			LIMIT 1
-		)
-		WHERE m.is_from_me = 0
-		  AND EXISTS (
-			SELECT 1
-			FROM conversations AS c
-			JOIN linked_accounts AS la ON la.id = c.linked_account_id
-			WHERE c.protocol_conv_id = m.protocol_conv_id
-			  AND la.protocol = 'googlemessages'
-			  AND la.is_group = 0
-			  AND la.username != ''
-			  AND la.username != la.user_id
-			  AND m.sender_name != la.username
-		  )
-	`)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected > 0 {
-		fmt.Printf("Migration: repaired %d Google Messages DM sender names\n", result.RowsAffected)
 	}
 	return nil
 }

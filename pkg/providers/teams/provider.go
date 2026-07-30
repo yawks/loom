@@ -270,6 +270,37 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 	return out, nil
 }
 
+// GetContactProfile exposes the rich Teams directory card when the participant
+// is a person MRI. It is intentionally optional and not part of core.Provider.
+func (p *Provider) GetContactProfile(userID string) (models.ContactProfile, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return models.ContactProfile{}, err
+	}
+	user, err := client.GetUser(context.Background(), userID)
+	if err != nil {
+		return models.ContactProfile{}, err
+	}
+	phones := make([]string, 0, len(user.Phones))
+	for _, phone := range user.Phones {
+		if strings.TrimSpace(phone.Number) != "" {
+			phones = append(phones, phone.Number)
+		}
+	}
+	emails := []string{}
+	if user.Email != "" {
+		emails = append(emails, user.Email)
+	}
+	avatarURL := p.cachedAvatar(client, userID)
+	return models.ContactProfile{
+		UserID: userID, DisplayName: user.DisplayName, AvatarURL: avatarURL,
+		Protocol: providerID, ProviderInstanceID: p.instance,
+		PhoneNumbers: phones, Emails: emails, Company: user.Company,
+		JobTitle: user.JobTitle, Department: user.Department, Address: user.Office,
+		ProviderFields: map[string]string{},
+	}, nil
+}
+
 func (p *Provider) GetConversationHistory(conversationID string, limit int, before, since *time.Time) ([]models.Message, error) {
 	conversationID = core.StripConvID(conversationID)
 	client, _, err := p.connectedClient()
