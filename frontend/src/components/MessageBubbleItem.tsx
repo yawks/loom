@@ -260,6 +260,9 @@ export function MessageBubbleItem({
                   </div>
                 ) : (
                   <>
+                    {message.isForwarded && (
+                      <div className="mb-1 text-xs italic opacity-60">{t("forwarded")}</div>
+                    )}
                     {message.quotedMessageId && message.quotedBody && (
                       <div
                         className={cn(

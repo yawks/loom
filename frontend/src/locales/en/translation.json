@@ -202,6 +202,7 @@
   "reply_to_message": "Reply to message",
   "forward_message": "Forward message",
   "forward_message_title": "Forward message",
+  "forwarded": "Forwarded",
   "forward_search_placeholder": "Search for rooms or people",
   "message_preview": "Message preview",
   "sent": "Sent",

@@ -89,6 +89,7 @@ type Message struct {
 	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                      // When the deletion happened
 	IsEdited         bool             `json:"isEdited"`                                        // Flag when the message has been edited
 	EditedTimestamp  *time.Time       `json:"editedTimestamp,omitempty"`                       // When the message was edited
+	IsForwarded      bool             `json:"isForwarded"`                                     // Whether the provider marked the message as forwarded
 	CallType         string           `json:"callType,omitempty"`                              // Type of call: "missed_voice", "missed_video", "missed_group_voice", "missed_group_video", "scheduled_start", "scheduled_cancel", "linked_group_start"
 	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
 	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)

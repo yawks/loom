@@ -45,6 +45,37 @@ type MessageId = string;
 type ConversationReadState = Record<MessageId, boolean>;
 type ReadStateByConversation = Record<ConversationId, ConversationReadState>;
 
+// Message history is paginated from SQLite. This store only tracks the recent
+// IDs needed by mounted views and unread interactions.
+const MAX_READ_STATE_MESSAGES_PER_CONVERSATION = 500;
+
+const boundConversationReadState = (
+  state: ConversationReadState
+): ConversationReadState => {
+  const keys = Object.keys(state);
+  const messageKeys = keys.filter((key) => !key.startsWith("_"));
+  if (messageKeys.length <= MAX_READ_STATE_MESSAGES_PER_CONVERSATION) {
+    return state;
+  }
+
+  const keptMessageKeys = messageKeys.slice(
+    -MAX_READ_STATE_MESSAGES_PER_CONVERSATION
+  );
+  const keptMessages = new Set(keptMessageKeys);
+  const bounded: ConversationReadState = {};
+  if (state._lastReadTS !== undefined) {
+    bounded._lastReadTS = state._lastReadTS;
+  }
+  for (const key of keptMessageKeys) {
+    bounded[key] = state[key];
+    const marker = `_thread:${key}`;
+    if (state[marker] !== undefined && keptMessages.has(key)) {
+      bounded[marker] = state[marker];
+    }
+  }
+  return bounded;
+};
+
 interface MessageReadStore {
   readByConversation: ReadStateByConversation;
   syncConversation: (conversationId: ConversationId, messages: models.Message[]) => void;
@@ -127,7 +158,17 @@ const loadPersistedState = (): ReadStateByConversation => {
     }
     const parsed = JSON.parse(raw) as ReadStateByConversation;
     if (parsed && typeof parsed === "object") {
-      return parsed;
+      let changed = false;
+      const bounded: ReadStateByConversation = {};
+      for (const [conversationId, conversationState] of Object.entries(parsed)) {
+        const boundedConversation = boundConversationReadState(conversationState);
+        bounded[conversationId] = boundedConversation;
+        if (boundedConversation !== conversationState) changed = true;
+      }
+      if (changed) {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bounded));
+      }
+      return bounded;
     }
   } catch (error) {
     console.warn("Failed to load message read state:", error);
@@ -181,6 +222,14 @@ const getMessageIdentifier = (message: models.Message): MessageId | null => {
   const timestamp = timeToDate(message.timestamp).getTime();
   return Number.isNaN(timestamp) ? null : `ts-${timestamp}`;
 };
+
+const threadMarker = (messageId: MessageId) => `_thread:${messageId}`;
+const isThreadReply = (message: models.Message) =>
+  Boolean(
+    message.threadId &&
+    message.threadId.trim() !== "" &&
+    message.threadId !== message.protocolMsgId
+  );
 
 export const useMessageReadStore = create<MessageReadStore>((set) => {
   const initialState = loadPersistedState();
@@ -236,10 +285,14 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let removedCount = 0;
 
       // Only keep messages that exist in the current conversation.
-      // Special keys (prefixed with "_", e.g. _lastReadTS) are always preserved.
+      // Preserve the provider cursor and states for messages still loaded.
+      // Thread markers are rebuilt below from message metadata.
       if (existingState) {
         Object.keys(existingState).forEach((messageId) => {
-          if (messageId.startsWith("_") || existingMessageIds.has(messageId)) {
+          if (
+            messageId === "_lastReadTS" ||
+            (!messageId.startsWith("_") && existingMessageIds.has(messageId))
+          ) {
             nextState[messageId] = existingState[messageId];
           } else {
             removedCount++;
@@ -287,6 +340,13 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
             }
           }
           hasChanged = true;
+        }
+        if (isThreadReply(message)) {
+          const marker = threadMarker(messageId);
+          if (nextState[marker] !== true) {
+            nextState[marker] = true;
+            hasChanged = true;
+          }
         }
       });
 
@@ -466,6 +526,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         if (messageId.startsWith("_")) {
           return;
         }
+        // A channel/conversation cursor must not consume thread replies. They
+        // remain unread until ThreadView explicitly marks them.
+        if (updatedConversation[threadMarker(messageId)] === true) {
+          return;
+        }
         
         // Parse message timestamp from the messageId
         // messageId format can be either "protocolMsgId" (e.g., "1766067993.591559")
@@ -547,20 +612,26 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
     // Check if conversation already has messages (to determine if this is a new message or existing history)
     set((state) => {
       const existingState = state.readByConversation[conversationId] || {};
-      
-      if (existingState[messageId] !== undefined) {
+      const marker = threadMarker(messageId);
+      const needsThreadMarker =
+        isThreadReply(message) && existingState[marker] !== true;
+
+      if (existingState[messageId] !== undefined && !needsThreadMarker) {
         return state;
       }
       
       // Use lastReadTS if available to determine read state
       const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
-      let isRead: boolean;
+      let isRead = existingState[messageId];
 
       // Call messages are always marked as read (they don't count as unread messages)
       // They have their own badge indicator. Messages sent by the current user are always marked as read.
       const isCallMessage = message.callType && message.callType.trim() !== "";
 
-      if (isCallMessage || message.isFromMe) {
+      if (isRead !== undefined) {
+        // Preserve the existing read state when this pass only adds legacy
+        // thread metadata.
+      } else if (isCallMessage || message.isFromMe) {
         isRead = true;
       } else if (lastReadTS) {
         // Compare message timestamp with lastReadTS
@@ -582,6 +653,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         ...existingState,
         [messageId]: isRead,
       };
+      if (isThreadReply(message)) {
+        updatedConversation[marker] = true;
+      }
       const updatedMap = {
         ...state.readByConversation,
         [conversationId]: updatedConversation,
@@ -611,12 +685,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           changedConversations.get(conversationId) ??
           updatedReadByConversation[conversationId] ??
           {};
-        if (existingState[messageId] !== undefined) continue;
+        const marker = threadMarker(messageId);
+        const needsThreadMarker =
+          isThreadReply(message) && existingState[marker] !== true;
+        if (existingState[messageId] !== undefined && !needsThreadMarker) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
-        let isRead: boolean;
+        let isRead = existingState[messageId];
         const isCallMessage = message.callType && message.callType.trim() !== "";
-        if (isCallMessage || message.isFromMe) {
+        if (isRead !== undefined) {
+          // Keep the existing value when only adding the thread marker.
+        } else if (isCallMessage || message.isFromMe) {
           isRead = true;
         } else if (lastReadTS) {
           const lastReadTimestamp = parseFloat(lastReadTS);
@@ -637,6 +716,16 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           updatedReadByConversation[conversationId] = updatedConversation;
         }
         updatedConversation[messageId] = isRead;
+        if (isThreadReply(message)) {
+          updatedConversation[marker] = true;
+        }
+        const boundedConversation =
+          boundConversationReadState(updatedConversation);
+        if (boundedConversation !== updatedConversation) {
+          updatedConversation = boundedConversation;
+          changedConversations.set(conversationId, updatedConversation);
+          updatedReadByConversation[conversationId] = updatedConversation;
+        }
         conversationHasMessages.set(conversationId, true);
         hasChanges = true;
       }
@@ -655,6 +744,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       }
       const updatedConversation = { ...conversationState };
       delete updatedConversation[messageId];
+      delete updatedConversation[threadMarker(messageId)];
       const updatedMap = {
         ...state.readByConversation,
         [conversationId]: updatedConversation,
@@ -691,9 +781,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
       
-      // Only keep messages that are in the valid set. Special keys (_lastReadTS etc.) are always preserved.
+      // Keep the provider cursor and thread markers only while their messages
+      // still exist in the loaded conversation.
       Object.keys(existingState).forEach((messageId) => {
-        if (messageId.startsWith("_") || validMessageIds.has(messageId)) {
+        const isValidThreadMarker =
+          messageId.startsWith("_thread:") &&
+          validMessageIds.has(messageId.slice("_thread:".length));
+        if (
+          messageId === "_lastReadTS" ||
+          isValidThreadMarker ||
+          (!messageId.startsWith("_") && validMessageIds.has(messageId))
+        ) {
           nextState[messageId] = existingState[messageId];
         } else {
           removedCount++;

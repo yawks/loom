@@ -172,6 +172,29 @@ func TestCallPayloadIsConvertedToCallMessage(t *testing.T) {
 	}
 }
 
+func TestScheduledCallStartIncludesEnterpriseJoinURL(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := NewProvider()
+	message := provider.toModelMessage(client, msteams.Message{
+		ID: "call-start", ThreadID: "thread-1", From: "8:orgid:alice",
+		MessageType: "ThreadActivity/CallStarted", Created: time.Unix(123, 0),
+		Content: `https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant%22%7d`,
+	}, "thread-1")
+
+	if message.CallType != "scheduled_start" {
+		t.Fatalf("call type=%q, want scheduled_start", message.CallType)
+	}
+	if message.CallUrl != `https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant%22%7d` {
+		t.Fatalf("call URL=%q", message.CallUrl)
+	}
+}
+
 func TestIsMicrosoftFileURL(t *testing.T) {
 	for _, fileURL := range []string{
 		"https://api.asm.skype.com/v1/objects/file/views/original",

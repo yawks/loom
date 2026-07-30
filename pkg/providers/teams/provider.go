@@ -154,6 +154,7 @@ func (p *Provider) Connect() error {
 		return fmt.Errorf("%s: save refreshed session: %w", providerID, err)
 	}
 	go p.forwardEvents(ctx, client)
+	go p.watchConversationList(ctx, client)
 	return nil
 }
 
@@ -910,7 +911,7 @@ var (
 	callEventTypePattern   = regexp.MustCompile(`(?is)<callEventType>\s*([^<]+)\s*</callEventType>`)
 	callDisplayNamePattern = regexp.MustCompile(`(?is)<displayName>\s*([^<]+)\s*</displayName>`)
 	callDurationPattern    = regexp.MustCompile(`(?is)<duration>\s*(\d+)\s*</duration>`)
-	teamsMeetingURLPattern = regexp.MustCompile(`https://teams\.microsoft\.com/meet/[^\s<"'\\]+`)
+	teamsMeetingURLPattern = regexp.MustCompile(`https://teams\.microsoft\.com/(?:meet/|l/meetup-join/)[^\s<"'\\]+`)
 )
 
 func isTeamsCallMessage(message msteams.Message) bool {
@@ -1019,6 +1020,12 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 		if event.Message == nil {
 			return
 		}
+		if discovered, err := p.ensureConversationStored(client, event.ThreadID); err == nil && discovered {
+			p.emit(core.ContactStatusEvent{
+				InstanceID: p.instance, UserID: "refresh",
+				Status: "new_conversations_discovered",
+			})
+		}
 		message := p.toModelMessage(client, *event.Message, event.ThreadID)
 		messages := []models.Message{message}
 		p.enrichReplyMetadata(messages)
@@ -1035,6 +1042,47 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 		}
 		_ = p.storeMessages([]models.Message{message})
 		p.emit(core.MessageEvent{InstanceID: p.instance, Message: message})
+	case msteams.EventTypeReaction:
+		if event.Message == nil {
+			return
+		}
+		conversationID := core.BuildConvID(p.instance, event.ThreadID)
+		current := make([]models.Reaction, 0, len(event.Message.Reactions))
+		for _, reaction := range event.Message.Reactions {
+			current = append(current, models.Reaction{
+				UserID: reaction.UserID, Emoji: msteams.DecodeReactionKey(reaction.Type),
+				CreatedAt: reaction.Time, UpdatedAt: reaction.Time,
+			})
+		}
+		previous, err := p.replaceStoredReactions(conversationID, event.Message.ID, current)
+		if err != nil {
+			return
+		}
+		previousKeys := make(map[string]models.Reaction, len(previous))
+		currentKeys := make(map[string]models.Reaction, len(current))
+		for _, reaction := range previous {
+			previousKeys[reaction.UserID+"\x00"+reaction.Emoji] = reaction
+		}
+		for _, reaction := range current {
+			key := reaction.UserID + "\x00" + reaction.Emoji
+			currentKeys[key] = reaction
+			if _, exists := previousKeys[key]; !exists {
+				p.emit(core.ReactionEvent{
+					InstanceID: p.instance, ConversationID: conversationID,
+					MessageID: event.Message.ID, UserID: reaction.UserID,
+					Emoji: reaction.Emoji, Added: true, Timestamp: reaction.CreatedAt.Unix(),
+				})
+			}
+		}
+		for key, reaction := range previousKeys {
+			if _, exists := currentKeys[key]; !exists {
+				p.emit(core.ReactionEvent{
+					InstanceID: p.instance, ConversationID: conversationID,
+					MessageID: event.Message.ID, UserID: reaction.UserID,
+					Emoji: reaction.Emoji, Added: false, Timestamp: event.Timestamp.Unix(),
+				})
+			}
+		}
 	case msteams.EventTypeTyping:
 		p.emit(core.TypingEvent{
 			InstanceID: p.instance, ConversationID: event.ThreadID,
@@ -1043,6 +1091,25 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 		})
 	case msteams.EventTypeChatUpdate:
 		p.emit(core.ContactStatusEvent{InstanceID: p.instance, UserID: "refresh", Status: "new_conversations_discovered"})
+	}
+}
+
+func (p *Provider) watchConversationList(ctx context.Context, client *msteams.Client) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			discovered, err := p.discoverNewConversations(ctx, client)
+			if err == nil && discovered > 0 {
+				p.emit(core.ContactStatusEvent{
+					InstanceID: p.instance, UserID: "refresh",
+					Status: "new_conversations_discovered",
+				})
+			}
+		}
 	}
 }
 

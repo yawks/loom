@@ -230,6 +230,9 @@ export function MessageIRCItem({
                       </div>
                     ) : (
                       <>
+                        {message.isForwarded && (
+                          <div className="mb-1 text-xs italic text-muted-foreground">{t("forwarded")}</div>
+                        )}
                         {sendFailed && (
                           <div className="text-xs text-destructive mb-1 flex items-center gap-2">
                             <span>{t("send_failed") || "Envoi échoué"}</span>

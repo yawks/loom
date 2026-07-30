@@ -166,7 +166,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
   metaContacts: [],
-  setMetaContacts: (contacts) => set({ metaContacts: contacts }),
+  setMetaContacts: (contacts) => set((state) => {
+    const selectedContact = state.selectedContact
+      ? (contacts.find((c) => c.id === state.selectedContact!.id) ?? state.selectedContact)
+      : null;
+    return { metaContacts: contacts, selectedContact };
+  }),
   // Navigation history
   conversationHistory: [],
   historyIndex: -1,

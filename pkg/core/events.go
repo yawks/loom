@@ -63,13 +63,13 @@ func (e MessageBatchEvent) Type() EventType {
 
 // ReactionEvent represents a reaction to a message.
 type ReactionEvent struct {
-	InstanceID     string
-	ConversationID string // Protocol conversation ID
-	MessageID      string // Protocol message ID
-	UserID         string // User who reacted
-	Emoji          string // Emoji reaction (e.g., "👍", "❤️")
-	Added          bool   // true if reaction added, false if removed
-	Timestamp      int64  // Unix timestamp
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"` // Protocol conversation ID
+	MessageID      string `json:"messageId"`      // Protocol message ID
+	UserID         string `json:"userId"`         // User who reacted
+	Emoji          string `json:"emoji"`          // Emoji reaction (e.g., "👍", "❤️")
+	Added          bool   `json:"added"`          // true if reaction added, false if removed
+	Timestamp      int64  `json:"timestamp"`      // Unix timestamp
 }
 
 // Type returns the event type for ReactionEvent.
