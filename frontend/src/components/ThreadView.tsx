@@ -208,12 +208,14 @@ export function ThreadView() {
   const savedScrollTopRef = useRef(0);
   const shouldRestoreScrollRef = useRef(false);
   const threadListScrollRef = useRef<HTMLDivElement>(null);
+  const shouldStickToThreadListTopRef = useRef(true);
 
   // Reset navigation state when conversation changes
   useEffect(() => {
     setThreadOpenedFromList(false);
     savedScrollTopRef.current = 0;
     shouldRestoreScrollRef.current = false;
+    shouldStickToThreadListTopRef.current = true;
   }, [conversationId]);
 
   // Restore thread list scroll position after going back
@@ -326,12 +328,40 @@ export function ThreadView() {
 
   const handleThreadListScroll = useCallback(() => {
     const el = threadListScrollRef.current;
-    if (!el || !threadListHasMore || threadListIsFetching) return;
+    if (!el) return;
+    shouldStickToThreadListTopRef.current = el.scrollTop <= 2;
+    if (!threadListHasMore || threadListIsFetching) return;
     if (el.scrollTop <= 80) {
       prevScrollMetricsRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
       fetchMoreThreadListMessages();
     }
   }, [threadListHasMore, threadListIsFetching, fetchMoreThreadListMessages]);
+
+  useEffect(() => {
+    const el = threadListScrollRef.current;
+    if (!el || selectedThreadId !== null) return;
+
+    const keepLatestThreadVisible = () => {
+      if (shouldStickToThreadListTopRef.current) el.scrollTop = 0;
+    };
+    const resizeObserver = new ResizeObserver(keepLatestThreadVisible);
+    const observeContent = () => {
+      resizeObserver.disconnect();
+      resizeObserver.observe(el);
+      Array.from(el.children).forEach((node) => resizeObserver.observe(node));
+    };
+    const mutationObserver = new MutationObserver(() => {
+      observeContent();
+      keepLatestThreadVisible();
+    });
+    observeContent();
+    mutationObserver.observe(el, { childList: true, subtree: true });
+
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [selectedThreadId]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToThreadBottomRef = useRef(true);
@@ -358,6 +388,7 @@ export function ThreadView() {
 
   const handleBackToList = () => {
     shouldRestoreScrollRef.current = true;
+    shouldStickToThreadListTopRef.current = savedScrollTopRef.current <= 2;
     setSelectedThreadId(null);
     setThreadOpenedFromList(false);
     setReplyingToMessage(null);
@@ -465,15 +496,19 @@ export function ThreadView() {
     [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient]
   );
 
+  const correctThreadBottomImmediately = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !shouldStickToThreadBottomRef.current) return;
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+  }, []);
+
   const scheduleThreadBottomCorrection = useCallback(() => {
     if (!shouldStickToThreadBottomRef.current || threadBottomFrameRef.current !== null) return;
     threadBottomFrameRef.current = requestAnimationFrame(() => {
       threadBottomFrameRef.current = null;
-      const el = scrollContainerRef.current;
-      if (!el || !shouldStickToThreadBottomRef.current) return;
-      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      correctThreadBottomImmediately();
     });
-  }, []);
+  }, [correctThreadBottomImmediately]);
 
   // A newly opened thread starts at its live edge. Unlike a fixed timeout, this
   // intent remains active while media and other asynchronous content settle.
@@ -508,7 +543,9 @@ export function ThreadView() {
     // The scroll container has a fixed viewport height, so observe both it and
     // its direct content wrappers. Their sizes change when images, audio
     // players, previews, reactions, or edited messages finish rendering.
-    const resizeObserver = new ResizeObserver(scheduleThreadBottomCorrection);
+    // Correct in ResizeObserver's pre-paint phase. Waiting for another
+    // animation frame makes the composer visibly jump when it gains a line.
+    const resizeObserver = new ResizeObserver(correctThreadBottomImmediately);
     const observeContent = () => {
       resizeObserver.disconnect();
       resizeObserver.observe(el);
@@ -536,7 +573,7 @@ export function ThreadView() {
       el.removeEventListener("keydown", handleKeyDown);
       el.removeEventListener("scroll", handleScroll);
     };
-  }, [selectedThreadId, isLoading, scheduleThreadBottomCorrection]);
+  }, [selectedThreadId, isLoading, correctThreadBottomImmediately, scheduleThreadBottomCorrection]);
 
   useEffect(() => () => {
     if (threadBottomFrameRef.current !== null) {

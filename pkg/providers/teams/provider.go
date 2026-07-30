@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -996,6 +997,14 @@ func (p *Provider) toCallModelMessage(client *msteams.Client, remote msteams.Mes
 	decodedContent := html.UnescapeString(remote.Content)
 	if match := teamsMeetingURLPattern.FindString(decodedContent); match != "" {
 		message.CallUrl = match
+		message.CallLinkAction = "join"
+	} else if rawConversationID := core.StripConvID(conversationID); strings.HasPrefix(rawConversationID, "19:") {
+		// Ad-hoc calls generally expose only an internal flightproxy URL, which
+		// cannot be opened anonymously. Navigating to the chat lets Teams show
+		// the active-call banner and its native Join action.
+		message.CallUrl = "https://teams.microsoft.com/l/chat/" +
+			url.PathEscape(rawConversationID) + "/conversations"
+		message.CallLinkAction = "open"
 	}
 	return message
 }

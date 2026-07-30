@@ -976,7 +976,10 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 
 	return &models.Message{
-		ProtocolConvID:  convID,
+		// Frontend message caches and persisted conversations are keyed by the
+		// namespaced ID. Emitting the raw JID here updates the sidebar preview,
+		// but misses the cache of an already-open conversation.
+		ProtocolConvID:  core.BuildConvID(w.getInstanceId(), convID),
 		ProtocolMsgID:   msgID,
 		SenderID:        senderID,
 		SenderName:      senderName,

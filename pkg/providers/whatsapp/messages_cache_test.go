@@ -58,6 +58,7 @@ func TestSetCachedConversationMessagesLockedEvictsOldestConversation(t *testing.
 
 func TestConvertMessageUnwrapsBotForwardedText(t *testing.T) {
 	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
 	chat := types.NewJID("33600000000", types.DefaultUserServer)
 	event := &events.Message{
 		Info: types.MessageInfo{
@@ -82,6 +83,9 @@ func TestConvertMessageUnwrapsBotForwardedText(t *testing.T) {
 	}
 	if got.Body != "message transféré" {
 		t.Fatalf("body = %q, want %q", got.Body, "message transféré")
+	}
+	if got.ProtocolConvID != "whatsapp-1::33600000000@s.whatsapp.net" {
+		t.Fatalf("protocol conversation ID = %q, want namespaced ID", got.ProtocolConvID)
 	}
 	if !got.IsForwarded {
 		t.Fatal("forwarded message was not marked as forwarded")

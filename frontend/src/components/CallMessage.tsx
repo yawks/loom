@@ -210,6 +210,9 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   const Icon = callInfo.icon;
   const hasDuration = callInfo.duration != null;
   const hasParticipants = callInfo.participantCount > 0 && isGroup;
+  const callLinkLabel = message.callLinkAction === "open"
+    ? t("call.open")
+    : t("call.join");
 
   if (layout === "bubble") {
     return (
@@ -224,7 +227,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
                 className="flex items-center gap-1 text-xs text-primary hover:underline"
               >
                 <ExternalLink className="h-3 w-3" />
-                {t("call.join")}
+                {callLinkLabel}
               </button>
             )}
           </div>
@@ -257,7 +260,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
               className="flex items-center gap-1 not-italic text-primary hover:underline"
             >
               <ExternalLink className="h-3 w-3" />
-              {t("call.join")}
+              {callLinkLabel}
             </button>
           )}
         </div>
