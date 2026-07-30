@@ -12,6 +12,7 @@ interface ParticipantTarget {
   userId: string;
   displayName: string;
   avatarUrl?: string;
+  status: string;
 }
 
 interface ContactProfileDialogProps {
@@ -56,6 +57,50 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+function PresenceBadge({
+  presence,
+  statusText,
+  statusEmoji,
+  t,
+}: {
+  presence?: string;
+  statusText?: string;
+  statusEmoji?: string;
+  t: (key: string) => string;
+}) {
+  const normalizedPresence = presence || "offline";
+  const colorMap: Record<string, string> = {
+    online: "bg-green-500",
+    meeting: "bg-blue-500",
+    away: "bg-yellow-500",
+    busy: "bg-red-500",
+    dnd: "bg-red-500",
+    holiday: "bg-purple-500",
+    offline: "bg-gray-500",
+  };
+  const labelMap: Record<string, string> = {
+    online: t("online"),
+    meeting: t("meeting") || "In a meeting",
+    away: t("away") || "Away",
+    busy: t("busy") || "Busy",
+    dnd: t("dnd") || "Do not disturb",
+    holiday: t("holiday") || "Holiday",
+    offline: t("offline"),
+  };
+  const presenceLabel = labelMap[normalizedPresence] || normalizedPresence;
+  const customStatus = [statusEmoji, statusText].filter(Boolean).join(" ");
+
+  return (
+    <div className="mt-2 flex max-w-full items-center gap-2 rounded-full border bg-background/95 px-3 py-1 text-xs shadow-sm">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${colorMap[normalizedPresence] || "bg-gray-500"}`} />
+      <span className="truncate">{customStatus || presenceLabel}</span>
+      {customStatus && (
+        <span className="shrink-0 text-muted-foreground">· {presenceLabel}</span>
+      )}
+    </div>
+  );
+}
+
 export function ContactProfileDialog({ conversationId, participant, onClose }: ContactProfileDialogProps) {
   const { t, i18n } = useTranslation();
   const enabled = Boolean(participant && conversationId);
@@ -76,10 +121,6 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
   const stats = statsQuery.data;
   const name = profile?.displayName || participant?.displayName || "";
   const avatar = profile?.avatarUrl || participant?.avatarUrl;
-  const status = profile?.statusText || (
-    profile?.presence && profile.presence !== "offline" ? t(profile.presence) : ""
-  );
-
   return (
     <Dialog open={participant !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
@@ -95,12 +136,16 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
                   {name.substring(0, 2).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
+              <PresenceBadge
+                presence={participant.status || profile?.presence}
+                statusText={profile?.statusText}
+                statusEmoji={profile?.statusEmoji}
+                t={t}
+              />
               <h2 className="mt-3 text-xl font-semibold">{name}</h2>
-              <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                {profile?.presence && profile.presence !== "offline" && <span className="h-2 w-2 rounded-full bg-green-500" />}
-                <span>{profile?.statusEmoji} {status}</span>
-                {profile?.protocol && <span>· {profile.protocol}</span>}
-              </div>
+              {profile?.protocol && (
+                <p className="mt-1 text-sm text-muted-foreground">{profile.protocol}</p>
+              )}
             </div>
 
             {profileQuery.isLoading ? (
