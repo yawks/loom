@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers/messageformat"
 	"context"
 	"encoding/json"
 	"errors"
@@ -338,8 +339,8 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 	if err != nil {
 		return nil, err
 	}
-	opts := msteams.SendOptions{}
-	content := msteams.MatrixToTeamsHTML(text)
+	opts := msteams.SendOptions{ContentType: "html"}
+	content := msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(text))
 	var modelAttachment *models.Attachment
 	if file != nil {
 		if len(file.Data) == 0 {
@@ -441,7 +442,7 @@ func (p *Provider) SendReply(conversationID, text, quotedMessageID string) (*mod
 	if err != nil {
 		return nil, err
 	}
-	content := p.inlineReplyHTML(nsConvID, quotedMessageID) + msteams.MatrixToTeamsHTML(text)
+	content := p.inlineReplyHTML(nsConvID, quotedMessageID) + msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(text))
 	id, err := client.SendMessage(context.Background(), rawConvID, content, msteams.SendOptions{ContentType: "html"})
 	if err != nil {
 		return nil, fmt.Errorf("%s: send reply: %w", providerID, err)
@@ -508,7 +509,7 @@ func (p *Provider) EditMessage(conversationID, messageID, newText string) (*mode
 	if err != nil {
 		return nil, err
 	}
-	if err := client.EditMessage(context.Background(), rawConvID, messageID, msteams.MatrixToTeamsHTML(newText), msteams.SendOptions{}); err != nil {
+	if err := client.EditMessage(context.Background(), rawConvID, messageID, msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(newText)), msteams.SendOptions{ContentType: "html"}); err != nil {
 		return nil, fmt.Errorf("%s: edit message: %w", providerID, err)
 	}
 	now := time.Now()

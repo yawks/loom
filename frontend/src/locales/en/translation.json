@@ -255,5 +255,14 @@
   "all": "All",
   "no_unread_messages": "No unread messages",
   "view_recent": "View recent messages",
-  "scroll_to_bottom": "Go to latest message"
+  "scroll_to_bottom": "Go to latest message",
+  "format_bold": "Bold",
+  "format_italic": "Italic",
+  "format_underline": "Underline",
+  "format_strikethrough": "Strikethrough",
+  "format_link": "Link",
+  "format_link_prompt": "Link URL",
+  "format_link_apply": "Apply",
+  "format_bulleted_list": "Bulleted list",
+  "format_numbered_list": "Numbered list"
 }

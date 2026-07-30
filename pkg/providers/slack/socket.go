@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
@@ -115,25 +116,39 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Normalize the conversation ID: DM channels (D...) become the peer's User ID (U...).
 	normalizedConvID := p.normalizeDMConversationID(ev.Channel)
 
-	// Check if this is a huddle-related message
+	// Extract huddle join URL from raw text before any preprocessing.
+	callUrl := ""
+	callLinkAction := ""
+	if m := huddleURLRegex.FindStringSubmatch(ev.Text); len(m) >= 2 {
+		callUrl = m[1]
+		callLinkAction = "join"
+	}
+
+	// Check if this is a huddle-related message.
 	callType := ""
-	textLower := strings.ToLower(ev.Text)
-	if strings.Contains(textLower, "huddle") {
-		if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
-			// Determine if it's a group or individual call
+	if ev.SubType == "sh_room_created" {
+		isGroup := !strings.HasPrefix(ev.Channel, "D")
+		if isGroup {
+			callType = "incoming_group_call"
+		} else {
+			callType = "incoming_call"
+		}
+	} else {
+		textLower := strings.ToLower(ev.Text)
+		if strings.Contains(textLower, "huddle") {
 			isGroup := !strings.HasPrefix(ev.Channel, "D")
-			if isGroup {
-				callType = "incoming_group_call"
-			} else {
-				callType = "incoming_call"
-			}
-		} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
-			// Huddle ended - we'll mark it as missed
-			isGroup := !strings.HasPrefix(ev.Channel, "D")
-			if isGroup {
-				callType = "missed_group_voice"
-			} else {
-				callType = "missed_voice"
+			if strings.Contains(textLower, "started") || strings.Contains(textLower, "joined") {
+				if isGroup {
+					callType = "incoming_group_call"
+				} else {
+					callType = "incoming_call"
+				}
+			} else if strings.Contains(textLower, "ended") || strings.Contains(textLower, "left") {
+				if isGroup {
+					callType = "missed_group_voice"
+				} else {
+					callType = "missed_voice"
+				}
 			}
 		}
 	}
@@ -146,6 +161,10 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	messageBody := p.preprocessMessageBody(ev.Text)
+	// For huddle messages, text is empty and content is in blocks.
+	if messageBody == "" && ev.Message != nil && len(ev.Message.Blocks.BlockSet) > 0 {
+		messageBody = p.extractTextFromRichContent(slack.Message{Msg: *ev.Message})
+	}
 	var quotedMessageID *string
 	var quotedSenderName string
 	var quotedBody *string
@@ -167,8 +186,10 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		Body:             messageBody,
 		Timestamp:        timestamp,
 		IsFromMe:         isFromMe,
-		Attachments:      "[]", // Handle attachments if any
+		Attachments:      "[]",
 		CallType:         callType,
+		CallUrl:          callUrl,
+		CallLinkAction:   callLinkAction,
 		ThreadID:         socketThreadID,
 		QuotedMessageID:  quotedMessageID,
 		QuotedSenderName: quotedSenderName,

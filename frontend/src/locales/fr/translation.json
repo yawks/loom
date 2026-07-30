@@ -255,5 +255,14 @@
   "all": "Tous",
   "no_unread_messages": "Pas de messages non lus",
   "view_recent": "Voir les messages récents",
-  "scroll_to_bottom": "Aller au dernier message"
+  "scroll_to_bottom": "Aller au dernier message",
+  "format_bold": "Gras",
+  "format_italic": "Italique",
+  "format_underline": "Souligné",
+  "format_strikethrough": "Barré",
+  "format_link": "Lien",
+  "format_link_prompt": "URL du lien",
+  "format_link_apply": "Valider",
+  "format_bulleted_list": "Liste à puces",
+  "format_numbered_list": "Liste numérotée"
 }

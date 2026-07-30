@@ -58,7 +58,6 @@ export function useSystemTrayBadge() {
   // Calculate total unread count across all conversations
   const totalUnreadCount = useMemo(() => {
     let total = 0;
-    const debugInfo: { convId: string; unread: number; messages: string[] }[] = [];
     const countedConversations = new Set<string>();
 
     contacts.forEach((contact) => {
@@ -68,26 +67,13 @@ export function useSystemTrayBadge() {
         countedConversations.add(conversationId);
         const conversationState = readStateByConversation[conversationId];
         if (!conversationState) return;
-        const unreadMessages = Object.entries(conversationState).filter(
+        const unreadCount = Object.entries(conversationState).filter(
           ([key, isRead]) => !key.startsWith("_") && !isRead
-        );
-        const unreadCount = unreadMessages.length;
-        if (unreadCount > 0) {
-          const unreadIds = unreadMessages.map(([key]) => key);
-          debugInfo.push({
-            convId: conversationId,
-            unread: unreadCount,
-            messages: unreadIds.slice(0, 5),
-          });
-        }
+        ).length;
         total += unreadCount;
       });
     });
 
-    console.log(`useSystemTrayBadge: Total unread messages across all conversations: ${total}`);
-    if (debugInfo.length > 0) {
-      console.table(debugInfo);
-    }
     return total;
   }, [readStateByConversation, contacts]);
 

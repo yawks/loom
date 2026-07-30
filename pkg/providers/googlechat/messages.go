@@ -14,6 +14,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers/messageformat"
 )
 
 func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, beforeTS *time.Time, sinceTS *time.Time) ([]models.Message, error) {
@@ -90,6 +91,7 @@ func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, be
 }
 
 func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	canonicalText := text
 	if p.getHTTPClient() == nil {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -106,7 +108,7 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		Attachment []ChatAttachment `json:"attachment,omitempty"`
 	}
 
-	body := msgBody{Text: text}
+	body := msgBody{Text: messageformat.GoogleChat(text)}
 	path := "/" + rawConvID + "/messages"
 	if file != nil {
 		uploaded, err := p.apiUploadAttachment(spaceName(rawConvID), file.FileName, file.MimeType, file.Data)
@@ -142,6 +144,7 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 
 	selfID := p.getSelfID()
 	m := p.convertMessage(result, rawConvID, selfID)
+	m.Body = canonicalText
 	// We know we sent this message — enforce correct identity regardless of API response.
 	m.IsFromMe = true
 	if m.SenderID == "" && selfID != "" {
@@ -207,6 +210,7 @@ func (p *GoogleChatProvider) SendFile(convID string, file *core.Attachment, thre
 }
 
 func (p *GoogleChatProvider) EditMessage(convID, messageID, newText string) (*models.Message, error) {
+	canonicalText := newText
 	if p.getHTTPClient() == nil {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -217,7 +221,7 @@ func (p *GoogleChatProvider) EditMessage(convID, messageID, newText string) (*mo
 
 	msgPath := ensureMessagePath(convID, messageID)
 	var result ChatMessage
-	if err := p.apiPatch("/"+msgPath, "text", editBody{Text: newText}, &result); err != nil {
+	if err := p.apiPatch("/"+msgPath, "text", editBody{Text: messageformat.GoogleChat(newText)}, &result); err != nil {
 		return nil, err
 	}
 
@@ -226,13 +230,14 @@ func (p *GoogleChatProvider) EditMessage(convID, messageID, newText string) (*mo
 		db.DB.Model(&models.Message{}).
 			Where("protocol_msg_id = ?", messageID).
 			Updates(map[string]interface{}{
-				"body":             newText,
+				"body":             canonicalText,
 				"is_edited":        true,
 				"edited_timestamp": now,
 			})
 	}
 
 	m := p.convertMessage(result, convID, p.getSelfID())
+	m.Body = canonicalText
 	return &m, nil
 }
 

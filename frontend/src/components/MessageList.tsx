@@ -361,7 +361,6 @@ export function MessageList({
     if (!conversationId || !mainMessages.length) return;
     if (scrollInitializedRef.current === conversationId) return;
     scrollInitializedRef.current = conversationId;
-    console.log(`[Scroll] Init scroll for conv ${conversationId.slice(-8)}: ${mainMessages.length} msgs, firstUnread=${firstUnreadMessageId?.slice(-8) ?? "none"}`);
 
     // Only stabilize (auto-re-anchor) when we're targeting the bottom.
     // If there's a firstUnreadMessageId the user is intentionally NOT at the bottom.
@@ -380,12 +379,10 @@ export function MessageList({
         if (firstUnreadMessageId) {
           const idx = mainMessages.findIndex((m) => getMessageDomId(m) === firstUnreadMessageId);
           if (idx >= 0) {
-            console.log(`[Scroll] → scrollToIndex(${idx}) [first unread]`);
             virtuosoRef.current.scrollToIndex({ index: idx, align: 'start', behavior: 'auto' });
             return;
           }
         }
-        console.log(`[Scroll] → scrollToIndex(${mainMessages.length - 1}) [last msg]`);
         virtuosoRef.current.scrollToIndex({ index: mainMessages.length - 1, align: 'end', behavior: 'auto' });
       });
     });
@@ -589,14 +586,6 @@ export function MessageList({
       }
     );
 
-    console.log("[Loom Debug] handleReaction parameters:", {
-      emoji,
-      canonicalName,
-      apiEmoji,
-      hasReaction,
-      nativeEmojiReactions
-    });
-
     try {
       if (hasReaction) await RemoveReaction(conversationId, protocolMsgId, apiEmoji);
       else await AddReaction(conversationId, protocolMsgId, apiEmoji);
@@ -699,13 +688,11 @@ export function MessageList({
             alignToBottom
             followOutput={(isAtBottom) => {
               const lastMsg = mainMessages.at(-1) as unknown as Record<string, unknown>;
-              const result = lastMsg?.isFromMe === true ? "auto" : (isAtBottom ? "smooth" : false);
-              if (result !== false) console.log(`[Scroll] followOutput → "${result}" (isAtBottom=${isAtBottom}, lastIsFromMe=${lastMsg?.isFromMe})`);
-              return result;
+              if (lastMsg?.isFromMe === true) return "auto";
+              return isAtBottom ? "smooth" : false;
             }}
             startReached={handleStartReached}
             atBottomStateChange={(isAtBottom) => {
-              console.log(`[Scroll] atBottomStateChange → ${isAtBottom} stabilizing=${isStabilizingRef.current}`);
               atBottomRef.current = isAtBottom;
               setAtBottom(isAtBottom);
               if (isAtBottom) {

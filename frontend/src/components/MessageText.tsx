@@ -154,7 +154,14 @@ export const MessageText = memo(function MessageText({
     if (!text) return null;
 
     // Preprocessing
-    let processedText = transformUrls(htmlFragmentToText(text));
+    // Preserve Loom's explicit underline extension while stripping provider
+    // HTML. Standard Markdown intentionally has no underline syntax.
+    const underlineProtected = text
+      .replace(/<u>/gi, "LOOM_UNDERLINE_OPEN")
+      .replace(/<\/u>/gi, "LOOM_UNDERLINE_CLOSE");
+    let processedText = transformUrls(htmlFragmentToText(underlineProtected))
+      .replaceAll("LOOM_UNDERLINE_OPEN", "<u>")
+      .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>");
     // Last-resort compatibility for cached Slack replies that reach this
     // component without reply metadata. Do this before emoji splitting and
     // Markdown parsing so neither stage can expose the protocol's `>` syntax.
@@ -268,7 +275,7 @@ export const MessageText = memo(function MessageText({
 
   if (!parsedContent) return null;
 
-  const renderMarkdown = (content: string, isInline = false) => (
+  const renderMarkdownBase = (content: string, isInline = false) => (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
       rehypePlugins={[[rehypeHighlight, { detect: true }]]}
@@ -278,6 +285,21 @@ export const MessageText = memo(function MessageText({
       {content}
     </ReactMarkdown>
   );
+
+  const renderMarkdown = (content: string, isInline = false) => {
+    const parts = content.split(/(<u>[\s\S]*?<\/u>)/gi);
+    if (parts.length === 1) return renderMarkdownBase(content, isInline);
+    return (
+      <>
+        {parts.map((part, index) => {
+          const match = part.match(/^<u>([\s\S]*?)<\/u>$/i);
+          return match
+            ? <u key={index}>{renderMarkdownBase(match[1], true)}</u>
+            : <React.Fragment key={index}>{renderMarkdownBase(part, isInline)}</React.Fragment>;
+        })}
+      </>
+    );
+  };
 
   if (slackInlineQuote) {
     return (
