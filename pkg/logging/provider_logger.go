@@ -8,9 +8,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
+
+const providerConsoleLogEnv = "LOOM_PROVIDER_LOG_CONSOLE"
 
 // ProviderLogger provides logging functionality for providers
 // Each provider instance gets its own log file
@@ -71,9 +74,14 @@ func GetLogger(providerID, instanceID string) (*ProviderLogger, error) {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	// Create logger that writes to both file and stdout (for development)
-	multiWriter := io.MultiWriter(logFile, os.Stdout)
-	logger := log.New(multiWriter, fmt.Sprintf("[%s] ", key), log.LstdFlags|log.Lmicroseconds)
+	// Provider logs are intentionally file-only by default: protocol libraries can
+	// be extremely chatty and otherwise drown out application logs. Developers can
+	// opt into the previous console output when diagnosing a provider.
+	var output io.Writer = logFile
+	if providerConsoleLoggingEnabled() {
+		output = io.MultiWriter(logFile, os.Stdout)
+	}
+	logger := log.New(output, fmt.Sprintf("[%s] ", key), log.LstdFlags|log.Lmicroseconds)
 
 	pl := &ProviderLogger{
 		providerID: providerID,
@@ -85,6 +93,11 @@ func GetLogger(providerID, instanceID string) (*ProviderLogger, error) {
 
 	loggers[key] = pl
 	return pl, nil
+}
+
+func providerConsoleLoggingEnabled() bool {
+	enabled, err := strconv.ParseBool(os.Getenv(providerConsoleLogEnv))
+	return err == nil && enabled
 }
 
 // Log writes a log message with the given format and arguments
