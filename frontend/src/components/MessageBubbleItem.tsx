@@ -31,6 +31,7 @@ export interface MessageHandlers {
   onCancelEdit: () => void;
   onThreadClick: (parentMsgId: string, message: models.Message) => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
+  onContactAvatarClick: (message: models.Message, name: string) => void;
   onNavigateToEdit: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
   setOpenActionsMessageId: (id: string | null) => void;
   showToast: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
@@ -172,7 +173,7 @@ export function MessageBubbleItem({
         <div className={cn("flex items-start gap-3", message.isFromMe && "justify-end")}>
           {!message.isFromMe && (
             <div className="flex flex-col items-center shrink-0">
-              <button onClick={() => handlers.onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+              <button onClick={() => handlers.onContactAvatarClick(message, displayName)} className="shrink-0">
                 <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
                   <AvatarImage src={message.senderAvatarUrl} />
                   <AvatarFallback>{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
@@ -325,7 +326,7 @@ export function MessageBubbleItem({
           </div>
           {message.isFromMe && (
             <div className="flex flex-col items-center shrink-0">
-              <button onClick={() => handlers.onAvatarClick(message.senderAvatarUrl || "", t("you"))} className="shrink-0">
+              <button onClick={() => handlers.onContactAvatarClick(message, t("you"))} className="shrink-0">
                 <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
                   <AvatarImage src={message.senderAvatarUrl || ""} />
                   <AvatarFallback>{t("me")}</AvatarFallback>

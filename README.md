@@ -58,11 +58,33 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | Feature | Supported |
 |---|---|
 | Send / receive messages | ✓ |
+| Direct messages and group conversations | ✓ |
 | Reactions | ✓ |
 | Typing indicator | ✓ |
 | Edit message | ✓ |
 | Delete message | ✓ |
 | Read receipts | ✓ |
+| Replies | ✓ |
+| Send / receive files and inline images | ✓ |
+| Call events and Teams meeting links | ✓ |
+| Contact avatars | ✓ |
+| Contact presence (online, away, busy, in a meeting, do not disturb) | ✓ |
+| Automatic discovery of new conversations | ✓ |
+| Catch-up sync after startup and system wake | ✓ |
+
+Teams authentication uses Microsoft's browser-based device-code flow. Loom opens
+a browser, fills in the temporary code and lets Microsoft handle credentials,
+MFA and Conditional Access. Passwords and browser cookies are not stored by Loom,
+and the provider does not require Microsoft Graph application permissions.
+
+Presence is currently available for one-to-one conversations and is refreshed
+approximately once per minute. New conversations are discovered in the background,
+and Loom reconnects the Teams event stream and synchronizes missed messages after
+the computer resumes from sleep.
+
+> **Note:** The Teams integration uses the same private web services as the Teams
+> client through a maintained fork of `mautrix-teams`. As these are not public
+> Microsoft Graph APIs, Microsoft may change them without notice.
 
 ### Google Chat
 
@@ -99,7 +121,7 @@ The protocol layer relies on the excellent [mau.fi](https://mau.fi/) libraries:
 - [whatsmeow](https://github.com/tulir/whatsmeow) — WhatsApp
 - [mautrix-gmessages](https://github.com/mautrix/gmessages) — Google Messages
 - [mautrix-googlechat](https://github.com/mautrix/googlechat) — Google Chat
-- [mautrix-teams](https://github.com/mautrix/teams) — Microsoft Teams
+- [mautrix-teams](https://github.com/yawks/mautrix-teams) — Microsoft Teams
 
 ### UI inspiration
 

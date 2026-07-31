@@ -161,7 +161,7 @@ export function MessageIRCItem({
         <div className="flex flex-col items-center min-w-[60px]">
           {showSender ? (
             <>
-              <button onClick={() => handlers.onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+              <button onClick={() => handlers.onContactAvatarClick(message, displayName)} className="shrink-0">
                 <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
                   <AvatarImage src={message.senderAvatarUrl} />
                   <AvatarFallback className="text-xs">

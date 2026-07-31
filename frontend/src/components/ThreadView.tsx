@@ -30,6 +30,7 @@ import { cn, timeToDate } from "@/lib/utils";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { usePresenceStore } from "@/lib/presenceStore";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -56,9 +57,10 @@ interface ThreadListItemProps {
   providerInstanceId: string | undefined;
   onClick: () => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
+  onContactAvatarClick: (message: models.Message, name: string) => void;
 }
 
-function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerInstanceId, onClick, onAvatarClick }: ThreadListItemProps) {
+function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerInstanceId, onClick, onAvatarClick, onContactAvatarClick }: ThreadListItemProps) {
   const { t } = useTranslation();
   const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
   const timestamp = timeToDate(parentMessage.timestamp);
@@ -79,7 +81,7 @@ function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerI
           className="shrink-0 bg-transparent border-0 p-0"
           onClick={(e) => {
             e.stopPropagation();
-            onAvatarClick(parentMessage.senderAvatarUrl, displayName);
+            onContactAvatarClick(parentMessage, displayName);
           }}
         >
           <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
@@ -110,13 +112,13 @@ function ThreadParentMessage({
   message,
   layout,
   providerInstanceId,
-  onAvatarClick,
+  onContactAvatarClick,
   t,
 }: {
   message: models.Message;
   layout: "bubble" | "irc";
   providerInstanceId: string | undefined;
-  onAvatarClick: (url: string | undefined, name?: string) => void;
+  onContactAvatarClick: (message: models.Message, name: string) => void;
   t: (key: string) => string;
 }) {
   const displayName = getSenderDisplayName(message.senderName, message.senderId, message.isFromMe, t);
@@ -126,7 +128,7 @@ function ThreadParentMessage({
     return (
       <div className={cn("flex items-start gap-3", message.isFromMe && "justify-end")}>
         {!message.isFromMe && (
-          <button onClick={() => onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+          <button onClick={() => onContactAvatarClick(message, displayName)} className="shrink-0">
             <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
               <AvatarImage src={message.senderAvatarUrl} />
               <AvatarFallback className="text-xs">{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
@@ -143,7 +145,7 @@ function ThreadParentMessage({
           </p>
         </div>
         {message.isFromMe && (
-          <button onClick={() => onAvatarClick(message.senderAvatarUrl, t("you"))} className="shrink-0">
+          <button onClick={() => onContactAvatarClick(message, t("you"))} className="shrink-0">
             <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
               <AvatarImage src={message.senderAvatarUrl} />
               <AvatarFallback className="text-xs">{t("me")}</AvatarFallback>
@@ -159,7 +161,7 @@ function ThreadParentMessage({
   return (
     <div className="flex items-start">
       <div className="flex flex-col items-center min-w-[60px]">
-        <button onClick={() => onAvatarClick(message.senderAvatarUrl, displayName)} className="shrink-0">
+        <button onClick={() => onContactAvatarClick(message, displayName)} className="shrink-0">
           <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
             <AvatarImage src={message.senderAvatarUrl} />
             <AvatarFallback className="text-xs">{message.isFromMe ? t("me") : displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
@@ -191,6 +193,8 @@ export function ThreadView() {
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
+  const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
+  const presenceMap = usePresenceStore((state) => state.presenceMap);
   const selectedContact = useAppStore((state) => state.selectedContact);
   const capabilities = useAppStore((state) => state.capabilities);
 
@@ -399,6 +403,20 @@ export function ThreadView() {
     if (urlToShow) {
       setSelectedAvatarUrl(urlToShow);
     }
+  };
+  const handleContactAvatarClick = (message: models.Message, displayName: string) => {
+    setSelectedContactProfile({
+      conversationId,
+      userId: message.senderId,
+      displayName,
+      avatarUrl: message.senderAvatarUrl,
+      status: message.isFromMe
+        ? ""
+        : (activeAccount?.status && activeAccount.status !== "offline")
+          ? activeAccount.status
+          : (presenceMap[message.senderId] ? "online" : "offline"),
+      isSelf: message.isFromMe,
+    });
   };
 
   const { data: threadMessages, isLoading } = useQuery<models.Message[], Error>({
@@ -639,6 +657,7 @@ export function ThreadView() {
                   providerInstanceId={providerInstanceId}
                   onClick={() => handleOpenThread(parentMessage.protocolMsgId!)}
                   onAvatarClick={handleAvatarClick}
+                  onContactAvatarClick={handleContactAvatarClick}
                 />
               ))}
             </div>
@@ -698,7 +717,7 @@ export function ThreadView() {
               message={selectedThreadParentMessage}
               layout={messageLayout}
               providerInstanceId={providerInstanceId}
-              onAvatarClick={handleAvatarClick}
+              onContactAvatarClick={handleContactAvatarClick}
               t={t}
             />
             <div className="thread-view__reply-count flex items-center gap-2 mt-3 text-xs text-muted-foreground">
@@ -726,7 +745,7 @@ export function ThreadView() {
                 >
                   {!message.isFromMe && (
                     <button
-                      onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
+                      onClick={() => handleContactAvatarClick(message, displayName)}
                       className="shrink-0"
                     >
                       <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
@@ -861,7 +880,7 @@ export function ThreadView() {
                   </div>
                   {message.isFromMe && (
                     <button
-                      onClick={() => handleAvatarClick(message.senderAvatarUrl, t("you"))}
+                      onClick={() => handleContactAvatarClick(message, t("you"))}
                       className="shrink-0"
                     >
                       <Avatar className="h-6 w-6 cursor-pointer hover:opacity-80 transition-opacity">
@@ -927,7 +946,7 @@ export function ThreadView() {
                       {showSender ? (
                         <>
                           <button
-                            onClick={() => handleAvatarClick(message.senderAvatarUrl, displayName)}
+                            onClick={() => handleContactAvatarClick(message, displayName)}
                             className="shrink-0"
                           >
                             <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">

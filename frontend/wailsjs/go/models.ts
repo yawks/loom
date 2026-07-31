@@ -143,11 +143,11 @@ export namespace models {
 	    lastExchange?: time.Time;
 	    medianContactResponseSecs?: number;
 	    medianMyResponseSecs?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactExchangeStats(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.isGroup = source["isGroup"];
@@ -166,7 +166,7 @@ export namespace models {
 	        this.medianContactResponseSecs = source["medianContactResponseSecs"];
 	        this.medianMyResponseSecs = source["medianMyResponseSecs"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -203,11 +203,11 @@ export namespace models {
 	    statusEmoji?: string;
 	    lastSeen?: time.Time;
 	    providerFields: Record<string, string>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactProfile(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.userId = source["userId"];
@@ -228,7 +228,7 @@ export namespace models {
 	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
 	        this.providerFields = source["providerFields"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -706,3 +706,4 @@ export namespace time {
 	}
 
 }
+

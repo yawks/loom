@@ -28,7 +28,7 @@ export function VoiceMessage({
     const [playbackRate, setPlaybackRate] = useState(1);
     const [hasPlayedAndMarked, setHasPlayedAndMarked] = useState(false);
     const [waveform, setWaveform] = useState<number[]>([]);
-    const [loadRequested] = useState(true);
+    const [loadRequested, setLoadRequested] = useState(false);
     const [playWhenReady, setPlayWhenReady] = useState(false);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -237,6 +237,11 @@ export function VoiceMessage({
     }, [audioUrl, conversationID, hasPlayedAndMarked, isFromMe, messageID, playWhenReady]);
 
     const togglePlay = async () => {
+        if (!loadRequested) {
+            setLoadRequested(true);
+            setPlayWhenReady(true);
+            return;
+        }
         if (!audioUrl) {
             setPlayWhenReady(true);
             return;
@@ -387,13 +392,14 @@ export function VoiceMessage({
 
             <button
                 onClick={togglePlay}
-                disabled={!audioUrl}
+                disabled={loadRequested && !audioUrl}
                 className={`flex items-center justify-center h-10 w-10 rounded-full shrink-0 transition-colors ${isFromMe
                     ? "bg-white/20 hover:bg-white/30 text-white"
                     : "bg-primary/10 hover:bg-primary/20 text-primary"
                     }`}
             >
-                {!audioUrl && <Loader2 className="h-5 w-5 animate-spin opacity-60" />}
+                {!audioUrl && loadRequested && <Loader2 className="h-5 w-5 animate-spin opacity-60" />}
+                {!audioUrl && !loadRequested && <Play className="h-5 w-5 fill-current ml-0.5" />}
                 {audioUrl && isPlaying && <Pause className="h-5 w-5 fill-current" />}
                 {audioUrl && !isPlaying && <Play className="h-5 w-5 fill-current ml-0.5" />}
             </button>

@@ -35,6 +35,7 @@ import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 
 
 import { useAppStore } from "@/lib/store";
+import { usePresenceStore } from "@/lib/presenceStore";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import { useMessageData } from "@/hooks/useMessageData";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
@@ -232,6 +233,8 @@ export function MessageList({
   const showConversationDetails = useAppStore((state) => state.showConversationDetails);
   const setShowConversationDetails = useAppStore((state) => state.setShowConversationDetails);
   const setSelectedAvatarUrl = useAppStore((state) => state.setSelectedAvatarUrl);
+  const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
+  const presenceMap = usePresenceStore((state) => state.presenceMap);
 
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
   const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
@@ -521,6 +524,21 @@ export function MessageList({
     const urlToShow = avatarUrl || (displayName ? `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}` : null);
     if (urlToShow) setSelectedAvatarUrl(urlToShow);
   }, [setSelectedAvatarUrl]);
+  const handleContactAvatarClick = useCallback((message: models.Message, displayName: string) => {
+    const accountStatus = selectedConversation.linkedAccounts.find(
+      (account) => account.status && account.status !== "offline"
+    )?.status;
+    setSelectedContactProfile({
+      conversationId,
+      userId: message.senderId,
+      displayName,
+      avatarUrl: message.senderAvatarUrl,
+      status: message.isFromMe
+        ? ""
+        : accountStatus || (presenceMap[message.senderId] ? "online" : "offline"),
+      isSelf: message.isFromMe,
+    });
+  }, [conversationId, presenceMap, selectedConversation.linkedAccounts, setSelectedContactProfile]);
 
   const toggleDeletedMessage = useCallback((messageId: string) => {
     setRevealedDeletedMessages((prev) => {
@@ -617,10 +635,11 @@ export function MessageList({
     onCancelEdit: handleCancelEdit,
     onThreadClick: (parentMsgId: string, message: models.Message) => { setSelectedThreadId(parentMsgId); setShowThreads(true); setSelectedThreadParentMessage(message); },
     onAvatarClick: handleAvatarClick,
+    onContactAvatarClick: handleContactAvatarClick,
     onNavigateToEdit: handleNavigateToEdit,
     setOpenActionsMessageId,
     showToast,
-  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
+  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleContactAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
 
   const commonItemProps = {
     mainMessages,
@@ -659,6 +678,7 @@ export function MessageList({
           displayName={selectedConversation.displayName}
           avatarUrl={selectedConversation.avatarUrl}
           conversationId={conversationId}
+          contactUserId={messages.find((message) => !message.isFromMe && message.senderId)?.senderId}
           linkedAccounts={selectedConversation.linkedAccounts}
           onToggleThreads={handleToggleThreads}
           onToggleDetails={handleToggleDetails}

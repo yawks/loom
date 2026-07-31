@@ -10,7 +10,7 @@ import {
   Video,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
@@ -53,6 +53,15 @@ function cacheAttachment(url: string, data: string): void {
     _attachmentDataCache.delete(oldest[0]);
     attachmentCacheBytes -= oldest[1].length * 2;
   }
+}
+
+// Drop base64 strings before an extended background/sleep period. WebKit can
+// retain decoded image surfaces after JS has released the corresponding string.
+export function clearAttachmentCache(): void {
+  _attachmentDataCache.clear();
+  _attachmentLoadingUrls.clear();
+  _attachmentFailedUrls.clear();
+  attachmentCacheBytes = 0;
 }
 
 interface Attachment {
@@ -107,6 +116,104 @@ function getFileExtension(fileName: string): string {
   return parts.length > 1 ? parts[parts.length - 1].toUpperCase() : "";
 }
 
+function VisibleImageAttachment({
+  attachment,
+  onOpen,
+  onDownload,
+}: {
+  attachment: Attachment;
+  onOpen: (dataUrl: string) => void;
+  onDownload: () => void;
+}) {
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+  const [imageData, setImageData] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+      threshold: 0.01,
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) {
+      // Remove both the data URL and its decoded image from this DOM subtree.
+      // The fixed container keeps Virtuoso's measurements stable while showing
+      // the skeleton again outside the viewport.
+      setImageData(null);
+      setFailed(false);
+      return;
+    }
+
+    let active = true;
+    setFailed(false);
+    const load = async () => {
+      try {
+        const data = await GetAttachmentData(attachment.url);
+        if (active) setImageData(data);
+      } catch (error) {
+        // Preserve accessibility for old messages whose original media is no
+        // longer available, but never retain this fallback outside the viewport.
+        if (!attachment.thumbnail) {
+          if (active) setFailed(true);
+          return;
+        }
+        try {
+          const fallback = await GetAttachmentData(attachment.thumbnail);
+          if (active) setImageData(fallback);
+        } catch {
+          if (active) setFailed(true);
+        }
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [attachment.thumbnail, attachment.url, isVisible]);
+
+  return (
+    <div
+      ref={elementRef}
+      className="message-attachment__image relative cursor-pointer rounded-lg overflow-hidden"
+      style={{ width: "320px", height: "200px", contain: "strict" }}
+      onClick={() => imageData && onOpen(imageData)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {imageData ? (
+        <img
+          src={imageData}
+          alt={attachment.fileName}
+          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          className="bg-muted"
+        />
+      ) : (
+        <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
+          <ImageIcon className="h-12 w-12 text-muted-foreground" />
+          {failed && <span className="text-xs text-muted-foreground">{attachment.fileName}</span>}
+        </div>
+      )}
+      {hovered && imageData && (
+        <button
+          className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
+          onClick={(event) => { event.stopPropagation(); onDownload(); }}
+          title="Télécharger"
+        >
+          <Download className="h-4 w-4 text-white" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function MessageAttachments({
   attachments,
   conversationID,
@@ -156,22 +263,16 @@ export function MessageAttachments({
     return uniqueAttachments;
   }, [attachments]);
 
-  // WhatsApp's embedded JPEG thumbnails are often too compressed for the
-  // conversation view. Images therefore use their original file; the bounded
-  // cache prevents a long conversation from retaining unlimited media.
-  // Video, audio and other attachments are still loaded on demand.
+  // Videos keep only their compact poster in the shared cache. Images use an
+  // IntersectionObserver below: high-resolution data exists only while the
+  // corresponding attachment is actually visible.
   useEffect(() => {
     if (parsedAttachments.length === 0) return;
 
     const urlsToLoad: Array<{ url: string; fallbackUrl?: string }> = [];
 
     for (const attachment of parsedAttachments) {
-      if (attachment.type === "image" || attachment.mimeType?.startsWith("image/")) {
-        const url = attachment.url;
-        if (url && !_attachmentDataCache.has(url) && !_attachmentFailedUrls.has(url) && !_attachmentLoadingUrls.has(url)) {
-          urlsToLoad.push({ url, fallbackUrl: attachment.thumbnail });
-        }
-      } else if (attachment.type === "video" || attachment.mimeType?.startsWith("video/")) {
+      if (attachment.type === "video" || attachment.mimeType?.startsWith("video/")) {
         if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
           urlsToLoad.push({ url: attachment.thumbnail });
         }
@@ -244,34 +345,6 @@ export function MessageAttachments({
         }
       }
       showToast?.(t("file_save_error"), "error");
-    }
-  };
-
-  const handleImageClick = async (attachment: Attachment) => {
-    if (attachment.type === "image" && attachment.url) {
-      const url = attachment.url;
-      // The conversation view preloads the thumbnail to keep scrolling light.
-      // Do not use it here: opening an image must show the original file.
-      const cached = getCachedAttachment(url);
-      if (cached) {
-        setSelectedImage(cached);
-        return;
-      }
-      try {
-        const dataUrl = await GetAttachmentData(url);
-        if (dataUrl) {
-          setSelectedImage(dataUrl);
-          return;
-        }
-      } catch (error) {
-        console.error("Failed to load image:", error);
-      }
-
-      // Retain a usable preview when the original is no longer available.
-      const thumbnail = getCachedAttachment(attachment.thumbnail ?? "");
-      if (thumbnail) {
-        setSelectedImage(thumbnail);
-      }
     }
   };
 
@@ -356,15 +429,8 @@ export function MessageAttachments({
           const isVideo = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
           const isAudio = attachment.type === "audio";
           const isPdf = attachment.mimeType === "application/pdf";
-          const thumbnail = attachment.thumbnail || attachment.url;
           const audioUrl = getCachedAttachment(attachment.url);
           const videoThumbnailDataUrl = attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
-          const imageDataUrl = isImage
-            ? getCachedAttachment(attachment.url) ?? getCachedAttachment(attachment.thumbnail ?? "")
-            : getCachedAttachment(thumbnail);
-          const imageFailed = isImage
-            ? _attachmentFailedUrls.has(attachment.url) && _attachmentFailedUrls.has(attachment.thumbnail ?? "")
-            : _attachmentFailedUrls.has(thumbnail);
 
           return (
             <div
@@ -374,38 +440,11 @@ export function MessageAttachments({
               onMouseLeave={() => setHoveredIndex(null)}
             >
               {isImage ? (
-                // Fixed-size container: skeleton and loaded image share identical dimensions,
-                // eliminating the Virtuoso height-remeasure that causes content to jump.
-                <div
-                  className="message-attachment__image relative cursor-pointer rounded-lg overflow-hidden"
-                  style={{ width: "320px", height: "200px", contain: "strict" }}
-                  onClick={() => handleImageClick(attachment)}
-                >
-                  {imageDataUrl ? (
-                    <img
-                      src={imageDataUrl}
-                      alt={attachment.fileName}
-                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      className="bg-muted"
-                    />
-                  ) : (
-                    <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
-                      <ImageIcon className="h-12 w-12 text-muted-foreground" />
-                      {imageFailed && (
-                        <span className="text-xs text-muted-foreground">{attachment.fileName}</span>
-                      )}
-                    </div>
-                  )}
-                  {hoveredIndex === index && imageDataUrl && (
-                    <button
-                      className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
-                      onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
-                      title="Télécharger"
-                    >
-                      <Download className="h-4 w-4 text-white" />
-                    </button>
-                  )}
-                </div>
+                <VisibleImageAttachment
+                  attachment={attachment}
+                  onOpen={setSelectedImage}
+                  onDownload={() => { void handleDownload(attachment); }}
+                />
               ) : isVideo ? (
                 <div
                   className="message-attachment__video relative rounded-lg overflow-hidden bg-black"

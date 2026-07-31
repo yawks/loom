@@ -18,6 +18,7 @@ export function MessageHeader({
   displayName,
   avatarUrl,
   conversationId,
+  contactUserId,
   linkedAccounts,
   onToggleThreads,
   onToggleDetails,
@@ -25,6 +26,7 @@ export function MessageHeader({
   displayName: string;
   avatarUrl?: string;
   conversationId: string;
+  contactUserId?: string;
   linkedAccounts: models.LinkedAccount[];
   onToggleThreads: () => void;
   onToggleDetails: () => void;
@@ -32,6 +34,7 @@ export function MessageHeader({
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const showThreads = useAppStore((state) => state.showThreads);
+  const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
   const isTyping = useTypingStore(
     (state) => (state.typingByConversation[conversationId]?.length ?? 0) > 0
   );
@@ -47,6 +50,7 @@ export function MessageHeader({
     (account) => presenceMap[account.userId] === true
   );
   const status = accountStatus || (hasOnlinePresence ? "online" : null);
+  const profileAccount = linkedAccounts.find((account) => !account.isGroup) ?? linkedAccounts[0];
 
   const { data: configuredProviders = [] } = useQuery({
     queryKey: ["configuredProviders"],
@@ -68,7 +72,22 @@ export function MessageHeader({
   return (
     <div className={cn("message-header p-4 border-b flex justify-between items-center shrink-0 transition-opacity duration-200", showThreads && "opacity-20")}>
       <div className="message-header__identity flex items-center gap-3 min-w-0">
-        <div className="relative shrink-0">
+        <button
+          type="button"
+          className="relative shrink-0"
+          disabled={isGroup || !profileAccount}
+          onClick={() => {
+            if (!profileAccount || isGroup) return;
+            setSelectedContactProfile({
+              conversationId,
+              userId: contactUserId || profileAccount.userId,
+              displayName,
+              avatarUrl,
+              status: status || "offline",
+            });
+          }}
+          aria-label={t("contact_profile.title")}
+        >
           <Avatar className="message-header__avatar h-9 w-9">
             <AvatarImage src={avatarUrl} alt={displayName} />
             <AvatarFallback>{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
@@ -95,7 +114,7 @@ export function MessageHeader({
               />
             )
           )}
-        </div>
+        </button>
         <div className="message-header__name-block flex flex-col min-w-0">
           <h2 className="message-header__display-name text-lg font-semibold leading-tight truncate">{displayName}</h2>
           {isTyping ? (

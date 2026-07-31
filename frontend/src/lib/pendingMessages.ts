@@ -5,11 +5,28 @@ import { models } from "../../wailsjs/go/models";
 // returns them on its own, eliminating the race where a background refetch overwrites
 // an optimistic setQueryData before the message has been committed.
 const pending = new Map<string, models.Message[]>();
+const MAX_PENDING_PER_CONVERSATION = 50;
+const MAX_PENDING_MESSAGES = 500;
+
+function boundPendingMessages(): void {
+  let total = 0;
+  for (const messages of pending.values()) total += messages.length;
+  while (total > MAX_PENDING_MESSAGES) {
+    const oldest = pending.entries().next().value as [string, models.Message[]] | undefined;
+    if (!oldest) break;
+    pending.delete(oldest[0]);
+    total -= oldest[1].length;
+  }
+}
 
 export function addPendingMessage(convId: string, message: models.Message): void {
   const existing = pending.get(convId) ?? [];
   if (!existing.some((m) => m.protocolMsgId && m.protocolMsgId === message.protocolMsgId)) {
-    pending.set(convId, [...existing, message]);
+    // This is only a short bridge while SQLite commits the event. Do not let a
+    // resume sync turn it into a second, unbounded message store.
+    pending.delete(convId);
+    pending.set(convId, [...existing, message].slice(-MAX_PENDING_PER_CONVERSATION));
+    boundPendingMessages();
   }
 }
 
