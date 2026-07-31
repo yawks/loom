@@ -1,11 +1,81 @@
 package slack
 
 import (
+	"Loom/pkg/core"
 	"Loom/pkg/models"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/slack-go/slack"
+	"golang.org/x/text/unicode/norm"
 )
+
+const slackChannelNameMaxLength = 80
+
+func normalizeSlackChannelName(name string) string {
+	var normalized strings.Builder
+	separatorPending := false
+	for _, r := range norm.NFD.String(strings.ToLower(strings.TrimSpace(name))) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			if separatorPending && normalized.Len() > 0 && normalized.Len() < slackChannelNameMaxLength {
+				normalized.WriteByte('-')
+			}
+			separatorPending = false
+			if normalized.Len() < slackChannelNameMaxLength {
+				normalized.WriteRune(r)
+			}
+			continue
+		}
+		if r == '_' {
+			if normalized.Len() > 0 && normalized.Len() < slackChannelNameMaxLength {
+				normalized.WriteRune(r)
+			}
+			separatorPending = false
+			continue
+		}
+		separatorPending = normalized.Len() > 0
+	}
+	return strings.TrimRight(normalized.String(), "-_")
+}
+
+// CreateConversation supports Slack's distinct multi-person DM and channel
+// concepts while keeping the generic provider API provider-neutral.
+func (p *SlackProvider) CreateConversation(conversationType, title string, participantIDs []string) (*models.Conversation, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+	if conversationType == "group_message" {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{Users: participantIDs})
+		if err != nil {
+			return nil, err
+		}
+		return &models.Conversation{ProtocolConvID: core.BuildConvID(p.getInstanceId(), channel.ID), GroupName: channel.Name, IsGroup: true}, nil
+	}
+	channelName := normalizeSlackChannelName(title)
+	if channelName == "" {
+		return nil, fmt.Errorf("slack channel name must contain at least one letter or number")
+	}
+	channel, err := client.CreateConversation(slack.CreateConversationParams{
+		ChannelName: channelName,
+		IsPrivate:   conversationType == "private_channel",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(participantIDs) > 0 {
+		if _, err = client.InviteUsersToConversation(channel.ID, participantIDs...); err != nil {
+			return nil, fmt.Errorf("channel created but participants could not be invited: %w", err)
+		}
+	}
+	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.getInstanceId(), channel.ID), GroupName: channel.Name, IsGroup: true}, nil
+}
 
 // CreateGroup creates a new channel (group).
 func (p *SlackProvider) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
@@ -16,8 +86,12 @@ func (p *SlackProvider) CreateGroup(groupName string, participantIDs []string) (
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
+	channelName := normalizeSlackChannelName(groupName)
+	if channelName == "" {
+		return nil, fmt.Errorf("slack channel name must contain at least one letter or number")
+	}
 	channel, err := p.client.CreateConversation(slack.CreateConversationParams{
-		ChannelName: groupName,
+		ChannelName: channelName,
 		IsPrivate:   false,
 	})
 	if err != nil {
@@ -47,7 +121,11 @@ func (p *SlackProvider) UpdateGroupName(conversationID string, newName string) e
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	_, err := p.client.RenameConversation(conversationID, newName)
+	channelName := normalizeSlackChannelName(newName)
+	if channelName == "" {
+		return fmt.Errorf("slack channel name must contain at least one letter or number")
+	}
+	_, err := p.client.RenameConversation(conversationID, channelName)
 	return err
 }
 

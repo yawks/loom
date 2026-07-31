@@ -119,6 +119,11 @@ func (p *Provider) Disconnect() error {
 	defer p.mu.Unlock()
 	if p.client != nil {
 		p.client.Disconnect()
+		// libgm's client owns a long-poll session, acknowledgement timers and
+		// HTTP transports. Reusing that object after a laptop wake can leave the
+		// provider attached to the dead pre-sleep session. Keep the persisted
+		// pairing data, but give the next Connect a completely fresh client.
+		p.newClientLocked()
 	}
 	return nil
 }

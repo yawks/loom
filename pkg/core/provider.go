@@ -313,4 +313,42 @@ type Capabilities struct {
 	// NativeEmojiReactions indicates the provider's reaction API expects raw Unicode
 	// emoji characters (e.g. "👍") rather than Slack-style names (e.g. "+1").
 	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
+	// Conversation creation capabilities are intentionally more precise than
+	// SupportsGroupManagement, which also covers editing existing groups.
+	SupportsContactDirectory   bool `json:"supportsContactDirectory"`
+	SupportsDirectConversation bool `json:"supportsDirectConversation"`
+	SupportsGroupConversation  bool `json:"supportsGroupConversation"`
+	SupportsGroupTitle         bool `json:"supportsGroupTitle"`
+	RequiresGroupTitle         bool `json:"requiresGroupTitle"`
+	// GroupConversationTypes is a comma-separated list so Capabilities remains
+	// comparable (several provider contract tests compare it as a value).
+	GroupConversationTypes string `json:"groupConversationTypes"`
+}
+
+// ConversationCreator is optional. Providers implement it when creating a
+// conversation requires more information than the legacy CreateGroup method.
+type ConversationCreator interface {
+	CreateConversation(conversationType, title string, participantIDs []string) (*models.Conversation, error)
+}
+
+// ContactSearcher is implemented by providers whose directory is a remote
+// people picker rather than a list that can be fully synchronized up front.
+type ContactSearcher interface {
+	SearchContacts(query string) ([]models.LinkedAccount, error)
+}
+
+// DirectConversationCreator resolves providers (such as Teams) whose DM
+// conversation ID cannot be derived from the target user ID alone.
+type DirectConversationCreator interface {
+	CreateDirectConversation(participantID string) (*models.Conversation, error)
+}
+
+type CurrentUserProvider interface {
+	CurrentUserID() string
+}
+
+// ContactStatusRefresher provides accurate on-demand presence for providers
+// whose directory endpoint does not carry reliable presence information.
+type ContactStatusRefresher interface {
+	RefreshContactStatuses(userIDs []string) map[string]string
 }

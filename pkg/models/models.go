@@ -83,6 +83,7 @@ type Conversation struct {
 	LinkedAccountID   uint               `json:"linkedAccountId"`
 	ProtocolConvID    string             `gorm:"uniqueIndex" json:"protocolConvId"` // Conversation ID on the platform
 	IsGroup           bool               `json:"isGroup"`
+	ConversationType  string             `json:"conversationType,omitempty"` // group, group_message, private_channel, public_channel
 	GroupName         string             `json:"groupName,omitempty"`
 	IsPinned          bool               `json:"isPinned"`                                                     // Whether the conversation is pinned
 	IsMuted           bool               `json:"isMuted"`                                                      // Whether the conversation is muted
@@ -90,6 +91,21 @@ type Conversation struct {
 	Messages          []Message          `gorm:"foreignKey:ConversationID" json:"messages"`
 	CreatedAt         time.Time          `json:"createdAt"`
 	UpdatedAt         time.Time          `json:"updatedAt"`
+}
+
+// OpenConversationRequest describes the provider-neutral new conversation flow.
+type OpenConversationRequest struct {
+	ProviderInstanceID string   `json:"providerInstanceId"`
+	ParticipantIDs     []string `json:"participantIds"`
+	ConversationType   string   `json:"conversationType"`
+	Title              string   `json:"title"`
+}
+
+// ConversationResolution either contains one or more existing matching
+// conversations, or the newly created conversation in Created.
+type ConversationResolution struct {
+	Matches []MetaContact `json:"matches"`
+	Created *MetaContact  `json:"created,omitempty"`
 }
 
 // GroupParticipant represents a participant in a group conversation.

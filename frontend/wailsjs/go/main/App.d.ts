@@ -73,6 +73,8 @@ export function GetMetaContacts():Promise<Array<models.MetaContact>>;
 
 export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, string>>;
 
+export function GetProviderContacts(arg1:string):Promise<Array<models.MetaContact>>;
+
 export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
@@ -87,6 +89,8 @@ export function MarkMessageAsPlayed(arg1:string,arg2:string):Promise<void>;
 
 export function MarkMessageAsRead(arg1:string,arg2:string):Promise<void>;
 
+export function OpenConversation(arg1:models.OpenConversationRequest):Promise<models.ConversationResolution>;
+
 export function OpenFile(arg1:string):Promise<void>;
 
 export function RemoveProvider(arg1:string):Promise<void>;
@@ -98,6 +102,8 @@ export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
 
 export function SearchMessages(arg1:string,arg2:number):Promise<models.MessageSearchPage>;
+
+export function SearchProviderContacts(arg1:string,arg2:string):Promise<Array<models.MetaContact>>;
 
 export function SendFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 

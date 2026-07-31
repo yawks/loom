@@ -81,10 +81,21 @@ func TestCapabilities(t *testing.T) {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
-		NativeEmojiReactions: true,
+		NativeEmojiReactions:     true,
+		SupportsContactDirectory: true, SupportsDirectConversation: true,
+		SupportsGroupConversation: true, SupportsGroupTitle: true,
+		GroupConversationTypes: "group",
 	}
 	if got != want {
 		t.Fatalf("capabilities=%+v, want %+v", got, want)
+	}
+}
+
+func TestTeamsDMParticipantMRI(t *testing.T) {
+	threadID := "19:6815e2df-8147-4ab5-8d28-b935a253334a_cd0ce28e-581e-422a-a157-7427f06e3496@unq.gbl.spaces"
+	got := teamsDMParticipantMRI(threadID, "8:orgid:6815e2df-8147-4ab5-8d28-b935a253334a")
+	if got != "8:orgid:cd0ce28e-581e-422a-a157-7427f06e3496" {
+		t.Fatalf("teamsDMParticipantMRI()=%q", got)
 	}
 }
 

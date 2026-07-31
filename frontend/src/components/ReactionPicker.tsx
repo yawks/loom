@@ -72,7 +72,10 @@ export function ReactionPicker({
       // emoji-picker-react puts the Slack/GitHub shortcode first (for example
       // "grinning" for 😀). Reversing our large alias map can instead pick
       // textual aliases such as ":d", which Slack rejects with invalid_name.
-      const slackName = emojiData.names[0].trim().toLowerCase().replaceAll(" ", "_");
+      const slackName = emojiData.names[0]
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, "_");
       onReactionSelect(`:${slackName}:`);
     } else {
       // Standard unicode emoji

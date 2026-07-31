@@ -69,6 +69,7 @@ function generateEmojiMap(emojilibData) {
   
   // Add Slack-specific mappings not in emojilib or with different names
   const slackSpecificMappings = {
+    'heart_eyes': '😍',
     'spiral_calendar_pad': '📓',
     'spiral_calendar': '📓',
     'spiral_notepad': '📓',
@@ -167,7 +168,6 @@ async function main() {
 }
 
 main();
-
 
 
 

@@ -13,6 +13,12 @@ export namespace core {
 	    supportsMuteConversation: boolean;
 	    supportsQRCodeAuth: boolean;
 	    nativeEmojiReactions: boolean;
+	    supportsContactDirectory: boolean;
+	    supportsDirectConversation: boolean;
+	    supportsGroupConversation: boolean;
+	    supportsGroupTitle: boolean;
+	    requiresGroupTitle: boolean;
+	    groupConversationTypes: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
@@ -32,6 +38,12 @@ export namespace core {
 	        this.supportsMuteConversation = source["supportsMuteConversation"];
 	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
 	        this.nativeEmojiReactions = source["nativeEmojiReactions"];
+	        this.supportsContactDirectory = source["supportsContactDirectory"];
+	        this.supportsDirectConversation = source["supportsDirectConversation"];
+	        this.supportsGroupConversation = source["supportsGroupConversation"];
+	        this.supportsGroupTitle = source["supportsGroupTitle"];
+	        this.requiresGroupTitle = source["requiresGroupTitle"];
+	        this.groupConversationTypes = source["groupConversationTypes"];
 	    }
 	}
 	export class ProviderInfo {
@@ -470,6 +482,7 @@ export namespace models {
 	    linkedAccountId: number;
 	    protocolConvId: string;
 	    isGroup: boolean;
+	    conversationType?: string;
 	    groupName?: string;
 	    isPinned: boolean;
 	    isMuted: boolean;
@@ -488,6 +501,7 @@ export namespace models {
 	        this.linkedAccountId = source["linkedAccountId"];
 	        this.protocolConvId = source["protocolConvId"];
 	        this.isGroup = source["isGroup"];
+	        this.conversationType = source["conversationType"];
 	        this.groupName = source["groupName"];
 	        this.isPinned = source["isPinned"];
 	        this.isMuted = source["isMuted"];
@@ -515,7 +529,6 @@ export namespace models {
 		    return a;
 		}
 	}
-	
 	export class LinkedAccount {
 	    id: number;
 	    metaContactId: number;
@@ -572,6 +585,80 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class MetaContact {
+	    id: number;
+	    displayName: string;
+	    avatarUrl: string;
+	    linkedAccounts: LinkedAccount[];
+	    createdAt: time.Time;
+	    updatedAt: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new MetaContact(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.linkedAccounts = this.convertValues(source["linkedAccounts"], LinkedAccount);
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ConversationResolution {
+	    matches: MetaContact[];
+	    created?: MetaContact;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversationResolution(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.matches = this.convertValues(source["matches"], MetaContact);
+	        this.created = this.convertValues(source["created"], MetaContact);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	
 	
 	export class MessageSearchResult {
@@ -647,45 +734,24 @@ export namespace models {
 		}
 	}
 	
-	export class MetaContact {
-	    id: number;
-	    displayName: string;
-	    avatarUrl: string;
-	    linkedAccounts: LinkedAccount[];
-	    createdAt: time.Time;
-	    updatedAt: time.Time;
+	
+	export class OpenConversationRequest {
+	    providerInstanceId: string;
+	    participantIds: string[];
+	    conversationType: string;
+	    title: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new MetaContact(source);
+	        return new OpenConversationRequest(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.displayName = source["displayName"];
-	        this.avatarUrl = source["avatarUrl"];
-	        this.linkedAccounts = this.convertValues(source["linkedAccounts"], LinkedAccount);
-	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
-	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.participantIds = source["participantIds"];
+	        this.conversationType = source["conversationType"];
+	        this.title = source["title"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 
 }

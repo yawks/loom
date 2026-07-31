@@ -138,6 +138,10 @@ export function GetParticipantNames(arg1) {
   return window['go']['main']['App']['GetParticipantNames'](arg1);
 }
 
+export function GetProviderContacts(arg1) {
+  return window['go']['main']['App']['GetProviderContacts'](arg1);
+}
+
 export function GetProviderQRCode(arg1) {
   return window['go']['main']['App']['GetProviderQRCode'](arg1);
 }
@@ -166,6 +170,10 @@ export function MarkMessageAsRead(arg1, arg2) {
   return window['go']['main']['App']['MarkMessageAsRead'](arg1, arg2);
 }
 
+export function OpenConversation(arg1) {
+  return window['go']['main']['App']['OpenConversation'](arg1);
+}
+
 export function OpenFile(arg1) {
   return window['go']['main']['App']['OpenFile'](arg1);
 }
@@ -188,6 +196,10 @@ export function SaveConfig(arg1) {
 
 export function SearchMessages(arg1, arg2) {
   return window['go']['main']['App']['SearchMessages'](arg1, arg2);
+}
+
+export function SearchProviderContacts(arg1, arg2) {
+  return window['go']['main']['App']['SearchProviderContacts'](arg1, arg2);
 }
 
 export function SendFile(arg1, arg2, arg3, arg4) {

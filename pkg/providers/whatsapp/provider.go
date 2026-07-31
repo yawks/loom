@@ -579,22 +579,13 @@ func (w *WhatsAppProvider) Disconnect() error {
 		close(w.stopChan)
 	}
 
-	select {
-	case <-w.eventChan:
-		// Already closed
-	default:
-		close(w.eventChan)
-	}
-
 	w.disconnected = true
 	w.qrChanSet = false
 	w.qrChan = nil
-
-	// Close logger
-	if w.logger != nil {
-		w.logger.Close()
-		w.logger = nil
-	}
+	// eventChan belongs to the provider for its whole lifetime. Closing it here
+	// would make a wake/reconnect look successful while permanently disabling
+	// delivery of subsequent WhatsApp events to Loom.
+	w.stopChan = make(chan struct{})
 
 	w.log("WhatsApp: Disconnected\n")
 	return nil
@@ -647,23 +638,33 @@ func (w *WhatsAppProvider) Cleanup() error {
 	}
 
 	w.log("WhatsApp: Cleanup completed successfully\n")
+	if w.logger != nil {
+		w.logger.Close()
+		w.logger = nil
+	}
 	return nil
 }
 
 func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:          false,
-		SupportsReactions:        true,
-		SupportsCustomEmojis:     false,
-		SupportsTypingIndicator:  true,
-		SupportsGroupManagement:  true,
-		SupportsDeleteMessage:    true,
-		SupportsEditMessage:      true,
-		SupportsReadReceipts:     true,
-		SupportsPinConversation:  true,
-		SupportsMuteConversation: true,
-		SupportsQRCodeAuth:       true,
-		NativeEmojiReactions:     true,
+		SupportsThreads:            false,
+		SupportsReactions:          true,
+		SupportsCustomEmojis:       false,
+		SupportsTypingIndicator:    true,
+		SupportsGroupManagement:    true,
+		SupportsDeleteMessage:      true,
+		SupportsEditMessage:        true,
+		SupportsReadReceipts:       true,
+		SupportsPinConversation:    true,
+		SupportsMuteConversation:   true,
+		SupportsQRCodeAuth:         true,
+		NativeEmojiReactions:       true,
+		SupportsContactDirectory:   true,
+		SupportsDirectConversation: true,
+		SupportsGroupConversation:  true,
+		SupportsGroupTitle:         true,
+		RequiresGroupTitle:         true,
+		GroupConversationTypes:     "group",
 	}
 }
 

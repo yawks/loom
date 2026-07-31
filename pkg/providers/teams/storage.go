@@ -81,13 +81,94 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 		if err := db.DB.Create(&conversation).Error; err != nil {
 			return fmt.Errorf("%s: create conversation: %w", providerID, err)
 		}
-	} else if conversation.IsGroup {
-		conversation.GroupName = account.Username
-		if err := db.DB.Save(&conversation).Error; err != nil {
-			return fmt.Errorf("%s: update conversation name: %w", providerID, err)
+	} else {
+		oldLinkedAccountID := conversation.LinkedAccountID
+		conversation.LinkedAccountID = stored.ID
+		if conversation.IsGroup {
+			conversation.GroupName = account.Username
+		}
+		if oldLinkedAccountID != stored.ID || conversation.IsGroup {
+			if err := db.DB.Save(&conversation).Error; err != nil {
+				return fmt.Errorf("%s: update conversation: %w", providerID, err)
+			}
+			if oldLinkedAccountID != stored.ID {
+				db.ContactStore.SetConversation(oldLinkedAccountID, "")
+			}
 		}
 	}
 	db.ContactStore.UpsertConversation(stored.ID, conversation.ProtocolConvID)
+	return nil
+}
+
+// storeDirectoryContact persists a people-picker result without inventing a
+// Conversation record. A conversation is attached only when it is opened.
+func (p *Provider) storeDirectoryContact(account models.LinkedAccount) error {
+	if db.DB == nil || account.UserID == "" {
+		return nil
+	}
+	var stored models.LinkedAccount
+	result := db.DB.Where("provider_instance_id = ? AND user_id = ?", p.instance, account.UserID).First(&stored)
+	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+		return result.Error
+	}
+	if result.Error == gorm.ErrRecordNotFound {
+		meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
+		if err := db.DB.Create(&meta).Error; err != nil {
+			return err
+		}
+		db.ContactStore.UpsertMetaContact(meta)
+		account.MetaContactID = meta.ID
+		if account.Status == "" {
+			account.Status = "offline"
+		}
+		if err := db.DB.Create(&account).Error; err != nil {
+			return err
+		}
+		stored = account
+	} else {
+		stored.Username = account.Username
+		if account.AvatarURL != "" {
+			stored.AvatarURL = account.AvatarURL
+		}
+		if account.Extra != "" {
+			stored.Extra = account.Extra
+		}
+		if err := db.DB.Save(&stored).Error; err != nil {
+			return err
+		}
+		if meta, ok := db.ContactStore.FindMetaContact(stored.MetaContactID); ok {
+			meta.DisplayName = stored.Username
+			if stored.AvatarURL != "" {
+				meta.AvatarURL = stored.AvatarURL
+			}
+			if err := db.DB.Save(&meta).Error; err != nil {
+				return err
+			}
+			db.ContactStore.UpsertMetaContact(meta)
+		}
+	}
+	db.ContactStore.UpsertLinkedAccount(stored)
+	if account.ConversationID != "" {
+		nsConvID := core.BuildConvID(p.instance, account.ConversationID)
+		var conversation models.Conversation
+		result := db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
+		if result.Error == gorm.ErrRecordNotFound {
+			conversation = models.Conversation{LinkedAccountID: stored.ID, ProtocolConvID: nsConvID, IsGroup: false}
+			if err := db.DB.Create(&conversation).Error; err != nil {
+				return err
+			}
+		} else if result.Error != nil {
+			return result.Error
+		} else if conversation.LinkedAccountID != stored.ID {
+			oldLinkedAccountID := conversation.LinkedAccountID
+			conversation.LinkedAccountID = stored.ID
+			if err := db.DB.Save(&conversation).Error; err != nil {
+				return err
+			}
+			db.ContactStore.SetConversation(oldLinkedAccountID, "")
+		}
+		db.ContactStore.SetConversation(stored.ID, nsConvID)
+	}
 	return nil
 }
 

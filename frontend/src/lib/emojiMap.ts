@@ -2690,6 +2690,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "heard": "🇦🇺",
   "hearing": "👂",
   "heart": "😍",
+  "heart_eyes": "😍",
   "heart_decoration": "💟",
   "heart_exclamation": "❣️",
   "heart_hands": "🫶",
@@ -6309,6 +6310,15 @@ export function emojiNameToUnicode(name: string): string | null {
   const directMatch = unicodeEmojiMap[name];
   if (directMatch) {
     return directMatch;
+  }
+
+  // Emoji pickers sometimes expose human-readable aliases containing hyphens
+  // (for example "upside-down_face"), while Slack uses underscores in its
+  // canonical shortcodes. Accept both forms so previously stored reactions
+  // render and group with the canonical Slack reaction.
+  const slackCompatibleMatch = unicodeEmojiMap[name.replaceAll("-", "_")];
+  if (slackCompatibleMatch) {
+    return slackCompatibleMatch;
   }
 
   const toneMatch = name.match(SKIN_TONE_PATTERN);

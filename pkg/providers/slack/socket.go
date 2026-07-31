@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -14,13 +15,13 @@ import (
 )
 
 // startSocketMode starts the Socket Mode event listener loop
-func (p *SlackProvider) startSocketMode() {
+func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.Client) {
 	p.log("SlackProvider.startSocketMode: starting event loop\n")
 
 	// Create a goroutine to run the socket mode loop
 	// We use p.socketClient which was initialized in Connect
 	go func() {
-		for evt := range p.socketClient.Events {
+		for evt := range client.Events {
 			switch evt.Type {
 			case socketmode.EventTypeConnecting:
 				p.log("SlackProvider.startSocketMode: connecting to Slack Socket Mode...\n")
@@ -36,7 +37,7 @@ func (p *SlackProvider) startSocketMode() {
 				}
 
 				// Acknowledge the event
-				p.socketClient.Ack(*evt.Request)
+				client.Ack(*evt.Request)
 
 				switch eventsAPIEvent.Type {
 				case slackevents.CallbackEvent:
@@ -63,7 +64,7 @@ func (p *SlackProvider) startSocketMode() {
 	// Looking at slack-go docs, client.Run() starts the loop and populates the Events channel.
 	// So we need to call client.Run() separately.
 
-	runErr := p.socketClient.Run()
+	runErr := client.RunContext(ctx)
 	if runErr != nil {
 		p.log("SlackProvider.startSocketMode: ERROR - socket client stopped with error: %v\n", runErr)
 	}

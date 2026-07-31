@@ -252,9 +252,26 @@
   "optional_group_title": "Titre du groupe (optionnel)",
   "search_contacts": "Rechercher des contacts...",
   "no_contacts_found": "Aucun contact trouvé",
+  "loading_contacts": "Chargement des contacts...",
   "create_group": "Créer le groupe",
   "open_chat": "Ouvrir la discussion",
   "creating": "Création...",
+  "continue": "Continuer",
+  "choose_provider": "Choisir un provider",
+  "no_provider_contact_directory": "Aucun provider ne propose actuellement de répertoire de contacts.",
+  "choose_existing_conversation": "Plusieurs conversations ont déjà ces participants. Choisissez celle à ouvrir.",
+  "conversation_type": "Type de conversation",
+  "conversation_types": {
+    "group": "Groupe",
+    "group_message": "Message de groupe",
+    "private_channel": "Canal privé",
+    "public_channel": "Canal public"
+  },
+  "conversation_errors": {
+    "name_taken": "Ce nom de canal est déjà utilisé. Choisissez-en un autre.",
+    "invalid_name": "Ce nom de canal n’est pas valide. Utilisez des lettres, des chiffres, des tirets ou des underscores.",
+    "persistence_conflict": "La conversation a bien été créée, mais elle n’a pas pu être enregistrée localement. Réessayez dans un instant."
+  },
   "all": "Tous",
   "no_unread_messages": "Pas de messages non lus",
   "view_recent": "Voir les messages récents",
