@@ -72,3 +72,21 @@ func TestSameParticipantSetRejectsExtraDirectoryContact(t *testing.T) {
 		t.Fatal("expected a group with an extra selectable participant to be rejected")
 	}
 }
+
+func TestProviderAccountsNamespaceConversationID(t *testing.T) {
+	contacts := providerAccountsToMetaContacts("teams-work", []models.LinkedAccount{{
+		Protocol: "teams", ProviderInstanceID: "teams-work", UserID: "8:orgid:alice",
+		Username: "Alice", ConversationID: "19:alice_me@unq.gbl.spaces",
+	}})
+	if len(contacts) != 1 {
+		t.Fatalf("got %d contacts, want 1", len(contacts))
+	}
+	if got := contacts[0].LinkedAccounts[0].ConversationID; got != "teams-work::19:alice_me@unq.gbl.spaces" {
+		t.Fatalf("conversation ID = %q, want namespaced ID", got)
+	}
+
+	contacts = providerAccountsToMetaContacts("teams-work", contacts[0].LinkedAccounts)
+	if got := contacts[0].LinkedAccounts[0].ConversationID; got != "teams-work::19:alice_me@unq.gbl.spaces" {
+		t.Fatalf("already namespaced conversation ID changed to %q", got)
+	}
+}

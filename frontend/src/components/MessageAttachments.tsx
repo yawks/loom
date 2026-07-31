@@ -129,6 +129,7 @@ function VisibleImageAttachment({
   const [isVisible, setIsVisible] = useState(false);
   const [imageData, setImageData] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [hovered, setHovered] = useState(false);
 
   useEffect(() => {
@@ -161,6 +162,7 @@ function VisibleImageAttachment({
         const data = await GetAttachmentData(attachment.url);
         if (active) setImageData(data);
       } catch (error) {
+        console.warn(`[MessageAttachments] Failed to load image ${attachment.url}:`, error);
         // Preserve accessibility for old messages whose original media is no
         // longer available, but never retain this fallback outside the viewport.
         if (!attachment.thumbnail) {
@@ -170,14 +172,15 @@ function VisibleImageAttachment({
         try {
           const fallback = await GetAttachmentData(attachment.thumbnail);
           if (active) setImageData(fallback);
-        } catch {
+        } catch (fallbackError) {
+          console.warn(`[MessageAttachments] Failed to load image fallback ${attachment.thumbnail}:`, fallbackError);
           if (active) setFailed(true);
         }
       }
     };
     void load();
     return () => { active = false; };
-  }, [attachment.thumbnail, attachment.url, isVisible]);
+  }, [attachment.thumbnail, attachment.url, isVisible, loadAttempt]);
 
   return (
     <div
@@ -198,7 +201,22 @@ function VisibleImageAttachment({
       ) : (
         <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
           <ImageIcon className="h-12 w-12 text-muted-foreground" />
-          {failed && <span className="text-xs text-muted-foreground">{attachment.fileName}</span>}
+          {failed && (
+            <>
+              <span className="max-w-[90%] truncate text-xs text-muted-foreground">{attachment.fileName}</span>
+              <button
+                type="button"
+                className="rounded bg-background/70 px-2 py-1 text-xs text-foreground hover:bg-background"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setFailed(false);
+                  setLoadAttempt((attempt) => attempt + 1);
+                }}
+              >
+                Réessayer
+              </button>
+            </>
+          )}
         </div>
       )}
       {hovered && imageData && (
@@ -502,19 +520,21 @@ export function MessageAttachments({
                       )}
                     </div>
                   </div>
-                  {audioUrl ? (
-                    <audio
-                      controls
-                      className="w-full h-8"
-                      src={audioUrl}
-                    >
-                      Your browser does not support the audio element.
-                    </audio>
-                  ) : (
-                    <button className="text-xs opacity-70 text-left underline" onClick={() => GetAttachmentData(attachment.url).then((data) => { cacheAttachment(attachment.url, data); bumpCache(attachment.url, true); }).catch(console.error)}>
-                      Load audio
-                    </button>
-                  )}
+                  <div className="message-attachment__audio-player h-8 w-full">
+                    {audioUrl ? (
+                      <audio
+                        controls
+                        className="w-full h-8"
+                        src={audioUrl}
+                      >
+                        Your browser does not support the audio element.
+                      </audio>
+                    ) : (
+                      <button className="h-8 w-full rounded bg-primary/10 px-2 text-xs opacity-70 text-left underline" onClick={() => GetAttachmentData(attachment.url).then((data) => { cacheAttachment(attachment.url, data); bumpCache(attachment.url, true); }).catch(console.error)}>
+                        Load audio
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : isPdf ? (
                 <div

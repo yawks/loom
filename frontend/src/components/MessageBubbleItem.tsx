@@ -33,6 +33,9 @@ export interface MessageHandlers {
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onContactAvatarClick: (message: models.Message, name: string) => void;
   onNavigateToEdit: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
+  onEditKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onEditBlur: (relatedTarget: EventTarget | null) => void;
+  editingInputRef: RefObject<HTMLInputElement | null>;
   setOpenActionsMessageId: (id: string | null) => void;
   showToast: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
 }
@@ -222,35 +225,13 @@ export function MessageBubbleItem({
                       value={editingText}
                       onChange={(e) => setEditingText(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-                          const input = e.currentTarget;
-                          if (input.selectionStart === 0 || editingText.trim() === "") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handlers.onNavigateToEdit("up");
-                          }
-                          return;
-                        }
-                        if (e.key === "ArrowDown" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-                          const input = e.currentTarget;
-                          if (input.selectionStart === input.value.length || editingText.trim() === "") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handlers.onNavigateToEdit("down", () => {
-                              const chatInput = document.querySelector('textarea[placeholder*="message"], textarea[placeholder*="Message"]') as HTMLTextAreaElement;
-                              if (chatInput) setTimeout(() => chatInput.focus(), 0);
-                            });
-                          }
-                          return;
-                        }
+                        handlers.onEditKeyDown(e);
+                        if (e.defaultPrevented) return;
                         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlers.onSaveEdit(); }
                         else if (e.key === "Escape") { handlers.onCancelEdit(); }
                       }}
                       onBlur={(e) => {
-                        const relatedTarget = e.relatedTarget as HTMLElement | null;
-                        if (!relatedTarget || (!relatedTarget.closest("button") && !relatedTarget.closest('[role="button"]'))) {
-                          handlers.onSaveEdit(false);
-                        }
+                        handlers.onEditBlur(e.relatedTarget);
                       }}
                       className="text-foreground"
                       autoFocus

@@ -90,6 +90,10 @@ export function GetCapabilities(arg1) {
   return window['go']['main']['App']['GetCapabilities'](arg1);
 }
 
+export function GetCommunicationStats(arg1, arg2) {
+  return window['go']['main']['App']['GetCommunicationStats'](arg1, arg2);
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -156,6 +160,10 @@ export function GetThreadMessages(arg1, arg2) {
 
 export function GetThreads(arg1) {
   return window['go']['main']['App']['GetThreads'](arg1);
+}
+
+export function LeaveGroup(arg1) {
+  return window['go']['main']['App']['LeaveGroup'](arg1);
 }
 
 export function MarkConversationAsRead(arg1) {

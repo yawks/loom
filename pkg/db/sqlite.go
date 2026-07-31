@@ -145,6 +145,7 @@ func ensureIndices(db *gorm.DB) error {
 		{"idx_conversations_linked_account_id", "conversations", "linked_account_id"},
 		{"idx_conversations_protocol_conv_id", "conversations", "protocol_conv_id"},
 		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},
+		{"idx_messages_timestamp", "messages", "timestamp"},
 		{"idx_reactions_message_id", "reactions", "message_id"},
 	}
 
@@ -160,6 +161,9 @@ func ensureIndices(db *gorm.DB) error {
 	err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_latest ON messages(protocol_conv_id, timestamp DESC) WHERE deleted_at IS NULL`).Error
 	if err != nil {
 		fmt.Printf("Error creating index idx_messages_conv_latest: %v\n", err)
+	}
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats_time ON messages(timestamp, protocol_conv_id, is_from_me) WHERE deleted_at IS NULL AND is_deleted = 0`).Error; err != nil {
+		fmt.Printf("Error creating index idx_messages_stats_time: %v\n", err)
 	}
 
 	return nil

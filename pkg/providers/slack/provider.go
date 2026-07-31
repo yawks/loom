@@ -1257,6 +1257,7 @@ func (p *SlackProvider) GetCapabilities() core.Capabilities {
 		SupportsCustomEmojis:       true,
 		SupportsTypingIndicator:    true,
 		SupportsGroupManagement:    true,
+		SupportsLeaveGroup:         true,
 		SupportsDeleteMessage:      true,
 		SupportsEditMessage:        true,
 		SupportsReadReceipts:       false,

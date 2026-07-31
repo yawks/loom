@@ -304,6 +304,7 @@ type Capabilities struct {
 	SupportsCustomEmojis     bool `json:"supportsCustomEmojis"`
 	SupportsTypingIndicator  bool `json:"supportsTypingIndicator"`
 	SupportsGroupManagement  bool `json:"supportsGroupManagement"`
+	SupportsLeaveGroup       bool `json:"supportsLeaveGroup"`
 	SupportsDeleteMessage    bool `json:"supportsDeleteMessage"`
 	SupportsEditMessage      bool `json:"supportsEditMessage"`
 	SupportsReadReceipts     bool `json:"supportsReadReceipts"`

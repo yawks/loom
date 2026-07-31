@@ -73,8 +73,6 @@ require (
 	modernc.org/sqlite v1.23.1 // indirect
 )
 
-replace go.mau.fi/mautrix-googlechat => ./third_party/mautrix-googlechat
-
 replace go.mau.fi/mautrix-teams => ./teams/mautrix-teams
 
 // Whatsmeow currently requires the pre-0.9.12 UpgradeTable API. Keep this

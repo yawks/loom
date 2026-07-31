@@ -412,6 +412,18 @@ func (p *Provider) CreateGroup(groupName string, participantIDs []string) (*mode
 	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: true, GroupName: chat.Topic}, nil
 }
 
+func (p *Provider) LeaveGroup(conversationID string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	threadID := core.StripConvID(conversationID)
+	if err := client.LeaveGroupChat(context.Background(), threadID); err != nil {
+		return fmt.Errorf("%s: leave group: %w", providerID, err)
+	}
+	return nil
+}
+
 // GetContactProfile exposes the rich Teams directory card when the participant
 // is a person MRI. It is intentionally optional and not part of core.Provider.
 func (p *Provider) GetContactProfile(userID string) (models.ContactProfile, error) {
@@ -769,6 +781,7 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
+		SupportsLeaveGroup:       true,
 		NativeEmojiReactions:     true,
 		SupportsContactDirectory: true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,

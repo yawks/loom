@@ -147,9 +147,27 @@ func (w *WhatsAppProvider) RemoveGroupParticipants(conversationID string, partic
 }
 
 func (w *WhatsAppProvider) LeaveGroup(conversationID string) error {
-	// TODO: Implement leaving group
-	markUnused(conversationID)
-	return fmt.Errorf("leaving group not yet implemented")
+	w.mu.RLock()
+	client := w.client
+	ctx := w.ctx
+	w.mu.RUnlock()
+
+	if client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	groupJID, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil {
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+	if groupJID.Server != types.GroupServer {
+		return fmt.Errorf("conversation is not a group: %s", conversationID)
+	}
+
+	if err := client.LeaveGroup(ctx, groupJID); err != nil {
+		return fmt.Errorf("leave group: %w", err)
+	}
+	return nil
 }
 
 func (w *WhatsAppProvider) PromoteGroupAdmins(conversationID string, participantIDs []string) error {

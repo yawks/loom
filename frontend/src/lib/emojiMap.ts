@@ -2689,7 +2689,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "hear_no_evil_monkey": "🙉",
   "heard": "🇦🇺",
   "hearing": "👂",
-  "heart": "😍",
+  "heart": "❤️",
   "heart_eyes": "😍",
   "heart_decoration": "💟",
   "heart_exclamation": "❣️",
