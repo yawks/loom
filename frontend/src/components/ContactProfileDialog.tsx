@@ -7,17 +7,12 @@ import type { models } from "../../wailsjs/go/models";
 import { Skeleton } from "@/components/ui/skeleton";
 import { timeToDate } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-
-interface ParticipantTarget {
-  userId: string;
-  displayName: string;
-  avatarUrl?: string;
-  status: string;
-}
+import { Emoji } from "./Emoji";
+import type { ContactProfileTarget } from "@/lib/store";
 
 interface ContactProfileDialogProps {
   conversationId: string;
-  participant: ParticipantTarget | null;
+  participant: ContactProfileTarget | null;
   onClose: () => void;
 }
 
@@ -61,11 +56,13 @@ function PresenceBadge({
   presence,
   statusText,
   statusEmoji,
+  providerInstanceId,
   t,
 }: {
   presence?: string;
   statusText?: string;
   statusEmoji?: string;
+  providerInstanceId?: string;
   t: (key: string) => string;
 }) {
   const normalizedPresence = presence || "offline";
@@ -88,13 +85,21 @@ function PresenceBadge({
     offline: t("offline"),
   };
   const presenceLabel = labelMap[normalizedPresence] || normalizedPresence;
-  const customStatus = [statusEmoji, statusText].filter(Boolean).join(" ");
+  const hasCustomStatus = Boolean(statusEmoji || statusText);
 
   return (
     <div className="mt-2 flex max-w-full items-center gap-2 rounded-full border bg-background/95 px-3 py-1 text-xs shadow-sm">
       <span className={`h-2 w-2 shrink-0 rounded-full ${colorMap[normalizedPresence] || "bg-gray-500"}`} />
-      <span className="truncate">{customStatus || presenceLabel}</span>
-      {customStatus && (
+      {statusEmoji && (
+        <Emoji
+          emoji={statusEmoji}
+          providerInstanceId={providerInstanceId}
+          size={14}
+          className="shrink-0"
+        />
+      )}
+      <span className="truncate">{statusText || (!hasCustomStatus ? presenceLabel : "")}</span>
+      {hasCustomStatus && (
         <span className="shrink-0 text-muted-foreground">· {presenceLabel}</span>
       )}
     </div>
@@ -136,12 +141,15 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
                   {name.substring(0, 2).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
-              <PresenceBadge
-                presence={participant.status || profile?.presence}
-                statusText={profile?.statusText}
-                statusEmoji={profile?.statusEmoji}
-                t={t}
-              />
+              {!participant.isSelf && (
+                <PresenceBadge
+                  presence={participant.status || profile?.presence}
+                  statusText={profile?.statusText}
+                  statusEmoji={profile?.statusEmoji}
+                  providerInstanceId={profile?.providerInstanceId}
+                  t={t}
+                />
+              )}
               <h2 className="mt-3 text-xl font-semibold">{name}</h2>
               {profile?.protocol && (
                 <p className="mt-1 text-sm text-muted-foreground">{profile.protocol}</p>

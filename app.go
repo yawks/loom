@@ -633,7 +633,11 @@ func (a *App) startWakeDetector() {
 	lastTick := time.Now()
 	for {
 		select {
-		case now := <-ticker.C:
+		case <-ticker.C:
+			// Do not use the timestamp carried by ticker.C here. After system
+			// sleep, that value may be a stale tick which was buffered before
+			// the machine woke up and would hide the actual elapsed time.
+			now := time.Now()
 			// If more than 30 seconds have passed since the last 10-second tick,
 			// the computer was likely asleep or the system was heavily throttled.
 			if now.Sub(lastTick) > 30*time.Second {
@@ -716,6 +720,18 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 	if err != nil {
 		a.setProviderError(instanceID, fmt.Sprintf("Sync unavailable: %v", err))
 		return
+	}
+
+	// A socket can still look connected to the application after a laptop wake
+	// even though the underlying network session is dead. Reconnect before the
+	// catch-up sync so both missed messages and subsequent live events resume.
+	if reason == "system wake" {
+		_ = provider.Disconnect()
+		if err := provider.Connect(); err != nil {
+			log.Printf("[App] %s initial reconnect for %s failed: %v", reason, instanceID, err)
+		} else {
+			a.startEventListenerForProvider(a.ctx, instanceID, provider)
+		}
 	}
 
 	var lastErr error
@@ -824,12 +840,6 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 	}
 
 	go func() {
-		defer func() {
-			a.mu.Lock()
-			delete(a.eventCancels, instanceID)
-			a.mu.Unlock()
-		}()
-
 		for {
 			select {
 			case <-subCtx.Done():

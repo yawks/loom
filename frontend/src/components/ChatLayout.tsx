@@ -6,8 +6,10 @@ import {
 import { Suspense, useCallback, useEffect, useState } from "react";
 
 import { AvatarModal } from "./AvatarModal";
+import { clearAttachmentCache } from "./MessageAttachments";
 import { Button } from "@/components/ui/button";
 import { ContactList } from "./ContactList";
+import { ContactProfileDialog } from "./ContactProfileDialog";
 import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
 import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
@@ -32,6 +34,8 @@ export function ChatLayout() {
   useMessageEvents();
   useKeyboardShortcuts();
   useSystemTrayBadge();
+  const selectedContactProfile = useAppStore((state) => state.selectedContactProfile);
+  const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
 
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
@@ -94,6 +98,16 @@ export function ChatLayout() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [showOnboarding]);
+
+  useEffect(() => {
+    const clearMediaMemory = () => clearAttachmentCache();
+    window.addEventListener("blur", clearMediaMemory);
+    window.addEventListener("pagehide", clearMediaMemory);
+    return () => {
+      window.removeEventListener("blur", clearMediaMemory);
+      window.removeEventListener("pagehide", clearMediaMemory);
+    };
+  }, []);
 
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -304,6 +318,11 @@ export function ChatLayout() {
       />
       <SearchModal open={isSearchOpen} onOpenChange={setIsSearchOpen} />
       <AvatarModal />
+      <ContactProfileDialog
+        conversationId={selectedContactProfile?.conversationId || ""}
+        participant={selectedContactProfile}
+        onClose={() => setSelectedContactProfile(null)}
+      />
     </div>
   );
 }

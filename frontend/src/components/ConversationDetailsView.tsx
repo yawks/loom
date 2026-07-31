@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
 import { ParticipantsList } from "./ParticipantsList";
-import { ContactProfileDialog } from "./ContactProfileDialog";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
@@ -31,12 +30,7 @@ export function ConversationDetailsView({
   const setShowConversationDetails = useAppStore(
     (state) => state.setShowConversationDetails
   );
-  const [selectedParticipant, setSelectedParticipant] = useState<{
-    userId: string;
-    displayName: string;
-    avatarUrl?: string;
-    status: string;
-  } | null>(null);
+  const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
   const [idCopied, setIdCopied] = useState(false);
 
@@ -86,7 +80,7 @@ export function ConversationDetailsView({
   };
 
   const handleAvatarClick = (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => {
-    setSelectedParticipant({ avatarUrl, displayName, userId, status });
+    setSelectedContactProfile({ conversationId, avatarUrl, displayName, userId, status });
   };
 
   return (
@@ -152,11 +146,6 @@ export function ConversationDetailsView({
         filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
         uploadState={uploadState}
         onConfirm={handleFileUpload}
-      />
-      <ContactProfileDialog
-        conversationId={conversationId}
-        participant={selectedParticipant}
-        onClose={() => setSelectedParticipant(null)}
       />
     </div>
   );

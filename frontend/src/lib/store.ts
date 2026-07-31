@@ -3,6 +3,14 @@ import type { core, models } from "../../wailsjs/go/models";
 
 export type Theme = "light" | "dark" | "system";
 export type ContactSortOption = "alphabetical" | "last_message" | "unread";
+export interface ContactProfileTarget {
+  conversationId: string;
+  userId: string;
+  displayName: string;
+  avatarUrl?: string;
+  status: string;
+  isSelf?: boolean;
+}
 
 interface AppState {
   selectedContact: models.MetaContact | null;
@@ -25,6 +33,8 @@ interface AppState {
   setFontSize: (fontSize: number) => void;
   selectedAvatarUrl: string | null;
   setSelectedAvatarUrl: (url: string | null) => void;
+  selectedContactProfile: ContactProfileTarget | null;
+  setSelectedContactProfile: (target: ContactProfileTarget | null) => void;
   metaContacts: models.MetaContact[];
   setMetaContacts: (contacts: models.MetaContact[]) => void;
   selectedProviderFilter: string | null;
@@ -165,6 +175,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   selectedAvatarUrl: null,
   setSelectedAvatarUrl: (url) => set({ selectedAvatarUrl: url }),
+  selectedContactProfile: null,
+  setSelectedContactProfile: (target) => set({ selectedContactProfile: target }),
   metaContacts: [],
   setMetaContacts: (contacts) => set((state) => {
     const selectedContact = state.selectedContact
