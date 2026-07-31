@@ -22,7 +22,7 @@ var chatScopes = []string{
 	"https://www.googleapis.com/auth/chat.messages",
 	"https://www.googleapis.com/auth/chat.messages.reactions",
 	"https://www.googleapis.com/auth/chat.spaces",
-	"https://www.googleapis.com/auth/chat.memberships.readonly",
+	"https://www.googleapis.com/auth/chat.memberships",
 	"https://www.googleapis.com/auth/directory.readonly",
 	"https://www.googleapis.com/auth/contacts.readonly",
 	"openid",
@@ -226,6 +226,7 @@ func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
 		SupportsThreads:       true,
 		SupportsReactions:     true,
+		SupportsLeaveGroup:    true,
 		SupportsDeleteMessage: true,
 		SupportsEditMessage:   true,
 		SupportsQRCodeAuth:    false,

@@ -184,27 +184,38 @@ export function FileUploadModal({
                 {selectedFiles.map((file, index) => (
                   <div
                     key={`file-${file.name}-${index}`}
-                    className="flex items-center gap-3 p-3 border rounded-lg min-w-0"
+                    className={file.type?.startsWith("image/")
+                      ? "relative overflow-hidden border rounded-lg min-w-0 bg-muted/20"
+                      : "flex items-center gap-3 p-3 border rounded-lg min-w-0"}
                   >
                     {file.type?.startsWith("image/") ? (
-                      <img
-                        src={imagePreviews[`${file.name}-${file.size}-${file.lastModified}`]}
-                        alt={file.name}
-                        className="h-10 w-10 rounded object-cover border"
-                      />
+                      <>
+                        <img
+                          src={imagePreviews[`${file.name}-${file.size}-${file.lastModified}`]}
+                          alt={file.name}
+                          className="h-52 w-full object-contain"
+                        />
+                        <span className="absolute bottom-2 left-2 rounded bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm">
+                          {formatFileSize(file.size)}
+                        </span>
+                      </>
                     ) : (
                       <File className="h-5 w-5 text-muted-foreground shrink-0" />
                     )}
-                    <div className="flex-1 min-w-0 max-w-full overflow-hidden">
-                      <p className="text-sm font-medium truncate" title={file.name}>{file.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatFileSize(file.size)}
-                      </p>
-                    </div>
+                    {!file.type?.startsWith("image/") && (
+                      <div className="flex-1 min-w-0 max-w-full overflow-hidden">
+                        <p className="text-sm font-medium truncate" title={file.name}>{file.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(file.size)}
+                        </p>
+                      </div>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 shrink-0"
+                      className={file.type?.startsWith("image/")
+                        ? "absolute right-2 top-2 h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background"
+                        : "h-8 w-8 shrink-0"}
                       disabled={isUploading}
                       onClick={() => handleRemoveFile(index)}
                     >
@@ -274,4 +285,3 @@ export function FileUploadModal({
     </Dialog>
   );
 }
-

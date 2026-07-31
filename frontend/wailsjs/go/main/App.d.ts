@@ -49,6 +49,8 @@ export function GetAvatar(arg1:string):Promise<string>;
 
 export function GetCapabilities(arg1:string):Promise<core.Capabilities>;
 
+export function GetCommunicationStats(arg1:time.Time,arg2:time.Time):Promise<models.CommunicationStats>;
+
 export function GetConfig():Promise<Record<string, any>>;
 
 export function GetConfiguredProviders():Promise<Array<core.ProviderInfo>>;
@@ -82,6 +84,8 @@ export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
+
+export function LeaveGroup(arg1:string):Promise<void>;
 
 export function MarkConversationAsRead(arg1:string):Promise<void>;
 

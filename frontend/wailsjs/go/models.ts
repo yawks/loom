@@ -6,6 +6,7 @@ export namespace core {
 	    supportsCustomEmojis: boolean;
 	    supportsTypingIndicator: boolean;
 	    supportsGroupManagement: boolean;
+	    supportsLeaveGroup: boolean;
 	    supportsDeleteMessage: boolean;
 	    supportsEditMessage: boolean;
 	    supportsReadReceipts: boolean;
@@ -31,6 +32,7 @@ export namespace core {
 	        this.supportsCustomEmojis = source["supportsCustomEmojis"];
 	        this.supportsTypingIndicator = source["supportsTypingIndicator"];
 	        this.supportsGroupManagement = source["supportsGroupManagement"];
+	        this.supportsLeaveGroup = source["supportsLeaveGroup"];
 	        this.supportsDeleteMessage = source["supportsDeleteMessage"];
 	        this.supportsEditMessage = source["supportsEditMessage"];
 	        this.supportsReadReceipts = source["supportsReadReceipts"];
@@ -138,6 +140,163 @@ export namespace main {
 }
 
 export namespace models {
+	
+	export class CommunicationCount {
+	    total: number;
+	    sent: number;
+	    received: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommunicationCount(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total = source["total"];
+	        this.sent = source["sent"];
+	        this.received = source["received"];
+	    }
+	}
+	export class CommunicationSeriesPoint {
+	    timestamp: time.Time;
+	    total: number;
+	    sent: number;
+	    received: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommunicationSeriesPoint(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
+	        this.total = source["total"];
+	        this.sent = source["sent"];
+	        this.received = source["received"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ContactCommunicationStats {
+	    metaContactId: number;
+	    displayName: string;
+	    avatarUrl: string;
+	    providerInstanceId: string;
+	    providerId: string;
+	    instanceName: string;
+	    total: number;
+	    sent: number;
+	    received: number;
+	    callCount: number;
+	    callDurationSecs: number;
+	    callsWithoutDuration: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ContactCommunicationStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.metaContactId = source["metaContactId"];
+	        this.displayName = source["displayName"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.providerId = source["providerId"];
+	        this.instanceName = source["instanceName"];
+	        this.total = source["total"];
+	        this.sent = source["sent"];
+	        this.received = source["received"];
+	        this.callCount = source["callCount"];
+	        this.callDurationSecs = source["callDurationSecs"];
+	        this.callsWithoutDuration = source["callsWithoutDuration"];
+	    }
+	}
+	export class InstanceCommunicationStats {
+	    providerInstanceId: string;
+	    providerId: string;
+	    instanceName: string;
+	    total: number;
+	    sent: number;
+	    received: number;
+	    callCount: number;
+	    callDurationSecs: number;
+	    callsWithoutDuration: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstanceCommunicationStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.providerId = source["providerId"];
+	        this.instanceName = source["instanceName"];
+	        this.total = source["total"];
+	        this.sent = source["sent"];
+	        this.received = source["received"];
+	        this.callCount = source["callCount"];
+	        this.callDurationSecs = source["callDurationSecs"];
+	        this.callsWithoutDuration = source["callsWithoutDuration"];
+	    }
+	}
+	export class CommunicationStats {
+	    from: time.Time;
+	    to: time.Time;
+	    summary: CommunicationCount;
+	    previousSummary: CommunicationCount;
+	    series: CommunicationSeriesPoint[];
+	    instances: InstanceCommunicationStats[];
+	    contacts: ContactCommunicationStats[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CommunicationStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.from = this.convertValues(source["from"], time.Time);
+	        this.to = this.convertValues(source["to"], time.Time);
+	        this.summary = this.convertValues(source["summary"], CommunicationCount);
+	        this.previousSummary = this.convertValues(source["previousSummary"], CommunicationCount);
+	        this.series = this.convertValues(source["series"], CommunicationSeriesPoint);
+	        this.instances = this.convertValues(source["instances"], InstanceCommunicationStats);
+	        this.contacts = this.convertValues(source["contacts"], ContactCommunicationStats);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class ContactExchangeStats {
 	    isGroup: boolean;
@@ -657,6 +816,7 @@ export namespace models {
 		    return a;
 		}
 	}
+	
 	
 	
 	

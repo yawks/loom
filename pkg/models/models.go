@@ -58,6 +58,55 @@ type ContactExchangeStats struct {
 	MedianMyResponseSecs      *int64     `json:"medianMyResponseSecs,omitempty"`
 }
 
+// CommunicationCount contains directional message aggregates.
+type CommunicationCount struct {
+	Total    int64 `json:"total"`
+	Sent     int64 `json:"sent"`
+	Received int64 `json:"received"`
+}
+
+// CommunicationSeriesPoint is one time bucket in the statistics chart.
+type CommunicationSeriesPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	CommunicationCount
+}
+
+// InstanceCommunicationStats contains aggregates for one configured provider instance.
+type InstanceCommunicationStats struct {
+	ProviderInstanceID string `json:"providerInstanceId"`
+	ProviderID         string `json:"providerId"`
+	InstanceName       string `json:"instanceName"`
+	CommunicationCount
+	CallCount            int64 `json:"callCount"`
+	CallDurationSecs     int64 `json:"callDurationSecs"`
+	CallsWithoutDuration int64 `json:"callsWithoutDuration"`
+}
+
+// ContactCommunicationStats contains aggregates for one contact/provider-instance pair.
+type ContactCommunicationStats struct {
+	MetaContactID      uint   `json:"metaContactId"`
+	DisplayName        string `json:"displayName"`
+	AvatarURL          string `json:"avatarUrl"`
+	ProviderInstanceID string `json:"providerInstanceId"`
+	ProviderID         string `json:"providerId"`
+	InstanceName       string `json:"instanceName"`
+	CommunicationCount
+	CallCount            int64 `json:"callCount"`
+	CallDurationSecs     int64 `json:"callDurationSecs"`
+	CallsWithoutDuration int64 `json:"callsWithoutDuration"`
+}
+
+// CommunicationStats is the complete on-demand dashboard payload.
+type CommunicationStats struct {
+	From            time.Time                    `json:"from"`
+	To              time.Time                    `json:"to"`
+	Summary         CommunicationCount           `json:"summary"`
+	PreviousSummary CommunicationCount           `json:"previousSummary"`
+	Series          []CommunicationSeriesPoint   `json:"series"`
+	Instances       []InstanceCommunicationStats `json:"instances"`
+	Contacts        []ContactCommunicationStats  `json:"contacts"`
+}
+
 // LinkedAccount represents a protocol-specific account (WhatsApp, Slack, etc.).
 type LinkedAccount struct {
 	ID                 uint           `gorm:"primarykey" json:"id"`

@@ -26,8 +26,7 @@ import type { MessageHandlers } from "./MessageBubbleItem";
 import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
 import { MessageIRCItem } from "./MessageIRCItem";
-import { ChevronDown, Loader2 } from "lucide-react";
-import { Progress } from "@/components/ui/progress";
+import { ChevronDown, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
@@ -43,26 +42,6 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useTranslation } from "react-i18next";
 
-// Module-level context so VirtuosoHeader can read isFetchingNextPage without
-// being defined inside MessageList. All three Virtuoso sub-components live
-// outside the component, which means VIRTUOSO_COMPONENTS is a true constant —
-// it never changes between renders and Virtuoso never has to remount wrappers.
-const VirtuosoFetchingContext = React.createContext(false);
-
-const VirtuosoHeader = () => {
-  const isFetchingNextPage = React.useContext(VirtuosoFetchingContext);
-  const { t } = useTranslation();
-  if (!isFetchingNextPage) return null;
-  return (
-    <div className="flex justify-center items-center h-16 w-full bg-muted/30">
-      <div className="flex items-center gap-2">
-        <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-        <span className="text-sm text-muted-foreground">{t("loading")}</span>
-      </div>
-    </div>
-  );
-};
-
 const VirtuosoFooter = () => <div className="h-4" />;
 
 const VirtuosoItem = (props: React.ComponentPropsWithRef<"div">) => (
@@ -73,7 +52,6 @@ const VirtuosoItem = (props: React.ComponentPropsWithRef<"div">) => (
 );
 
 const VIRTUOSO_COMPONENTS = {
-  Header: VirtuosoHeader,
   Footer: VirtuosoFooter,
   Item: VirtuosoItem,
 };
@@ -128,7 +106,6 @@ export function MessageList({
   // scrollTop corrections that bypass Virtuoso's animation system.
   const scrollerElementRef = useRef<HTMLElement | null>(null);
   const scrollerCleanupRef = useRef<(() => void) | null>(null);
-  const bottomCorrectionFrameRef = useRef<number | null>(null);
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
@@ -147,6 +124,19 @@ export function MessageList({
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
 
   // Hooks
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const focusComposer = useCallback(() => composerRef.current?.focus(), []);
+
+  useEffect(() => {
+    const handleFocusMainComposer = () => {
+      // The conversation update remounts ChatInput. Wait for that commit before
+      // focusing so the thread composer cannot retain focus.
+      requestAnimationFrame(() => composerRef.current?.focus());
+    };
+    window.addEventListener("focus-main-composer", handleFocusMainComposer);
+    return () => window.removeEventListener("focus-main-composer", handleFocusMainComposer);
+  }, []);
+
   const {
     messages,
     mainMessages,
@@ -220,7 +210,9 @@ export function MessageList({
     handleSaveEdit,
     handleCancelEdit,
     handleNavigateToEdit,
-  } = useMessageEdit({ messages, conversationId, showToast, t });
+    handleEditKeyDown,
+    handleEditBlur,
+  } = useMessageEdit({ messages, conversationId, showToast, t, focusComposer });
 
   // Store
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
@@ -416,12 +408,9 @@ export function MessageList({
     // intent through both the optimistic and confirmed render.
     isStabilizingRef.current = true;
     setIsStabilizing(true);
-    // Double rAF: first lets React commit, second lets Virtuoso measure item heights.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: lastIndex, align: 'end', behavior: 'auto' });
-      });
-    });
+    // followOutput owns item insertion. ResizeObserver below only handles real
+    // post-render size changes; running another scrollToIndex here caused two
+    // competing corrections during send.
   }, [hasPendingMessage, conversationId, mainMessages.length]);
 
   const correctBottomImmediately = useCallback(() => {
@@ -429,14 +418,6 @@ export function MessageList({
     if (!el || !isStabilizingRef.current) return;
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
   }, []);
-
-  const scheduleBottomCorrection = useCallback(() => {
-    if (!isStabilizingRef.current || bottomCorrectionFrameRef.current !== null) return;
-    bottomCorrectionFrameRef.current = requestAnimationFrame(() => {
-      bottomCorrectionFrameRef.current = null;
-      correctBottomImmediately();
-    });
-  }, [correctBottomImmediately]);
 
   const setScrollerElement = useCallback((ref: HTMLElement | Window | null) => {
     scrollerCleanupRef.current?.();
@@ -449,8 +430,12 @@ export function MessageList({
       isStabilizingRef.current = false;
       setIsStabilizing(false);
     };
+    let userScrollIntentUntil = 0;
     const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) stopFollowingBottom();
+      if (event.deltaY < 0) {
+        userScrollIntentUntil = performance.now() + 300;
+        stopFollowingBottom();
+      }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopFollowingBottom();
@@ -459,6 +444,20 @@ export function MessageList({
       // Pointer events whose target is the scroller itself are scrollbar
       // interactions. Clicking a message, link, or reaction must not unpin it.
       if (event.target === el) stopFollowingBottom();
+    };
+    let previousScrollTop = el.scrollTop;
+    const handleScroll = () => {
+      const currentScrollTop = el.scrollTop;
+      // Wheel events can be coalesced during a fast trackpad gesture, and
+      // Virtuoso may report atBottom=false before our wheel listener runs.
+      // A decreasing scrollTop is an unambiguous move away from the live edge.
+      if (
+        performance.now() <= userScrollIntentUntil &&
+        currentScrollTop < previousScrollTop - 1
+      ) {
+        stopFollowingBottom();
+      }
+      previousScrollTop = currentScrollTop;
     };
 
     // Virtuoso's viewport has a fixed height; its item-list descendant is the
@@ -476,7 +475,6 @@ export function MessageList({
     };
     const mutationObserver = new MutationObserver(() => {
       observeContent();
-      scheduleBottomCorrection();
     });
     observeContent();
     mutationObserver.observe(el, { childList: true, subtree: true });
@@ -485,6 +483,7 @@ export function MessageList({
     el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
     el.addEventListener("pointerdown", handlePointerDown, { passive: true });
     el.addEventListener("keydown", handleKeyDown);
+    el.addEventListener("scroll", handleScroll, { passive: true });
 
     scrollerCleanupRef.current = () => {
       resizeObserver.disconnect();
@@ -493,14 +492,12 @@ export function MessageList({
       el.removeEventListener("touchmove", stopFollowingBottom);
       el.removeEventListener("pointerdown", handlePointerDown);
       el.removeEventListener("keydown", handleKeyDown);
+      el.removeEventListener("scroll", handleScroll);
     };
-  }, [correctBottomImmediately, scheduleBottomCorrection]);
+  }, [correctBottomImmediately]);
 
   useEffect(() => () => {
     scrollerCleanupRef.current?.();
-    if (bottomCorrectionFrameRef.current !== null) {
-      cancelAnimationFrame(bottomCorrectionFrameRef.current);
-    }
   }, []);
 
   // Handlers
@@ -637,9 +634,12 @@ export function MessageList({
     onAvatarClick: handleAvatarClick,
     onContactAvatarClick: handleContactAvatarClick,
     onNavigateToEdit: handleNavigateToEdit,
+    onEditKeyDown: handleEditKeyDown,
+    onEditBlur: handleEditBlur,
+    editingInputRef,
     setOpenActionsMessageId,
     showToast,
-  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleContactAvatarClick, handleNavigateToEdit, setSelectedThreadId, setShowThreads, showToast]);
+  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleContactAvatarClick, handleNavigateToEdit, handleEditKeyDown, handleEditBlur, setSelectedThreadId, setShowThreads, showToast]);
 
   const commonItemProps = {
     mainMessages,
@@ -668,12 +668,20 @@ export function MessageList({
     <>
       <ToastContainer toasts={toasts} onClose={closeToast} />
       <div
-        className={cn("flex flex-col h-full overflow-hidden transition-colors", isDragging && "bg-muted/50")}
+        className={cn("relative flex flex-col h-full overflow-hidden transition-colors", isDragging && "bg-muted/50")}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-3 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/85 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-3 rounded-xl px-8 py-6 text-center text-primary">
+              <UploadCloud className="h-10 w-10" />
+              <p className="text-sm font-semibold">{t("drop_files_to_upload")}</p>
+            </div>
+          </div>
+        )}
         <MessageHeader
           displayName={selectedConversation.displayName}
           avatarUrl={selectedConversation.avatarUrl}
@@ -705,7 +713,6 @@ export function MessageList({
           </div>
         ) : (
           <div className={cn("message-list__scroll-wrapper relative flex-1 min-h-0 transition-opacity duration-200", showThreads && "opacity-20")}>
-          <VirtuosoFetchingContext.Provider value={isFetchingNextPage}>
           <Virtuoso
             key={conversationId}
             ref={virtuosoRef}
@@ -725,9 +732,6 @@ export function MessageList({
               if (isAtBottom) {
                 isStabilizingRef.current = true;
                 setIsStabilizing(true);
-              } else if (isStabilizingRef.current) {
-                // A measurement or delayed media render moved the live edge.
-                scheduleBottomCorrection();
               }
             }}
             scrollerRef={setScrollerElement}
@@ -769,7 +773,14 @@ export function MessageList({
               );
             }}
           />
-          </VirtuosoFetchingContext.Provider>
+          {isFetchingNextPage && (
+            <div className="message-list__history-loader pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full border bg-background/90 px-3 py-1.5 shadow-sm backdrop-blur">
+              <div className="flex items-center gap-2">
+                <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                <span className="text-sm text-muted-foreground">{t("loading")}</span>
+              </div>
+            </div>
+          )}
           {!atBottom && !isStabilizing && (
             <button
               className="message-list__scroll-to-bottom absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition-opacity hover:opacity-90"
@@ -786,30 +797,6 @@ export function MessageList({
           </div>
         )}
         <div className="shrink-0">
-          {uploadState.isUploading && (
-            <div className="mx-4 mb-2 p-2.5 rounded-lg border bg-background/95 backdrop-blur shadow-sm space-y-1.5 transition-all">
-              <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
-                <span className="flex items-center gap-2 min-w-0 truncate">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
-                  <span className="truncate">
-                    {uploadState.statusText === "compressing"
-                      ? t("compressing_image")
-                      : t("uploading_file_progress", {
-                          current: uploadState.currentFileIndex,
-                          total: uploadState.totalFiles,
-                        })}
-                  </span>
-                </span>
-                <span className="shrink-0 font-mono text-[11px] font-semibold ml-2">{uploadState.progressPercent}%</span>
-              </div>
-              <Progress value={uploadState.progressPercent} className="h-1.5" />
-              {uploadState.currentFileName && (
-                <p className="text-[11px] text-muted-foreground/70 truncate" title={uploadState.currentFileName}>
-                  {uploadState.currentFileName}
-                </p>
-              )}
-            </div>
-          )}
           <ChatInput
             key={`main-${conversationId}`}
             onFileUploadRequest={(files, filePaths) => {
@@ -820,6 +807,7 @@ export function MessageList({
             replyingToMessage={replyingToMessage}
             onCancelReply={() => setReplyingToMessage(null)}
             onNavigateToEdit={handleNavigateToEdit}
+            onTextareaMount={(textarea) => { composerRef.current = textarea; }}
             currentUserName={currentUserName}
             currentUserAvatarUrl={currentUserAvatarUrl}
             onHeightChange={correctBottomImmediately}

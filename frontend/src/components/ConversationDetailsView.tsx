@@ -1,17 +1,28 @@
-import { GetContactAliases, GetMessagesForConversation } from "../../wailsjs/go/main/App";
+import { GetContactAliases, GetMessagesForConversation, LeaveGroup } from "../../wailsjs/go/main/App";
 import { Suspense, useMemo, useState } from "react";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { FileUploadModal } from "./FileUploadModal";
 import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
 import { ParticipantsList } from "./ParticipantsList";
-import { X } from "lucide-react";
+import { LogOut, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import { useTranslation } from "react-i18next";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 
 const fetchMessages = async (conversationID: string): Promise<models.Message[]> => {
   const result = await GetMessagesForConversation(conversationID);
@@ -31,13 +42,26 @@ export function ConversationDetailsView({
     (state) => state.setShowConversationDetails
   );
   const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
+  const capabilities = useAppStore((state) => state.capabilities);
+  const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
   const [idCopied, setIdCopied] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [leftConversationId, setLeftConversationId] = useState<string | null>(null);
+  const { toasts, showToast, closeToast } = useToast();
 
-  const conversationId =
-    selectedConversation.linkedAccounts[0]?.conversationId ??
-    selectedConversation.linkedAccounts[0]?.userId ??
-    "";
+  const selectedAccount =
+    selectedConversation.linkedAccounts.find(
+      (account) => !selectedProviderFilter || account.providerInstanceId === selectedProviderFilter
+    ) ?? selectedConversation.linkedAccounts[0];
+  const conversationId = selectedAccount?.conversationId ?? selectedAccount?.userId ?? "";
+  const canLeaveGroup = Boolean(
+    leftConversationId !== conversationId &&
+    selectedAccount?.isGroup &&
+    selectedAccount.providerInstanceId &&
+    capabilities[selectedAccount.providerInstanceId]?.supportsLeaveGroup
+  );
 
   const {
     isDragging,
@@ -81,6 +105,21 @@ export function ConversationDetailsView({
 
   const handleAvatarClick = (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => {
     setSelectedContactProfile({ conversationId, avatarUrl, displayName, userId, status });
+  };
+
+  const handleLeaveGroup = async () => {
+    setIsLeaving(true);
+    try {
+      await LeaveGroup(conversationId);
+      setLeaveConfirmOpen(false);
+      setLeftConversationId(conversationId);
+      showToast(t("leave_group_success"), "success");
+    } catch (error) {
+      console.error("Failed to leave group:", error);
+      showToast(t("leave_group_error"), "error");
+    } finally {
+      setIsLeaving(false);
+    }
   };
 
   return (
@@ -137,6 +176,19 @@ export function ConversationDetailsView({
               </button>
             </div>
           )}
+
+          {canLeaveGroup && (
+            <div className="pt-2 border-t">
+              <Button
+                variant="destructive"
+                className="w-full"
+                onClick={() => setLeaveConfirmOpen(true)}
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                {t("leave_group")}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
       <FileUploadModal
@@ -147,6 +199,28 @@ export function ConversationDetailsView({
         uploadState={uploadState}
         onConfirm={handleFileUpload}
       />
+      <AlertDialog open={leaveConfirmOpen} onOpenChange={setLeaveConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("leave_group_title")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("leave_group_description")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isLeaving}>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isLeaving}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleLeaveGroup();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isLeaving ? t("leaving_group") : t("leave_group")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <ToastContainer toasts={toasts} onClose={closeToast} />
     </div>
   );
 }

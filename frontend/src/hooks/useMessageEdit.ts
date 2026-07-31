@@ -1,5 +1,6 @@
 import { EditMessage } from "../../wailsjs/go/main/App";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { InfiniteData } from "@tanstack/react-query";
 import { getMessageDomId } from "@/lib/messageUtils";
@@ -11,14 +12,16 @@ interface UseMessageEditParams {
   conversationId: string;
   showToast: (message: string, type: "error" | "success") => void;
   t: (key: string) => string;
+  focusComposer?: () => void;
 }
 
-export function useMessageEdit({ messages, conversationId, showToast, t }: UseMessageEditParams) {
+export function useMessageEdit({ messages, conversationId, showToast, t, focusComposer }: UseMessageEditParams) {
   const queryClient = useQueryClient();
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [originalEditText, setOriginalEditText] = useState("");
   const editingInputRef = useRef<HTMLInputElement>(null);
+  const isNavigatingEditRef = useRef(false);
 
   const handleEditMessage = useCallback((message: models.Message) => {
     const messageId = getMessageDomId(message);
@@ -31,7 +34,9 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
     setEditingText("");
-  }, []);
+    setOriginalEditText("");
+    setTimeout(() => focusComposer?.(), 0);
+  }, [focusComposer]);
 
   const handleSaveEdit = useCallback(async (skipValidation = false) => {
     if (!editingMessageId || typeof EditMessage !== "function") return;
@@ -47,6 +52,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
     setEditingMessageId(null);
     setEditingText("");
     setOriginalEditText("");
+    setTimeout(() => focusComposer?.(), 0);
 
     // Reflect the edit immediately. The protocol call can take long enough for
     // a refetch issued beforehand to return the old message.
@@ -94,7 +100,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
       );
       showToast(t("edit_failed"), "error");
     }
-  }, [editingMessageId, editingText, originalEditText, conversationId, messages, queryClient, t, showToast]);
+  }, [editingMessageId, editingText, originalEditText, conversationId, messages, queryClient, t, showToast, focusComposer]);
 
   const handleNavigateToEdit = useCallback(
     (direction: "up" | "down", returnFocusToInput?: () => void) => {
@@ -123,10 +129,14 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
               setEditingMessageId(null);
               setEditingText("");
               setOriginalEditText("");
-              returnFocusToInput?.();
+              setTimeout(() => (returnFocusToInput || focusComposer)?.(), 0);
               return;
             }
           }
+        } else if (direction === "up") {
+          // A provider refresh can replace the message object while keeping an
+          // obsolete editing id for one render. Recover from that stale state.
+          targetMessage = sentMessages[0];
         }
       } else {
         if (direction === "up") targetMessage = sentMessages[0];
@@ -139,57 +149,34 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
         if (messageElement) messageElement.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     },
-    [messages, editingMessageId, handleEditMessage]
+    [messages, editingMessageId, handleEditMessage, focusComposer]
   );
 
-  // Attach keyboard listener to editing input (capture phase) for arrow navigation in bubble layout
-  useEffect(() => {
-    if (!editingMessageId) return;
+  const handleEditKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 
-    const timeoutId = setTimeout(() => {
-      const inputElement = editingInputRef.current;
-      if (!inputElement) return;
+    if (e.key === "ArrowUp" && (e.currentTarget.selectionStart === 0 || editingText.trim() === "")) {
+      e.preventDefault();
+      e.stopPropagation();
+      isNavigatingEditRef.current = true;
+      handleNavigateToEdit("up");
+      setTimeout(() => { isNavigatingEditRef.current = false; }, 0);
+    } else if (e.key === "ArrowDown" && (e.currentTarget.selectionStart === e.currentTarget.value.length || editingText.trim() === "")) {
+      e.preventDefault();
+      e.stopPropagation();
+      isNavigatingEditRef.current = true;
+      handleNavigateToEdit("down");
+      setTimeout(() => { isNavigatingEditRef.current = false; }, 0);
+    }
+  }, [editingText, handleNavigateToEdit]);
 
-      const handleKeyDown = (e: Event) => {
-        const keyboardEvent = e as globalThis.KeyboardEvent;
-        if (keyboardEvent.shiftKey || keyboardEvent.ctrlKey || keyboardEvent.metaKey || keyboardEvent.altKey) return;
-
-        if (keyboardEvent.key === "ArrowUp") {
-          const input = keyboardEvent.target as HTMLInputElement;
-          const currentText = input?.value || editingText;
-          const canNavigate = input?.selectionStart === 0 || currentText.trim() === "";
-          if (canNavigate) {
-            keyboardEvent.preventDefault();
-            keyboardEvent.stopPropagation();
-            keyboardEvent.stopImmediatePropagation();
-            handleNavigateToEdit("up");
-          }
-          return;
-        }
-
-        if (keyboardEvent.key === "ArrowDown") {
-          const input = keyboardEvent.target as HTMLInputElement;
-          const currentText = input?.value || editingText;
-          const canNavigate = input?.selectionStart === input?.value?.length || currentText.trim() === "";
-          if (canNavigate) {
-            keyboardEvent.preventDefault();
-            keyboardEvent.stopPropagation();
-            keyboardEvent.stopImmediatePropagation();
-            handleNavigateToEdit("down", () => {
-              const chatInput = document.querySelector('textarea[placeholder*="message"], textarea[placeholder*="Message"]') as HTMLTextAreaElement;
-              if (chatInput) setTimeout(() => chatInput.focus(), 0);
-            });
-          }
-          return;
-        }
-      };
-
-      inputElement.addEventListener("keydown", handleKeyDown, true);
-      return () => inputElement.removeEventListener("keydown", handleKeyDown, true);
-    }, 100);
-
-    return () => clearTimeout(timeoutId);
-  }, [editingMessageId, editingText, handleNavigateToEdit]);
+  const handleEditBlur = useCallback((relatedTarget: EventTarget | null) => {
+    if (isNavigatingEditRef.current) return;
+    const target = relatedTarget as HTMLElement | null;
+    if (!target || (!target.closest("button") && !target.closest('[role="button"]'))) {
+      void handleSaveEdit(false);
+    }
+  }, [handleSaveEdit]);
 
   return {
     editingMessageId,
@@ -200,5 +187,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t }: UseMe
     handleSaveEdit,
     handleCancelEdit,
     handleNavigateToEdit,
+    handleEditKeyDown,
+    handleEditBlur,
   };
 }

@@ -455,6 +455,9 @@ export function ThreadView() {
     return undefined;
   }, [sortedThreadMessages]);
 
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const focusComposer = useCallback(() => composerRef.current?.focus(), []);
+
   const {
     editingMessageId,
     editingText,
@@ -463,7 +466,9 @@ export function ThreadView() {
     handleEditMessage,
     handleSaveEdit,
     handleCancelEdit,
-  } = useMessageEdit({ messages: sortedThreadMessages, conversationId, showToast, t });
+    handleNavigateToEdit,
+    handleEditKeyDown,
+  } = useMessageEdit({ messages: sortedThreadMessages, conversationId, showToast, t, focusComposer });
 
   const handleDeleteClick = useCallback((message: models.Message) => {
     setMessageToDelete(message);
@@ -571,7 +576,6 @@ export function ThreadView() {
     };
     const mutationObserver = new MutationObserver(() => {
       observeContent();
-      scheduleThreadBottomCorrection();
     });
     observeContent();
     mutationObserver.observe(el, { childList: true, subtree: true });
@@ -612,8 +616,8 @@ export function ThreadView() {
     ) {
       shouldStickToThreadBottomRef.current = true;
     }
-    scheduleThreadBottomCorrection();
-  }, [sortedThreadMessages, scheduleThreadBottomCorrection]);
+    correctThreadBottomImmediately();
+  }, [sortedThreadMessages, correctThreadBottomImmediately]);
 
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
@@ -793,6 +797,8 @@ export function ThreadView() {
                             value={editingText}
                             onChange={(e) => setEditingText(e.target.value)}
                             onKeyDown={(e) => {
+                              handleEditKeyDown(e);
+                              if (e.defaultPrevented) return;
                               if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 handleSaveEdit(false);
@@ -970,6 +976,8 @@ export function ThreadView() {
                             value={editingText}
                             onChange={(e) => setEditingText(e.target.value)}
                             onKeyDown={(e) => {
+                              handleEditKeyDown(e);
+                              if (e.defaultPrevented) return;
                               if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
                                 handleSaveEdit(false);
@@ -1075,6 +1083,8 @@ export function ThreadView() {
           onFileUploadRequest={() => { }}
           replyingToMessage={replyingToMessage}
           onCancelReply={() => setReplyingToMessage(null)}
+          onNavigateToEdit={handleNavigateToEdit}
+          onTextareaMount={(textarea) => { composerRef.current = textarea; }}
           threadId={selectedThreadId || undefined}
           onHeightChange={correctThreadBottomImmediately}
         />

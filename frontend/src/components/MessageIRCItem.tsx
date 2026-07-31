@@ -209,17 +209,17 @@ export function MessageIRCItem({
                     {editingMessageId === messageId ? (
                       <div className="flex flex-col gap-2 w-full">
                         <Input
+                          ref={editingMessageId === messageId ? handlers.editingInputRef : undefined}
                           value={editingText}
                           onChange={(e) => setEditingText(e.target.value)}
                           onKeyDown={(e) => {
+                            handlers.onEditKeyDown(e);
+                            if (e.defaultPrevented) return;
                             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlers.onSaveEdit(false); }
                             else if (e.key === "Escape") { handlers.onCancelEdit(); }
                           }}
                           onBlur={(e) => {
-                            const relatedTarget = e.relatedTarget as HTMLElement | null;
-                            if (!relatedTarget || (!relatedTarget.closest("button") && !relatedTarget.closest('[role="button"]'))) {
-                              handlers.onSaveEdit(false);
-                            }
+                            handlers.onEditBlur(e.relatedTarget);
                           }}
                           className="text-foreground"
                           autoFocus

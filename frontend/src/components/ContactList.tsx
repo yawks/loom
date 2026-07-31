@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Calendar, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
+import { ArrowDownAZ, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { Emoji } from "./Emoji";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { MessageText } from "./MessageText";
 import { NewConversationModal } from "./NewConversationModal";
+import { CommunicationStatsDialog } from "./CommunicationStatsDialog";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -71,6 +72,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   // Track sync status to gray out/hide empty conversations
   const [syncStatus, setSyncStatus] = useState<"syncing" | "completed" | null>(null);
   const [isNewConversationModalOpen, setIsNewConversationModalOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
 
   // Listen for sync status events
   useEffect(() => {
@@ -387,6 +389,15 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             <Button
               variant="ghost"
               size="icon"
+              className="contact-list__stats-button h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
+              onClick={() => setIsStatsOpen(true)}
+              title={t("stats.title")}
+            >
+              <ChartNoAxesCombined className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               className="contact-list__new-conversation-button h-7 w-7 rounded-md shrink-0 hover:bg-sidebar-hover text-sidebar-muted-foreground hover:text-sidebar-foreground"
               onClick={() => setIsNewConversationModalOpen(true)}
               title={t("new_conversation")}
@@ -666,6 +677,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
       </div>
 
 
+      <CommunicationStatsDialog open={isStatsOpen} onOpenChange={setIsStatsOpen} />
       <NewConversationModal
         open={isNewConversationModalOpen}
         onOpenChange={setIsNewConversationModalOpen}

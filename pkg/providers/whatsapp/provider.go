@@ -652,6 +652,7 @@ func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
 		SupportsCustomEmojis:       false,
 		SupportsTypingIndicator:    true,
 		SupportsGroupManagement:    true,
+		SupportsLeaveGroup:         true,
 		SupportsDeleteMessage:      true,
 		SupportsEditMessage:        true,
 		SupportsReadReceipts:       true,

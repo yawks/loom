@@ -667,8 +667,29 @@ func (a *App) resyncAllProviders() {
 		}
 
 		log.Printf("[App] Triggering catch-up sync for %s", pInfo.InstanceID)
-		go a.syncProviderHistory(pInfo.InstanceID, a.syncSince(pInfo.InstanceID, 24*time.Hour), "system wake")
+		if pInfo.ID == "teams" {
+			go a.resyncProviderAfterWake(pInfo.InstanceID)
+		} else {
+			go a.syncProviderHistory(pInfo.InstanceID, a.syncSince(pInfo.InstanceID, 24*time.Hour), "system wake")
+		}
 	}
+}
+
+// resyncProviderAfterWake performs a second pass using the exact same lower
+// bound. Teams can accept requests as soon as Wi-Fi is
+// back while their conversation view is still catching up. Advancing
+// LastSyncAt after that first, apparently successful, empty response would
+// otherwise leave a permanent hole until a manual full synchronization.
+func (a *App) resyncProviderAfterWake(instanceID string) {
+	since := a.syncSince(instanceID, 24*time.Hour)
+	a.syncProviderHistory(instanceID, since, "system wake")
+
+	select {
+	case <-time.After(30 * time.Second):
+	case <-a.ctx.Done():
+		return
+	}
+	a.syncProviderHistory(instanceID, since, "post-wake verification")
 }
 
 // syncSince returns the last successful sync with a small overlap. The overlap makes
@@ -1298,6 +1319,10 @@ func providerAccountsToMetaContacts(instanceID string, accounts []models.LinkedA
 		}
 		seen[account.UserID] = true
 		account.ProviderInstanceID = instanceID
+		// Providers generally expose raw remote IDs, while messages and the
+		// timestamp cache use namespaced conversation IDs. Normalize here so
+		// contact recency works identically for initial and searched results.
+		account.ConversationID = core.BuildConvID(instanceID, account.ConversationID)
 		if stored, ok := db.ContactStore.FindByProviderUser(instanceID, account.UserID); ok {
 			account.ID = stored.ID
 			account.MetaContactID = stored.MetaContactID
@@ -2116,6 +2141,23 @@ func (a *App) GetGroupParticipants(conversationID string) ([]models.GroupPartici
 	return a.getActiveProvider().GetGroupParticipants(conversationID)
 }
 
+// LeaveGroup leaves a group through the provider that owns the conversation.
+// Capability checks live here so callers do not need provider-specific logic.
+func (a *App) LeaveGroup(conversationID string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	if !provider.GetCapabilities().SupportsLeaveGroup {
+		return fmt.Errorf("provider does not support leaving groups")
+	}
+	if err := provider.LeaveGroup(conversationID); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
 func (a *App) GetThreads(parentMessageID string) ([]models.Message, error) {
 	if a.getActiveProvider() == nil {
 		return nil, fmt.Errorf("no active provider")
@@ -2927,6 +2969,171 @@ func (a *App) GetContactExchangeStats(conversationID, participantID string) (mod
 	}
 	stats.MedianContactResponseSecs = medianSeconds(contactResponses)
 	stats.MedianMyResponseSecs = medianSeconds(myResponses)
+	return stats, nil
+}
+
+// GetCommunicationStats calculates the dashboard aggregates directly from the
+// persisted history. from is inclusive and to is exclusive.
+func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationStats, error) {
+	stats := models.CommunicationStats{From: from, To: to, Series: []models.CommunicationSeriesPoint{}, Instances: []models.InstanceCommunicationStats{}, Contacts: []models.ContactCommunicationStats{}}
+	if db.DB == nil || !to.After(from) {
+		return stats, nil
+	}
+	previousFrom := from.Add(-to.Sub(from))
+
+	type countRow struct{ Total, Sent, Received int64 }
+	loadCount := func(start, end time.Time, target *models.CommunicationCount) error {
+		var row countRow
+		err := db.DB.Raw(`SELECT COUNT(*) total,
+			COALESCE(SUM(CASE WHEN is_from_me = 1 THEN 1 ELSE 0 END), 0) sent,
+			COALESCE(SUM(CASE WHEN is_from_me = 0 THEN 1 ELSE 0 END), 0) received
+			FROM messages WHERE timestamp >= ? AND timestamp < ? AND deleted_at IS NULL
+			AND is_deleted = 0 AND COALESCE(call_type, '') = ''`, start, end).Scan(&row).Error
+		target.Total, target.Sent, target.Received = row.Total, row.Sent, row.Received
+		return err
+	}
+	if err := loadCount(from, to, &stats.Summary); err != nil {
+		return stats, err
+	}
+	if err := loadCount(previousFrom, from, &stats.PreviousSummary); err != nil {
+		return stats, err
+	}
+
+	bucket := 24 * time.Hour
+	if to.Sub(from) <= 48*time.Hour {
+		bucket = time.Hour
+	} else if to.Sub(from) > 62*24*time.Hour {
+		bucket = 7 * 24 * time.Hour
+	}
+	type seriesRow struct {
+		Bucket                int
+		Total, Sent, Received int64
+	}
+	var series []seriesRow
+	if err := db.DB.Raw(`SELECT CAST(((julianday(timestamp)-julianday(?))*86400)/? AS INTEGER) bucket,
+		COUNT(*) total, COALESCE(SUM(CASE WHEN is_from_me=1 THEN 1 ELSE 0 END),0) sent,
+		COALESCE(SUM(CASE WHEN is_from_me=0 THEN 1 ELSE 0 END),0) received
+		FROM messages WHERE timestamp >= ? AND timestamp < ? AND deleted_at IS NULL AND is_deleted=0
+		AND COALESCE(call_type,'')='' GROUP BY bucket ORDER BY bucket`, from, int64(bucket.Seconds()), from, to).Scan(&series).Error; err != nil {
+		return stats, err
+	}
+	byBucket := make(map[int]seriesRow, len(series))
+	for _, row := range series {
+		byBucket[row.Bucket] = row
+	}
+	for i, at := 0, from; at.Before(to); i, at = i+1, at.Add(bucket) {
+		row := byBucket[i]
+		stats.Series = append(stats.Series, models.CommunicationSeriesPoint{Timestamp: at, CommunicationCount: models.CommunicationCount{Total: row.Total, Sent: row.Sent, Received: row.Received}})
+	}
+
+	type aggregateRow struct {
+		MetaContactID                                                        uint
+		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName string
+		Total, Sent, Received                                                int64
+	}
+	var rows []aggregateRow
+	err := db.DB.Raw(`SELECT mc.id meta_contact_id, mc.display_name, mc.avatar_url,
+		la.provider_instance_id, la.protocol provider_id,
+		COALESCE(NULLIF(pc.instance_name,''), la.provider_instance_id) instance_name,
+		COUNT(*) total, COALESCE(SUM(CASE WHEN m.is_from_me=1 THEN 1 ELSE 0 END),0) sent,
+		COALESCE(SUM(CASE WHEN m.is_from_me=0 THEN 1 ELSE 0 END),0) received
+		FROM messages m JOIN conversations c ON c.id=m.conversation_id
+		JOIN linked_accounts la ON la.id=c.linked_account_id JOIN meta_contacts mc ON mc.id=la.meta_contact_id
+		LEFT JOIN provider_configurations pc ON pc.instance_id=la.provider_instance_id
+		WHERE m.timestamp>=? AND m.timestamp<? AND m.deleted_at IS NULL AND m.is_deleted=0 AND COALESCE(m.call_type,'')=''
+		GROUP BY mc.id, la.provider_instance_id ORDER BY total DESC`, from, to).Scan(&rows).Error
+	if err != nil {
+		return stats, err
+	}
+	instances := make(map[string]*models.InstanceCommunicationStats)
+	contacts := make(map[string]*models.ContactCommunicationStats)
+	for _, row := range rows {
+		inst := &models.InstanceCommunicationStats{ProviderInstanceID: row.ProviderInstanceID, ProviderID: row.ProviderID, InstanceName: row.InstanceName, CommunicationCount: models.CommunicationCount{Total: row.Total, Sent: row.Sent, Received: row.Received}}
+		if existing := instances[row.ProviderInstanceID]; existing != nil {
+			existing.Total += row.Total
+			existing.Sent += row.Sent
+			existing.Received += row.Received
+		} else {
+			instances[row.ProviderInstanceID] = inst
+		}
+		key := fmt.Sprintf("%d:%s", row.MetaContactID, row.ProviderInstanceID)
+		contacts[key] = &models.ContactCommunicationStats{MetaContactID: row.MetaContactID, DisplayName: row.DisplayName, AvatarURL: row.AvatarURL, ProviderInstanceID: row.ProviderInstanceID, ProviderID: row.ProviderID, InstanceName: row.InstanceName, CommunicationCount: inst.CommunicationCount}
+	}
+
+	type callRow struct {
+		MetaContactID                                                                                  uint
+		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName, ProtocolConvID, CallType string
+		Timestamp                                                                                      time.Time
+		Duration                                                                                       *int32
+	}
+	var calls []callRow
+	err = db.DB.Raw(`SELECT mc.id meta_contact_id, mc.display_name, mc.avatar_url, la.provider_instance_id,
+		la.protocol provider_id, COALESCE(NULLIF(pc.instance_name,''),la.provider_instance_id) instance_name,
+		m.protocol_conv_id, m.call_type, m.timestamp, m.call_duration_secs duration
+		FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN linked_accounts la ON la.id=c.linked_account_id
+		JOIN meta_contacts mc ON mc.id=la.meta_contact_id LEFT JOIN provider_configurations pc ON pc.instance_id=la.provider_instance_id
+		WHERE m.timestamp>=? AND m.timestamp<? AND m.deleted_at IS NULL AND m.is_deleted=0 AND COALESCE(m.call_type,'')<>''
+		ORDER BY m.timestamp, m.id`, from.Add(-24*time.Hour), to).Scan(&calls).Error
+	if err != nil {
+		return stats, err
+	}
+	pending := map[string]callRow{}
+	addCall := func(row callRow, duration int64, missing bool) {
+		inst := instances[row.ProviderInstanceID]
+		if inst == nil {
+			inst = &models.InstanceCommunicationStats{ProviderInstanceID: row.ProviderInstanceID, ProviderID: row.ProviderID, InstanceName: row.InstanceName}
+			instances[row.ProviderInstanceID] = inst
+		}
+		key := fmt.Sprintf("%d:%s", row.MetaContactID, row.ProviderInstanceID)
+		contact := contacts[key]
+		if contact == nil {
+			contact = &models.ContactCommunicationStats{MetaContactID: row.MetaContactID, DisplayName: row.DisplayName, AvatarURL: row.AvatarURL, ProviderInstanceID: row.ProviderInstanceID, ProviderID: row.ProviderID, InstanceName: row.InstanceName}
+			contacts[key] = contact
+		}
+		inst.CallCount++
+		contact.CallCount++
+		inst.CallDurationSecs += duration
+		contact.CallDurationSecs += duration
+		if missing {
+			inst.CallsWithoutDuration++
+			contact.CallsWithoutDuration++
+		}
+	}
+	for _, row := range calls {
+		t := strings.ToLower(row.CallType)
+		isStart := t == "scheduled_start" || t == "incoming_call" || t == "incoming_group_call"
+		if isStart && row.Duration == nil {
+			pending[row.ProtocolConvID] = row
+			continue
+		}
+		duration := int64(0)
+		if row.Duration != nil && *row.Duration > 0 {
+			duration = int64(*row.Duration)
+		}
+		if duration == 0 {
+			if start, ok := pending[row.ProtocolConvID]; ok && row.Timestamp.After(start.Timestamp) && row.Timestamp.Sub(start.Timestamp) <= 24*time.Hour {
+				duration = int64(row.Timestamp.Sub(start.Timestamp).Seconds())
+				delete(pending, row.ProtocolConvID)
+			}
+		}
+		if !row.Timestamp.Before(from) {
+			addCall(row, duration, duration == 0)
+		}
+	}
+	for _, row := range pending {
+		if !row.Timestamp.Before(from) {
+			addCall(row, 0, true)
+		}
+	}
+
+	for _, value := range instances {
+		stats.Instances = append(stats.Instances, *value)
+	}
+	for _, value := range contacts {
+		stats.Contacts = append(stats.Contacts, *value)
+	}
+	sort.Slice(stats.Instances, func(i, j int) bool { return stats.Instances[i].Total > stats.Instances[j].Total })
+	sort.Slice(stats.Contacts, func(i, j int) bool { return stats.Contacts[i].Total > stats.Contacts[j].Total })
 	return stats, nil
 }
 

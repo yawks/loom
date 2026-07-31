@@ -8,6 +8,8 @@ import type { models } from "../../wailsjs/go/models";
 export function useKeyboardShortcuts() {
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
+  const setShowThreads = useAppStore((state) => state.setShowThreads);
+  const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const navigateHistoryBack = useAppStore((state) => state.navigateHistoryBack);
   const navigateHistoryForward = useAppStore((state) => state.navigateHistoryForward);
   const contactSortBy = useAppStore((state) => state.contactSortBy);
@@ -15,6 +17,11 @@ export function useKeyboardShortcuts() {
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
+  const finishConversationNavigation = useCallback(() => {
+    setShowThreads(false);
+    setSelectedThreadId(null);
+    window.dispatchEvent(new Event("focus-main-composer"));
+  }, [setSelectedThreadId, setShowThreads]);
   const relevantAccounts = useCallback(
     (contact: models.MetaContact) =>
       selectedProviderFilter
@@ -122,6 +129,7 @@ export function useKeyboardShortcuts() {
           : unreadConversations[0];
       if (targetContact) {
         selectContactForCurrentProvider(targetContact);
+        finishConversationNavigation();
       }
       return;
     }
@@ -133,6 +141,7 @@ export function useKeyboardShortcuts() {
         const contact = sortedContacts[i];
         if (hasUnread(contact)) {
           selectContactForCurrentProvider(contact);
+          finishConversationNavigation();
           return;
         }
       }
@@ -140,6 +149,7 @@ export function useKeyboardShortcuts() {
       const lastUnread = unreadConversations[unreadConversations.length - 1];
       if (lastUnread && lastUnread.id !== selectedContact.id) {
         selectContactForCurrentProvider(lastUnread);
+        finishConversationNavigation();
       }
     } else {
       // Look for unread conversations below current
@@ -147,6 +157,7 @@ export function useKeyboardShortcuts() {
         const contact = sortedContacts[i];
         if (hasUnread(contact)) {
           selectContactForCurrentProvider(contact);
+          finishConversationNavigation();
           return;
         }
       }
@@ -154,9 +165,10 @@ export function useKeyboardShortcuts() {
       const firstUnread = unreadConversations[0];
       if (firstUnread && firstUnread.id !== selectedContact.id) {
         selectContactForCurrentProvider(firstUnread);
+        finishConversationNavigation();
       }
     }
-  }, [selectedContact, sortedContacts, hasUnread, selectContactForCurrentProvider]);
+  }, [selectedContact, sortedContacts, hasUnread, selectContactForCurrentProvider, finishConversationNavigation]);
 
   const navigateInList = useCallback((direction: "up" | "down") => {
     if (!selectedContact || sortedContacts.length === 0) {
@@ -164,6 +176,7 @@ export function useKeyboardShortcuts() {
       if (sortedContacts.length > 0) {
         const targetContact = direction === "down" ? sortedContacts[0] : sortedContacts[sortedContacts.length - 1];
         setSelectedContact(targetContact);
+        finishConversationNavigation();
       }
       return;
     }
@@ -178,6 +191,7 @@ export function useKeyboardShortcuts() {
       const targetContact = direction === "down" ? sortedContacts[0] : sortedContacts[sortedContacts.length - 1];
       if (targetContact) {
         setSelectedContact(targetContact);
+        finishConversationNavigation();
       }
       return;
     }
@@ -187,20 +201,24 @@ export function useKeyboardShortcuts() {
       // Go to conversation below
       if (currentIndex < sortedContacts.length - 1) {
         setSelectedContact(sortedContacts[currentIndex + 1]);
+        finishConversationNavigation();
       } else {
         // Wrap around: go to first
         setSelectedContact(sortedContacts[0]);
+        finishConversationNavigation();
       }
     } else {
       // Go to conversation above
       if (currentIndex > 0) {
         setSelectedContact(sortedContacts[currentIndex - 1]);
+        finishConversationNavigation();
       } else {
         // Wrap around: go to last
         setSelectedContact(sortedContacts[sortedContacts.length - 1]);
+        finishConversationNavigation();
       }
     }
-  }, [selectedContact, sortedContacts, setSelectedContact]);
+  }, [selectedContact, sortedContacts, setSelectedContact, finishConversationNavigation]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -244,6 +262,7 @@ export function useKeyboardShortcuts() {
         const previousContact = navigateHistoryBack();
         if (previousContact) {
           setSelectedContact(previousContact, true); // Skip history to avoid duplicates
+          finishConversationNavigation();
         }
         return;
       }
@@ -255,6 +274,7 @@ export function useKeyboardShortcuts() {
         const nextContact = navigateHistoryForward();
         if (nextContact) {
           setSelectedContact(nextContact, true); // Skip history to avoid duplicates
+          finishConversationNavigation();
         }
         return;
       }
@@ -278,5 +298,5 @@ export function useKeyboardShortcuts() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [selectedContact, sortedContacts, readStateByConversation, setSelectedContact, navigateHistoryBack, navigateHistoryForward, navigateToUnreadConversation, navigateInList]);
+  }, [selectedContact, sortedContacts, readStateByConversation, setSelectedContact, navigateHistoryBack, navigateHistoryForward, navigateToUnreadConversation, navigateInList, finishConversationNavigation]);
 }

@@ -23,6 +23,7 @@ interface ChatInputProps {
   currentUserName?: string;
   currentUserAvatarUrl?: string;
   onHeightChange?: () => void;
+  onTextareaMount?: (textarea: HTMLTextAreaElement | null) => void;
 }
 
 // emoji-picker-react carries a large emoji dataset. Do not retain it in the
@@ -126,7 +127,7 @@ const saveDraft = (key: string | null, value: string): void => {
   }
 };
 
-export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange }: ChatInputProps) {
+export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange, onTextareaMount }: ChatInputProps) {
   const { t } = useTranslation();
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
@@ -395,16 +396,38 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
 
   // Auto-resize textarea based on content
-  const adjustTextareaHeight = useCallback((allowShrink = true) => {
+  const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
     if (textarea) {
       const previousHeight = textarea.offsetHeight;
-      // Keeping the current height while text is added lets scrollHeight report
-      // the required larger size without first collapsing the textarea. That
-      // collapse used to move the message viewport up and down on every key.
-      if (allowShrink) textarea.style.height = "auto";
+      const computedStyle = window.getComputedStyle(textarea);
+      const minHeight = Number.parseFloat(computedStyle.minHeight) || 40;
       const maxHeight = 200; // Maximum height in pixels
-      const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+
+      // Measure on an invisible clone. Setting the real textarea to "auto"
+      // before reading scrollHeight makes it collapse and expand, which also
+      // moves the adjacent message viewport twice (especially on Backspace).
+      const measurement = textarea.cloneNode() as HTMLTextAreaElement;
+      measurement.value = textarea.value;
+      measurement.tabIndex = -1;
+      measurement.setAttribute("aria-hidden", "true");
+      Object.assign(measurement.style, {
+        position: "fixed",
+        left: "-10000px",
+        top: "0",
+        visibility: "hidden",
+        pointerEvents: "none",
+        width: `${textarea.offsetWidth}px`,
+        height: "auto",
+        minHeight: "0",
+        maxHeight: "none",
+        overflow: "hidden",
+      });
+      document.body.appendChild(measurement);
+      const contentHeight = measurement.scrollHeight;
+      measurement.remove();
+
+      const newHeight = Math.max(minHeight, Math.min(contentHeight, maxHeight));
       textarea.style.height = `${newHeight}px`;
       if (textarea.offsetHeight !== previousHeight) {
         // The textarea is resized imperatively, so notify the message viewport
@@ -425,10 +448,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
-    const isShrinking = newValue.length < message.length;
     setMessage(newValue);
     saveDraft(draftStorageKey, newValue);
-    adjustTextareaHeight(isShrinking);
+    adjustTextareaHeight();
     
     // Hide unread divider when user starts typing
     if (newValue.trim().length > 0) {
@@ -514,8 +536,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       saveDraft(draftStorageKey, "");
       setIsTypingInInput(false); // Reset typing state after sending
       if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-        onHeightChange?.();
+        const previousHeight = textareaRef.current.offsetHeight;
+        const minHeight =
+          Number.parseFloat(window.getComputedStyle(textareaRef.current).minHeight) || 40;
+        textareaRef.current.style.height = `${minHeight}px`;
+        if (previousHeight !== textareaRef.current.offsetHeight) onHeightChange?.();
       }
       // Clear reply state after sending
       if (onCancelReply) {
@@ -558,28 +583,14 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // Only navigate if cursor is at the start of the textarea or textarea is empty
       const textarea = textareaRef.current;
       const canNavigate = textarea && (textarea.selectionStart === 0 || message.trim() === "");
-      console.log("[ChatInput] ArrowUp pressed", {
-        hasTextarea: !!textarea,
-        selectionStart: textarea?.selectionStart,
-        messageLength: message.length,
-        messageTrimmed: message.trim().length,
-        canNavigate,
-        hasOnNavigateToEdit: !!onNavigateToEdit
-      });
-      
       if (canNavigate) {
         e.preventDefault();
         if (onNavigateToEdit) {
-          console.log("[ChatInput] Calling onNavigateToEdit('up')");
           onNavigateToEdit("up", () => {
-            // Return focus to textarea
-            console.log("[ChatInput] Returning focus to textarea");
             setTimeout(() => {
               textareaRef.current?.focus();
             }, 0);
           });
-        } else {
-          console.warn("[ChatInput] onNavigateToEdit is not defined");
         }
         return;
       }
@@ -589,29 +600,14 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // Only navigate if cursor is at the end of the textarea
       const textarea = textareaRef.current;
       const canNavigate = textarea && (textarea.selectionStart === textarea.value.length || message.trim() === "");
-      console.log("[ChatInput] ArrowDown pressed", {
-        hasTextarea: !!textarea,
-        selectionStart: textarea?.selectionStart,
-        valueLength: textarea?.value.length,
-        messageLength: message.length,
-        messageTrimmed: message.trim().length,
-        canNavigate,
-        hasOnNavigateToEdit: !!onNavigateToEdit
-      });
-      
       if (canNavigate) {
         e.preventDefault();
         if (onNavigateToEdit) {
-          console.log("[ChatInput] Calling onNavigateToEdit('down')");
           onNavigateToEdit("down", () => {
-            // Return focus to textarea
-            console.log("[ChatInput] Returning focus to textarea");
             setTimeout(() => {
               textareaRef.current?.focus();
             }, 0);
           });
-        } else {
-          console.warn("[ChatInput] onNavigateToEdit is not defined");
         }
         return;
       }
@@ -962,7 +958,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               </div>
             )}
             <textarea
-              ref={textareaRef}
+              ref={(textarea) => {
+                textareaRef.current = textarea;
+                onTextareaMount?.(textarea);
+              }}
               value={message}
               onChange={handleMessageChange}
               onKeyDown={handleKeyDown}
