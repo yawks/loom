@@ -267,7 +267,149 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 		}
 		out = append(out, p.linkedAccount(client, chat))
 	}
+	mris := make([]string, 0, len(out))
+	for _, account := range out {
+		if !account.IsGroup && strings.HasPrefix(account.UserID, "8:") {
+			mris = append(mris, account.UserID)
+		}
+	}
+	if presences, presenceErr := client.GetPresences(context.Background(), mris); presenceErr == nil {
+		presenceByMRI := make(map[string]msteams.Presence, len(presences))
+		for _, presence := range presences {
+			presenceByMRI[strings.ToLower(presence.MRI)] = presence
+		}
+		for index := range out {
+			if presence, ok := presenceByMRI[strings.ToLower(out[index].UserID)]; ok {
+				out[index].Status = teamsPresenceStatus(presence.Availability, presence.Activity)
+				extra, _ := json.Marshal(map[string]string{"activity": presence.Activity})
+				out[index].Extra = string(extra)
+			}
+		}
+	}
 	return out, nil
+}
+
+func (p *Provider) SearchContacts(query string) ([]models.LinkedAccount, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	users, err := client.SearchUsers(context.Background(), query)
+	if err != nil {
+		return nil, fmt.Errorf("%s: search contacts: %w", providerID, err)
+	}
+	mris := make([]string, 0, len(users))
+	for _, user := range users {
+		if user.MRI != "" && !strings.EqualFold(user.MRI, client.UserMRI()) {
+			mris = append(mris, user.MRI)
+		}
+	}
+	presenceByMRI := make(map[string]msteams.Presence, len(mris))
+	if presences, presenceErr := client.GetPresences(context.Background(), mris); presenceErr == nil {
+		for _, presence := range presences {
+			presenceByMRI[strings.ToLower(presence.MRI)] = presence
+		}
+	}
+	dmByMRI := make(map[string]string)
+	if chats, listErr := client.ListChats(context.Background()); listErr == nil {
+		for _, chat := range chats {
+			if chat.Type != msteams.ChatType1on1 {
+				continue
+			}
+			members := chat.Members
+			if len(members) == 0 {
+				if detailed, detailErr := client.GetChat(context.Background(), chat.ID); detailErr == nil {
+					members = detailed.Members
+				}
+			}
+			for _, member := range members {
+				if member.MRI != "" && !strings.EqualFold(member.MRI, client.UserMRI()) {
+					dmByMRI[strings.ToLower(member.MRI)] = chat.ID
+				}
+			}
+		}
+	}
+	out := make([]models.LinkedAccount, 0, len(users))
+	for _, user := range users {
+		if user.MRI == "" || strings.EqualFold(user.MRI, client.UserMRI()) {
+			continue
+		}
+		presence := presenceByMRI[strings.ToLower(user.MRI)]
+		status := teamsPresenceStatus(presence.Availability, presence.Activity)
+		extra, _ := json.Marshal(map[string]string{"email": user.Email, "jobTitle": user.JobTitle, "company": user.Company, "department": user.Department, "activity": presence.Activity})
+		account := models.LinkedAccount{Protocol: providerID, ProviderInstanceID: p.instance, UserID: user.MRI, Username: user.DisplayName, AvatarURL: user.AvatarURL, Status: status, Extra: string(extra)}
+		account.ConversationID = dmByMRI[strings.ToLower(user.MRI)]
+		if account.Username == "" {
+			account.Username = user.Email
+		}
+		if err := p.storeDirectoryContact(account); err != nil {
+			return nil, fmt.Errorf("%s: store directory contact: %w", providerID, err)
+		}
+		out = append(out, account)
+	}
+	return out, nil
+}
+
+func (p *Provider) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	chat, err := client.GetChat(context.Background(), core.StripConvID(conversationID))
+	if err != nil {
+		return nil, err
+	}
+	participants := make([]models.GroupParticipant, 0, len(chat.Members))
+	for _, member := range chat.Members {
+		if member.MRI == "" {
+			continue
+		}
+		participants = append(participants, models.GroupParticipant{UserID: member.MRI, IsAdmin: strings.EqualFold(member.Role, "Admin") || strings.EqualFold(member.Role, "Owner")})
+	}
+	return participants, nil
+}
+
+func (p *Provider) CreateDirectConversation(participantID string) (*models.Conversation, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	chat, err := client.StartOneOnOne(context.Background(), participantID)
+	if err != nil {
+		return nil, err
+	}
+	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: false}, nil
+}
+
+func (p *Provider) CurrentUserID() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.client != nil {
+		return p.client.UserMRI()
+	}
+	if p.session != nil {
+		return p.session.UserMRI
+	}
+	return ""
+}
+
+func (p *Provider) CreateConversation(conversationType, title string, participantIDs []string) (*models.Conversation, error) {
+	if conversationType != "group" {
+		return nil, fmt.Errorf("%s: unsupported conversation type %q", providerID, conversationType)
+	}
+	return p.CreateGroup(title, participantIDs)
+}
+
+func (p *Provider) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	chat, err := client.CreateGroupChat(context.Background(), groupName, participantIDs)
+	if err != nil {
+		return nil, err
+	}
+	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: true, GroupName: chat.Topic}, nil
 }
 
 // GetContactProfile exposes the rich Teams directory card when the participant
@@ -627,7 +769,10 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
-		NativeEmojiReactions: true,
+		NativeEmojiReactions:     true,
+		SupportsContactDirectory: true, SupportsDirectConversation: true,
+		SupportsGroupConversation: true, SupportsGroupTitle: true,
+		RequiresGroupTitle: false, GroupConversationTypes: "group",
 	}
 }
 
@@ -665,11 +810,55 @@ func (p *Provider) linkedAccount(client *msteams.Client, chat msteams.Chat) mode
 			name = chat.ID
 		}
 	}
+	userID := chat.ID
+	if !isGroup {
+		members := chat.Members
+		if len(members) == 0 {
+			if detailed, err := client.GetChat(context.Background(), chat.ID); err == nil {
+				members = detailed.Members
+			}
+		}
+		for _, member := range members {
+			if member.MRI != "" && !strings.EqualFold(member.MRI, client.UserMRI()) {
+				userID = member.MRI
+				break
+			}
+		}
+		if userID == chat.ID {
+			userID = teamsDMParticipantMRI(chat.ID, client.UserMRI())
+		}
+		if userID != "" && userID != chat.ID && isTechnicalConversationName(name, chat.ID) {
+			name = client.CachedDisplayName(userID)
+			if name == "" {
+				if profile, err := client.GetUser(context.Background(), userID); err == nil {
+					name = profile.DisplayName
+				}
+			}
+		}
+	}
 	return models.LinkedAccount{
 		Protocol: providerID, ProviderInstanceID: p.instance,
-		UserID: chat.ID, Username: name, AvatarURL: p.conversationAvatar(client, chat), IsGroup: isGroup,
+		UserID: userID, Username: name, AvatarURL: p.conversationAvatar(client, chat), IsGroup: isGroup,
 		ConversationID: chat.ID,
 	}
+}
+
+func teamsDMParticipantMRI(threadID, selfMRI string) string {
+	if !strings.HasPrefix(threadID, "19:") || !strings.HasSuffix(threadID, "@unq.gbl.spaces") {
+		return threadID
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(threadID, "19:"), "@unq.gbl.spaces")
+	parts := strings.Split(body, "_")
+	if len(parts) != 2 {
+		return threadID
+	}
+	self := strings.TrimPrefix(strings.ToLower(selfMRI), "8:orgid:")
+	for _, part := range parts {
+		if strings.ToLower(part) != self {
+			return "8:orgid:" + part
+		}
+	}
+	return threadID
 }
 
 func isVirtualTeamsThread(threadID string) bool {
@@ -1200,8 +1389,8 @@ func (p *Provider) pollPresence(ctx context.Context, client *msteams.Client) {
 		}
 		for _, presence := range presences {
 			status := teamsPresenceStatus(presence.Availability, presence.Activity)
-			for _, chatID := range chatIDsByMRI[presence.MRI] {
-				updated, err := p.updateConversationPresence(chatID, status, presence.Activity)
+			if len(chatIDsByMRI[presence.MRI]) > 0 {
+				updated, err := p.updateConversationPresence(presence.MRI, status, presence.Activity)
 				if err == nil && updated {
 					changed = true
 				}

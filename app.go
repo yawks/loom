@@ -1211,6 +1211,389 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 	return metaContacts, nil
 }
 
+// GetProviderContacts returns people from one provider instance, never groups or
+// channels. Calling the provider first also refreshes directory-backed providers.
+func (a *App) GetProviderContacts(instanceID string) ([]models.MetaContact, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := provider.GetContacts()
+	if err != nil {
+		return nil, err
+	}
+	// Include directory-only contacts persisted by remote people pickers.
+	accounts = append(accounts, db.ContactStore.FindByProvider(instanceID)...)
+	contacts := providerAccountsToMetaContacts(instanceID, accounts)
+	refreshContactStatuses(provider, contacts)
+	return contacts, nil
+}
+
+// SearchProviderContacts supports remote people pickers (Teams) while using
+// the already synchronized directory for providers such as WhatsApp and Slack.
+func (a *App) SearchProviderContacts(instanceID, query string) ([]models.MetaContact, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if searcher, ok := provider.(core.ContactSearcher); ok {
+		accounts, err := searcher.SearchContacts(query)
+		if err != nil {
+			return nil, err
+		}
+		return providerAccountsToMetaContacts(instanceID, accounts), nil
+	}
+	contacts, err := a.GetProviderContacts(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return contacts, nil
+	}
+	filtered := contacts[:0]
+	for _, contact := range contacts {
+		if strings.Contains(strings.ToLower(contact.DisplayName), query) {
+			filtered = append(filtered, contact)
+		}
+	}
+	refreshContactStatuses(provider, filtered)
+	return filtered, nil
+}
+
+func refreshContactStatuses(provider core.Provider, contacts []models.MetaContact) {
+	refresher, ok := provider.(core.ContactStatusRefresher)
+	if !ok {
+		return
+	}
+	limit := min(30, len(contacts))
+	userIDs := make([]string, 0, limit)
+	for _, contact := range contacts[:limit] {
+		if len(contact.LinkedAccounts) > 0 && !contact.LinkedAccounts[0].IsGroup {
+			userIDs = append(userIDs, contact.LinkedAccounts[0].UserID)
+		}
+	}
+	statuses := refresher.RefreshContactStatuses(userIDs)
+	for index := range contacts {
+		if len(contacts[index].LinkedAccounts) == 0 {
+			continue
+		}
+		if status, exists := statuses[contacts[index].LinkedAccounts[0].UserID]; exists {
+			contacts[index].LinkedAccounts[0].Status = status
+		}
+	}
+}
+
+func providerAccountsToMetaContacts(instanceID string, accounts []models.LinkedAccount) []models.MetaContact {
+	contacts := make([]models.MetaContact, 0, len(accounts))
+	seen := make(map[string]bool)
+	for _, account := range accounts {
+		// Teams historically persisted DMs by their technical thread ID. The
+		// canonical contact is now the participant MRI; hide stale legacy rows.
+		if account.Protocol == "teams" && !account.IsGroup && strings.HasPrefix(account.UserID, "19:") {
+			continue
+		}
+		if account.IsGroup || account.UserID == "" || seen[account.UserID] {
+			continue
+		}
+		seen[account.UserID] = true
+		account.ProviderInstanceID = instanceID
+		if stored, ok := db.ContactStore.FindByProviderUser(instanceID, account.UserID); ok {
+			account.ID = stored.ID
+			account.MetaContactID = stored.MetaContactID
+			if account.Status == "" {
+				account.Status = stored.Status
+			}
+			if account.Extra == "" {
+				account.Extra = stored.Extra
+			}
+			if account.ConversationID == "" {
+				account.ConversationID = db.ContactStore.GetConversation(stored.ID)
+			}
+			if meta, ok := db.ContactStore.FindMetaContact(stored.MetaContactID); ok {
+				if account.Username == "" {
+					account.Username = meta.DisplayName
+				}
+				contacts = append(contacts, models.MetaContact{ID: meta.ID, DisplayName: meta.DisplayName, AvatarURL: meta.AvatarURL, LinkedAccounts: []models.LinkedAccount{account}})
+				continue
+			}
+		}
+		name := account.Username
+		if name == "" {
+			name = account.UserID
+		}
+		contacts = append(contacts, models.MetaContact{DisplayName: name, AvatarURL: account.AvatarURL, LinkedAccounts: []models.LinkedAccount{account}})
+	}
+	lastExchange := make(map[string]time.Time)
+	conversationIDs := make([]string, 0, len(contacts))
+	for _, contact := range contacts {
+		if len(contact.LinkedAccounts) > 0 && contact.LinkedAccounts[0].ConversationID != "" {
+			conversationIDs = append(conversationIDs, contact.LinkedAccounts[0].ConversationID)
+		}
+	}
+	if db.DB != nil && len(conversationIDs) > 0 {
+		var rows []struct {
+			ProtocolConvID string
+			LastExchange   time.Time
+		}
+		db.DB.Model(&models.Message{}).
+			Select("protocol_conv_id, MAX(timestamp) AS last_exchange").
+			Where("protocol_conv_id IN ? AND deleted_at IS NULL", conversationIDs).
+			Group("protocol_conv_id").Scan(&rows)
+		for _, row := range rows {
+			lastExchange[row.ProtocolConvID] = row.LastExchange
+		}
+	}
+	sort.SliceStable(contacts, func(i, j int) bool {
+		iConv, jConv := contacts[i].LinkedAccounts[0].ConversationID, contacts[j].LinkedAccounts[0].ConversationID
+		iTime, jTime := lastExchange[iConv], lastExchange[jConv]
+		if !iTime.Equal(jTime) {
+			return iTime.After(jTime)
+		}
+		return strings.ToLower(contacts[i].DisplayName) < strings.ToLower(contacts[j].DisplayName)
+	})
+	return contacts
+}
+
+func sameParticipantSet(selected map[string]bool, participants []models.GroupParticipant, directoryUsers map[string]bool, selfID string) bool {
+	found := make(map[string]bool)
+	for _, participant := range participants {
+		if selfID != "" && strings.EqualFold(participant.UserID, selfID) {
+			continue
+		}
+		// Providers commonly return the authenticated user as a participant. It is
+		// absent from the selectable directory, so ignore it here.
+		if selfID != "" || directoryUsers[participant.UserID] {
+			found[participant.UserID] = true
+		}
+	}
+	if len(found) != len(selected) {
+		return false
+	}
+	for id := range selected {
+		if !found[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// OpenConversation reuses exact existing conversations and only creates when
+// there is no match. Multiple matches are returned for an explicit user choice.
+func (a *App) OpenConversation(request models.OpenConversationRequest) (models.ConversationResolution, error) {
+	resolution := models.ConversationResolution{Matches: []models.MetaContact{}}
+	if request.ProviderInstanceID == "" || len(request.ParticipantIDs) == 0 {
+		return resolution, fmt.Errorf("provider and at least one participant are required")
+	}
+	provider, err := a.providerManager.GetProvider(request.ProviderInstanceID)
+	if err != nil {
+		return resolution, err
+	}
+	caps := provider.GetCapabilities()
+	selfID := ""
+	if withCurrentUser, ok := provider.(core.CurrentUserProvider); ok {
+		selfID = withCurrentUser.CurrentUserID()
+	}
+	directory, err := a.GetProviderContacts(request.ProviderInstanceID)
+	if err != nil {
+		return resolution, err
+	}
+	directoryUsers := make(map[string]bool, len(directory))
+	selected := make(map[string]bool, len(request.ParticipantIDs))
+	for _, contact := range directory {
+		if len(contact.LinkedAccounts) > 0 {
+			directoryUsers[contact.LinkedAccounts[0].UserID] = true
+		}
+	}
+	for _, id := range request.ParticipantIDs {
+		if !directoryUsers[id] {
+			return resolution, fmt.Errorf("participant %s does not belong to provider %s", id, request.ProviderInstanceID)
+		}
+		selected[id] = true
+	}
+
+	if len(selected) == 1 {
+		for _, contact := range directory {
+			account := contact.LinkedAccounts[0]
+			if selected[account.UserID] && account.ConversationID != "" {
+				resolution.Matches = append(resolution.Matches, contact)
+				return resolution, nil
+			}
+		}
+		if !caps.SupportsDirectConversation {
+			return resolution, fmt.Errorf("provider does not support direct conversation creation")
+		}
+		for _, contact := range directory {
+			account := contact.LinkedAccounts[0]
+			if selected[account.UserID] {
+				if creator, ok := provider.(core.DirectConversationCreator); ok {
+					conversation, err := creator.CreateDirectConversation(account.UserID)
+					if err != nil {
+						return resolution, err
+					}
+					account.ConversationID = core.BuildConvID(request.ProviderInstanceID, conversation.ProtocolConvID)
+				} else {
+					account.ConversationID = core.BuildConvID(request.ProviderInstanceID, account.UserID)
+				}
+				contact.LinkedAccounts[0] = account
+				resolution.Created = &contact
+				return resolution, nil
+			}
+		}
+	}
+
+	for _, account := range db.ContactStore.FindByProvider(request.ProviderInstanceID) {
+		if !account.IsGroup {
+			continue
+		}
+		convID := db.ContactStore.GetConversation(account.ID)
+		if convID == "" {
+			continue
+		}
+		var storedConversation models.Conversation
+		if err := db.DB.Where("protocol_conv_id = ?", convID).First(&storedConversation).Error; err == nil &&
+			storedConversation.ConversationType != "" && request.ConversationType != "" &&
+			storedConversation.ConversationType != request.ConversationType {
+			continue
+		}
+		participants, err := provider.GetGroupParticipants(core.StripConvID(convID))
+		if err != nil || !sameParticipantSet(selected, participants, directoryUsers, selfID) {
+			continue
+		}
+		if meta, ok := db.ContactStore.FindMetaContact(account.MetaContactID); ok {
+			account.ConversationID = convID
+			meta.LinkedAccounts = []models.LinkedAccount{account}
+			resolution.Matches = append(resolution.Matches, meta)
+		}
+	}
+	if len(resolution.Matches) > 0 {
+		return resolution, nil
+	}
+	if !caps.SupportsGroupConversation {
+		return resolution, fmt.Errorf("provider does not support group conversation creation")
+	}
+	if caps.RequiresGroupTitle && request.ConversationType != "group_message" && strings.TrimSpace(request.Title) == "" {
+		return resolution, fmt.Errorf("this conversation type requires a title")
+	}
+	var conversation *models.Conversation
+	if creator, ok := provider.(core.ConversationCreator); ok {
+		conversation, err = creator.CreateConversation(request.ConversationType, request.Title, request.ParticipantIDs)
+	} else {
+		conversation, err = provider.CreateGroup(request.Title, request.ParticipantIDs)
+	}
+	if err != nil {
+		return resolution, err
+	}
+	protocol := ""
+	if len(directory) > 0 && len(directory[0].LinkedAccounts) > 0 {
+		protocol = directory[0].LinkedAccounts[0].Protocol
+	}
+	created, err := a.persistCreatedConversation(request.ProviderInstanceID, protocol, request.ConversationType, request.Title, conversation)
+	if err != nil {
+		return resolution, err
+	}
+	resolution.Created = created
+	a.emitContactsRefresh()
+	return resolution, nil
+}
+
+func (a *App) persistCreatedConversation(instanceID, protocol, conversationType, title string, conversation *models.Conversation) (*models.MetaContact, error) {
+	if db.DB == nil || conversation == nil || conversation.ProtocolConvID == "" {
+		return nil, fmt.Errorf("provider returned an invalid conversation")
+	}
+	conversation.ProtocolConvID = core.BuildConvID(instanceID, conversation.ProtocolConvID)
+	conversation.ConversationType = conversationType
+	if conversation.GroupName == "" {
+		conversation.GroupName = title
+	}
+	var meta models.MetaContact
+	var account models.LinkedAccount
+	userID := core.StripConvID(conversation.ProtocolConvID)
+	persist := func() error {
+		return db.DB.Transaction(func(tx *gorm.DB) error {
+			account = models.LinkedAccount{}
+			result := tx.Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).First(&account)
+			if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+				return result.Error
+			}
+			if result.Error == gorm.ErrRecordNotFound {
+				meta = models.MetaContact{DisplayName: conversation.GroupName}
+				if err := tx.Create(&meta).Error; err != nil {
+					return err
+				}
+				account = models.LinkedAccount{
+					MetaContactID: meta.ID, Protocol: protocol, ProviderInstanceID: instanceID,
+					UserID: userID, Username: conversation.GroupName, IsGroup: true, Status: "offline",
+				}
+				if err := tx.Create(&account).Error; err != nil {
+					return err
+				}
+			} else {
+				account.IsGroup = true
+				if protocol != "" {
+					account.Protocol = protocol
+				}
+				if conversation.GroupName != "" {
+					account.Username = conversation.GroupName
+				}
+				if account.MetaContactID == 0 {
+					meta = models.MetaContact{DisplayName: account.Username}
+					if err := tx.Create(&meta).Error; err != nil {
+						return err
+					}
+					account.MetaContactID = meta.ID
+				} else if err := tx.First(&meta, account.MetaContactID).Error; err != nil {
+					return err
+				}
+				if conversation.GroupName != "" {
+					meta.DisplayName = conversation.GroupName
+				}
+				if err := tx.Save(&meta).Error; err != nil {
+					return err
+				}
+				if err := tx.Save(&account).Error; err != nil {
+					return err
+				}
+			}
+
+			var storedConversation models.Conversation
+			result = tx.Where("protocol_conv_id = ?", conversation.ProtocolConvID).First(&storedConversation)
+			if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+				return result.Error
+			}
+			if result.Error == gorm.ErrRecordNotFound {
+				conversation.LinkedAccountID = account.ID
+				return tx.Create(conversation).Error
+			}
+			storedConversation.LinkedAccountID = account.ID
+			storedConversation.IsGroup = conversation.IsGroup
+			storedConversation.ConversationType = conversation.ConversationType
+			storedConversation.GroupName = conversation.GroupName
+			if err := tx.Save(&storedConversation).Error; err != nil {
+				return err
+			}
+			*conversation = storedConversation
+			return nil
+		})
+	}
+	err := persist()
+	// A realtime provider event may insert the same remote conversation between
+	// our initial lookup and insert. The transaction rolls back cleanly; retrying
+	// then follows the existing-record path above.
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique constraint") {
+		err = persist()
+	}
+	if err != nil {
+		return nil, err
+	}
+	db.ContactStore.UpsertMetaContact(meta)
+	db.ContactStore.UpsertLinkedAccount(account)
+	db.ContactStore.UpsertConversation(account.ID, conversation.ProtocolConvID)
+	account.ConversationID = conversation.ProtocolConvID
+	meta.LinkedAccounts = []models.LinkedAccount{account}
+	return &meta, nil
+}
+
 // invalidateMessageCaches clears the three short-lived message caches so the next
 // call to GetAllLastMessages / GetAllLastMessageTimestamps / GetAllMessageCounts
 // hits the DB. Called whenever a new message is saved.

@@ -8,6 +8,11 @@ import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { mergePendingMessages } from "@/lib/pendingMessages";
 
+// SQLite is the source of truth. Keep a small LRU window of conversation
+// histories in the renderer so browsing many conversations cannot grow the
+// React Query cache for the lifetime of the application.
+const MAX_CACHED_CONVERSATIONS = 8;
+
 const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {
   try {
     const result = beforeTimestamp
@@ -66,6 +71,30 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       },
       initialPageParam: undefined,
     });
+
+  useEffect(() => {
+    if (!conversationId) return;
+
+    const olderConversationQueries = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: ["messages"] })
+      .filter((query) =>
+        query.queryKey.length === 2 &&
+        typeof query.queryKey[1] === "string" &&
+        query.queryKey[1] !== conversationId
+      )
+      .sort((a, b) => a.state.dataUpdatedAt - b.state.dataUpdatedAt);
+
+    // One slot is reserved for the active conversation. Evict all associated
+    // detail/thread data for the least recently used histories as well.
+    const overflow = olderConversationQueries.slice(MAX_CACHED_CONVERSATIONS - 1);
+    for (const query of overflow) {
+      const oldConversationId = query.queryKey[1] as string;
+      queryClient.removeQueries({ queryKey: ["messages", oldConversationId], exact: true });
+      queryClient.removeQueries({ queryKey: ["messages-details", oldConversationId], exact: true });
+      queryClient.removeQueries({ queryKey: ["threads", oldConversationId] });
+    }
+  }, [conversationId, queryClient]);
 
   const dataKey = useMemo(() => {
     if (!data?.pages) return "";

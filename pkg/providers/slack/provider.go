@@ -48,6 +48,7 @@ type SlackProvider struct {
 	eventStreamCtx     context.Context         // Context for event stream
 	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
 	eventStreamStarted bool                    // Whether event stream has been started
+	connectionCancel   context.CancelFunc      // Stops Socket Mode across reconnects
 	dmChannelCache     map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
 	dmChannelCacheMu   sync.RWMutex            // Mutex for DM channel cache
 	selfUserID         string                  // Cached authenticated user ID (from AuthTest)
@@ -584,6 +585,11 @@ func (p *SlackProvider) Connect() error {
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
 	p.selfUserID = authInfo.UserID
+	if p.connectionCancel != nil {
+		p.connectionCancel()
+	}
+	connectionCtx, connectionCancel := context.WithCancel(context.Background())
+	p.connectionCancel = connectionCancel
 
 	// Determine connection mode based on token type
 	token, _ := p.config.GetString("token")
@@ -627,7 +633,7 @@ func (p *SlackProvider) Connect() error {
 		}
 
 		p.rtmClient = p.client.NewRTM(rtmOptions...)
-		go p.startRTM()
+		go p.startRTM(connectionCtx)
 	} else {
 		// Bot Token -> Use Socket Mode (Modern)
 		p.log("SlackProvider.Connect: Detected Bot Token (xoxb), initializing Socket Mode client\n")
@@ -636,7 +642,7 @@ func (p *SlackProvider) Connect() error {
 			socketmode.OptionDebug(false), // Set to true if detailed logs are needed
 			socketmode.OptionLog(p.logger),
 		)
-		go p.startSocketMode()
+		go p.startSocketMode(connectionCtx, p.socketClient)
 	}
 
 	// Perform initialization tasks in background to avoid blocking Connect return
@@ -655,7 +661,7 @@ func (p *SlackProvider) Connect() error {
 		p.log("SlackProvider.Connect: initializeStatusCache returned\n")
 
 		// Start status polling
-		go p.pollStatusUpdates()
+		go p.pollStatusUpdates(connectionCtx)
 
 		// Note: SyncHistory and incrementalSyncExistingConversations are NOT called here.
 		// On startup, app.go triggers SyncHistory from domReady() once the frontend is ready
@@ -1017,48 +1023,67 @@ func (p *SlackProvider) initializeStatusCache() {
 func (p *SlackProvider) determineStatus(presence, statusText, statusEmoji string) string {
 	switch presence {
 	case "active":
-		return activeStatus(statusText, statusEmoji)
+		return "online"
 	case "away":
-		return awayStatus(statusText, statusEmoji)
+		return "away"
 	default:
 		return "offline"
 	}
 }
 
-func activeStatus(statusText, statusEmoji string) string {
-	sl := strings.ToLower(statusText)
-	if strings.Contains(statusEmoji, "calendar") ||
-		containsAny(sl, "meeting", "réunion", "en réunion") {
-		return "meeting"
+func (p *SlackProvider) RefreshContactStatuses(userIDs []string) map[string]string {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	result := make(map[string]string, len(userIDs))
+	if client == nil {
+		return result
 	}
-	return "online"
-}
-
-func awayStatus(statusText, statusEmoji string) string {
-	sl := strings.ToLower(statusText)
-	if containsAny(sl, "holiday", "vacation", "vacances") {
-		return "holiday"
+	type presenceResult struct{ userID, status string }
+	results := make(chan presenceResult, len(userIDs))
+	semaphore := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	seen := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == "" || seen[userID] {
+			continue
+		}
+		seen[userID] = true
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			presence, err := client.GetUserPresence(id)
+			if err != nil {
+				return
+			}
+			status := p.determineStatus(presence.Presence, "", "")
+			results <- presenceResult{userID: id, status: status}
+		}(userID)
 	}
-	if containsAny(sl, "busy", "dnd", "do not disturb", "occupé", "occupée", "indisponible") {
-		return "busy"
-	}
-	if containsAny(sl, "meeting", "réunion") || strings.Contains(statusEmoji, "calendar") {
-		return "meeting"
-	}
-	return "away"
-}
-
-func containsAny(s string, keywords ...string) bool {
-	for _, kw := range keywords {
-		if strings.Contains(s, kw) {
-			return true
+	wg.Wait()
+	close(results)
+	for item := range results {
+		result[item.userID] = item.status
+		p.statusCacheMu.Lock()
+		cached := p.statusCache[item.userID]
+		cached.status = item.status
+		p.statusCache[item.userID] = cached
+		p.statusCacheMu.Unlock()
+		if account, ok := db.ContactStore.FindByProviderUser(p.getInstanceId(), item.userID); ok {
+			account.Status = item.status
+			db.ContactStore.UpsertLinkedAccount(account)
+			if db.DB != nil {
+				db.DB.Model(&account).Update("status", item.status)
+			}
 		}
 	}
-	return false
+	return result
 }
 
 // pollStatusUpdates periodically checks for status changes and emits events
-func (p *SlackProvider) pollStatusUpdates() {
+func (p *SlackProvider) pollStatusUpdates(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second) // Poll every 30 seconds
 	defer ticker.Stop()
 
@@ -1066,7 +1091,7 @@ func (p *SlackProvider) pollStatusUpdates() {
 		select {
 		case <-ticker.C:
 			p.checkStatusChanges()
-		case <-p.stopChan:
+		case <-ctx.Done():
 			p.log("SlackProvider.pollStatusUpdates: stopping polling goroutine\n")
 			return
 		}
@@ -1149,6 +1174,16 @@ func (p *SlackProvider) Disconnect() error {
 	default:
 		close(p.stopChan)
 	}
+	if p.eventStreamCancel != nil {
+		p.eventStreamCancel()
+		p.eventStreamCancel = nil
+		p.eventStreamCtx = nil
+		p.eventStreamStarted = false
+	}
+	if p.connectionCancel != nil {
+		p.connectionCancel()
+		p.connectionCancel = nil
+	}
 
 	// Disconnect Socket Mode if active
 	if p.socketClient != nil {
@@ -1164,8 +1199,6 @@ func (p *SlackProvider) Disconnect() error {
 		p.rtmClient = nil
 	}
 
-	p.client = nil
-
 	// Re-create stopChan for next connection
 	p.stopChan = make(chan struct{})
 
@@ -1173,12 +1206,6 @@ func (p *SlackProvider) Disconnect() error {
 	p.statusCacheMu.Lock()
 	p.statusCache = make(map[string]userStatus)
 	p.statusCacheMu.Unlock()
-
-	// Close logger
-	if p.logger != nil {
-		p.logger.Close()
-		p.logger = nil
-	}
 
 	p.log("Slack: Disconnected\n")
 	return nil
@@ -1215,23 +1242,33 @@ func (p *SlackProvider) Cleanup() error {
 	if err := os.RemoveAll(cacheDir); err != nil {
 		p.log("SlackProvider.Cleanup: WARNING - failed to remove cache directory: %v\n", err)
 	}
+	if p.logger != nil {
+		p.logger.Close()
+		p.logger = nil
+	}
 
 	return nil
 }
 
 func (p *SlackProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:          true,
-		SupportsReactions:        true,
-		SupportsCustomEmojis:     true,
-		SupportsTypingIndicator:  true,
-		SupportsGroupManagement:  true,
-		SupportsDeleteMessage:    true,
-		SupportsEditMessage:      true,
-		SupportsReadReceipts:     false,
-		SupportsPinConversation:  false,
-		SupportsMuteConversation: false,
-		SupportsQRCodeAuth:       false,
+		SupportsThreads:            true,
+		SupportsReactions:          true,
+		SupportsCustomEmojis:       true,
+		SupportsTypingIndicator:    true,
+		SupportsGroupManagement:    true,
+		SupportsDeleteMessage:      true,
+		SupportsEditMessage:        true,
+		SupportsReadReceipts:       false,
+		SupportsPinConversation:    false,
+		SupportsMuteConversation:   false,
+		SupportsQRCodeAuth:         false,
+		SupportsContactDirectory:   true,
+		SupportsDirectConversation: true,
+		SupportsGroupConversation:  true,
+		SupportsGroupTitle:         true,
+		RequiresGroupTitle:         true,
+		GroupConversationTypes:     "group_message,private_channel,public_channel",
 	}
 }
 

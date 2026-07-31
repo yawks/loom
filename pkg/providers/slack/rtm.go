@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -16,7 +17,7 @@ import (
 
 // startRTM starts the Real Time Messaging (RTM) event loop.
 // This is used for "User" tokens (xoxc/xoxp) which don't support Socket Mode.
-func (p *SlackProvider) startRTM() {
+func (p *SlackProvider) startRTM(ctx context.Context) {
 	p.log("SlackProvider.startRTM: starting RTM event loop\n")
 
 	// ManageConnection is blocking, so we run it in a separate goroutine if needed,
@@ -28,7 +29,7 @@ func (p *SlackProvider) startRTM() {
 
 	for {
 		select {
-		case <-p.stopChan:
+		case <-ctx.Done():
 			p.log("SlackProvider.startRTM: stopping RTM event loop\n")
 			return
 		case msg := <-p.rtmClient.IncomingEvents:

@@ -179,9 +179,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSelectedContactProfile: (target) => set({ selectedContactProfile: target }),
   metaContacts: [],
   setMetaContacts: (contacts) => set((state) => {
-    const selectedContact = state.selectedContact
-      ? (contacts.find((c) => c.id === state.selectedContact!.id) ?? state.selectedContact)
-      : null;
+    let selectedContact = state.selectedContact;
+    if (selectedContact) {
+      const refreshed = contacts.find((c) => c.id === selectedContact!.id);
+      if (refreshed) {
+        const activeAccount = selectedContact.linkedAccounts[0];
+        const matchingAccount = activeAccount
+          ? refreshed.linkedAccounts.find((account) =>
+              account.providerInstanceId === activeAccount.providerInstanceId &&
+              (account.userId === activeAccount.userId || account.conversationId === activeAccount.conversationId)
+            )
+          : undefined;
+        const preservedAccount = matchingAccount && activeAccount?.conversationId && !matchingAccount.conversationId
+          ? { ...matchingAccount, conversationId: activeAccount.conversationId } as models.LinkedAccount
+          : matchingAccount;
+        selectedContact = preservedAccount
+          ? { ...refreshed, linkedAccounts: [preservedAccount, ...refreshed.linkedAccounts.filter((account) => account !== matchingAccount)] } as models.MetaContact
+          : refreshed;
+      }
+    }
     return { metaContacts: contacts, selectedContact };
   }),
   // Navigation history

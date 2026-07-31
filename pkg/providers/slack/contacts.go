@@ -301,20 +301,6 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 				continue
 			}
 
-			// If not in active IMs and we have many users, skip processing status/metadata to save CPU
-			if len(fullUserList) > 500 && !activeUserIDs[user.ID] {
-				// Still include the user for alphabetical search, but with minimal metadata
-				contacts = append(contacts, models.LinkedAccount{
-					UserID:    user.ID,
-					Username:  getUserDisplayName(&user),
-					IsGroup:   false,
-					AvatarURL: user.Profile.Image48,
-					Status:    "offline",
-					Protocol:  "slack",
-				})
-				continue
-			}
-
 			// Determine status based on presence and custom status
 			extraData := make(map[string]interface{})
 

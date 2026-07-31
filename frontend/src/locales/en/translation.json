@@ -252,9 +252,26 @@
   "optional_group_title": "Optional group title",
   "search_contacts": "Search contacts...",
   "no_contacts_found": "No contacts found",
+  "loading_contacts": "Loading contacts...",
   "create_group": "Create Group",
   "open_chat": "Open Chat",
   "creating": "Creating...",
+  "continue": "Continue",
+  "choose_provider": "Choose a provider",
+  "no_provider_contact_directory": "No provider currently exposes a contact directory.",
+  "choose_existing_conversation": "Several conversations already have these participants. Choose one to open.",
+  "conversation_type": "Conversation type",
+  "conversation_types": {
+    "group": "Group",
+    "group_message": "Group message",
+    "private_channel": "Private channel",
+    "public_channel": "Public channel"
+  },
+  "conversation_errors": {
+    "name_taken": "This channel name is already in use. Choose another one.",
+    "invalid_name": "This channel name is invalid. Use letters, numbers, hyphens, or underscores.",
+    "persistence_conflict": "The conversation was created, but could not be saved locally. Try again in a moment."
+  },
   "all": "All",
   "no_unread_messages": "No unread messages",
   "view_recent": "View recent messages",
