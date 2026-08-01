@@ -18,6 +18,7 @@ import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
+import { mergePhotoGroupAttachments } from "@/lib/photoMessageGroups";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -43,6 +44,8 @@ interface MessageIRCItemProps {
   threadsByParent: Record<string, models.Message[]>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
+  photoGroupMessages?: models.Message[];
+  displayIndexByMessageId?: Map<string, number>;
 }
 
 export function MessageIRCItem({
@@ -69,6 +72,8 @@ export function MessageIRCItem({
   threadsByParent,
   virtuosoRef,
   handlers,
+  photoGroupMessages,
+  displayIndexByMessageId,
 }: MessageIRCItemProps) {
   const { t } = useTranslation();
   message = normalizeSlackQuotedReply(message);
@@ -250,7 +255,10 @@ export function MessageIRCItem({
                             className="mb-2 pl-3 pr-2 py-1.5 border-l-[3px] border-purple-600 dark:border-purple-400 bg-muted/40 hover:bg-muted/70 cursor-pointer rounded-r transition-colors text-left"
                             onClick={() => {
                               const quotedId = message.quotedMessageId || "";
-                              const quotedIdx = mainMessages.findIndex((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
+                              const quotedMessage = mainMessages.find((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
+                              const quotedIdx = quotedMessage
+                                ? (displayIndexByMessageId?.get(getMessageDomId(quotedMessage)) ?? mainMessages.indexOf(quotedMessage))
+                                : -1;
                               if (quotedIdx >= 0) virtuosoRef.current?.scrollToIndex({ index: quotedIdx, behavior: "smooth", align: "center" });
                             }}
                           >
@@ -277,7 +285,7 @@ export function MessageIRCItem({
                         {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                         {message.attachments?.trim() && (
                           <MessageAttachments
-                            attachments={message.attachments}
+                            attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments}
                             isFromMe={message.isFromMe}
                             conversationID={conversationId}
                             messageID={String(message.id)}

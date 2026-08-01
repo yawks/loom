@@ -1,4 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { ImageOff } from "lucide-react";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { cn } from "@/lib/utils";
@@ -10,6 +13,8 @@ interface LinkPreviewCardProps {
 }
 
 export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps) {
+  const { t } = useTranslation();
+  const [failedImageURL, setFailedImageURL] = useState<string | null>(null);
   const { data: preview, isLoading, isError } = useQuery({
     queryKey: ["link-preview", url],
     queryFn: () => FetchLinkPreview(url),
@@ -39,6 +44,8 @@ export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps)
 
   const targetUrl = preview?.url || url;
   const title = preview?.title || domain || url;
+  const imageURL = preview?.imageURL;
+  const showImage = Boolean(imageURL && !isError && failedImageURL !== imageURL);
 
   return (
     <button
@@ -52,15 +59,18 @@ export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps)
       )}
     >
       <div className="link-preview-card__media h-36 w-full bg-primary/5">
-        {preview?.imageURL && !isError ? (
+        {showImage ? (
           <img
-            src={preview.imageURL}
+            src={imageURL}
             alt={title}
             className="link-preview-card__image h-full w-full object-cover"
-            onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
+            onError={() => setFailedImageURL(imageURL || null)}
           />
         ) : (
-          <div className="link-preview-card__image-placeholder h-full w-full bg-gradient-to-br from-primary/10 to-primary/5" />
+          <div className="link-preview-card__image-placeholder flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-primary/10 to-primary/5">
+            <ImageOff className={cn("h-8 w-8", isFromMe ? "text-white/45" : "text-muted-foreground/60")} aria-hidden="true" />
+            <span className={cn("text-xs", isFromMe ? "text-white/55" : "text-muted-foreground")}>{t("link_preview_image_unavailable")}</span>
+          </div>
         )}
       </div>
       <div className="link-preview-card__body h-24 overflow-hidden p-3 space-y-0.5">

@@ -1,5 +1,7 @@
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
+  ChevronLeft,
+  ChevronRight,
   Download,
   File,
   FileText,
@@ -232,6 +234,70 @@ function VisibleImageAttachment({
   );
 }
 
+function MosaicImageAttachment({
+  attachment,
+  onOpen,
+  className,
+}: {
+  attachment: Attachment;
+  onOpen: (dataUrl: string) => void;
+  className?: string;
+}) {
+  const elementRef = useRef<HTMLButtonElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+  const [imageData, setImageData] = useState<string | null>(null);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+      threshold: 0.01,
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) {
+      // Release the data URL and its decoded WebKit image surface while the
+      // mosaic remains mounted in Virtuoso's overscan area.
+      setImageData(null);
+      return;
+    }
+
+    let active = true;
+    GetAttachmentData(attachment.url)
+      .then((data) => { if (active) setImageData(data); })
+      .catch(() => {
+        if (attachment.thumbnail && attachment.thumbnail !== attachment.url) {
+          GetAttachmentData(attachment.thumbnail)
+            .then((data) => { if (active) setImageData(data); })
+            .catch(() => undefined);
+        }
+    });
+    return () => { active = false; };
+  }, [attachment.thumbnail, attachment.url, isVisible]);
+
+  return (
+    <button
+      ref={elementRef}
+      type="button"
+      className={`message-attachment__mosaic-tile relative min-h-0 overflow-hidden bg-muted ${className || ""}`}
+      onClick={() => imageData && onOpen(imageData)}
+      aria-label={attachment.fileName}
+    >
+      {imageData ? (
+        <img src={imageData} alt={attachment.fileName} className="h-full w-full object-cover" />
+      ) : (
+        <ImageIcon className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 text-muted-foreground" />
+      )}
+    </button>
+  );
+}
+
 export function MessageAttachments({
   attachments,
   conversationID,
@@ -242,6 +308,7 @@ export function MessageAttachments({
 }: MessageAttachmentsProps) {
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -401,8 +468,61 @@ export function MessageAttachments({
     }
   };
 
+  const imageAttachments = parsedAttachments.filter((attachment) =>
+    attachment.type === "image" || attachment.mimeType?.startsWith("image/")
+  );
+  const isPhotoMosaic = imageAttachments.length > 1 && imageAttachments.length === parsedAttachments.length;
+
+  const openMosaicImage = (dataUrl: string, index: number) => {
+    setSelectedImage(dataUrl);
+    setSelectedImageIndex(index);
+  };
+
+  const navigateMosaic = async (direction: -1 | 1) => {
+    if (selectedImageIndex === null || imageAttachments.length < 2) return;
+    const nextIndex = (selectedImageIndex + direction + imageAttachments.length) % imageAttachments.length;
+    const attachment = imageAttachments[nextIndex];
+    try {
+      const data = await GetAttachmentData(attachment.url);
+      setSelectedImage(data);
+      setSelectedImageIndex(nextIndex);
+    } catch {
+      if (!attachment.thumbnail) return;
+      try {
+        const fallback = await GetAttachmentData(attachment.thumbnail);
+        setSelectedImage(fallback);
+        setSelectedImageIndex(nextIndex);
+      } catch {
+        // Keep the current photo visible when neither source is available.
+      }
+    }
+  };
+
   return (
     <>
+      {isPhotoMosaic ? (
+        <div
+          className="message-attachment__mosaic relative mt-2 grid h-[260px] w-[320px] grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-lg bg-background/30"
+          aria-label={`${imageAttachments.length} photos`}
+        >
+          {imageAttachments.slice(0, 4).map((attachment, index) => (
+            <MosaicImageAttachment
+              key={`${attachment.url}-${index}`}
+              attachment={attachment}
+              onOpen={(dataUrl) => openMosaicImage(dataUrl, index)}
+              className={imageAttachments.length === 2 ? "row-span-2" : imageAttachments.length === 3 && index === 0 ? "row-span-2" : ""}
+            />
+          ))}
+          <div className="message-attachment__photo-count pointer-events-none absolute bottom-2 right-2 z-10 rounded-full bg-black/70 px-2.5 py-1 text-xs font-semibold text-white shadow">
+            {imageAttachments.length} photos
+          </div>
+          {imageAttachments.length > 4 && (
+            <div className="message-attachment__overflow-count pointer-events-none absolute bottom-0 right-0 flex h-1/2 w-1/2 items-center justify-center bg-black/55 text-2xl font-semibold text-white">
+              +{imageAttachments.length - 3}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
           // Use VoiceMessage for voice messages (type "voice" or audio files that are likely voice messages)
@@ -583,14 +703,27 @@ export function MessageAttachments({
           );
         })}
       </div>
+      )}
 
-      <Dialog open={selectedImage !== null} onOpenChange={() => setSelectedImage(null)}>
-        <DialogContent className="max-w-4xl max-h-[90vh] p-0">
+      <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); }}>
+        <DialogContent
+          className="max-w-4xl max-h-[90vh] p-0"
+          onKeyDown={(event) => {
+            if (selectedImageIndex === null) return;
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              void navigateMosaic(-1);
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              void navigateMosaic(1);
+            }
+          }}
+        >
           <DialogTitle className="sr-only">Image Preview</DialogTitle>
           {selectedImage && (
             <div className="relative">
               <button
-                onClick={() => setSelectedImage(null)}
+                onClick={() => { setSelectedImage(null); setSelectedImageIndex(null); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
               >
                 <X className="h-5 w-5" />
@@ -600,6 +733,31 @@ export function MessageAttachments({
                 alt="Preview"
                 className="w-full h-auto max-h-[85vh] object-contain"
               />
+              {selectedImageIndex !== null && imageAttachments.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { void navigateMosaic(-1); }}
+                    className="message-attachment__previous-photo absolute left-3 top-1/2 z-20 flex h-14 w-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:scale-105 hover:bg-black/90"
+                    aria-label="Photo précédente"
+                    title="Photo précédente"
+                  >
+                    <ChevronLeft className="h-9 w-9" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void navigateMosaic(1); }}
+                    className="message-attachment__next-photo absolute right-3 top-1/2 z-20 flex h-14 w-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:scale-105 hover:bg-black/90"
+                    aria-label="Photo suivante"
+                    title="Photo suivante"
+                  >
+                    <ChevronRight className="h-9 w-9" />
+                  </button>
+                  <div className="message-attachment__gallery-position absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-sm font-medium text-white">
+                    {selectedImageIndex + 1} / {imageAttachments.length}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </DialogContent>

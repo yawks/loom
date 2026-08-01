@@ -215,6 +215,7 @@
   "forwarded": "Forwarded",
   "forward_search_placeholder": "Search for rooms or people",
   "message_preview": "Message preview",
+  "link_preview_image_unavailable": "Image unavailable",
   "sent": "Sent",
   "attachment": "Attachment",
   "start_thread": "Start a thread",

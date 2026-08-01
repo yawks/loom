@@ -3503,6 +3503,78 @@ func walkHTMLForPreview(n *html.Node, p *LinkPreview, title *string) {
 	}
 }
 
+// jsonLDString returns the first useful string representation of a JSON-LD
+// value. Schema.org allows image and URL fields to be strings, objects, or
+// arrays of either.
+func jsonLDString(value any) string {
+	switch value := value.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []any:
+		for _, item := range value {
+			if result := jsonLDString(item); result != "" {
+				return result
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"url", "contentUrl", "@id"} {
+			if result := jsonLDString(value[key]); result != "" {
+				return result
+			}
+		}
+	}
+	return ""
+}
+
+// applyJSONLDToPreview walks a JSON-LD document and fills metadata missing
+// from the standard Open Graph tags. Nested @graph entries are common.
+func applyJSONLDToPreview(value any, p *LinkPreview) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			applyJSONLDToPreview(item, p)
+		}
+	case map[string]any:
+		if p.Title == "" {
+			for _, key := range []string{"name", "headline"} {
+				if p.Title = jsonLDString(value[key]); p.Title != "" {
+					break
+				}
+			}
+		}
+		if p.Description == "" {
+			p.Description = jsonLDString(value["description"])
+		}
+		if p.ImageURL == "" {
+			p.ImageURL = jsonLDString(value["image"])
+		}
+		if nested, ok := value["@graph"]; ok {
+			applyJSONLDToPreview(nested, p)
+		}
+	}
+}
+
+func walkHTMLForJSONLD(n *html.Node, p *LinkPreview) {
+	if n.Type == html.ElementNode && n.Data == "script" {
+		var scriptType string
+		for _, attr := range n.Attr {
+			if attr.Key == "type" {
+				scriptType = strings.ToLower(strings.TrimSpace(strings.Split(attr.Val, ";")[0]))
+				break
+			}
+		}
+		if scriptType == "application/ld+json" && n.FirstChild != nil {
+			var value any
+			if json.Unmarshal([]byte(n.FirstChild.Data), &value) == nil {
+				applyJSONLDToPreview(value, p)
+			}
+		}
+	}
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		walkHTMLForJSONLD(child, p)
+	}
+}
+
 // FetchLinkPreview fetches and parses Open Graph metadata for a given URL.
 // Results are cached for one hour to avoid repeated network requests.
 func (a *App) FetchLinkPreview(url string) (LinkPreview, error) {
@@ -3548,6 +3620,7 @@ func (a *App) FetchLinkPreview(url string) (LinkPreview, error) {
 	preview := LinkPreview{URL: url}
 	var title string
 	walkHTMLForPreview(doc, &preview, &title)
+	walkHTMLForJSONLD(doc, &preview)
 
 	if preview.Title == "" {
 		preview.Title = title

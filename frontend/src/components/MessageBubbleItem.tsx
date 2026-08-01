@@ -17,6 +17,7 @@ import { getMessageDomId, getSenderDisplayName, isDifferentDay, normalizeSlackQu
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
+import { mergePhotoGroupAttachments } from "@/lib/photoMessageGroups";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -64,6 +65,8 @@ interface MessageBubbleItemProps {
   threadsByParent: Record<string, models.Message[]>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
+  photoGroupMessages?: models.Message[];
+  displayIndexByMessageId?: Map<string, number>;
 }
 
 export function MessageBubbleItem({
@@ -90,6 +93,8 @@ export function MessageBubbleItem({
   threadsByParent,
   virtuosoRef,
   handlers,
+  photoGroupMessages,
+  displayIndexByMessageId,
 }: MessageBubbleItemProps) {
   const { t } = useTranslation();
   // The cache can briefly contain Slack's transport representation alongside
@@ -256,7 +261,10 @@ export function MessageBubbleItem({
                         )}
                         onClick={() => {
                           const quotedId = message.quotedMessageId || "";
-                          const quotedIdx = mainMessages.findIndex((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
+                          const quotedMessage = mainMessages.find((m) => m.protocolMsgId === quotedId || getMessageDomId(m) === quotedId);
+                          const quotedIdx = quotedMessage
+                            ? (displayIndexByMessageId?.get(getMessageDomId(quotedMessage)) ?? mainMessages.indexOf(quotedMessage))
+                            : -1;
                           if (quotedIdx >= 0) virtuosoRef.current?.scrollToIndex({ index: quotedIdx, behavior: "smooth", align: "center" });
                         }}
                       >
@@ -280,7 +288,7 @@ export function MessageBubbleItem({
                   </>
                 )}
                 {message.attachments?.trim() && (
-                  <MessageAttachments attachments={message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} />
+                  <MessageAttachments attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} />
                 )}
                 {!message.body?.trim() && !message.attachments?.trim() && (
                   <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
