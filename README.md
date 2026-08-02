@@ -32,7 +32,7 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | Reactions | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Custom emoji | — | ✓ | — | — | — |
 | Typing indicator | ✓ | ✓ | ✓ | — | — |
-| Group / channel management | ✓ | ✓ | Partial | ✓ | — |
+| Group / channel management | ✓ | ✓ | ✓ | ✓ | — |
 | Edit message | ✓ | ✓ | ✓ | ✓ | — |
 | Delete message | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -53,12 +53,12 @@ shows actions supported by the service that owns the conversation.
 | Operation | WhatsApp | Slack | Teams | Google Chat |
 |---|:---:|:---:|:---:|:---:|
 | Create a group / space / channel | ✓ | ✓ | ✓ | ✓ |
-| Rename | ✓ | ✓ | — | ✓ |
-| Edit description | ✓ | ✓ | — | — |
+| Rename | ✓ | ✓ | ✓ | ✓ |
+| Edit description | ✓ | ✓ | ✓ | — |
 | Change group photo | ✓ | — | — | — |
-| Add members | ✓ | ✓ | — | ✓ |
+| Add members | ✓ | ✓ | ✓ | ✓ |
 | Remove members | ✓ | ✓ | ✓ | ✓ |
-| Promote / demote administrators | ✓ | — | — | ✓ |
+| Promote / demote administrators | ✓ | — | ✓ | ✓ |
 | Leave | ✓ | ✓ | ✓ | ✓ |
 
 The conversation details panel displays remote group metadata and participants,
@@ -66,10 +66,18 @@ and lets authorized users perform the available operations. Changes made from
 another client are reflected through real-time WhatsApp group events and
 periodic remote refreshes for all compatible providers.
 
+After a group rename is confirmed by the provider, Loom immediately updates the
+conversation name in both the message header and the conversation list. The new
+name is also persisted in the local conversation, linked account, and unified
+contact records so subsequent refreshes and application restarts keep the
+updated value. This update path is provider-neutral and applies to every
+provider that advertises the rename capability.
+
 Loom also exposes a generic `canSendMessages` state. Read-only conversations
 show their history without a composer. This currently covers archived Slack
-channels, Google Chat memberships that are not in the `JOINED` state, and
-WhatsApp announcement groups where the current user isn't an administrator.
+channels, Google Chat memberships that are not in the `JOINED` state, Teams
+group chats the current user has left, and WhatsApp announcement groups where
+the current user isn't an administrator.
 
 When the last member leaves a Slack channel, Slack requires the channel to be
 archived instead; Loom performs that fallback automatically.

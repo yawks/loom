@@ -2191,8 +2191,35 @@ func (a *App) UpdateGroupName(conversationID, name string) error {
 	if provider == nil || !provider.GetCapabilities().SupportsRenameGroup {
 		return fmt.Errorf("provider does not support renaming groups")
 	}
+	name = strings.TrimSpace(name)
 	if err := provider.UpdateGroupName(conversationID, name); err != nil {
 		return err
+	}
+	if db.DB != nil {
+		var conversation models.Conversation
+		if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conversation).Error; err == nil {
+			conversation.GroupName = name
+			if err := db.DB.Save(&conversation).Error; err != nil {
+				fmt.Printf("Warning: group renamed remotely but local conversation could not be updated: %v\n", err)
+			}
+			var account models.LinkedAccount
+			if err := db.DB.First(&account, conversation.LinkedAccountID).Error; err == nil {
+				account.Username = name
+				if err := db.DB.Save(&account).Error; err != nil {
+					fmt.Printf("Warning: group renamed remotely but local account could not be updated: %v\n", err)
+				} else {
+					db.ContactStore.UpsertLinkedAccount(account)
+					if meta, ok := db.ContactStore.FindMetaContact(account.MetaContactID); ok {
+						meta.DisplayName = name
+						if err := db.DB.Save(&meta).Error; err != nil {
+							fmt.Printf("Warning: group renamed remotely but local contact could not be updated: %v\n", err)
+						} else {
+							db.ContactStore.UpsertMetaContact(meta)
+						}
+					}
+				}
+			}
+		}
 	}
 	a.emitContactsRefresh()
 	return nil

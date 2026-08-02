@@ -45,6 +45,7 @@ export function ConversationDetailsView({
     (state) => state.setShowConversationDetails
   );
   const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
+  const renameGroupConversation = useAppStore((state) => state.renameGroupConversation);
   const capabilities = useAppStore((state) => state.capabilities);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const [participantsCount, setParticipantsCount] = useState<number | null>(null);
@@ -99,7 +100,12 @@ export function ConversationDetailsView({
   const saveName = async () => {
     setSavingGroupDetails(true);
     try {
-      await UpdateGroupName(conversationId, groupName.trim());
+      const updatedName = groupName.trim();
+      await UpdateGroupName(conversationId, updatedName);
+      renameGroupConversation(conversationId, updatedName);
+      queryClient.setQueryData<models.GroupDetails>(["group-details", conversationId], (current) =>
+        current ? { ...current, name: updatedName } as models.GroupDetails : current
+      );
       setEditingName(false);
       await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
       showToast(t("group_name_updated"), "success");

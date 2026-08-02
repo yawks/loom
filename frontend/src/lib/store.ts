@@ -37,6 +37,7 @@ interface AppState {
   setSelectedContactProfile: (target: ContactProfileTarget | null) => void;
   metaContacts: models.MetaContact[];
   setMetaContacts: (contacts: models.MetaContact[]) => void;
+  renameGroupConversation: (conversationId: string, name: string) => void;
   selectedProviderFilter: string | null;
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   messageSearchTargetId: string | null;
@@ -199,6 +200,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
     return { metaContacts: contacts, selectedContact };
+  }),
+  renameGroupConversation: (conversationId, name) => set((state) => {
+    const renameContact = (contact: models.MetaContact) => {
+      const matches = contact.linkedAccounts.some(
+        (account) => account.conversationId === conversationId || account.userId === conversationId
+      );
+      if (!matches) return contact;
+      return {
+        ...contact,
+        displayName: name,
+        linkedAccounts: contact.linkedAccounts.map((account) =>
+          account.conversationId === conversationId || account.userId === conversationId
+            ? { ...account, username: name } as models.LinkedAccount
+            : account
+        ),
+      } as models.MetaContact;
+    };
+    return {
+      metaContacts: state.metaContacts.map(renameContact),
+      selectedContact: state.selectedContact ? renameContact(state.selectedContact) : null,
+      conversationHistory: state.conversationHistory.map(renameContact),
+    };
   }),
   // Navigation history
   conversationHistory: [],
