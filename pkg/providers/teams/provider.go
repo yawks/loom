@@ -412,6 +412,68 @@ func (p *Provider) CreateGroup(groupName string, participantIDs []string) (*mode
 	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: true, GroupName: chat.Topic}, nil
 }
 
+func (p *Provider) UpdateGroupName(conversationID, newName string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	if err := client.UpdateThreadTopic(context.Background(), core.StripConvID(conversationID), newName); err != nil {
+		return fmt.Errorf("%s: rename group: %w", providerID, err)
+	}
+	return nil
+}
+
+func (p *Provider) GetGroupDetails(conversationID string) (*models.GroupDetails, error) {
+	client, instance, err := p.connectedClient()
+	if err != nil {
+		return nil, err
+	}
+	threadID := core.StripConvID(conversationID)
+	chat, err := client.GetChat(context.Background(), threadID)
+	if err != nil {
+		return nil, err
+	}
+	canSend := false
+	for _, member := range chat.Members {
+		if strings.EqualFold(member.MRI, client.UserMRI()) {
+			canSend = true
+			break
+		}
+	}
+	return &models.GroupDetails{
+		ConversationID:  core.BuildConvID(instance, threadID),
+		Name:            chat.Topic,
+		Description:     chat.Description,
+		CanSendMessages: canSend,
+	}, nil
+}
+
+func (p *Provider) UpdateGroupDescription(conversationID, description string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	if err := client.UpdateThreadDescription(context.Background(), core.StripConvID(conversationID), description); err != nil {
+		return fmt.Errorf("%s: update group description: %w", providerID, err)
+	}
+	return nil
+}
+
+func (p *Provider) UpdateGroupPhoto(string, []byte) error {
+	return fmt.Errorf("%s: custom group photos are not supported", providerID)
+}
+
+func (p *Provider) AddGroupParticipants(conversationID string, participantIDs []string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	if err := client.AddThreadMembers(context.Background(), core.StripConvID(conversationID), participantIDs); err != nil {
+		return fmt.Errorf("%s: add group participants: %w", providerID, err)
+	}
+	return nil
+}
+
 func (p *Provider) LeaveGroup(conversationID string) error {
 	client, _, err := p.connectedClient()
 	if err != nil {
@@ -433,6 +495,28 @@ func (p *Provider) RemoveGroupParticipants(conversationID string, participantIDs
 	for _, participantID := range participantIDs {
 		if err := client.RemoveThreadMember(context.Background(), threadID, participantID); err != nil {
 			return fmt.Errorf("%s: remove group participant %s: %w", providerID, participantID, err)
+		}
+	}
+	return nil
+}
+
+func (p *Provider) PromoteGroupAdmins(conversationID string, participantIDs []string) error {
+	return p.updateGroupMemberRoles(conversationID, participantIDs, "Admin")
+}
+
+func (p *Provider) DemoteGroupAdmins(conversationID string, participantIDs []string) error {
+	return p.updateGroupMemberRoles(conversationID, participantIDs, "User")
+}
+
+func (p *Provider) updateGroupMemberRoles(conversationID string, participantIDs []string, role string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	threadID := core.StripConvID(conversationID)
+	for _, participantID := range participantIDs {
+		if err := client.UpdateThreadMemberRole(context.Background(), threadID, participantID, role); err != nil {
+			return fmt.Errorf("%s: update group participant %s role: %w", providerID, participantID, err)
 		}
 	}
 	return nil
@@ -795,8 +879,13 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
+		SupportsGroupManagement:    true,
 		SupportsLeaveGroup:         true,
+		SupportsAddGroupMembers:    true,
 		SupportsRemoveGroupMembers: true,
+		SupportsRenameGroup:        true,
+		SupportsGroupDescription:   true,
+		SupportsGroupAdminRoles:    true,
 		NativeEmojiReactions:       true,
 		SupportsContactDirectory:   true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
