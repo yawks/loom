@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"Loom/pkg/core"
 	"Loom/pkg/models"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -129,21 +130,64 @@ func (w *WhatsAppProvider) CreateGroup(groupName string, participantIDs []string
 }
 
 func (w *WhatsAppProvider) UpdateGroupName(conversationID string, newName string) error {
-	// TODO: Implement group name update
-	markUnused(conversationID, newName)
-	return fmt.Errorf("group name update not yet implemented")
+	client, ctx, groupJID, err := w.groupClient(conversationID)
+	if err != nil {
+		return err
+	}
+	if err := client.SetGroupName(ctx, groupJID, strings.TrimSpace(newName)); err != nil {
+		return fmt.Errorf("update group name: %w", err)
+	}
+	return nil
 }
 
 func (w *WhatsAppProvider) AddGroupParticipants(conversationID string, participantIDs []string) error {
-	// TODO: Implement adding participants
-	markUnused(conversationID, participantIDs)
-	return fmt.Errorf("adding participants not yet implemented")
+	return w.updateGroupParticipants(conversationID, participantIDs, whatsmeow.ParticipantChangeAdd)
 }
 
 func (w *WhatsAppProvider) RemoveGroupParticipants(conversationID string, participantIDs []string) error {
-	// TODO: Implement removing participants
-	markUnused(conversationID, participantIDs)
-	return fmt.Errorf("removing participants not yet implemented")
+	return w.updateGroupParticipants(conversationID, participantIDs, whatsmeow.ParticipantChangeRemove)
+}
+
+func (w *WhatsAppProvider) updateGroupParticipants(conversationID string, participantIDs []string, action whatsmeow.ParticipantChange) error {
+	w.mu.RLock()
+	client, ctx := w.client, w.ctx
+	w.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+	groupJID, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil || groupJID.Server != types.GroupServer {
+		return fmt.Errorf("invalid WhatsApp group ID %q", conversationID)
+	}
+	participants := make([]types.JID, 0, len(participantIDs))
+	for _, participantID := range participantIDs {
+		participantID = strings.TrimSpace(strings.TrimPrefix(participantID, "whatsapp-"))
+		if participantID == "" {
+			continue
+		}
+		if !strings.Contains(participantID, "@") {
+			participantID += "@s.whatsapp.net"
+		}
+		jid, parseErr := types.ParseJID(participantID)
+		if parseErr != nil {
+			return fmt.Errorf("invalid participant ID %q: %w", participantID, parseErr)
+		}
+		participants = append(participants, jid)
+	}
+	if len(participants) == 0 {
+		return fmt.Errorf("at least one participant is required")
+	}
+	results, err := client.UpdateGroupParticipants(ctx, groupJID, participants, action)
+	if err != nil {
+		return fmt.Errorf("%s group participants: %w", action, err)
+	}
+	for _, result := range results {
+		if result.Error != 0 {
+			return fmt.Errorf("%s participant %s: WhatsApp error %d", action, result.JID, result.Error)
+		}
+	}
+	go w.cacheGroupParticipants(groupJID)
+	return nil
 }
 
 func (w *WhatsAppProvider) LeaveGroup(conversationID string) error {
@@ -171,15 +215,75 @@ func (w *WhatsAppProvider) LeaveGroup(conversationID string) error {
 }
 
 func (w *WhatsAppProvider) PromoteGroupAdmins(conversationID string, participantIDs []string) error {
-	// TODO: Implement promoting admins
-	markUnused(conversationID, participantIDs)
-	return fmt.Errorf("promoting admins not yet implemented")
+	return w.updateGroupParticipants(conversationID, participantIDs, whatsmeow.ParticipantChangePromote)
 }
 
 func (w *WhatsAppProvider) DemoteGroupAdmins(conversationID string, participantIDs []string) error {
-	// TODO: Implement demoting admins
-	markUnused(conversationID, participantIDs)
-	return fmt.Errorf("demoting admins not yet implemented")
+	return w.updateGroupParticipants(conversationID, participantIDs, whatsmeow.ParticipantChangeDemote)
+}
+
+func (w *WhatsAppProvider) groupClient(conversationID string) (*whatsmeow.Client, context.Context, types.JID, error) {
+	w.mu.RLock()
+	client, ctx := w.client, w.ctx
+	w.mu.RUnlock()
+	if client == nil {
+		return nil, nil, types.JID{}, fmt.Errorf("client not initialized")
+	}
+	groupJID, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil || groupJID.Server != types.GroupServer {
+		return nil, nil, types.JID{}, fmt.Errorf("invalid WhatsApp group ID %q", conversationID)
+	}
+	return client, ctx, groupJID, nil
+}
+
+func (w *WhatsAppProvider) GetGroupDetails(conversationID string) (*models.GroupDetails, error) {
+	client, ctx, groupJID, err := w.groupClient(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	info, err := client.GetGroupInfo(ctx, groupJID)
+	if err != nil {
+		return nil, fmt.Errorf("get group details: %w", err)
+	}
+	canSendMessages := !info.IsAnnounce
+	if info.IsAnnounce && client.Store.ID != nil {
+		self := client.Store.ID.ToNonAD()
+		for _, participant := range info.Participants {
+			if participant.JID.ToNonAD() == self || participant.PhoneNumber.ToNonAD() == self || participant.LID.ToNonAD() == self {
+				canSendMessages = participant.IsAdmin || participant.IsSuperAdmin
+				break
+			}
+		}
+	}
+	return &models.GroupDetails{ConversationID: core.BuildConvID(w.getInstanceId(), groupJID.String()), Name: info.Name, Description: info.Topic, AvatarURL: w.getProfilePictureURL(groupJID), CanSendMessages: canSendMessages}, nil
+}
+
+func (w *WhatsAppProvider) UpdateGroupDescription(conversationID, description string) error {
+	client, ctx, groupJID, err := w.groupClient(conversationID)
+	if err != nil {
+		return err
+	}
+	if err := client.SetGroupDescription(ctx, groupJID, description); err != nil {
+		return fmt.Errorf("update group description: %w", err)
+	}
+	return nil
+}
+
+func (w *WhatsAppProvider) UpdateGroupPhoto(conversationID string, photo []byte) error {
+	client, ctx, groupJID, err := w.groupClient(conversationID)
+	if err != nil {
+		return err
+	}
+	if len(photo) == 0 {
+		return fmt.Errorf("group photo is empty")
+	}
+	if _, err := client.SetGroupPhoto(ctx, groupJID, photo); err != nil {
+		return fmt.Errorf("update group photo: %w", err)
+	}
+	w.avatarFailuresMu.Lock()
+	delete(w.avatarFailures, groupJID.String())
+	w.avatarFailuresMu.Unlock()
+	return nil
 }
 
 func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
@@ -222,7 +326,12 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 	for _, participant := range groupInfo.Participants {
 		// Determine if participant is admin
 		// In whatsmeow, GroupParticipant has an IsSuperAdmin field
-		isAdmin := participant.IsSuperAdmin
+		isAdmin := participant.IsAdmin || participant.IsSuperAdmin
+		isSelf := false
+		if client.Store.ID != nil {
+			self := client.Store.ID.ToNonAD()
+			isSelf = participant.JID.ToNonAD() == self || participant.PhoneNumber.ToNonAD() == self || participant.LID.ToNonAD() == self
+		}
 
 		// Use current time as JoinedAt if not available (whatsmeow doesn't provide join time)
 		joinedAt := time.Now()
@@ -259,6 +368,7 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 		participants = append(participants, models.GroupParticipant{
 			UserID:   userID,
 			IsAdmin:  isAdmin,
+			IsSelf:   isSelf,
 			JoinedAt: joinedAt,
 		})
 	}

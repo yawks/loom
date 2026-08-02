@@ -1,6 +1,7 @@
-import { GetContactAliases, GetMessagesForConversation, LeaveGroup } from "../../wailsjs/go/main/App";
-import { Suspense, useMemo, useState } from "react";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { GetContactAliases, GetGroupDetails, GetMessagesForConversation, LeaveGroup, UpdateGroupDescription, UpdateGroupName, UpdateGroupPhoto } from "../../wailsjs/go/main/App";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 
 import {
   AlertDialog,
@@ -13,10 +14,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Input } from "@/components/ui/input";
 import { FileUploadModal } from "./FileUploadModal";
 import { ParticipantListSkeleton } from "./ParticipantListSkeleton";
 import { ParticipantsList } from "./ParticipantsList";
-import { LogOut, X } from "lucide-react";
+import { Camera, Check, LogOut, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
@@ -49,6 +52,13 @@ export function ConversationDetailsView({
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [leftConversationId, setLeftConversationId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
+  const [savingGroupDetails, setSavingGroupDetails] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
   const { toasts, showToast, closeToast } = useToast();
 
   const selectedAccount =
@@ -62,6 +72,69 @@ export function ConversationDetailsView({
     selectedAccount.providerInstanceId &&
     capabilities[selectedAccount.providerInstanceId]?.supportsLeaveGroup
   );
+  const groupCapabilities = selectedAccount?.providerInstanceId
+    ? capabilities[selectedAccount.providerInstanceId]
+    : undefined;
+  const canAddMembers = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsAddGroupMembers);
+  const canRemoveMembers = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsRemoveGroupMembers);
+  const canManageAdmins = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsGroupAdminRoles);
+
+  const { data: groupDetails } = useQuery<models.GroupDetails>({
+    queryKey: ["group-details", conversationId],
+    queryFn: () => GetGroupDetails(conversationId),
+    enabled: Boolean(selectedAccount?.isGroup && conversationId),
+    refetchInterval: 15000,
+  });
+
+  useEffect(() => {
+    setGroupName(groupDetails?.name ?? selectedConversation.displayName ?? "");
+    setGroupDescription(groupDetails?.description ?? "");
+  }, [groupDetails, selectedConversation.displayName]);
+
+  useEffect(() => EventsOn("group-change", () => {
+    void queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
+    void queryClient.invalidateQueries({ queryKey: ["participantsData", conversationId] });
+  }), [conversationId, queryClient]);
+
+  const saveName = async () => {
+    setSavingGroupDetails(true);
+    try {
+      await UpdateGroupName(conversationId, groupName.trim());
+      setEditingName(false);
+      await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
+      showToast(t("group_name_updated"), "success");
+    } catch (error) {
+      showToast(`${t("group_details_update_error")}: ${String(error)}`, "error");
+    } finally { setSavingGroupDetails(false); }
+  };
+
+  const saveDescription = async () => {
+    setSavingGroupDetails(true);
+    try {
+      await UpdateGroupDescription(conversationId, groupDescription);
+      setEditingDescription(false);
+      await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
+      showToast(t("group_description_updated"), "success");
+    } catch (error) {
+      showToast(`${t("group_details_update_error")}: ${String(error)}`, "error");
+    } finally { setSavingGroupDetails(false); }
+  };
+
+  const updatePhoto = async (file?: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setSavingGroupDetails(true);
+      try {
+        await UpdateGroupPhoto(conversationId, String(reader.result));
+        await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
+        showToast(t("group_photo_updated"), "success");
+      } catch (error) {
+        showToast(`${t("group_details_update_error")}: ${String(error)}`, "error");
+      } finally { setSavingGroupDetails(false); }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const {
     isDragging,
@@ -111,6 +184,7 @@ export function ConversationDetailsView({
     setIsLeaving(true);
     try {
       await LeaveGroup(conversationId);
+      await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
       setLeaveConfirmOpen(false);
       setLeftConversationId(conversationId);
       showToast(t("leave_group_success"), "success");
@@ -141,11 +215,53 @@ export function ConversationDetailsView({
       </div>
       <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
         <div className="space-y-6">
+          {selectedAccount?.isGroup && (
+            <div className="space-y-4">
+              <div className="flex justify-center">
+                <div className="relative">
+                  <Avatar className="h-24 w-24">
+                    <AvatarImage src={groupDetails?.avatarUrl || selectedAccount.avatarUrl} />
+                    <AvatarFallback>{(groupDetails?.name || selectedConversation.displayName).slice(0, 2).toUpperCase()}</AvatarFallback>
+                  </Avatar>
+                  {groupCapabilities?.supportsGroupPhoto && (
+                    <Button size="icon" className="absolute -bottom-1 -right-1 rounded-full h-8 w-8" onClick={() => photoInputRef.current?.click()} disabled={savingGroupDetails}>
+                      <Camera className="h-4 w-4" />
+                    </Button>
+                  )}
+                  <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void updatePhoto(event.target.files?.[0])} />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-muted-foreground">{t("group_name")}</label>
+                <div className="flex gap-2">
+                  <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} disabled={!editingName} spellCheck={false} />
+                  {groupCapabilities?.supportsRenameGroup && (
+                    <Button size="icon" variant="outline" disabled={savingGroupDetails} onClick={() => editingName ? void saveName() : setEditingName(true)}>
+                      {editingName ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {groupCapabilities?.supportsGroupDescription && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">{t("group_description")}</label>
+                  <div className="flex gap-2 items-start">
+                    <textarea className="flex min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-70" value={groupDescription} onChange={(event) => setGroupDescription(event.target.value)} disabled={!editingDescription} placeholder={t("no_group_description")} spellCheck={false} />
+                    <Button size="icon" variant="outline" disabled={savingGroupDetails} onClick={() => editingDescription ? void saveDescription() : setEditingDescription(true)}>
+                      {editingDescription ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {/* Participants */}
           <div>
-            <h4 className="text-sm font-semibold text-muted-foreground mb-3">
-              {t("participants")}{participantsCount !== null ? ` (${participantsCount})` : ""}
-            </h4>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-semibold text-muted-foreground">
+                {t("participants")}{participantsCount !== null ? ` (${participantsCount})` : ""}
+              </h4>
+            </div>
             <Suspense fallback={<ParticipantListSkeleton />}>
               <ParticipantsList
                 conversationId={conversationId}
@@ -154,6 +270,10 @@ export function ConversationDetailsView({
                 aliases={aliases}
                 onAvatarClick={handleAvatarClick}
                 onParticipantsCountChange={setParticipantsCount}
+                providerInstanceId={selectedAccount?.providerInstanceId ?? ""}
+                canAddMembers={canAddMembers}
+                canRemoveMembers={canRemoveMembers}
+                canManageAdmins={canManageAdmins}
               />
             </Suspense>
           </div>

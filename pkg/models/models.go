@@ -161,11 +161,22 @@ type ConversationResolution struct {
 type GroupParticipant struct {
 	ID             uint      `gorm:"primarykey" json:"id"`
 	ConversationID uint      `gorm:"index" json:"conversationId"`
-	UserID         string    `json:"userId"`   // User ID on the platform
-	IsAdmin        bool      `json:"isAdmin"`  // Whether the participant is an admin
-	JoinedAt       time.Time `json:"joinedAt"` // When the participant joined
+	UserID         string    `json:"userId"`          // User ID on the platform
+	IsAdmin        bool      `json:"isAdmin"`         // Whether the participant is an admin
+	IsSelf         bool      `gorm:"-" json:"isSelf"` // Whether this participant is the authenticated user
+	JoinedAt       time.Time `json:"joinedAt"`        // When the participant joined
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// GroupDetails contains provider-independent group metadata shown in the
+// conversation details panel.
+type GroupDetails struct {
+	ConversationID  string `json:"conversationId"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	AvatarURL       string `json:"avatarUrl"`
+	CanSendMessages bool   `json:"canSendMessages"`
 }
 
 // Message contains the content of a message.

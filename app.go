@@ -667,7 +667,7 @@ func (a *App) resyncAllProviders() {
 		}
 
 		log.Printf("[App] Triggering catch-up sync for %s", pInfo.InstanceID)
-		if pInfo.ID == "teams" {
+		if pInfo.ID == "teams" || pInfo.ID == "googlemessages" {
 			go a.resyncProviderAfterWake(pInfo.InstanceID)
 		} else {
 			go a.syncProviderHistory(pInfo.InstanceID, a.syncSince(pInfo.InstanceID, 24*time.Hour), "system wake")
@@ -676,10 +676,11 @@ func (a *App) resyncAllProviders() {
 }
 
 // resyncProviderAfterWake performs a second pass using the exact same lower
-// bound. Teams can accept requests as soon as Wi-Fi is
-// back while their conversation view is still catching up. Advancing
-// LastSyncAt after that first, apparently successful, empty response would
-// otherwise leave a permanent hole until a manual full synchronization.
+// bound. Teams and Google Messages can accept requests as soon as Wi-Fi is
+// back while their server-side conversation view or phone relay is still
+// catching up. Advancing LastSyncAt after that first, apparently successful,
+// empty response would otherwise leave a permanent hole until a manual full
+// synchronization.
 func (a *App) resyncProviderAfterWake(instanceID string) {
 	since := a.syncSince(instanceID, 24*time.Hour)
 	a.syncProviderHistory(instanceID, since, "system wake")
@@ -932,6 +933,7 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "presence", string(presenceJSON))
 					}
 				case core.GroupChangeEvent:
+					a.emitContactsRefresh()
 					groupChangeJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "group-change", string(groupChangeJSON))
@@ -2135,10 +2137,116 @@ func (a *App) CreateGroup(groupName string, participantIDs []string) (*models.Co
 }
 
 func (a *App) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
-	if a.getActiveProvider() == nil {
-		return nil, fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return a.getActiveProvider().GetGroupParticipants(conversationID)
+	return provider.GetGroupParticipants(conversationID)
+}
+
+func (a *App) AddGroupParticipants(conversationID string, participantIDs []string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	if !provider.GetCapabilities().SupportsAddGroupMembers {
+		return fmt.Errorf("provider does not support adding group members")
+	}
+	if err := provider.AddGroupParticipants(conversationID, participantIDs); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
+func (a *App) RemoveGroupParticipants(conversationID string, participantIDs []string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	if !provider.GetCapabilities().SupportsRemoveGroupMembers {
+		return fmt.Errorf("provider does not support removing group members")
+	}
+	if err := provider.RemoveGroupParticipants(conversationID, participantIDs); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
+func (a *App) GetGroupDetails(conversationID string) (*models.GroupDetails, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	detailsProvider, ok := provider.(core.GroupDetailsProvider)
+	if !ok {
+		return nil, fmt.Errorf("provider does not expose group details")
+	}
+	return detailsProvider.GetGroupDetails(conversationID)
+}
+
+func (a *App) UpdateGroupName(conversationID, name string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil || !provider.GetCapabilities().SupportsRenameGroup {
+		return fmt.Errorf("provider does not support renaming groups")
+	}
+	if err := provider.UpdateGroupName(conversationID, name); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
+func (a *App) UpdateGroupDescription(conversationID, description string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil || !provider.GetCapabilities().SupportsGroupDescription {
+		return fmt.Errorf("provider does not support group descriptions")
+	}
+	detailsProvider, ok := provider.(core.GroupDetailsProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support group descriptions")
+	}
+	return detailsProvider.UpdateGroupDescription(conversationID, description)
+}
+
+func (a *App) UpdateGroupPhoto(conversationID, encodedPhoto string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil || !provider.GetCapabilities().SupportsGroupPhoto {
+		return fmt.Errorf("provider does not support group photos")
+	}
+	detailsProvider, ok := provider.(core.GroupDetailsProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support group photos")
+	}
+	if comma := strings.Index(encodedPhoto, ","); comma >= 0 {
+		encodedPhoto = encodedPhoto[comma+1:]
+	}
+	photo, err := base64.StdEncoding.DecodeString(encodedPhoto)
+	if err != nil {
+		return fmt.Errorf("invalid group photo: %w", err)
+	}
+	if err := detailsProvider.UpdateGroupPhoto(conversationID, photo); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
+func (a *App) PromoteGroupAdmins(conversationID string, participantIDs []string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil || !provider.GetCapabilities().SupportsGroupAdminRoles {
+		return fmt.Errorf("provider does not support group admin roles")
+	}
+	return provider.PromoteGroupAdmins(conversationID, participantIDs)
+}
+
+func (a *App) DemoteGroupAdmins(conversationID string, participantIDs []string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil || !provider.GetCapabilities().SupportsGroupAdminRoles {
+		return fmt.Errorf("provider does not support group admin roles")
+	}
+	return provider.DemoteGroupAdmins(conversationID, participantIDs)
 }
 
 // LeaveGroup leaves a group through the provider that owns the conversation.

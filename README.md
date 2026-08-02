@@ -32,7 +32,7 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | Reactions | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Custom emoji | — | ✓ | — | — | — |
 | Typing indicator | ✓ | ✓ | ✓ | — | — |
-| Group / channel management | ✓ | ✓ | — | — | — |
+| Group / channel management | ✓ | ✓ | Partial | ✓ | — |
 | Edit message | ✓ | ✓ | ✓ | ✓ | — |
 | Delete message | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -44,6 +44,35 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 **Teams — authentication:** uses Microsoft's browser-based device-code flow. Loom opens a browser, fills in the temporary code and lets Microsoft handle credentials, MFA and Conditional Access. Passwords and browser cookies are not stored by Loom.
 
 **Teams — presence:** available for one-to-one conversations, refreshed approximately once per minute. Loom also reconnects the event stream and syncs missed messages after the computer resumes from sleep.
+
+### Group and channel management
+
+Group operations use a provider-neutral capability model: the frontend only
+shows actions supported by the service that owns the conversation.
+
+| Operation | WhatsApp | Slack | Teams | Google Chat |
+|---|:---:|:---:|:---:|:---:|
+| Create a group / space / channel | ✓ | ✓ | ✓ | ✓ |
+| Rename | ✓ | ✓ | — | ✓ |
+| Edit description | ✓ | ✓ | — | — |
+| Change group photo | ✓ | — | — | — |
+| Add members | ✓ | ✓ | — | ✓ |
+| Remove members | ✓ | ✓ | ✓ | ✓ |
+| Promote / demote administrators | ✓ | — | — | ✓ |
+| Leave | ✓ | ✓ | ✓ | ✓ |
+
+The conversation details panel displays remote group metadata and participants,
+and lets authorized users perform the available operations. Changes made from
+another client are reflected through real-time WhatsApp group events and
+periodic remote refreshes for all compatible providers.
+
+Loom also exposes a generic `canSendMessages` state. Read-only conversations
+show their history without a composer. This currently covers archived Slack
+channels, Google Chat memberships that are not in the `JOINED` state, and
+WhatsApp announcement groups where the current user isn't an administrator.
+
+When the last member leaves a Slack channel, Slack requires the channel to be
+archived instead; Loom performs that fallback automatically.
 
 > **Note:** The Teams integration uses the same private web services as the Teams client through a maintained fork of `mautrix-teams`. These are not public Microsoft Graph APIs and may change without notice.
 
@@ -62,8 +91,11 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 The protocol layer relies on the excellent [mau.fi](https://mau.fi/) libraries:
 
 - [whatsmeow](https://github.com/tulir/whatsmeow) — WhatsApp
+- [slack-go](https://github.com/slack-go/slack) — Slack
 - [mautrix-gmessages](https://github.com/mautrix/gmessages) — Google Messages
 - [mautrix-teams](https://github.com/yawks/mautrix-teams) — Microsoft Teams
+
+Google Chat connects through the official Google Chat REST API.
 
 ### UI inspiration
 

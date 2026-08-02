@@ -6,6 +6,12 @@ export namespace core {
 	    supportsCustomEmojis: boolean;
 	    supportsTypingIndicator: boolean;
 	    supportsGroupManagement: boolean;
+	    supportsAddGroupMembers: boolean;
+	    supportsRemoveGroupMembers: boolean;
+	    supportsRenameGroup: boolean;
+	    supportsGroupDescription: boolean;
+	    supportsGroupPhoto: boolean;
+	    supportsGroupAdminRoles: boolean;
 	    supportsLeaveGroup: boolean;
 	    supportsDeleteMessage: boolean;
 	    supportsEditMessage: boolean;
@@ -32,6 +38,12 @@ export namespace core {
 	        this.supportsCustomEmojis = source["supportsCustomEmojis"];
 	        this.supportsTypingIndicator = source["supportsTypingIndicator"];
 	        this.supportsGroupManagement = source["supportsGroupManagement"];
+	        this.supportsAddGroupMembers = source["supportsAddGroupMembers"];
+	        this.supportsRemoveGroupMembers = source["supportsRemoveGroupMembers"];
+	        this.supportsRenameGroup = source["supportsRenameGroup"];
+	        this.supportsGroupDescription = source["supportsGroupDescription"];
+	        this.supportsGroupPhoto = source["supportsGroupPhoto"];
+	        this.supportsGroupAdminRoles = source["supportsGroupAdminRoles"];
 	        this.supportsLeaveGroup = source["supportsLeaveGroup"];
 	        this.supportsDeleteMessage = source["supportsDeleteMessage"];
 	        this.supportsEditMessage = source["supportsEditMessage"];
@@ -599,6 +611,7 @@ export namespace models {
 	    conversationId: number;
 	    userId: string;
 	    isAdmin: boolean;
+	    isSelf: boolean;
 	    joinedAt: time.Time;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
@@ -613,6 +626,7 @@ export namespace models {
 	        this.conversationId = source["conversationId"];
 	        this.userId = source["userId"];
 	        this.isAdmin = source["isAdmin"];
+	        this.isSelf = source["isSelf"];
 	        this.joinedAt = this.convertValues(source["joinedAt"], time.Time);
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
@@ -816,6 +830,26 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class GroupDetails {
+	    conversationId: string;
+	    name: string;
+	    description: string;
+	    avatarUrl: string;
+	    canSendMessages: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GroupDetails(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.canSendMessages = source["canSendMessages"];
+	    }
+	}
 	
 	
 	
@@ -932,4 +966,3 @@ export namespace time {
 	}
 
 }
-

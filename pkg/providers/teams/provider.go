@@ -364,7 +364,7 @@ func (p *Provider) GetGroupParticipants(conversationID string) ([]models.GroupPa
 		if member.MRI == "" {
 			continue
 		}
-		participants = append(participants, models.GroupParticipant{UserID: member.MRI, IsAdmin: strings.EqualFold(member.Role, "Admin") || strings.EqualFold(member.Role, "Owner")})
+		participants = append(participants, models.GroupParticipant{UserID: member.MRI, IsAdmin: strings.EqualFold(member.Role, "Admin") || strings.EqualFold(member.Role, "Owner"), IsSelf: strings.EqualFold(member.MRI, client.UserMRI())})
 	}
 	return participants, nil
 }
@@ -420,6 +420,20 @@ func (p *Provider) LeaveGroup(conversationID string) error {
 	threadID := core.StripConvID(conversationID)
 	if err := client.LeaveGroupChat(context.Background(), threadID); err != nil {
 		return fmt.Errorf("%s: leave group: %w", providerID, err)
+	}
+	return nil
+}
+
+func (p *Provider) RemoveGroupParticipants(conversationID string, participantIDs []string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	threadID := core.StripConvID(conversationID)
+	for _, participantID := range participantIDs {
+		if err := client.RemoveThreadMember(context.Background(), threadID, participantID); err != nil {
+			return fmt.Errorf("%s: remove group participant %s: %w", providerID, participantID, err)
+		}
 	}
 	return nil
 }
@@ -781,9 +795,10 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
-		SupportsLeaveGroup:       true,
-		NativeEmojiReactions:     true,
-		SupportsContactDirectory: true, SupportsDirectConversation: true,
+		SupportsLeaveGroup:         true,
+		SupportsRemoveGroupMembers: true,
+		NativeEmojiReactions:       true,
+		SupportsContactDirectory:   true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
 		RequiresGroupTitle: false, GroupConversationTypes: "group",
 	}

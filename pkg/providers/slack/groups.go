@@ -125,8 +125,49 @@ func (p *SlackProvider) UpdateGroupName(conversationID string, newName string) e
 	if channelName == "" {
 		return fmt.Errorf("slack channel name must contain at least one letter or number")
 	}
-	_, err := p.client.RenameConversation(conversationID, channelName)
+	_, err := p.client.RenameConversation(core.StripConvID(conversationID), channelName)
 	return err
+}
+
+func (p *SlackProvider) GetGroupDetails(conversationID string) (*models.GroupDetails, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+	rawID := core.StripConvID(conversationID)
+	channel, err := p.client.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: rawID, IncludeNumMembers: true})
+	if err != nil {
+		return nil, err
+	}
+	description := channel.Purpose.Value
+	if description == "" {
+		description = channel.Topic.Value
+	}
+	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceId(), rawID), Name: channel.Name, Description: description, CanSendMessages: !channel.IsArchived}, nil
+}
+
+func (p *SlackProvider) UpdateGroupDescription(conversationID, description string) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.client == nil {
+		return fmt.Errorf("slack client not initialized")
+	}
+	channel, err := p.client.SetPurposeOfConversation(core.StripConvID(conversationID), description)
+	if err != nil {
+		return err
+	}
+	if channel == nil {
+		return fmt.Errorf("Slack returned no channel after updating its description")
+	}
+	if channel.Purpose.Value != description {
+		return fmt.Errorf("Slack did not apply the channel description")
+	}
+	return nil
+}
+
+func (p *SlackProvider) UpdateGroupPhoto(string, []byte) error {
+	return fmt.Errorf("Slack does not support custom channel photos")
 }
 
 // AddGroupParticipants adds users to a channel.
@@ -138,7 +179,7 @@ func (p *SlackProvider) AddGroupParticipants(conversationID string, participantI
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	_, err := p.client.InviteUsersToConversation(conversationID, participantIDs...)
+	_, err := p.client.InviteUsersToConversation(core.StripConvID(conversationID), participantIDs...)
 	return err
 }
 
@@ -151,6 +192,7 @@ func (p *SlackProvider) RemoveGroupParticipants(conversationID string, participa
 		return fmt.Errorf("slack client not initialized")
 	}
 
+	conversationID = core.StripConvID(conversationID)
 	for _, user := range participantIDs {
 		err := p.client.KickUserFromConversation(conversationID, user)
 		if err != nil {
@@ -169,7 +211,19 @@ func (p *SlackProvider) LeaveGroup(conversationID string) error {
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	_, err := p.client.LeaveConversation(conversationID)
+	rawID := core.StripConvID(conversationID)
+	_, err := p.client.LeaveConversation(rawID)
+	if err == nil {
+		return nil
+	}
+	// Slack does not allow the final member to leave a channel. Archiving is
+	// the equivalent terminal action and removes it from active conversations.
+	if err.Error() == "last_member" {
+		if archiveErr := p.client.ArchiveConversation(rawID); archiveErr != nil {
+			return fmt.Errorf("leave group: %v; archive final-member channel: %w", err, archiveErr)
+		}
+		return nil
+	}
 	return err
 }
 
@@ -193,6 +247,7 @@ func (p *SlackProvider) GetGroupParticipants(conversationID string) ([]models.Gr
 	if p.client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
+	conversationID = core.StripConvID(conversationID)
 
 	// Check if this is a User ID (1-to-1 DM stored as normalized user ID)
 	// Slack user IDs start with "U" and are stored directly after DM channel normalization
@@ -270,6 +325,7 @@ func (p *SlackProvider) GetGroupParticipants(conversationID string) ([]models.Gr
 		participants = append(participants, models.GroupParticipant{
 			UserID:  uid,
 			IsAdmin: false,
+			IsSelf:  uid == p.selfUserID,
 		})
 	}
 	return participants, nil

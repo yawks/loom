@@ -1,10 +1,10 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { GetCustomEmojis, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, GetGroupDetails, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "emoji-picker-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -155,6 +155,13 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     );
   }, [selectedContact, selectedProviderFilter]);
   const conversationId = activeAccount?.conversationId || activeAccount?.userId;
+  const { data: groupDetails } = useQuery<models.GroupDetails>({
+    queryKey: ["group-details", conversationId],
+    queryFn: () => GetGroupDetails(conversationId ?? ""),
+    enabled: Boolean(activeAccount?.isGroup && conversationId),
+    refetchInterval: 15000,
+  });
+  const canSendMessages = !activeAccount?.isGroup || groupDetails?.canSendMessages !== false;
   const draftStorageKey = useMemo(
     () => getDraftStorageKey(conversationId, activeAccount?.providerInstanceId, threadId),
     [conversationId, activeAccount?.providerInstanceId, threadId]
@@ -800,6 +807,14 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     }
     return message.senderId;
   };
+
+  if (!canSendMessages) {
+    return (
+      <div className="border-t p-4 text-center text-sm text-muted-foreground">
+        {t("conversation_read_only")}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">

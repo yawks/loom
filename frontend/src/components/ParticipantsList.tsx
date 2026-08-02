@@ -1,11 +1,21 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { X } from "lucide-react";
-import { GetGroupParticipants, GetParticipantNames, SetContactAlias } from "../../wailsjs/go/main/App";
+import { Loader2, Plus, ShieldCheck, ShieldMinus, UserMinus, X } from "lucide-react";
+import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNames, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAlias } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
@@ -19,6 +29,10 @@ interface ParticipantsListProps {
   aliases: Record<string, string>;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => void;
   onParticipantsCountChange?: (count: number) => void;
+  providerInstanceId: string;
+  canAddMembers: boolean;
+  canRemoveMembers: boolean;
+  canManageAdmins: boolean;
 }
 
 // Fetch function that loads both group participants and their names
@@ -98,11 +112,22 @@ export function ParticipantsList({
   aliases,
   onAvatarClick,
   onParticipantsCountChange,
+  providerInstanceId,
+  canAddMembers,
+  canRemoveMembers,
+  canManageAdmins,
 }: ParticipantsListProps) {
   const { t } = useTranslation();
   const presenceMap = usePresenceStore((state) => state.presenceMap);
   const metaContacts = useAppStore((state) => state.metaContacts);
   const queryClient = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState("");
+  const [candidates, setCandidates] = useState<models.MetaContact[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [mutationError, setMutationError] = useState("");
+  const [participantToRemove, setParticipantToRemove] = useState<{ id: string; name: string } | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   // Use Suspense query to load participants data
   const { data: participantsData } = useSuspenseQuery<{
@@ -111,9 +136,66 @@ export function ParticipantsList({
   }, Error>({
     queryKey: ["participantsData", conversationId],
     queryFn: () => fetchParticipantsData(conversationId),
+    refetchInterval: 15000,
   });
 
   const { groupParticipants: groupParticipantsData, participantNames } = participantsData;
+
+  useEffect(() => {
+    if (!adding || !providerInstanceId) return;
+    let cancelled = false;
+    setIsSearching(true);
+    const timer = window.setTimeout(() => {
+      SearchProviderContacts(providerInstanceId, search.trim())
+        .then((items) => { if (!cancelled) setCandidates(items ?? []); })
+        .catch((error) => { if (!cancelled) setMutationError(String(error)); })
+        .finally(() => { if (!cancelled) setIsSearching(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [adding, providerInstanceId, search]);
+
+  const refreshParticipants = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["participantsData", conversationId] });
+  };
+
+  const addParticipant = async (contact: models.MetaContact) => {
+    const account = contact.linkedAccounts?.find((item) => item.providerInstanceId === providerInstanceId);
+    if (!account) return;
+    setMutationError("");
+    try {
+      await AddGroupParticipants(conversationId, [account.userId]);
+      await refreshParticipants();
+      setAdding(false);
+      setSearch("");
+    } catch (error) {
+      setMutationError(String(error));
+    }
+  };
+
+  const removeParticipant = async (participantID: string) => {
+    setMutationError("");
+    setIsRemoving(true);
+    try {
+      await RemoveGroupParticipants(conversationId, [participantID]);
+      await refreshParticipants();
+      setParticipantToRemove(null);
+    } catch (error) {
+      setMutationError(String(error));
+    } finally {
+      setIsRemoving(false);
+    }
+  };
+
+  const setParticipantAdmin = async (participantID: string, makeAdmin: boolean) => {
+    setMutationError("");
+    try {
+      if (makeAdmin) await PromoteGroupAdmins(conversationId, [participantID]);
+      else await DemoteGroupAdmins(conversationId, [participantID]);
+      await refreshParticipants();
+    } catch (error) {
+      setMutationError(String(error));
+    }
+  };
 
   // Extract unique participants from messages
   const participants = useMemo(() => {
@@ -152,7 +234,7 @@ export function ParticipantsList({
             senderId: participant.userId,
             senderName: providerName || undefined, // Will be populated from messages or aliases if not found
             senderAvatarUrl: undefined,
-            isFromMe: currentUserId ? participant.userId === currentUserId : false,
+            isFromMe: participant.isSelf || (currentUserId ? participant.userId === currentUserId : false),
             lastMessageTime: joinedAtDate,
             isAdmin: participant.isAdmin,
             joinedAt: joinedAtDate,
@@ -168,7 +250,7 @@ export function ParticipantsList({
               existing.senderName = participantNames[participant.userId];
             }
             // Ensure isFromMe is correctly set based on currentUserId
-            existing.isFromMe = currentUserId ? participant.userId === currentUserId : false;
+            existing.isFromMe = participant.isSelf || (currentUserId ? participant.userId === currentUserId : false);
           }
         }
       });
@@ -249,6 +331,30 @@ export function ParticipantsList({
 
   return (
     <div className="space-y-3">
+      {canAddMembers && (
+        <div className="space-y-2">
+          <Button variant="outline" size="sm" className="w-full" onClick={() => setAdding((value) => !value)}>
+            <Plus className="h-4 w-4 mr-2" />{t("add_group_member")}
+          </Button>
+          {adding && (
+            <div className="rounded-lg border p-2 space-y-2">
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("search_group_members")} autoFocus />
+              <div className="max-h-48 overflow-y-auto">
+                {isSearching && <Loader2 className="h-4 w-4 animate-spin mx-auto my-3" />}
+                {!isSearching && candidates.filter((contact) => {
+                  const id = contact.linkedAccounts?.find((item) => item.providerInstanceId === providerInstanceId)?.userId;
+                  return id && !groupParticipantsData.some((participant) => participant.userId === id);
+                }).map((contact) => (
+                  <button key={contact.id} className="w-full text-left rounded p-2 text-sm hover:bg-muted" onClick={() => addParticipant(contact)}>
+                    {contact.displayName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {mutationError && <p className="text-sm text-destructive">{t("group_member_update_error")}: {mutationError}</p>}
       {participants.map((participant) => {
         const displayName = getDisplayNameWithAlias(
           participant.senderName,
@@ -320,9 +426,34 @@ export function ParticipantsList({
               queryClient.invalidateQueries({ queryKey: ["contactAliases"] });
               queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
             }}
+            onRemove={canRemoveMembers && !participant.isFromMe ? () => setParticipantToRemove({ id: participant.senderId, name: displayName }) : undefined}
+            onToggleAdmin={canManageAdmins && !participant.isFromMe ? () => void setParticipantAdmin(participant.senderId, !participant.isAdmin) : undefined}
           />
         );
       })}
+      <AlertDialog open={participantToRemove !== null} onOpenChange={(open) => { if (!open && !isRemoving) setParticipantToRemove(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("remove_group_member")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("remove_group_member_confirm", { name: participantToRemove?.name ?? "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRemoving}>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isRemoving || !participantToRemove}
+              onClick={(event) => {
+                event.preventDefault();
+                if (participantToRemove) void removeParticipant(participantToRemove.id);
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isRemoving ? t("removing_group_member") : t("remove_group_member")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -341,6 +472,8 @@ interface ParticipantItemProps {
   alias?: string;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => void;
   onAliasChange: (newAlias: string) => Promise<void>;
+  onRemove?: () => void;
+  onToggleAdmin?: () => void;
 }
 
 function ParticipantItem({
@@ -350,6 +483,8 @@ function ParticipantItem({
   alias,
   onAvatarClick,
   onAliasChange,
+  onRemove,
+  onToggleAdmin,
 }: ParticipantItemProps) {
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
@@ -504,6 +639,16 @@ function ParticipantItem({
           {renderStatusText()}
         </div>
       </div>
+      {onRemove && (
+        <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground hover:text-destructive" onClick={onRemove} title={t("remove_group_member")}>
+          <UserMinus className="h-4 w-4" />
+        </Button>
+      )}
+      {onToggleAdmin && (
+        <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground" onClick={onToggleAdmin} title={participant.isAdmin ? t("demote_group_admin") : t("promote_group_admin")}>
+          {participant.isAdmin ? <ShieldMinus className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+        </Button>
+      )}
     </div>
   );
 }

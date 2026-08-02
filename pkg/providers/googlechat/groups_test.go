@@ -88,3 +88,62 @@ func TestSelfMembershipNamePaginates(t *testing.T) {
 		t.Fatalf("name = %q, calls = %d", name, call)
 	}
 }
+
+func TestAddGroupParticipantCreatesMembership(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/spaces/space-1/members" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		body, _ := io.ReadAll(req.Body)
+		if !strings.Contains(string(body), `"name":"users/user-2"`) {
+			t.Fatalf("unexpected membership payload: %s", body)
+		}
+		return jsonResponse(`{"name":"spaces/space-1/members/user-2","state":"JOINED"}`), nil
+	})}
+	if err := provider.AddGroupParticipants("googlechat-1::spaces/space-1", []string{"user-2"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPromoteGroupAdminPatchesMembershipRole(t *testing.T) {
+	call := 0
+	provider := NewGoogleChatProvider()
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		call++
+		if call == 1 {
+			return jsonResponse(`{"memberships":[{"name":"spaces/space-1/members/user-2","member":{"name":"users/user-2"},"role":"ROLE_MEMBER"}]}`), nil
+		}
+		if req.Method != http.MethodPatch || req.URL.Path != "/v1/spaces/space-1/members/user-2" || req.URL.Query().Get("updateMask") != "role" {
+			t.Fatalf("unexpected patch request: %s %s", req.Method, req.URL)
+		}
+		body, _ := io.ReadAll(req.Body)
+		if !strings.Contains(string(body), `"role":"ROLE_ASSISTANT_MANAGER"`) {
+			t.Fatalf("unexpected role payload: %s", body)
+		}
+		return jsonResponse(`{"name":"spaces/space-1/members/user-2","role":"ROLE_ASSISTANT_MANAGER"}`), nil
+	})}
+	if err := provider.PromoteGroupAdmins("spaces/space-1", []string{"user-2"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGroupDetailsUsesCurrentMembershipState(t *testing.T) {
+	call := 0
+	provider := NewGoogleChatProvider()
+	provider.selfID = "self-123"
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		call++
+		if call == 1 {
+			return jsonResponse(`{"name":"spaces/space-1","displayName":"Planning","spaceType":"SPACE"}`), nil
+		}
+		return jsonResponse(`{"memberships":[{"name":"spaces/space-1/members/me","state":"INVITED","member":{"name":"users/self-123"}}]}`), nil
+	})}
+	details, err := provider.GetGroupDetails("spaces/space-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.CanSendMessages {
+		t.Fatal("invited user must not be allowed to send messages")
+	}
+}

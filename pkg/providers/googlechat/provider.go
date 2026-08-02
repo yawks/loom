@@ -224,13 +224,22 @@ func (p *GoogleChatProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 
 func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:       true,
-		SupportsReactions:     true,
-		SupportsLeaveGroup:    true,
-		SupportsDeleteMessage: true,
-		SupportsEditMessage:   true,
-		SupportsQRCodeAuth:    false,
-		NativeEmojiReactions:  true,
+		SupportsThreads:            true,
+		SupportsReactions:          true,
+		SupportsLeaveGroup:         true,
+		SupportsDeleteMessage:      true,
+		SupportsEditMessage:        true,
+		SupportsQRCodeAuth:         false,
+		NativeEmojiReactions:       true,
+		SupportsRenameGroup:        true,
+		SupportsAddGroupMembers:    true,
+		SupportsRemoveGroupMembers: true,
+		SupportsGroupAdminRoles:    true,
+		SupportsContactDirectory:   true,
+		SupportsGroupConversation:  true,
+		SupportsGroupTitle:         true,
+		RequiresGroupTitle:         true,
+		GroupConversationTypes:     "group",
 	}
 }
 

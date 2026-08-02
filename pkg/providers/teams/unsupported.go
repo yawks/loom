@@ -54,9 +54,6 @@ func (unsupportedProvider) UpdateGroupName(string, string) error {
 func (unsupportedProvider) AddGroupParticipants(string, []string) error {
 	return unsupported("AddGroupParticipants")
 }
-func (unsupportedProvider) RemoveGroupParticipants(string, []string) error {
-	return unsupported("RemoveGroupParticipants")
-}
 func (unsupportedProvider) LeaveGroup(string) error { return unsupported("LeaveGroup") }
 func (unsupportedProvider) PromoteGroupAdmins(string, []string) error {
 	return unsupported("PromoteGroupAdmins")

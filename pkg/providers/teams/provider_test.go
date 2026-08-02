@@ -82,6 +82,7 @@ func TestCapabilities(t *testing.T) {
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsLeaveGroup:       true,
+		SupportsRemoveGroupMembers: true,
 		NativeEmojiReactions:     true,
 		SupportsContactDirectory: true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
