@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 
 import { Emoji } from "./Emoji";
 import { cleanEmoji } from "@/lib/userDisplayNames";
+import { normalizeReaction } from "@/lib/reactionUtils";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 
@@ -149,16 +150,19 @@ export function MessageReactions({
         cleanedEmoji = `${cleanedEmoji}:`;
       }
 
-      // Group by cleaned emoji
-      const existing = groups.get(cleanedEmoji);
+      // Aliases and Unicode glyphs can represent the same reaction depending
+      // on whether this row came from the optimistic update or the provider
+      // echo. Always group them under one canonical key.
+      const canonicalEmoji = normalizeReaction(cleanedEmoji, false).storedEmoji;
+      const existing = groups.get(canonicalEmoji);
       if (existing) {
-        existing.count++;
         if (!existing.userIds.includes(reaction.userId)) {
           existing.userIds.push(reaction.userId);
+          existing.count++;
         }
       } else {
-        groups.set(cleanedEmoji, {
-          emoji: cleanedEmoji,
+        groups.set(canonicalEmoji, {
+          emoji: canonicalEmoji,
           count: 1,
           userIds: [reaction.userId],
         });

@@ -1,9 +1,32 @@
 package slack
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestNormalizeSlackResponseObjectErrors(t *testing.T) {
+	input := []byte(`{"ok":true,"errors":{"warning":"ignored"}}`)
+	normalized := normalizeSlackResponse(input)
+	var response struct {
+		OK     bool            `json:"ok"`
+		Errors json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(normalized, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Errors != nil {
+		t.Fatalf("unexpected normalized response: %s", normalized)
+	}
+}
+
+func TestNormalizeSlackResponsePreservesArrayErrors(t *testing.T) {
+	input := []byte(`{"ok":false,"error":"failed","errors":["detail"]}`)
+	if got := string(normalizeSlackResponse(input)); got != string(input) {
+		t.Fatalf("response changed: %s", got)
+	}
+}
 
 func TestNormalizeSlackChannelName(t *testing.T) {
 	tests := map[string]string{

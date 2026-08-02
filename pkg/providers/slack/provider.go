@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,7 +76,41 @@ func (t *cookieTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	req.Header.Add("Cookie", t.Cookie)
 	// Some xoxc endpoints also check for d-s cookie, but usually d is the main auth one.
-	return t.Transport.RoundTrip(req)
+	response, err := t.Transport.RoundTrip(req)
+	if err != nil || response == nil || response.Body == nil {
+		return response, err
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	body = normalizeSlackResponse(body)
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	response.ContentLength = int64(len(body))
+	return response, nil
+}
+
+// normalizeSlackResponse accepts the response variant returned by some Slack
+// user-token endpoints, where the optional top-level "errors" value is an
+// object. slack-go declares that field as a slice and otherwise fails before it
+// can inspect the authoritative "ok" and "error" fields.
+func normalizeSlackResponse(body []byte) []byte {
+	var response map[string]json.RawMessage
+	if json.Unmarshal(body, &response) != nil {
+		return body
+	}
+	errors, ok := response["errors"]
+	trimmedErrors := bytes.TrimSpace(errors)
+	if !ok || len(trimmedErrors) == 0 || trimmedErrors[0] != '{' {
+		return body
+	}
+	delete(response, "errors")
+	normalized, err := json.Marshal(response)
+	if err != nil {
+		return body
+	}
+	return normalized
 }
 
 // Ensure interface compliance
@@ -1257,6 +1292,10 @@ func (p *SlackProvider) GetCapabilities() core.Capabilities {
 		SupportsCustomEmojis:       true,
 		SupportsTypingIndicator:    true,
 		SupportsGroupManagement:    true,
+		SupportsAddGroupMembers:    true,
+		SupportsRemoveGroupMembers: true,
+		SupportsRenameGroup:        true,
+		SupportsGroupDescription:   true,
 		SupportsLeaveGroup:         true,
 		SupportsDeleteMessage:      true,
 		SupportsEditMessage:        true,

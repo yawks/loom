@@ -7,7 +7,7 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTypingStore } from "@/lib/typingStore";
 import { timeToDate } from "@/lib/utils";
-import { emojiNameToUnicode, unicodeToEmojiName } from "@/lib/emojiMap";
+import { normalizeReaction } from "@/lib/reactionUtils";
 import { addPendingMessage } from "@/lib/pendingMessages";
 
 interface ReceiptEvent {
@@ -329,12 +329,7 @@ export function useMessageEvents() {
       
       try {
         const reaction: ReactionEvent = JSON.parse(reactionJSON);
-        const normalizeEmoji = (e: string) => {
-          const clean = e.startsWith(":") && e.endsWith(":") ? e.slice(1, -1) : e.replace(/^:/, "").replace(/:$/, "");
-          const unicode = emojiNameToUnicode(clean) || clean;
-          const name = unicodeToEmojiName(unicode);
-          return name || clean;
-        };
+        const normalizeEmoji = (emoji: string) => normalizeReaction(emoji, false).canonicalName;
         const normalizedReactionEmoji = normalizeEmoji(reaction.emoji);
 
         queryClient.setQueriesData<InfiniteData<models.Message[]>>(

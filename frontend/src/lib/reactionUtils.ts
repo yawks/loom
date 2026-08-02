@@ -6,6 +6,10 @@ export interface NormalizedReaction {
   storedEmoji: string;
 }
 
+function stripEmojiVariationSelectors(emoji: string): string {
+  return emoji.replace(/[\uFE0E\uFE0F]/g, "");
+}
+
 /**
  * Normalizes the UI representation of a reaction using the format advertised
  * by the active provider. Generic message components never need to know which
@@ -20,8 +24,8 @@ export function normalizeReaction(
     ? emoji.slice(1, -1)
     : emoji;
   const resolvedUnicode = emojiNameToUnicode(clean);
-  const unicode = resolvedUnicode || clean;
-  const canonicalName = unicodeToEmojiName(unicode) || clean;
+  const unicode = stripEmojiVariationSelectors(resolvedUnicode || clean);
+  const canonicalName = unicodeToEmojiName(unicode) || unicode;
   const namedApiEmoji = hasNamedForm || resolvedUnicode ? clean : canonicalName;
 
   return {

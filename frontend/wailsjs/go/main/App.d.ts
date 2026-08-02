@@ -5,6 +5,8 @@ import {main} from '../models';
 import {core} from '../models';
 import {time} from '../models';
 
+export function AddGroupParticipants(arg1:string,arg2:Array<string>):Promise<void>;
+
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function AutoLoginTeams(arg1:string,arg2:string):Promise<void>;
@@ -24,6 +26,8 @@ export function CreateProvider(arg1:string,arg2:Record<string, any>,arg3:string,
 export function CreateProviderWithOptions(arg1:string,arg2:Record<string, any>,arg3:string,arg4:string,arg5:boolean):Promise<string>;
 
 export function DeleteMessage(arg1:string,arg2:string):Promise<void>;
+
+export function DemoteGroupAdmins(arg1:string,arg2:Array<string>):Promise<void>;
 
 export function DisconnectProvider(arg1:string):Promise<void>;
 
@@ -65,6 +69,8 @@ export function GetConversationsWithMessages():Promise<Array<string>>;
 
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
+export function GetGroupDetails(arg1:string):Promise<models.GroupDetails>;
+
 export function GetGroupParticipants(arg1:string):Promise<Array<models.GroupParticipant>>;
 
 export function GetMessagesForConversation(arg1:string):Promise<Array<models.Message>>;
@@ -97,6 +103,10 @@ export function OpenConversation(arg1:models.OpenConversationRequest):Promise<mo
 
 export function OpenFile(arg1:string):Promise<void>;
 
+export function PromoteGroupAdmins(arg1:string,arg2:Array<string>):Promise<void>;
+
+export function RemoveGroupParticipants(arg1:string,arg2:Array<string>):Promise<void>;
+
 export function RemoveProvider(arg1:string):Promise<void>;
 
 export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -126,5 +136,11 @@ export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 
 export function SyncProvider(arg1:string):Promise<void>;
+
+export function UpdateGroupDescription(arg1:string,arg2:string):Promise<void>;
+
+export function UpdateGroupName(arg1:string,arg2:string):Promise<void>;
+
+export function UpdateGroupPhoto(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateSystemTrayBadge(arg1:number):Promise<void>;

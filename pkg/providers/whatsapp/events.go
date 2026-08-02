@@ -21,6 +21,49 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	fmt.Printf("WhatsApp: [EVENT] Received event type: %s\n", eventType)
 
 	switch v := evt.(type) {
+	case *events.GroupInfo:
+		convID := core.BuildConvID(w.getInstanceId(), v.JID.String())
+		changeType := core.GroupChangeUpdated
+		participantID := ""
+		switch {
+		case len(v.Join) > 0:
+			changeType, participantID = core.GroupChangeParticipantAdded, v.Join[0].String()
+		case len(v.Leave) > 0:
+			changeType, participantID = core.GroupChangeParticipantRemoved, v.Leave[0].String()
+		case len(v.Promote) > 0:
+			changeType, participantID = core.GroupChangeParticipantPromoted, v.Promote[0].String()
+		case len(v.Demote) > 0:
+			changeType, participantID = core.GroupChangeParticipantDemoted, v.Demote[0].String()
+		}
+		groupName := ""
+		if v.Name != nil {
+			groupName = v.Name.Name
+			w.mu.Lock()
+			w.knownGroups[v.JID.String()] = groupName
+			w.mu.Unlock()
+		}
+		go w.cacheGroupParticipants(v.JID)
+		select {
+		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: convID, ChangeType: changeType, GroupName: groupName, ParticipantID: participantID, Timestamp: v.Timestamp.Unix()}:
+		default:
+		}
+	case *events.JoinedGroup:
+		go w.cacheGroupParticipants(v.JID)
+		select {
+		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), v.JID.String()), ChangeType: core.GroupChangeCreated, GroupName: v.Name, Timestamp: time.Now().Unix()}:
+		default:
+		}
+	case *events.Picture:
+		if v.JID.Server != types.GroupServer {
+			break
+		}
+		w.avatarFailuresMu.Lock()
+		delete(w.avatarFailures, v.JID.String())
+		w.avatarFailuresMu.Unlock()
+		select {
+		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), v.JID.String()), ChangeType: core.GroupChangeUpdated, Timestamp: v.Timestamp.Unix()}:
+		default:
+		}
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
 		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())

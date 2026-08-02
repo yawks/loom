@@ -299,18 +299,24 @@ type Provider interface {
 
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
-	SupportsThreads          bool `json:"supportsThreads"`
-	SupportsReactions        bool `json:"supportsReactions"`
-	SupportsCustomEmojis     bool `json:"supportsCustomEmojis"`
-	SupportsTypingIndicator  bool `json:"supportsTypingIndicator"`
-	SupportsGroupManagement  bool `json:"supportsGroupManagement"`
-	SupportsLeaveGroup       bool `json:"supportsLeaveGroup"`
-	SupportsDeleteMessage    bool `json:"supportsDeleteMessage"`
-	SupportsEditMessage      bool `json:"supportsEditMessage"`
-	SupportsReadReceipts     bool `json:"supportsReadReceipts"`
-	SupportsPinConversation  bool `json:"supportsPinConversation"`
-	SupportsMuteConversation bool `json:"supportsMuteConversation"`
-	SupportsQRCodeAuth       bool `json:"supportsQRCodeAuth"`
+	SupportsThreads            bool `json:"supportsThreads"`
+	SupportsReactions          bool `json:"supportsReactions"`
+	SupportsCustomEmojis       bool `json:"supportsCustomEmojis"`
+	SupportsTypingIndicator    bool `json:"supportsTypingIndicator"`
+	SupportsGroupManagement    bool `json:"supportsGroupManagement"`
+	SupportsAddGroupMembers    bool `json:"supportsAddGroupMembers"`
+	SupportsRemoveGroupMembers bool `json:"supportsRemoveGroupMembers"`
+	SupportsRenameGroup        bool `json:"supportsRenameGroup"`
+	SupportsGroupDescription   bool `json:"supportsGroupDescription"`
+	SupportsGroupPhoto         bool `json:"supportsGroupPhoto"`
+	SupportsGroupAdminRoles    bool `json:"supportsGroupAdminRoles"`
+	SupportsLeaveGroup         bool `json:"supportsLeaveGroup"`
+	SupportsDeleteMessage      bool `json:"supportsDeleteMessage"`
+	SupportsEditMessage        bool `json:"supportsEditMessage"`
+	SupportsReadReceipts       bool `json:"supportsReadReceipts"`
+	SupportsPinConversation    bool `json:"supportsPinConversation"`
+	SupportsMuteConversation   bool `json:"supportsMuteConversation"`
+	SupportsQRCodeAuth         bool `json:"supportsQRCodeAuth"`
 	// NativeEmojiReactions indicates the provider's reaction API expects raw Unicode
 	// emoji characters (e.g. "👍") rather than Slack-style names (e.g. "+1").
 	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
@@ -324,6 +330,14 @@ type Capabilities struct {
 	// GroupConversationTypes is a comma-separated list so Capabilities remains
 	// comparable (several provider contract tests compare it as a value).
 	GroupConversationTypes string `json:"groupConversationTypes"`
+}
+
+// GroupDetailsProvider is implemented by providers that expose rich group
+// metadata beyond the participant list.
+type GroupDetailsProvider interface {
+	GetGroupDetails(conversationID string) (*models.GroupDetails, error)
+	UpdateGroupDescription(conversationID, description string) error
+	UpdateGroupPhoto(conversationID string, photo []byte) error
 }
 
 // ConversationCreator is optional. Providers implement it when creating a

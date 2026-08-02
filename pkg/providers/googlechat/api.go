@@ -85,6 +85,7 @@ type MessageListResponse struct {
 type Membership struct {
 	Name   string    `json:"name"`
 	State  string    `json:"state"`
+	Role   string    `json:"role"`
 	Member *ChatUser `json:"member"`
 }
 
