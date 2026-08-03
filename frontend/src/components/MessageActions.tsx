@@ -1,4 +1,4 @@
-import { Edit, Forward, MessageSquare, MoreVertical, Reply, Trash2 } from "lucide-react";
+import { Edit, Forward, MessageSquare, MoreVertical, Pin, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -21,6 +21,8 @@ interface MessageActionsProps {
   onReact?: (emoji: string) => void;
   onStartThread?: () => void;
   onForward?: () => void;
+  onPin?: () => void;
+  isPinned?: boolean;
   currentReactions?: string[];
   className?: string;
   messageId?: string;
@@ -39,6 +41,8 @@ export function MessageActions({
   onReact,
   onStartThread,
   onForward,
+  onPin,
+  isPinned = false,
   currentReactions = [],
   className,
   messageId,
@@ -55,6 +59,7 @@ export function MessageActions({
 
   const supportsReactions = instanceId ? capabilities[instanceId]?.supportsReactions ?? true : true;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
+  const supportsPinMessage = instanceId ? capabilities[instanceId]?.supportsPinMessage ?? false : false;
   const usesNamedReactions = instanceId
     ? !(capabilities[instanceId]?.nativeEmojiReactions ?? false)
     : provider?.toLowerCase() === "slack";
@@ -122,6 +127,17 @@ export function MessageActions({
           title={t("forward_message")}
         >
           <Forward className="h-4 w-4" />
+        </Button>
+      )}
+      {onPin && supportsPinMessage && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("h-6 w-6 hover:bg-muted", isPinned && "text-primary")}
+          onClick={(e) => { e.stopPropagation(); onPin(); }}
+          title={t(isPinned ? "unpin_message" : "pin_message")}
+        >
+          <Pin className="h-4 w-4" />
         </Button>
       )}
       {onReact && supportsReactions && (

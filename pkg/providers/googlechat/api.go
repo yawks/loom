@@ -114,6 +114,16 @@ type ReactionListResponse struct {
 	NextPageToken string         `json:"nextPageToken"`
 }
 
+type ChatMessagePin struct {
+	Name    string `json:"name"`
+	Message string `json:"message"`
+}
+
+type MessagePinListResponse struct {
+	MessagePins   []ChatMessagePin `json:"messagePins"`
+	NextPageToken string           `json:"nextPageToken"`
+}
+
 // --- HTTP helpers ---
 
 func (p *GoogleChatProvider) getHTTPClient() *http.Client {

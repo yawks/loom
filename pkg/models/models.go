@@ -217,6 +217,51 @@ type Message struct {
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 
+// MessagePinScope describes who can see a provider-side message pin.
+type MessagePinScope string
+
+const (
+	MessagePinScopePersonal MessagePinScope = "personal"
+	MessagePinScopeShared   MessagePinScope = "shared"
+)
+
+// MessagePinResolution tracks whether Loom has the pinned message locally.
+type MessagePinResolution string
+
+const (
+	MessagePinResolutionResolved    MessagePinResolution = "resolved"
+	MessagePinResolutionUnresolved  MessagePinResolution = "unresolved"
+	MessagePinResolutionLoading     MessagePinResolution = "loading"
+	MessagePinResolutionUnavailable MessagePinResolution = "unavailable"
+)
+
+// MessagePin persists provider-side pin state independently from message history.
+// Message is populated for API responses only and is not stored in this table.
+type MessagePin struct {
+	ID                 uint                 `gorm:"primarykey" json:"id"`
+	ProviderInstanceID string               `gorm:"uniqueIndex:idx_message_pin_provider_message,priority:1;index" json:"providerInstanceId"`
+	ProtocolConvID     string               `gorm:"index" json:"protocolConvId"`
+	ProtocolMsgID      string               `gorm:"uniqueIndex:idx_message_pin_provider_message,priority:2;index" json:"protocolMsgId"`
+	SenderID           string               `json:"senderId,omitempty"`
+	MessageIsFromMe    bool                 `json:"messageIsFromMe"`
+	Scope              MessagePinScope      `json:"scope"`
+	Resolution         MessagePinResolution `json:"resolution"`
+	PinnedAt           *time.Time           `json:"pinnedAt,omitempty"`
+	MessageTimestamp   *time.Time           `json:"messageTimestamp,omitempty"`
+	ProviderPinID      string               `json:"providerPinId,omitempty"`
+	Message            *Message             `gorm:"-" json:"message,omitempty"`
+	CreatedAt          time.Time            `json:"createdAt"`
+	UpdatedAt          time.Time            `json:"updatedAt"`
+}
+
+// MessageContext is a bounded historical window centered on a target message.
+type MessageContext struct {
+	TargetMessageID string    `json:"targetMessageId"`
+	Messages        []Message `json:"messages"`
+	HasMoreBefore   bool      `json:"hasMoreBefore"`
+	HasMoreAfter    bool      `json:"hasMoreAfter"`
+}
+
 // MessageSearchResult contains the message and the conversation metadata needed
 // to render a global database search result without additional frontend queries.
 type MessageSearchResult struct {

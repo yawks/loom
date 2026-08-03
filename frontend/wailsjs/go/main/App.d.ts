@@ -81,6 +81,10 @@ export function GetMetaContacts():Promise<Array<models.MetaContact>>;
 
 export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, string>>;
 
+export function GetPinnedMessageContext(arg1:string,arg2:string):Promise<models.MessageContext>;
+
+export function GetPinnedMessages(arg1:string):Promise<Array<models.MessagePin>>;
+
 export function GetProviderContacts(arg1:string):Promise<Array<models.MetaContact>>;
 
 export function GetProviderQRCode(arg1:string):Promise<string>;
@@ -102,6 +106,8 @@ export function MarkMessageAsRead(arg1:string,arg2:string):Promise<void>;
 export function OpenConversation(arg1:models.OpenConversationRequest):Promise<models.ConversationResolution>;
 
 export function OpenFile(arg1:string):Promise<void>;
+
+export function PinMessage(arg1:string,arg2:string):Promise<models.MessagePin>;
 
 export function PromoteGroupAdmins(arg1:string,arg2:Array<string>):Promise<void>;
 
@@ -136,6 +142,8 @@ export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 
 export function SyncProvider(arg1:string):Promise<void>;
+
+export function UnpinMessage(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateGroupDescription(arg1:string,arg2:string):Promise<void>;
 

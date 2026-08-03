@@ -16,6 +16,7 @@ import (
 
 	"Loom/pkg/core"
 	"Loom/pkg/logging"
+	"Loom/pkg/models"
 )
 
 var chatScopes = []string{
@@ -229,6 +230,9 @@ func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 		SupportsLeaveGroup:         true,
 		SupportsDeleteMessage:      true,
 		SupportsEditMessage:        true,
+		SupportsPinMessage:         true,
+		SupportsListMessagePins:    true,
+		MessagePinScope:            string(models.MessagePinScopeShared),
 		SupportsQRCodeAuth:         false,
 		NativeEmojiReactions:       true,
 		SupportsRenameGroup:        true,
