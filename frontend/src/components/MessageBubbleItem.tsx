@@ -111,7 +111,7 @@ export function MessageBubbleItem({
   const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
 
   const isUnread = conversationReadState[messageId] === false;
-  const showUnreadDivider = messageId === firstUnreadMessageId && isUnread && !isTypingInInput && !separatorDismissed;
+  const showUnreadDivider = messageId === firstUnreadMessageId && !isTypingInInput && !separatorDismissed;
 
   const isDeleted = Boolean(message.isDeleted);
   const isDeletedRevealed = isDeleted && revealedDeletedMessages.has(messageId);
