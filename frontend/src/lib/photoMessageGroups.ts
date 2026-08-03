@@ -27,9 +27,8 @@ function hasPhotoCaption(message: models.Message): boolean {
   return true;
 }
 
-function isSinglePhotoMessage(message: models.Message): boolean {
+function isSingleVisualMediaMessage(message: models.Message): boolean {
   if (
-    message.isFromMe ||
     hasPhotoCaption(message) ||
     message.isDeleted ||
     message.callType ||
@@ -39,7 +38,10 @@ function isSinglePhotoMessage(message: models.Message): boolean {
   try {
     const attachments = JSON.parse(message.attachments || "") as AttachmentLike[];
     return Boolean(attachments.length === 1 && attachments[0]?.url && (
-      attachments[0]?.type === "image" || attachments[0]?.mimeType?.startsWith("image/")
+      attachments[0]?.type === "image" ||
+      attachments[0]?.mimeType?.startsWith("image/") ||
+      attachments[0]?.type === "video" ||
+      attachments[0]?.mimeType?.startsWith("video/")
     ));
   } catch {
     return false;
@@ -67,8 +69,8 @@ export function groupConsecutivePhotoMessages(messages: models.Message[]): Photo
     const previous = groups.at(-1);
     if (
       previous &&
-      isSinglePhotoMessage(message) &&
-      previous.messages.every(isSinglePhotoMessage) &&
+      isSingleVisualMediaMessage(message) &&
+      previous.messages.every(isSingleVisualMediaMessage) &&
       senderKey(previous.message) === senderKey(message) &&
       calendarDay(previous.message) === calendarDay(message) &&
       isWithinFiveMinutes(previous.messages.at(-1)!, message)

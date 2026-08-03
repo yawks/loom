@@ -22,7 +22,7 @@ import { GetAllLastMessageTimestamps, GetAttachmentData, GetConfiguredProviders,
 interface ForwardMessageModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  message: models.Message | null;
+  messages: models.Message[];
   providerInstanceId?: string;
 }
 
@@ -38,7 +38,7 @@ interface ConversationEntry {
 export function ForwardMessageModal({
   open,
   onOpenChange,
-  message,
+  messages,
   providerInstanceId,
 }: ForwardMessageModalProps) {
   const { t } = useTranslation();
@@ -143,26 +143,28 @@ export function ForwardMessageModal({
   }, [open]);
 
   const handleSend = async (entry: ConversationEntry) => {
-    if (!message) return;
+    if (messages.length === 0) return;
     const key = `${entry.account.id}:${entry.conversationId}`;
     setSendingIds((prev) => new Set(prev).add(key));
     try {
-      if (message.body) {
-        await SendMessage(entry.conversationId, message.body);
-      }
-      if (message.attachments) {
-        let parsed: Array<{ type: string; url: string; fileName: string; fileSize: number; mimeType: string; thumbnail?: string }> = [];
-        try {
-          parsed = JSON.parse(message.attachments);
-        } catch {
-          // malformed attachments JSON — skip
+      for (const message of messages) {
+        if (message.body) {
+          await SendMessage(entry.conversationId, message.body);
         }
-        for (const att of parsed) {
-          const url = att.url || att.thumbnail;
-          if (!url) continue;
-          const base64Data = await GetAttachmentData(url);
-          if (!base64Data) continue;
-          await SendFile(entry.conversationId, base64Data, att.fileName || "file", att.mimeType || "application/octet-stream");
+        if (message.attachments) {
+          let parsed: Array<{ type: string; url: string; fileName: string; fileSize: number; mimeType: string; thumbnail?: string }> = [];
+          try {
+            parsed = JSON.parse(message.attachments);
+          } catch {
+            // malformed attachments JSON — skip
+          }
+          for (const att of parsed) {
+            const url = att.url || att.thumbnail;
+            if (!url) continue;
+            const base64Data = await GetAttachmentData(url);
+            if (!base64Data) continue;
+            await SendFile(entry.conversationId, base64Data, att.fileName || "file", att.mimeType || "application/octet-stream");
+          }
         }
       }
       setSentIds((prev) => new Set(prev).add(key));
@@ -177,6 +179,7 @@ export function ForwardMessageModal({
     }
   };
 
+  const message = messages[0] ?? null;
   const senderName = message?.senderName || t("unknown");
   const initials = senderName.substring(0, 2).toUpperCase();
 
@@ -185,6 +188,11 @@ export function ForwardMessageModal({
       <DialogContent className="forward-message-modal max-w-lg max-h-[85vh] flex flex-col p-0 overflow-hidden">
         <DialogHeader className="forward-message-modal__header px-6 pt-6 pb-4 border-b">
           <DialogTitle>{t("forward_message_title")}</DialogTitle>
+          {messages.length > 1 && (
+            <p className="forward-message-modal__group-count text-sm font-medium text-muted-foreground">
+              {messages.length} messages
+            </p>
+          )}
           {message && (
             <div className="forward-message-modal__preview mt-3">
               <p className="text-xs text-muted-foreground mb-2">{t("message_preview")}</p>

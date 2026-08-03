@@ -298,6 +298,63 @@ function MosaicImageAttachment({
   );
 }
 
+function MosaicVideoAttachment({
+  attachment,
+  onPlay,
+  className,
+}: {
+  attachment: Attachment;
+  onPlay: () => void;
+  className?: string;
+}) {
+  const elementRef = useRef<HTMLButtonElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+  const [thumbnailData, setThumbnailData] = useState<string | null>(null);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), { threshold: 0.01 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) {
+      setThumbnailData(null);
+      return;
+    }
+    if (!attachment.thumbnail) return;
+    let active = true;
+    GetAttachmentData(attachment.thumbnail)
+      .then((data) => { if (active) setThumbnailData(data); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [attachment.thumbnail, isVisible]);
+
+  return (
+    <button
+      ref={elementRef}
+      type="button"
+      className={`message-attachment__mosaic-video relative min-h-0 overflow-hidden bg-black ${className || ""}`}
+      onClick={onPlay}
+      aria-label={`Lire ${attachment.fileName}`}
+    >
+      {thumbnailData ? (
+        <img src={thumbnailData} alt="" className="h-full w-full object-cover" />
+      ) : (
+        <Video className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 text-white/60" />
+      )}
+      <span className="absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white shadow-lg">
+        <Play className="h-7 w-7 fill-white" />
+      </span>
+    </button>
+  );
+}
+
 export function MessageAttachments({
   attachments,
   conversationID,
@@ -471,25 +528,47 @@ export function MessageAttachments({
   const imageAttachments = parsedAttachments.filter((attachment) =>
     attachment.type === "image" || attachment.mimeType?.startsWith("image/")
   );
-  const isPhotoMosaic = imageAttachments.length > 1 && imageAttachments.length === parsedAttachments.length;
+  const visualMediaAttachments = parsedAttachments.filter((attachment) =>
+    attachment.type === "image" || attachment.mimeType?.startsWith("image/") ||
+    attachment.type === "video" || attachment.mimeType?.startsWith("video/")
+  );
+  const isMediaMosaic = visualMediaAttachments.length > 1 && visualMediaAttachments.length === parsedAttachments.length;
 
   const openMosaicImage = (dataUrl: string, index: number) => {
+    setSelectedVideo(null);
     setSelectedImage(dataUrl);
     setSelectedImageIndex(index);
   };
 
-  const navigateMosaic = async (direction: -1 | 1) => {
-    if (selectedImageIndex === null || imageAttachments.length < 2) return;
-    const nextIndex = (selectedImageIndex + direction + imageAttachments.length) % imageAttachments.length;
-    const attachment = imageAttachments[nextIndex];
+  const openMosaicVideo = async (attachment: Attachment, index: number) => {
+    setLoadingVideoIndex(index);
     try {
       const data = await GetAttachmentData(attachment.url);
-      setSelectedImage(data);
+      setSelectedImage(null);
+      setSelectedVideo(data);
+      setSelectedImageIndex(index);
+    } catch (error) {
+      console.error("Failed to load gallery video:", error);
+    } finally {
+      setLoadingVideoIndex(null);
+    }
+  };
+
+  const navigateMosaic = async (direction: -1 | 1) => {
+    if (selectedImageIndex === null || visualMediaAttachments.length < 2) return;
+    const nextIndex = (selectedImageIndex + direction + visualMediaAttachments.length) % visualMediaAttachments.length;
+    const attachment = visualMediaAttachments[nextIndex];
+    try {
+      const data = await GetAttachmentData(attachment.url);
+      const isVideoAttachment = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
+      setSelectedImage(isVideoAttachment ? null : data);
+      setSelectedVideo(isVideoAttachment ? data : null);
       setSelectedImageIndex(nextIndex);
     } catch {
       if (!attachment.thumbnail) return;
       try {
         const fallback = await GetAttachmentData(attachment.thumbnail);
+        setSelectedVideo(null);
         setSelectedImage(fallback);
         setSelectedImageIndex(nextIndex);
       } catch {
@@ -500,25 +579,36 @@ export function MessageAttachments({
 
   return (
     <>
-      {isPhotoMosaic ? (
+      {isMediaMosaic ? (
         <div
           className="message-attachment__mosaic relative mt-2 grid h-[260px] w-[320px] grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-lg bg-background/30"
-          aria-label={`${imageAttachments.length} photos`}
+          aria-label={`${visualMediaAttachments.length} médias`}
         >
-          {imageAttachments.slice(0, 4).map((attachment, index) => (
-            <MosaicImageAttachment
-              key={`${attachment.url}-${index}`}
-              attachment={attachment}
-              onOpen={(dataUrl) => openMosaicImage(dataUrl, index)}
-              className={imageAttachments.length === 2 ? "row-span-2" : imageAttachments.length === 3 && index === 0 ? "row-span-2" : ""}
-            />
-          ))}
+          {visualMediaAttachments.slice(0, 4).map((attachment, index) => {
+            const tileClass = visualMediaAttachments.length === 2 ? "row-span-2" : visualMediaAttachments.length === 3 && index === 0 ? "row-span-2" : "";
+            const isVideoAttachment = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
+            return isVideoAttachment ? (
+              <MosaicVideoAttachment
+                key={`${attachment.url}-${index}`}
+                attachment={attachment}
+                onPlay={() => { void openMosaicVideo(attachment, index); }}
+                className={tileClass}
+              />
+            ) : (
+              <MosaicImageAttachment
+                key={`${attachment.url}-${index}`}
+                attachment={attachment}
+                onOpen={(dataUrl) => openMosaicImage(dataUrl, index)}
+                className={tileClass}
+              />
+            );
+          })}
           <div className="message-attachment__photo-count pointer-events-none absolute bottom-2 right-2 z-10 rounded-full bg-black/70 px-2.5 py-1 text-xs font-semibold text-white shadow">
-            {imageAttachments.length} photos
+            {visualMediaAttachments.length} {imageAttachments.length === visualMediaAttachments.length ? "photos" : "médias"}
           </div>
-          {imageAttachments.length > 4 && (
+          {visualMediaAttachments.length > 4 && (
             <div className="message-attachment__overflow-count pointer-events-none absolute bottom-0 right-0 flex h-1/2 w-1/2 items-center justify-center bg-black/55 text-2xl font-semibold text-white">
-              +{imageAttachments.length - 3}
+              +{visualMediaAttachments.length - 3}
             </div>
           )}
         </div>
@@ -733,7 +823,7 @@ export function MessageAttachments({
                 alt="Preview"
                 className="w-full h-auto max-h-[85vh] object-contain"
               />
-              {selectedImageIndex !== null && imageAttachments.length > 1 && (
+              {selectedImageIndex !== null && visualMediaAttachments.length > 1 && (
                 <>
                   <button
                     type="button"
@@ -754,7 +844,7 @@ export function MessageAttachments({
                     <ChevronRight className="h-9 w-9" />
                   </button>
                   <div className="message-attachment__gallery-position absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-sm font-medium text-white">
-                    {selectedImageIndex + 1} / {imageAttachments.length}
+                    {selectedImageIndex + 1} / {visualMediaAttachments.length}
                   </div>
                 </>
               )}
@@ -763,13 +853,25 @@ export function MessageAttachments({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={selectedVideo !== null} onOpenChange={() => setSelectedVideo(null)}>
-        <DialogContent className="max-w-5xl max-h-[90vh] p-0 bg-black border-0">
+      <Dialog open={selectedVideo !== null} onOpenChange={() => { setSelectedVideo(null); setSelectedImageIndex(null); }}>
+        <DialogContent
+          className="max-w-5xl max-h-[90vh] p-0 bg-black border-0"
+          onKeyDown={(event) => {
+            if (selectedImageIndex === null) return;
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              void navigateMosaic(-1);
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              void navigateMosaic(1);
+            }
+          }}
+        >
           <DialogTitle className="sr-only">Video Preview</DialogTitle>
           {selectedVideo && (
             <div className="relative">
               <button
-                onClick={() => setSelectedVideo(null)}
+                onClick={() => { setSelectedVideo(null); setSelectedImageIndex(null); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
               >
                 <X className="h-5 w-5" />
@@ -779,10 +881,35 @@ export function MessageAttachments({
                 controls
                 className="w-full max-h-[90vh] object-contain"
                 src={selectedVideo}
-                onEnded={() => setSelectedVideo(null)}
+                onEnded={() => { if (selectedImageIndex === null) setSelectedVideo(null); }}
               >
                 <track kind="captions" />
               </video>
+              {selectedImageIndex !== null && visualMediaAttachments.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { void navigateMosaic(-1); }}
+                    className="message-attachment__previous-media absolute left-3 top-1/2 z-20 flex h-14 w-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:scale-105 hover:bg-black/90"
+                    aria-label="Média précédent"
+                    title="Média précédent"
+                  >
+                    <ChevronLeft className="h-9 w-9" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void navigateMosaic(1); }}
+                    className="message-attachment__next-media absolute right-3 top-1/2 z-20 flex h-14 w-14 -translate-y-1/2 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:scale-105 hover:bg-black/90"
+                    aria-label="Média suivant"
+                    title="Média suivant"
+                  >
+                    <ChevronRight className="h-9 w-9" />
+                  </button>
+                  <div className="message-attachment__gallery-position absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-sm font-medium text-white">
+                    {selectedImageIndex + 1} / {visualMediaAttachments.length}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </DialogContent>

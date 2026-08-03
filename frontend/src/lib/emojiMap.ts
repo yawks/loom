@@ -6298,6 +6298,29 @@ export const unicodeEmojiMap: Record<string, string> = {
   "zzz": "😴"
 };
 
+// Preferred emoji names for common reactions. This single source of truth is
+// used for both name -> Unicode and Unicode -> name conversions.
+const PREFERRED_EMOJI_NAMES: Record<string, string> = {
+  "👍": "+1",
+  "👎": "-1",
+  "❤️": "heart",
+  "😂": "joy",
+  "😮": "open_mouth",
+  "😢": "cry",
+  "🙏": "pray",
+  "😍": "heart_eyes",
+  "😊": "blush",
+  "🎉": "tada",
+  "🔥": "fire",
+  "👀": "eyes",
+  "✅": "white_check_mark",
+  "❌": "x",
+};
+
+const PREFERRED_UNICODE_BY_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(PREFERRED_EMOJI_NAMES).map(([emoji, name]) => [name, emoji])
+);
+
 const SKIN_TONE_MODIFIERS = ["🏻", "🏼", "🏽", "🏾", "🏿"] as const;
 const SKIN_TONE_PATTERN = /^(.*)-tone([1-5])$/;
 const SKIN_TONE_MODIFIER_PATTERN = /[\u{1F3FB}-\u{1F3FF}]/gu;
@@ -6307,7 +6330,7 @@ const SKIN_TONE_MODIFIER_PATTERN = /[\u{1F3FB}-\u{1F3FF}]/gu;
  * Example: "yes-tone3" -> "👍🏽"
  */
 export function emojiNameToUnicode(name: string): string | null {
-  const directMatch = unicodeEmojiMap[name];
+  const directMatch = PREFERRED_UNICODE_BY_NAME[name] || unicodeEmojiMap[name];
   if (directMatch) {
     return directMatch;
   }
@@ -6346,25 +6369,6 @@ export function emojiNameToUnicode(name: string): string | null {
   const modifier = SKIN_TONE_MODIFIERS[Number(toneNumber) - 1];
   return `${baseEmoji.replace(SKIN_TONE_MODIFIER_PATTERN, "")}${modifier}`;
 }
-
-// Preferred emoji names for common reactions
-// These are the most standard/recognized names
-const PREFERRED_EMOJI_NAMES: Record<string, string> = {
-  "👍": "+1",
-  "👎": "-1",
-  "❤️": "heart",
-  "😂": "joy",
-  "😮": "open_mouth",
-  "😢": "cry",
-  "🙏": "pray",
-  "😍": "heart_eyes",
-  "😊": "blush",
-  "🎉": "tada",
-  "🔥": "fire",
-  "👀": "eyes",
-  "✅": "white_check_mark",
-  "❌": "x",
-};
 
 // Reverse mapping: Unicode emoji -> emoji name (without colons)
 // Built lazily on first access for performance

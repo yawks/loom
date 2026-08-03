@@ -24,7 +24,7 @@ export interface MessageHandlers {
   onEditMessage: (message: models.Message) => void;
   onDeleteClick: (message: models.Message) => void;
   onReplyClick: (message: models.Message) => void;
-  onForwardClick: (message: models.Message) => void;
+  onForwardClick: (message: models.Message, groupedMessages?: models.Message[]) => void;
   onReaction: (message: models.Message, emoji: string) => void;
   onRetrySend: (message: models.Message) => void;
   onDeleteLocalMessage: (message: models.Message) => void;
@@ -199,7 +199,7 @@ export function MessageBubbleItem({
                   onEdit={() => handlers.onEditMessage(message)}
                   onDelete={() => handlers.onDeleteClick(message)}
                   onReply={() => handlers.onReplyClick(message)}
-                  onForward={() => handlers.onForwardClick(message)}
+                  onForward={() => handlers.onForwardClick(message, photoGroupMessages)}
                   onReact={(emoji) => handlers.onReaction(message, emoji)}
                   onStartThread={() => handlers.onThreadClick(message.protocolMsgId, message)}
                   currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}

@@ -46,7 +46,7 @@ function parseSlackInlineQuote(text: string): SlackInlineQuote | null {
   };
 }
 
-function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean): Components {
+function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean, providerInstanceId?: string, emojiSize = 16): Components {
   return {
     a: ({ href, children, ...props }) => {
       if (preview) return <span {...props}>{children}</span>;
@@ -105,6 +105,20 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean)
           {children}
         </code>
       );
+    },
+    img: ({ src, alt, ...props }) => {
+      if (src?.startsWith("loom-emoji://")) {
+        const emojiName = decodeURIComponent(src.slice("loom-emoji://".length));
+        return (
+          <Emoji
+            emoji={`:${emojiName}:`}
+            providerInstanceId={providerInstanceId}
+            size={emojiSize}
+            className="inline align-baseline mx-0.5"
+          />
+        );
+      }
+      return <img src={src} alt={alt ?? ""} {...props} />;
     },
     p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
     br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
@@ -176,12 +190,19 @@ export const MessageText = memo(function MessageText({
 
     const textWithoutSkinTones = cleanEmoji(processedText);
 
-    // Splitting around custom emoji shortcodes breaks Markdown delimiters when
-    // an emoji appears between **...** or *...*. In formatted messages,
-    // preserve the complete Markdown document; rendering the emphasis takes
-    // precedence over replacing colon shortcodes.
+    // Keep formatted Markdown as one document, but encode emoji shortcodes as
+    // synthetic inline images. The custom `img` renderer above turns them into
+    // Emoji components without breaking emphasis or links.
     if (/(\*\*|__|~~|`|\[[^\]]+\]\()/.test(textWithoutSkinTones)) {
-      return textWithoutSkinTones;
+      return textWithoutSkinTones.replace(
+        /:([a-zA-Z0-9_+-]+):/g,
+        (match, name, offset, source) => {
+          const before = source.slice(0, offset);
+          const currentLine = before.slice(before.lastIndexOf("\n") + 1);
+          if (/https?:\/\/\S*$/.test(currentLine)) return match;
+          return `![${match}](loom-emoji://${encodeURIComponent(name)})`;
+        },
+      );
     }
 
     // Skip emoji parsing inside code blocks
@@ -260,12 +281,12 @@ export const MessageText = memo(function MessageText({
   }, [text, providerInstanceId, emojiSize, preview]);
 
   const blockComponents = useMemo(
-    () => buildComponents(isFromMe, preview, false),
-    [isFromMe, preview]
+    () => buildComponents(isFromMe, preview, false, providerInstanceId, emojiSize),
+    [isFromMe, preview, providerInstanceId, emojiSize]
   );
   const inlineComponents = useMemo(
-    () => buildComponents(isFromMe, preview, true),
-    [isFromMe, preview]
+    () => buildComponents(isFromMe, preview, true, providerInstanceId, emojiSize),
+    [isFromMe, preview, providerInstanceId, emojiSize]
   );
 
   const remarkPlugins = useMemo(
@@ -280,7 +301,7 @@ export const MessageText = memo(function MessageText({
       remarkPlugins={remarkPlugins}
       rehypePlugins={[[rehypeHighlight, { detect: true }]]}
       components={isInline ? inlineComponents : blockComponents}
-      urlTransform={(url) => (url.startsWith("loom://") ? url : defaultUrlTransform(url))}
+      urlTransform={(url) => (url.startsWith("loom://") || url.startsWith("loom-emoji://") ? url : defaultUrlTransform(url))}
     >
       {content}
     </ReactMarkdown>
