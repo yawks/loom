@@ -349,25 +349,17 @@ export function ThreadView() {
       if (shouldStickToThreadListTopRef.current) el.scrollTop = 0;
     };
     const resizeObserver = new ResizeObserver(keepLatestThreadVisible);
-    const observeContent = () => {
-      resizeObserver.disconnect();
-      resizeObserver.observe(el);
-      Array.from(el.children).forEach((node) => resizeObserver.observe(node));
-    };
-    const mutationObserver = new MutationObserver(() => {
-      observeContent();
-      keepLatestThreadVisible();
-    });
-    observeContent();
-    mutationObserver.observe(el, { childList: true, subtree: true });
+    resizeObserver.observe(el);
+    const items = el.querySelector<HTMLElement>(".thread-view__list-items");
+    if (items) resizeObserver.observe(items);
 
     return () => {
       resizeObserver.disconnect();
-      mutationObserver.disconnect();
     };
-  }, [selectedThreadId]);
+  }, [selectedThreadId, threadsParentList.length]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const threadContentRef = useRef<HTMLDivElement>(null);
   const shouldStickToThreadBottomRef = useRef(true);
   const threadBottomFrameRef = useRef<number | null>(null);
   const previousThreadMessageCountRef = useRef(0);
@@ -563,22 +555,12 @@ export function ThreadView() {
       if (distanceFromBottom <= 2) shouldStickToThreadBottomRef.current = true;
     };
 
-    // The scroll container has a fixed viewport height, so observe both it and
-    // its direct content wrappers. Their sizes change when images, audio
-    // players, previews, reactions, or edited messages finish rendering.
-    // Correct in ResizeObserver's pre-paint phase. Waiting for another
-    // animation frame makes the composer visibly jump when it gains a line.
+    // Observe one stable content box. A subtree MutationObserver made every
+    // message insertion and media update participate in scrolling, which made
+    // fast scroll gestures feel heavy.
     const resizeObserver = new ResizeObserver(correctThreadBottomImmediately);
-    const observeContent = () => {
-      resizeObserver.disconnect();
-      resizeObserver.observe(el);
-      Array.from(el.children).forEach((node) => resizeObserver.observe(node));
-    };
-    const mutationObserver = new MutationObserver(() => {
-      observeContent();
-    });
-    observeContent();
-    mutationObserver.observe(el, { childList: true, subtree: true });
+    resizeObserver.observe(el);
+    if (threadContentRef.current) resizeObserver.observe(threadContentRef.current);
 
     el.addEventListener("wheel", handleWheel, { passive: true });
     el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
@@ -588,7 +570,6 @@ export function ThreadView() {
 
     return () => {
       resizeObserver.disconnect();
-      mutationObserver.disconnect();
       el.removeEventListener("wheel", handleWheel);
       el.removeEventListener("touchmove", stopFollowingBottom);
       el.removeEventListener("pointerdown", handlePointerDown);
@@ -714,7 +695,12 @@ export function ThreadView() {
           <X className="h-4 w-4" />
         </Button>
       </div>
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area"
+        style={{ overflowAnchor: "none" }}
+      >
+        <div ref={threadContentRef}>
         {selectedThreadParentMessage && (
           <div className="thread-view__parent mb-4 pb-4 border-b">
             <ThreadParentMessage
@@ -1076,6 +1062,7 @@ export function ThreadView() {
             })}
           </div>
         )}
+        </div>
       </div>
       <div className="border-t shrink-0">
         <ChatInput

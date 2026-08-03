@@ -370,6 +370,8 @@ export function MessageAttachments({
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [loadingVideoIndex, setLoadingVideoIndex] = useState<number | null>(null);
+  const attachmentsElementRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
   // Increment to force a re-render when the module-level cache is updated.
   const [, setCacheVersion] = useState(0);
   const bumpCache = (_url: string, _success: boolean) => {
@@ -405,11 +407,24 @@ export function MessageAttachments({
     return uniqueAttachments;
   }, [attachments]);
 
+  useEffect(() => {
+    const element = attachmentsElementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+      rootMargin: "200px 0px",
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   // Videos keep only their compact poster in the shared cache. Images use an
   // IntersectionObserver below: high-resolution data exists only while the
   // corresponding attachment is actually visible.
   useEffect(() => {
-    if (parsedAttachments.length === 0) return;
+    if (!isVisible || parsedAttachments.length === 0) return;
 
     const urlsToLoad: Array<{ url: string; fallbackUrl?: string }> = [];
 
@@ -461,7 +476,7 @@ export function MessageAttachments({
     });
     // Only depend on parsedAttachments
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsedAttachments]);
+  }, [isVisible, parsedAttachments]);
 
   if (parsedAttachments.length === 0) {
     return null;
@@ -579,6 +594,7 @@ export function MessageAttachments({
 
   return (
     <>
+      <div ref={attachmentsElementRef} className="message-attachments">
       {isMediaMosaic ? (
         <div
           className="message-attachment__mosaic relative mt-2 grid h-[260px] w-[320px] grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-lg bg-background/30"
@@ -658,7 +674,7 @@ export function MessageAttachments({
           const isAudio = attachment.type === "audio";
           const isPdf = attachment.mimeType === "application/pdf";
           const audioUrl = getCachedAttachment(attachment.url);
-          const videoThumbnailDataUrl = attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
+          const videoThumbnailDataUrl = isVisible && attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
 
           return (
             <div
@@ -794,6 +810,7 @@ export function MessageAttachments({
         })}
       </div>
       )}
+      </div>
 
       <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); }}>
         <DialogContent
