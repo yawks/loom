@@ -1738,8 +1738,55 @@ func (p *SlackProvider) richTextBlockToMarkdown(block *slack.RichTextBlock) stri
 func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 	var parts []string
 
-	// Extract from blocks (the modern way)
-	for _, block := range msg.Blocks.BlockSet {
+	appendBlocks := func(blocks slack.Blocks) {
+		parts = append(parts, p.textFromSlackBlocks(blocks)...)
+	}
+
+	// Extract from top-level blocks (the modern way).
+	appendBlocks(msg.Blocks)
+
+	// Apps frequently put Block Kit content inside a legacy attachment. Slack's
+	// fallback `text` can then be only "digest", while the attachment blocks are
+	// the complete message shown by the official client.
+	for _, att := range msg.Attachments {
+		beforeBlocks := len(parts)
+		appendBlocks(att.Blocks)
+		if len(parts) > beforeBlocks {
+			continue
+		}
+		if att.Pretext != "" {
+			parts = append(parts, att.Pretext)
+		}
+		if att.Text != "" {
+			parts = append(parts, att.Text)
+		}
+		if att.Title != "" {
+			title := att.Title
+			if att.TitleLink != "" {
+				title = "[" + title + "](" + att.TitleLink + ")"
+			}
+			parts = append(parts, title)
+		}
+		if att.Fallback != "" && len(parts) == 0 {
+			parts = append(parts, att.Fallback)
+		}
+		for _, field := range att.Fields {
+			if field.Title != "" {
+				parts = append(parts, field.Title+": "+field.Value)
+			} else {
+				parts = append(parts, field.Value)
+			}
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+// textFromSlackBlocks converts a Block Kit collection while retaining its order.
+// It is shared by top-level message blocks and blocks nested in attachments.
+func (p *SlackProvider) textFromSlackBlocks(blocks slack.Blocks) []string {
+	var parts []string
+	for _, block := range blocks.BlockSet {
 		switch b := block.(type) {
 		case *slack.RichTextBlock:
 			parts = append(parts, p.richTextBlockToMarkdown(b))
@@ -1752,8 +1799,15 @@ func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 			}
 		case *slack.ContextBlock:
 			for _, elem := range b.ContextElements.Elements {
-				if textElem, ok := elem.(*slack.TextBlockObject); ok {
+				switch textElem := elem.(type) {
+				case *slack.TextBlockObject:
 					parts = append(parts, textElem.Text)
+				case *slack.ImageBlockElement:
+					// Context images are commonly used as emoji-sized icons. Keep
+					// their accessible label instead of silently dropping them.
+					if textElem.AltText != "" {
+						parts = append(parts, textElem.AltText)
+					}
 				}
 			}
 		case *slack.HeaderBlock:
@@ -1772,34 +1826,30 @@ func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 					parts = append(parts, "["+strings.Join(labels, " / ")+"]")
 				}
 			}
-		}
-	}
-
-	// Extract from attachments (legacy but still common for bots/bridges)
-	for _, att := range msg.Attachments {
-		if att.Pretext != "" {
-			parts = append(parts, att.Pretext)
-		}
-		if att.Text != "" {
-			parts = append(parts, att.Text)
-		}
-		if att.Title != "" {
-			parts = append(parts, att.Title)
-		}
-		if att.Fallback != "" && len(parts) == 0 {
-			parts = append(parts, att.Fallback)
-		}
-		for _, field := range att.Fields {
-			if field.Title != "" {
-				parts = append(parts, field.Title+": "+field.Value)
-			} else {
-				parts = append(parts, field.Value)
+		case *slack.MarkdownBlock:
+			parts = append(parts, b.Text)
+		case *slack.ImageBlock:
+			label := b.AltText
+			if b.Title != nil && b.Title.Text != "" {
+				label = b.Title.Text
+			}
+			if label != "" {
+				parts = append(parts, label)
+			}
+		case *slack.VideoBlock:
+			if b.Title != nil && b.Title.Text != "" {
+				if b.TitleURL != "" {
+					parts = append(parts, "["+b.Title.Text+"]("+b.TitleURL+")")
+				} else {
+					parts = append(parts, b.Title.Text)
+				}
+			}
+			if b.Description != nil && b.Description.Text != "" {
+				parts = append(parts, b.Description.Text)
 			}
 		}
 	}
-
-	result := strings.TrimSpace(strings.Join(parts, "\n"))
-	return result
+	return parts
 }
 
 func parseSlackTimestamp(tsStr string) time.Time {

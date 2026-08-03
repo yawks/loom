@@ -836,11 +836,11 @@ export namespace models {
 	    description: string;
 	    avatarUrl: string;
 	    canSendMessages: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupDetails(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
@@ -966,3 +966,4 @@ export namespace time {
 	}
 
 }
+
