@@ -631,8 +631,12 @@ func (a *App) startWakeDetector() {
 	defer ticker.Stop()
 
 	lastTick := time.Now()
+	unlockEvents := systemSessionUnlockEvents()
 	for {
 		select {
+		case <-unlockEvents:
+			log.Printf("[WakeDetector] Session unlock detected. Triggering resync...")
+			go a.resyncAllProviders()
 		case <-ticker.C:
 			// Do not use the timestamp carried by ticker.C here. After system
 			// sleep, that value may be a stale tick which was buffered before
@@ -640,8 +644,12 @@ func (a *App) startWakeDetector() {
 			now := time.Now()
 			// If more than 30 seconds have passed since the last 10-second tick,
 			// the computer was likely asleep or the system was heavily throttled.
+			resumeReason := ""
 			if now.Sub(lastTick) > 30*time.Second {
-				log.Printf("[WakeDetector] System wake detected (gap: %v). Triggering resync...", now.Sub(lastTick))
+				resumeReason = fmt.Sprintf("system wake (gap: %v)", now.Sub(lastTick))
+			}
+			if resumeReason != "" {
+				log.Printf("[WakeDetector] %s detected. Triggering resync...", resumeReason)
 				// Do not block the detector: the catch-up routine waits for the
 				// network and retries transient failures in the background.
 				go a.resyncAllProviders()

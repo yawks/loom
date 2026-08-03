@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -68,7 +68,31 @@ interface LinkPreviewCardProps {
   isFromMe?: boolean;
 }
 
-export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps) {
+export function LinkPreviewCard(props: LinkPreviewCardProps) {
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+      rootMargin: "200px 0px",
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={elementRef} className="link-preview-card__visibility-root">
+      <LinkPreviewContent {...props} isVisible={isVisible} />
+    </div>
+  );
+}
+
+function LinkPreviewContent({ url, isFromMe = false, isVisible }: LinkPreviewCardProps & { isVisible: boolean }) {
   const { t } = useTranslation();
   const [failedImageURL, setFailedImageURL] = useState<string | null>(null);
   const { data: preview, isLoading, isError } = useQuery({
@@ -76,6 +100,7 @@ export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps)
     queryFn: () => FetchLinkPreview(url),
     staleTime: 60 * 60 * 1000,
     retry: false,
+    enabled: isVisible,
   });
 
   const domain = (() => {
@@ -120,7 +145,7 @@ export function LinkPreviewCard({ url, isFromMe = false }: LinkPreviewCardProps)
       )}
     >
       <div className="link-preview-card__media h-36 w-full bg-primary/5">
-        {showImage ? (
+        {isVisible && showImage ? (
           <img
             src={imageURL}
             alt={title}

@@ -14,8 +14,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ToastContainer, useToast } from "@/components/ui/toast";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Virtuoso, type ScrollSeekPlaceholderProps, type VirtuosoHandle } from "react-virtuoso";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { VirtuosoHandle } from "react-virtuoso";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
@@ -42,37 +42,6 @@ import { useMessageEdit } from "@/hooks/useMessageEdit";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useTranslation } from "react-i18next";
-
-const VirtuosoFooter = () => <div className="h-4" />;
-
-const VirtuosoItem = (props: React.ComponentPropsWithRef<"div">) => (
-  <div
-    {...props}
-    style={{ ...props.style, overflowX: "clip", paddingLeft: "1rem", paddingRight: "1rem" }}
-  />
-);
-
-const VirtuosoScrollSeekPlaceholder = ({ height }: ScrollSeekPlaceholderProps) => (
-  <div
-    className="message-list__scroll-seek-placeholder px-4 py-2"
-    style={{ height, overflow: "hidden" }}
-  >
-    <div className="h-full min-h-10 animate-pulse rounded-lg bg-primary/5" />
-  </div>
-);
-
-const VIRTUOSO_COMPONENTS = {
-  Footer: VirtuosoFooter,
-  Item: VirtuosoItem,
-  ScrollSeekPlaceholder: VirtuosoScrollSeekPlaceholder,
-};
-
-const SCROLL_SEEK_CONFIGURATION = {
-  enter: (velocity: number) => Math.abs(velocity) > 1_000,
-  exit: (velocity: number) => Math.abs(velocity) < 150,
-};
-
-const INITIAL_VIRTUOSO_ITEM_INDEX = 1_000_000;
 
 export function MessageList({
   selectedConversation,
@@ -112,6 +81,10 @@ export function MessageList({
 
   // State
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const nativeListRef = useRef<HTMLDivElement>(null);
+  const pendingAnchorRef = useRef<{ messageId: string; viewportOffset: number } | null>(null);
+  const liveEdgeSnapshotRef = useRef<{ conversationId: string; lastMessageId: string } | null>(null);
+  const presentedConversationRef = useRef<string>("");
   const scrollInitializedRef = useRef<string>('');
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -121,15 +94,13 @@ export function MessageList({
   // moves away from the bottom.
   const isStabilizingRef = useRef(false);
   const [isStabilizing, setIsStabilizing] = useState(false);
-  // Direct reference to Virtuoso's scroller DOM element — used for instant
-  // scrollTop corrections that bypass Virtuoso's animation system.
+  // Native timeline viewport and content anchor state.
   const scrollerElementRef = useRef<HTMLElement | null>(null);
   const scrollerCleanupRef = useRef<(() => void) | null>(null);
   const historyFetchInFlightRef = useRef(false);
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
-  const focusStateRef = useRef<boolean>(hasWindowFocus);
   // True for 5 seconds after regaining focus: prevents marking messages as read
   // before the user has had a chance to see them.
   const [isInFocusGracePeriod, setIsInFocusGracePeriod] = useState(false);
@@ -184,52 +155,37 @@ export function MessageList({
     });
     return indexes;
   }, [displayedMessageGroups]);
-  const virtuosoIndexStateRef = useRef({
-    conversationId: "",
-    firstGroupMessageId: "",
-    firstItemIndex: INITIAL_VIRTUOSO_ITEM_INDEX,
-  });
-  const firstGroupMessageId = displayedMessageGroups[0]
-    ? getMessageDomId(displayedMessageGroups[0].message)
-    : "";
-  if (virtuosoIndexStateRef.current.conversationId !== conversationId) {
-    virtuosoIndexStateRef.current = {
-      conversationId,
-      firstGroupMessageId,
-      firstItemIndex: INITIAL_VIRTUOSO_ITEM_INDEX,
-    };
-  } else if (
-    firstGroupMessageId &&
-    firstGroupMessageId !== virtuosoIndexStateRef.current.firstGroupMessageId
-  ) {
-    const previousFirstRelativeIndex = displayIndexByMessageId.get(
-      virtuosoIndexStateRef.current.firstGroupMessageId
-    );
-    if (previousFirstRelativeIndex !== undefined && previousFirstRelativeIndex > 0) {
-      virtuosoIndexStateRef.current.firstItemIndex -= previousFirstRelativeIndex;
-    }
-    virtuosoIndexStateRef.current.firstGroupMessageId = firstGroupMessageId;
-  }
-  const firstItemIndex = virtuosoIndexStateRef.current.firstItemIndex;
-  const virtuosoIndexByMessageId = useMemo(() => {
-    const indexes = new Map<string, number>();
-    displayIndexByMessageId.forEach((relativeIndex, messageId) => {
-      indexes.set(messageId, firstItemIndex + relativeIndex);
-    });
-    return indexes;
-  }, [displayIndexByMessageId, firstItemIndex]);
   const mainIndexByMessageId = useMemo(() => {
     const indexes = new Map<string, number>();
     mainMessages.forEach((message, index) => indexes.set(getMessageDomId(message), index));
     return indexes;
   }, [mainMessages]);
+  const scrollToNativeIndex = useCallback((location: Parameters<VirtuosoHandle["scrollToIndex"]>[0]) => {
+    const normalized = typeof location === "number" ? { index: location } : location;
+    const node = nativeListRef.current?.querySelector<HTMLElement>(
+      `[data-message-group-index="${normalized.index}"]`
+    );
+    if (!node) return;
+    node.scrollIntoView({
+      behavior: normalized.behavior === "smooth" ? "smooth" : "auto",
+      block: normalized.align === "center" ? "center" : normalized.align === "end" ? "end" : "start",
+    });
+  }, []);
+  useLayoutEffect(() => {
+    virtuosoRef.current = {
+      scrollToIndex: scrollToNativeIndex,
+    } as unknown as VirtuosoHandle;
+    return () => {
+      virtuosoRef.current = null;
+    };
+  }, [scrollToNativeIndex]);
 
   useEffect(() => {
     if (!messageSearchTargetId || isFetchingNextPage) return;
     const index = displayedMessageGroups.findIndex((group) => group.messages.some((message) => message.protocolMsgId === messageSearchTargetId));
     if (index >= 0) {
       requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + index, align: "center", behavior: "auto" });
+        virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "auto" });
         setMessageSearchTargetId(null);
       });
     } else if (hasNextPage) {
@@ -237,7 +193,7 @@ export function MessageList({
     } else {
       setMessageSearchTargetId(null);
     }
-  }, [messageSearchTargetId, displayedMessageGroups, firstItemIndex, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
+  }, [messageSearchTargetId, displayedMessageGroups, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
 
   const currentUserName = useMemo(() => {
     if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);
@@ -300,13 +256,11 @@ export function MessageList({
 
   const markMessageAsRead = useMessageReadStore((state) => state.markAsRead);
   const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
-  const markMultipleAsRead = useMessageReadStore((state) => state.markMultipleAsRead);
 
   // Effects
   useEffect(() => { setIsTypingInInput(false); }, [selectedConversation?.id, setIsTypingInInput]);
   useEffect(() => { setRevealedDeletedMessages(new Set()); }, [conversationId]);
   useEffect(() => { setSeparatorDismissed(false); }, [conversationId]);
-  useEffect(() => { focusStateRef.current = hasWindowFocus; }, [hasWindowFocus]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -394,8 +348,8 @@ export function MessageList({
 
   // Snapshot the first unread message ID once per conversation (when messages first arrive).
   // A live useMemo on conversationReadState would recompute every time a message is
-  // marked read (on every scroll via rangeChanged), causing all Virtuoso items to
-  // re-render via commonItemProps and the "new messages" divider to disappear from
+  // marked read, causing all message items to re-render via commonItemProps and
+  // the "new messages" divider to disappear from
   // one item — changing its height and triggering scroll drift.
   // Using a plain ref avoids any extra renders; the value is stable until the user
   // switches to a different conversation.
@@ -431,43 +385,34 @@ export function MessageList({
     return () => clearTimeout(timer);
   }, [firstUnreadMessageId, separatorDismissed]);
 
-  // Correct post-measurement scroll drift: Virtuoso positions based on estimated heights then
-  // Scroll to bottom (or first unread) on conversation open, then defend against
-  // the drift that happens as Virtuoso measures overscan items' actual heights.
-  useEffect(() => {
-    if (!conversationId || !mainMessages.length) return;
+  // Position the native timeline before the first paint.
+  useLayoutEffect(() => {
+    if (!conversationId) return;
+
+    // Reset the presentation state as soon as the selected conversation
+    // changes, even when the intermediate conversation has no messages. This
+    // guarantees that returning to an already cached conversation is treated
+    // as a fresh opening.
+    if (presentedConversationRef.current !== conversationId) {
+      presentedConversationRef.current = conversationId;
+      scrollInitializedRef.current = "";
+      pendingAnchorRef.current = null;
+      atBottomRef.current = true;
+      isStabilizingRef.current = true;
+      setAtBottom(true);
+      setIsStabilizing(true);
+    }
+
+    if (!mainMessages.length) return;
     if (scrollInitializedRef.current === conversationId) return;
     scrollInitializedRef.current = conversationId;
 
-    // Only stabilize (auto-re-anchor) when we're targeting the bottom.
-    // If there's a firstUnreadMessageId the user is intentionally NOT at the bottom.
-    if (!firstUnreadMessageId) {
-      isStabilizingRef.current = true;
-      setIsStabilizing(true);
-    } else {
-      isStabilizingRef.current = false;
-      setIsStabilizing(false);
-    }
-
-    // Double rAF: first lets React commit, second lets Virtuoso measure item heights.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!virtuosoRef.current) return;
-        if (firstUnreadMessageId) {
-          const idx = displayIndexByMessageId.get(firstUnreadMessageId) ?? -1;
-          if (idx >= 0) {
-            virtuosoRef.current.scrollToIndex({ index: firstItemIndex + idx, align: 'start', behavior: 'auto' });
-            return;
-          }
-        }
-        virtuosoRef.current.scrollToIndex({ index: firstItemIndex + displayedMessageGroups.length - 1, align: 'end', behavior: 'auto' });
-      });
-    });
-  }, [conversationId, mainMessages, firstUnreadMessageId, displayedMessageGroups.length, displayIndexByMessageId, firstItemIndex]);
+    if (!virtuosoRef.current) return;
+    virtuosoRef.current.scrollToIndex({ index: displayedMessageGroups.length - 1, align: 'end', behavior: 'auto' });
+  }, [conversationId, mainMessages.length, displayedMessageGroups.length]);
 
   // Re-anchor to bottom when a pending message is added or confirmed.
-  // followOutput fires on item-count change but cannot account for height changes
-  // that occur during initial measurement or during isPending→confirmed transition.
+  // Keep the live-edge intent through the optimistic→confirmed transition.
   const hasPendingMessage = useMemo(
     () => mainMessages.some((m) => (m as any).isPending),
     [mainMessages]
@@ -484,9 +429,7 @@ export function MessageList({
     // intent through both the optimistic and confirmed render.
     isStabilizingRef.current = true;
     setIsStabilizing(true);
-    // followOutput owns item insertion. ResizeObserver below only handles real
-    // post-render size changes; running another scrollToIndex here caused two
-    // competing corrections during send.
+    // The layout effect below owns the single bottom correction after commit.
   }, [hasPendingMessage, conversationId, mainMessages.length]);
 
   const correctBottomImmediately = useCallback(() => {
@@ -494,6 +437,37 @@ export function MessageList({
     if (!el || !isStabilizingRef.current) return;
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
   }, []);
+
+  const saveVisibleAnchor = useCallback(() => {
+    const scroller = scrollerElementRef.current;
+    const list = nativeListRef.current;
+    if (!scroller || !list || isStabilizingRef.current) return;
+    const viewportTop = scroller.getBoundingClientRect().top;
+    const nodes = list.querySelectorAll<HTMLElement>("[data-message-group-index]");
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom <= viewportTop) continue;
+      const messageId = node.dataset.anchorMessageId;
+      if (messageId) {
+        pendingAnchorRef.current = { messageId, viewportOffset: rect.top - viewportTop };
+      }
+      break;
+    }
+  }, []);
+
+  const restoreVisibleAnchor = useCallback(() => {
+    const anchor = pendingAnchorRef.current;
+    const scroller = scrollerElementRef.current;
+    if (!anchor || !scroller || isStabilizingRef.current) return;
+    const groupIndex = displayIndexByMessageId.get(anchor.messageId);
+    if (groupIndex === undefined) return;
+    const node = nativeListRef.current?.querySelector<HTMLElement>(
+      `[data-message-group-index="${groupIndex}"]`
+    );
+    if (!node) return;
+    const currentOffset = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    scroller.scrollTop += currentOffset - anchor.viewportOffset;
+  }, [displayIndexByMessageId]);
 
   const setScrollerElement = useCallback((ref: HTMLElement | Window | null) => {
     scrollerCleanupRef.current?.();
@@ -503,15 +477,17 @@ export function MessageList({
     if (!el) return;
 
     const stopFollowingBottom = () => {
+      // Record the user's intent immediately, before the browser dispatches
+      // the resulting scroll event. An incoming message can otherwise land
+      // between wheel/touch input and scroll and incorrectly pull the user
+      // back to the live edge.
+      atBottomRef.current = false;
       isStabilizingRef.current = false;
+      setAtBottom(false);
       setIsStabilizing(false);
     };
-    let userScrollIntentUntil = 0;
     const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) {
-        userScrollIntentUntil = performance.now() + 300;
-        stopFollowingBottom();
-      }
+      if (event.deltaY < 0) stopFollowingBottom();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopFollowingBottom();
@@ -521,33 +497,13 @@ export function MessageList({
       // interactions. Clicking a message, link, or reaction must not unpin it.
       if (event.target === el) stopFollowingBottom();
     };
-    let previousScrollTop = el.scrollTop;
-    const handleScroll = () => {
-      const currentScrollTop = el.scrollTop;
-      // Wheel events can be coalesced during a fast trackpad gesture, and
-      // Virtuoso may report atBottom=false before our wheel listener runs.
-      // A decreasing scrollTop is an unambiguous move away from the live edge.
-      if (
-        performance.now() <= userScrollIntentUntil &&
-        currentScrollTop < previousScrollTop - 1
-      ) {
-        stopFollowingBottom();
-      }
-      previousScrollTop = currentScrollTop;
-    };
-
-    // Virtuoso's viewport has a fixed height; its item-list descendant is the
-    // element whose size changes when asynchronous message content resolves.
-    // ResizeObserver runs after layout but before paint. Correcting directly in
-    // its callback avoids exposing one frame where a growing textarea has
-    // reduced the viewport while the scroll position is still unchanged.
-    const resizeObserver = new ResizeObserver(correctBottomImmediately);
+    const resizeObserver = new ResizeObserver(() => {
+      if (isStabilizingRef.current) correctBottomImmediately();
+      else restoreVisibleAnchor();
+    });
     resizeObserver.observe(el);
-    // Virtuoso keeps its item-list element stable. Observe it once after its
-    // initial commit instead of watching every virtual DOM insertion/removal.
-    // The previous subtree MutationObserver ran continuously while scrolling.
     const observeFrame = requestAnimationFrame(() => {
-      const itemList = el.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
+      const itemList = nativeListRef.current;
       if (itemList) resizeObserver.observe(itemList);
     });
 
@@ -555,7 +511,6 @@ export function MessageList({
     el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
     el.addEventListener("pointerdown", handlePointerDown, { passive: true });
     el.addEventListener("keydown", handleKeyDown);
-    el.addEventListener("scroll", handleScroll, { passive: true });
 
     scrollerCleanupRef.current = () => {
       cancelAnimationFrame(observeFrame);
@@ -564,22 +519,73 @@ export function MessageList({
       el.removeEventListener("touchmove", stopFollowingBottom);
       el.removeEventListener("pointerdown", handlePointerDown);
       el.removeEventListener("keydown", handleKeyDown);
-      el.removeEventListener("scroll", handleScroll);
     };
-  }, [correctBottomImmediately]);
+  }, [correctBottomImmediately, restoreVisibleAnchor]);
 
   useEffect(() => () => {
     scrollerCleanupRef.current?.();
   }, []);
 
+  const latestMessageId = mainMessages.length > 0
+    ? getMessageDomId(mainMessages[mainMessages.length - 1])
+    : "";
+
+  useLayoutEffect(() => {
+    const previous = liveEdgeSnapshotRef.current;
+    const isSameConversation = previous?.conversationId === conversationId;
+    const liveEdgeChanged = Boolean(
+      isSameConversation &&
+      previous?.lastMessageId &&
+      latestMessageId &&
+      previous.lastMessageId !== latestMessageId
+    );
+    const wasFollowingLiveEdge = atBottomRef.current && isStabilizingRef.current;
+
+    liveEdgeSnapshotRef.current = { conversationId, lastMessageId: latestMessageId };
+
+    // A prepend leaves the last message unchanged. A changed last message is a
+    // genuine live-edge update: follow it only if the user was already at the
+    // bottom before React committed the new message.
+    if (!liveEdgeChanged || !wasFollowingLiveEdge) return;
+    pendingAnchorRef.current = null;
+    isStabilizingRef.current = true;
+    atBottomRef.current = true;
+    setIsStabilizing(true);
+    setAtBottom(true);
+    correctBottomImmediately();
+  }, [conversationId, latestMessageId, correctBottomImmediately]);
+
+  useLayoutEffect(() => {
+    if (isStabilizingRef.current) correctBottomImmediately();
+    else restoreVisibleAnchor();
+  }, [displayedMessageGroups, correctBottomImmediately, restoreVisibleAnchor]);
+
   // Handlers
   const handleStartReached = useCallback(() => {
     if (!hasNextPage || isFetchingNextPage || historyFetchInFlightRef.current) return;
+    saveVisibleAnchor();
     historyFetchInFlightRef.current = true;
     void fetchNextPage().finally(() => {
       historyFetchInFlightRef.current = false;
     });
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, saveVisibleAnchor]);
+
+  const handleNativeScroll = useCallback(() => {
+    const el = scrollerElementRef.current;
+    if (!el) return;
+    const isNowAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+    atBottomRef.current = isNowAtBottom;
+    setAtBottom(isNowAtBottom);
+    if (isNowAtBottom) {
+      isStabilizingRef.current = true;
+      setIsStabilizing(true);
+    } else {
+      isStabilizingRef.current = false;
+      setIsStabilizing(false);
+      saveVisibleAnchor();
+    }
+    if (el.scrollTop <= el.clientHeight) handleStartReached();
+  }, [handleStartReached, saveVisibleAnchor]);
 
   const handleToggleThreads = () => {
     if (showThreads) {
@@ -788,81 +794,49 @@ export function MessageList({
           </div>
         ) : (
           <div className={cn("message-list__scroll-wrapper relative flex-1 min-h-0 transition-opacity duration-200", showThreads && "opacity-20")}>
-          <Virtuoso
+          <div
             key={conversationId}
-            ref={virtuosoRef}
-            className="h-full scroll-area bg-background"
-            style={{ paddingTop: "1rem", paddingBottom: "1rem" }}
-            data={displayedMessageGroups}
-            firstItemIndex={firstItemIndex}
-            computeItemKey={(_, group) => getMessageDomId(group.message)}
-            skipAnimationFrameInResizeObserver
-            alignToBottom
-            followOutput={(isAtBottom) => {
-              const lastMsg = mainMessages.at(-1) as unknown as Record<string, unknown>;
-              if (lastMsg?.isFromMe === true) return "auto";
-              return isAtBottom ? "smooth" : false;
-            }}
-            startReached={handleStartReached}
-            atBottomStateChange={(isAtBottom) => {
-              atBottomRef.current = isAtBottom;
-              setAtBottom(isAtBottom);
-              if (isAtBottom) {
-                isStabilizingRef.current = true;
-                setIsStabilizing(true);
-              }
-            }}
-            scrollerRef={setScrollerElement}
-            rangeChanged={({ startIndex, endIndex }) => {
-              const relativeStartIndex = startIndex - firstItemIndex;
-              const relativeEndIndex = endIndex - firstItemIndex;
-              // Prefetch before the user reaches the hard top. startReached can
-              // otherwise fail to fire again when prepended groups retain index 0.
-              if (relativeStartIndex <= 8) handleStartReached();
-              if (!focusStateRef.current || !conversationId) return;
-              const ids: string[] = [];
-              for (let i = relativeStartIndex; i <= relativeEndIndex; i++) {
-                displayedMessageGroups[i]?.messages.forEach((message) => ids.push(getMessageDomId(message)));
-              }
-              if (ids.length > 0) markMultipleAsRead(conversationId, ids);
-            }}
-            initialTopMostItemIndex={(() => {
-              if (!firstUnreadMessageId) return firstItemIndex + Math.max(0, displayedMessageGroups.length - 1);
-              const idx = displayIndexByMessageId.get(firstUnreadMessageId) ?? -1;
-              return firstItemIndex + (idx >= 0 ? idx : Math.max(0, displayedMessageGroups.length - 1));
-            })()}
-            increaseViewportBy={{ top: 800, bottom: 300 }}
-            overscan={{ main: 400, reverse: 800 }}
-            scrollSeekConfiguration={SCROLL_SEEK_CONFIGURATION}
-            components={VIRTUOSO_COMPONENTS}
-            itemContent={(_index, group) => {
-              const message = group.message;
-              if (messageLayout === "bubble") {
+            ref={setScrollerElement}
+            onScroll={handleNativeScroll}
+            className="message-list__native-scroller h-full overflow-y-auto scroll-area bg-background"
+            style={{ overflowAnchor: "none" }}
+          >
+            <div ref={nativeListRef} className="message-list__native-items py-4">
+              {displayedMessageGroups.map((group, groupIndex) => {
+                const message = group.message;
+                const messageId = getMessageDomId(message);
                 return (
-                  <MessageBubbleItem
-                    key={message.protocolMsgId}
-                    message={message}
-                    index={mainIndexByMessageId.get(getMessageDomId(message)) ?? 0}
-                    photoGroupMessages={group.messages}
-                    displayIndexByMessageId={virtuosoIndexByMessageId}
-                    editingInputRef={editingInputRef}
-                    {...commonItemProps}
-                  />
+                  <div
+                    key={messageId}
+                    data-message-group-index={groupIndex}
+                    data-anchor-message-id={messageId}
+                    className="message-list__native-item overflow-x-clip px-4"
+                  >
+                    {messageLayout === "bubble" ? (
+                      <MessageBubbleItem
+                        message={message}
+                        index={mainIndexByMessageId.get(messageId) ?? 0}
+                        photoGroupMessages={group.messages}
+                        displayIndexByMessageId={displayIndexByMessageId}
+                        editingInputRef={editingInputRef}
+                        {...commonItemProps}
+                      />
+                    ) : (
+                      <MessageIRCItem
+                        message={message}
+                        index={mainIndexByMessageId.get(messageId) ?? 0}
+                        photoGroupMessages={group.messages}
+                        displayIndexByMessageId={displayIndexByMessageId}
+                        messageLayout={messageLayout}
+                        {...commonItemProps}
+                      />
+                    )}
+                  </div>
                 );
-              }
-              return (
-                <MessageIRCItem
-                  key={message.protocolMsgId}
-                  message={message}
-                  index={mainIndexByMessageId.get(getMessageDomId(message)) ?? 0}
-                  photoGroupMessages={group.messages}
-                  displayIndexByMessageId={virtuosoIndexByMessageId}
-                  messageLayout={messageLayout}
-                  {...commonItemProps}
-                />
-              );
-            }}
-          />
+              })}
+              <div className="message-list__native-footer h-4" />
+            </div>
+          </div>
           {isFetchingNextPage && (
             <div className="message-list__history-loader pointer-events-none absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full border bg-background/90 px-3 py-1.5 shadow-sm backdrop-blur">
               <div className="flex items-center gap-2">
@@ -878,7 +852,7 @@ export function MessageList({
               onClick={() => {
                 isStabilizingRef.current = true;
                 setIsStabilizing(true);
-                virtuosoRef.current?.scrollToIndex({ index: firstItemIndex + displayedMessageGroups.length - 1, behavior: "smooth" });
+                virtuosoRef.current?.scrollToIndex({ index: displayedMessageGroups.length - 1, behavior: "smooth", align: "end" });
               }}
             >
               <ChevronDown className="h-5 w-5" />
