@@ -27,6 +27,8 @@ interface MessageActionsProps {
   openActionsMessageId?: string | null;
   provider?: string;
   instanceId?: string;
+  showEdit?: boolean;
+  showDeleteForAll?: boolean;
 }
 
 export function MessageActions({
@@ -43,6 +45,8 @@ export function MessageActions({
   openActionsMessageId,
   provider,
   instanceId,
+  showEdit = true,
+  showDeleteForAll = false,
 }: MessageActionsProps) {
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
@@ -130,7 +134,7 @@ export function MessageActions({
           onOpenChange={setReactionPickerOpen}
         />
       )}
-      {isFromMe && (
+      {(isFromMe || showDeleteForAll) && (
         <Popover open={open} onOpenChange={setInternalOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -145,17 +149,19 @@ export function MessageActions({
           </PopoverTrigger>
           <PopoverContent className="w-40 p-1 border" align="end">
             <div className="flex flex-col">
-              <Button
-                variant="ghost"
-                className="justify-start gap-2 h-9"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onEdit();
-                }}
-              >
-                <Edit className="h-4 w-4" />
-                {t("edit_message")}
-              </Button>
+              {showEdit && (
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-2 h-9"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEdit();
+                  }}
+                >
+                  <Edit className="h-4 w-4" />
+                  {t("edit_message")}
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"

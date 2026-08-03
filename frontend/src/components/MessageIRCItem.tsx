@@ -290,6 +290,14 @@ export function MessageIRCItem({
                             messageID={String(message.id)}
                             layout={messageLayout as "bubble" | "irc"}
                             showToast={handlers.showToast}
+                            galleryMessages={photoGroupMessages}
+                            messageHandlers={handlers}
+                            providerInstanceId={providerInstanceId}
+                            protocol={protocol}
+                            currentUserId={currentUserId}
+                            participantNames={participantNames}
+                            allMessages={mainMessages}
+                            isGroupConversation={isGroupConversation}
                           />
                         )}
                         {!message.body?.trim() && !message.attachments?.trim() && (

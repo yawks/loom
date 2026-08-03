@@ -18,6 +18,11 @@ import { useTranslation } from "react-i18next";
 import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { VoiceMessage } from "./VoiceMessage";
+import { MessageActions } from "./MessageActions";
+import type { MessageHandlers } from "./MessageBubbleItem";
+import { getMessageDomId } from "@/lib/messageUtils";
+import { models } from "../../wailsjs/go/models";
+import { MessageReactions } from "./MessageReactions";
 
 // Module-level cache for small previews. It is deliberately byte-bounded: data
 // URLs are substantially larger than their source files and otherwise survive
@@ -82,6 +87,14 @@ interface MessageAttachmentsProps {
   isFromMe: boolean;
   layout?: "bubble" | "irc";
   showToast?: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
+  galleryMessages?: models.Message[];
+  messageHandlers?: MessageHandlers;
+  providerInstanceId?: string;
+  protocol?: string;
+  currentUserId?: string;
+  participantNames?: Map<string, string>;
+  allMessages?: models.Message[];
+  isGroupConversation?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -362,6 +375,14 @@ export function MessageAttachments({
   isFromMe,
   layout = "bubble",
   showToast,
+  galleryMessages,
+  messageHandlers,
+  providerInstanceId,
+  protocol,
+  currentUserId,
+  participantNames,
+  allMessages,
+  isGroupConversation,
 }: MessageAttachmentsProps) {
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -591,6 +612,55 @@ export function MessageAttachments({
       }
     }
   };
+
+  const selectedGalleryMessage = selectedImageIndex === null ? undefined : galleryMessages?.[selectedImageIndex];
+  const galleryActions = selectedGalleryMessage && messageHandlers ? (
+    <div className="message-attachment__gallery-actions absolute left-1/2 top-3 z-30 -translate-x-1/2">
+      <MessageActions
+        isFromMe={selectedGalleryMessage.isFromMe}
+        hasAttachments
+        onEdit={() => undefined}
+        showEdit={false}
+        showDeleteForAll
+        onDelete={() => {
+          setSelectedImage(null);
+          setSelectedVideo(null);
+          setSelectedImageIndex(null);
+          messageHandlers.onDeleteClick(selectedGalleryMessage);
+        }}
+        onReply={() => {
+          setSelectedImage(null);
+          setSelectedVideo(null);
+          setSelectedImageIndex(null);
+          messageHandlers.onReplyClick(selectedGalleryMessage);
+        }}
+        onForward={() => {
+          messageHandlers.onForwardClick(selectedGalleryMessage, [selectedGalleryMessage]);
+        }}
+        onReact={(emoji) => messageHandlers.onReaction(selectedGalleryMessage, emoji)}
+        currentReactions={(selectedGalleryMessage.reactions || []).filter((reaction) => reaction.userId === currentUserId).map((reaction) => reaction.emoji)}
+        messageId={getMessageDomId(selectedGalleryMessage)}
+        openActionsMessageId={getMessageDomId(selectedGalleryMessage)}
+        provider={protocol}
+        instanceId={providerInstanceId}
+        className="shadow-xl [&_button]:h-9 [&_button]:w-9"
+      />
+    </div>
+  ) : null;
+  const galleryReactions = selectedGalleryMessage?.reactions?.length ? (
+    <div className="message-attachment__gallery-reactions absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg bg-black/65 px-2 py-1 shadow-lg backdrop-blur-sm">
+      <MessageReactions
+        reactions={selectedGalleryMessage.reactions}
+        isGroup={isGroupConversation}
+        participantNames={participantNames}
+        currentUserId={currentUserId}
+        providerInstanceId={providerInstanceId}
+        allMessages={allMessages}
+        onReactionClick={(emoji) => messageHandlers?.onReaction(selectedGalleryMessage, emoji)}
+        className="mt-0"
+      />
+    </div>
+  ) : null;
 
   return (
     <>
@@ -829,6 +899,8 @@ export function MessageAttachments({
           <DialogTitle className="sr-only">Image Preview</DialogTitle>
           {selectedImage && (
             <div className="relative">
+              {galleryActions}
+              {galleryReactions}
               <button
                 onClick={() => { setSelectedImage(null); setSelectedImageIndex(null); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
@@ -887,6 +959,8 @@ export function MessageAttachments({
           <DialogTitle className="sr-only">Video Preview</DialogTitle>
           {selectedVideo && (
             <div className="relative">
+              {galleryActions}
+              {galleryReactions}
               <button
                 onClick={() => { setSelectedVideo(null); setSelectedImageIndex(null); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
