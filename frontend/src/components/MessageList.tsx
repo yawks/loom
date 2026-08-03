@@ -83,6 +83,7 @@ export function MessageList({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const nativeListRef = useRef<HTMLDivElement>(null);
   const pendingAnchorRef = useRef<{ messageId: string; viewportOffset: number } | null>(null);
+  const positionedUnreadBoundaryRef = useRef<string>("");
   const liveEdgeSnapshotRef = useRef<{ conversationId: string; lastMessageId: string } | null>(null);
   const presentedConversationRef = useRef<string>("");
   const scrollInitializedRef = useRef<string>('');
@@ -106,6 +107,11 @@ export function MessageList({
   const [isInFocusGracePeriod, setIsInFocusGracePeriod] = useState(false);
   const focusGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [separatorDismissed, setSeparatorDismissed] = useState(false);
+  const [unreadBoundary, setUnreadBoundary] = useState<{
+    conversationId: string;
+    firstMessageId: string;
+    count: number;
+  } | null>(null);
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<models.Message | null>(null);
   const [forwardingMessages, setForwardingMessages] = useState<models.Message[]>([]);
@@ -260,7 +266,10 @@ export function MessageList({
   // Effects
   useEffect(() => { setIsTypingInInput(false); }, [selectedConversation?.id, setIsTypingInInput]);
   useEffect(() => { setRevealedDeletedMessages(new Set()); }, [conversationId]);
-  useEffect(() => { setSeparatorDismissed(false); }, [conversationId]);
+  useEffect(() => {
+    setSeparatorDismissed(false);
+    setUnreadBoundary(null);
+  }, [conversationId]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -275,6 +284,9 @@ export function MessageList({
     const handleBlur = () => {
       setHasWindowFocus(false);
       setIsInFocusGracePeriod(false);
+      setUnreadBoundary(null);
+      setSeparatorDismissed(false);
+      positionedUnreadBoundaryRef.current = "";
       if (focusGraceTimerRef.current) {
         clearTimeout(focusGraceTimerRef.current);
         focusGraceTimerRef.current = null;
@@ -346,31 +358,39 @@ export function MessageList({
     });
   }, [conversationId, messages, conversationReadState, markAsReadSilently]);
 
-  // Snapshot the first unread message ID once per conversation (when messages first arrive).
-  // A live useMemo on conversationReadState would recompute every time a message is
-  // marked read, causing all message items to re-render via commonItemProps and
-  // the "new messages" divider to disappear from
-  // one item — changing its height and triggering scroll drift.
-  // Using a plain ref avoids any extra renders; the value is stable until the user
-  // switches to a different conversation.
-  const firstUnreadSnapshotRef = useRef<{ convId: string; unreadId: string | null; count: number } | null>(null);
-  if (mainMessages.length > 0 && firstUnreadSnapshotRef.current?.convId !== conversationId) {
-    let firstUnread: string | null = null;
-    let count = 0;
-    for (const message of mainMessages) {
-      const domId = getMessageDomId(message);
-      if (conversationReadState[domId] === false) {
-        if (!firstUnread) firstUnread = domId;
-        count += 1;
+  // While the window is in the background (and during the short focus grace
+  // period), keep a visual boundary independent from the server read state.
+  // The boundary therefore survives the subsequent mark-as-read operation.
+  useEffect(() => {
+    if (hasWindowFocus && !isInFocusGracePeriod) return;
+    const unreadIds = mainMessages
+      .map((message) => getMessageDomId(message))
+      .filter((messageId) => conversationReadState[messageId] === false);
+    if (unreadIds.length === 0) return;
+
+    setUnreadBoundary((current) => {
+      if (
+        current?.conversationId === conversationId &&
+        current.firstMessageId === unreadIds[0] &&
+        current.count === unreadIds.length
+      ) {
+        return current;
       }
-    }
-    firstUnreadSnapshotRef.current = { convId: conversationId, unreadId: firstUnread, count };
-  }
-  const firstUnreadMessageId = firstUnreadSnapshotRef.current?.convId === conversationId
-    ? (firstUnreadSnapshotRef.current.unreadId ?? null)
+      return {
+        conversationId,
+        firstMessageId: current?.conversationId === conversationId
+          ? current.firstMessageId
+          : unreadIds[0],
+        count: unreadIds.length,
+      };
+    });
+  }, [conversationId, mainMessages, conversationReadState, hasWindowFocus, isInFocusGracePeriod]);
+
+  const firstUnreadMessageId = unreadBoundary?.conversationId === conversationId
+    ? unreadBoundary.firstMessageId
     : null;
-  const unreadMessageCount = firstUnreadSnapshotRef.current?.convId === conversationId
-    ? firstUnreadSnapshotRef.current.count
+  const unreadMessageCount = unreadBoundary?.conversationId === conversationId
+    ? unreadBoundary.count
     : 0;
   const firstUnreadGroup = firstUnreadMessageId
     ? displayedMessageGroups[displayIndexByMessageId.get(firstUnreadMessageId) ?? -1]
@@ -380,10 +400,10 @@ export function MessageList({
     : null;
 
   useEffect(() => {
-    if (!firstUnreadMessageId || separatorDismissed) return;
+    if (!hasWindowFocus || !firstUnreadMessageId || separatorDismissed) return;
     const timer = setTimeout(() => setSeparatorDismissed(true), 10000);
     return () => clearTimeout(timer);
-  }, [firstUnreadMessageId, separatorDismissed]);
+  }, [hasWindowFocus, firstUnreadMessageId, separatorDismissed]);
 
   // Position the native timeline before the first paint.
   useLayoutEffect(() => {
@@ -559,6 +579,57 @@ export function MessageList({
     if (isStabilizingRef.current) correctBottomImmediately();
     else restoreVisibleAnchor();
   }, [displayedMessageGroups, correctBottomImmediately, restoreVisibleAnchor]);
+
+  useLayoutEffect(() => {
+    if (!hasWindowFocus || separatorDismissed || !displayedFirstUnreadMessageId) return;
+    const positionKey = `${conversationId}:${displayedFirstUnreadMessageId}:${unreadMessageCount}`;
+    if (positionedUnreadBoundaryRef.current === positionKey) return;
+
+    const scroller = scrollerElementRef.current;
+    const groupIndex = displayIndexByMessageId.get(displayedFirstUnreadMessageId);
+    if (!scroller || groupIndex === undefined) return;
+    const firstUnreadNode = nativeListRef.current?.querySelector<HTMLElement>(
+      `[data-message-group-index="${groupIndex}"]`
+    );
+    if (!firstUnreadNode) return;
+
+    positionedUnreadBoundaryRef.current = positionKey;
+    const viewportTop = scroller.getBoundingClientRect().top;
+    const unreadTop = scroller.scrollTop + firstUnreadNode.getBoundingClientRect().top - viewportTop;
+    const unreadContentHeight = scroller.scrollHeight - unreadTop;
+
+    if (unreadContentHeight <= scroller.clientHeight) {
+      // All unread content fits: expose the latest message and eliminate any
+      // residual empty space below it.
+      pendingAnchorRef.current = null;
+      atBottomRef.current = true;
+      isStabilizingRef.current = true;
+      setAtBottom(true);
+      setIsStabilizing(true);
+      correctBottomImmediately();
+      return;
+    }
+
+    // More than one viewport of unread content: put the divider at the top and
+    // retain it as the fixed anchor while asynchronous media settles.
+    isStabilizingRef.current = false;
+    atBottomRef.current = false;
+    setIsStabilizing(false);
+    setAtBottom(false);
+    scroller.scrollTop = Math.max(0, unreadTop);
+    pendingAnchorRef.current = {
+      messageId: displayedFirstUnreadMessageId,
+      viewportOffset: 0,
+    };
+  }, [
+    conversationId,
+    correctBottomImmediately,
+    displayIndexByMessageId,
+    displayedFirstUnreadMessageId,
+    hasWindowFocus,
+    separatorDismissed,
+    unreadMessageCount,
+  ]);
 
   // Handlers
   const handleStartReached = useCallback(() => {
@@ -801,7 +872,10 @@ export function MessageList({
             className="message-list__native-scroller h-full overflow-y-auto scroll-area bg-background"
             style={{ overflowAnchor: "none" }}
           >
-            <div ref={nativeListRef} className="message-list__native-items py-4">
+            <div
+              ref={nativeListRef}
+              className="message-list__native-items flex min-h-full flex-col justify-end py-4"
+            >
               {displayedMessageGroups.map((group, groupIndex) => {
                 const message = group.message;
                 const messageId = getMessageDomId(message);
