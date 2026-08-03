@@ -1,18 +1,19 @@
-import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Calendar, Info, MessageSquare } from "lucide-react";
-import { ProtocolSwitcher } from "./ProtocolSwitcher";
-import { ProtocolIcon } from "./ProtocolIcon";
-import type { models } from "../../wailsjs/go/models";
-import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/utils";
-import { useAppStore } from "@/lib/store";
-import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { Calendar, Info, MessageSquare, Pin } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
+import { ProtocolIcon } from "./ProtocolIcon";
+import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import { TypingIndicator } from "./TypingIndicator";
-import { useTypingStore } from "@/lib/typingStore";
+import { cn } from "@/lib/utils";
+import type { models } from "../../wailsjs/go/models";
+import { useAppStore } from "@/lib/store";
+import { useMemo } from "react";
 import { usePresenceStore } from "@/lib/presenceStore";
+import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { useTypingStore } from "@/lib/typingStore";
 
 export function MessageHeader({
   displayName,
@@ -20,16 +21,22 @@ export function MessageHeader({
   conversationId,
   contactUserId,
   linkedAccounts,
+  activeAccount,
   onToggleThreads,
   onToggleDetails,
+  onTogglePins,
+  pinCount,
 }: {
   displayName: string;
   avatarUrl?: string;
   conversationId: string;
   contactUserId?: string;
   linkedAccounts: models.LinkedAccount[];
+  activeAccount?: models.LinkedAccount;
   onToggleThreads: () => void;
   onToggleDetails: () => void;
+  onTogglePins: () => void;
+  pinCount: number;
 }) {
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
@@ -40,9 +47,10 @@ export function MessageHeader({
   );
   const presenceMap = usePresenceStore((state) => state.presenceMap);
 
-  const instanceId = linkedAccounts[0]?.providerInstanceId;
+  const selectedAccount = activeAccount ?? linkedAccounts[0];
+  const instanceId = selectedAccount?.providerInstanceId;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
-  const isGroup = linkedAccounts[0]?.isGroup ?? false;
+  const isGroup = selectedAccount?.isGroup ?? false;
   const accountStatus = linkedAccounts.find(
     (account) => account.status && account.status !== "offline"
   )?.status;
@@ -133,6 +141,12 @@ export function MessageHeader({
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {instanceId && capabilities[instanceId]?.supportsListMessagePins && (
+          <Button variant="ghost" size="icon" className="relative" onClick={onTogglePins} title={t("pinned_messages")}>
+            <Pin className="h-4 w-4" />
+            {pinCount > 0 && <span className="absolute right-0 top-0 min-w-4 rounded-full bg-primary px-1 text-[10px] leading-4 text-primary-foreground">{pinCount}</span>}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"

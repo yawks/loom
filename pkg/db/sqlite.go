@@ -87,6 +87,7 @@ func initDatabase(dsn string) error {
 		&models.Conversation{},
 		&models.GroupParticipant{},
 		&models.Message{},
+		&models.MessagePin{},
 		&models.Reaction{},
 		&models.MessageReceipt{},
 		&models.ProviderConfiguration{},

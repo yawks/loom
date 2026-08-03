@@ -154,6 +154,14 @@ export function GetParticipantNames(arg1) {
   return window['go']['main']['App']['GetParticipantNames'](arg1);
 }
 
+export function GetPinnedMessageContext(arg1, arg2) {
+  return window['go']['main']['App']['GetPinnedMessageContext'](arg1, arg2);
+}
+
+export function GetPinnedMessages(arg1) {
+  return window['go']['main']['App']['GetPinnedMessages'](arg1);
+}
+
 export function GetProviderContacts(arg1) {
   return window['go']['main']['App']['GetProviderContacts'](arg1);
 }
@@ -196,6 +204,10 @@ export function OpenConversation(arg1) {
 
 export function OpenFile(arg1) {
   return window['go']['main']['App']['OpenFile'](arg1);
+}
+
+export function PinMessage(arg1, arg2) {
+  return window['go']['main']['App']['PinMessage'](arg1, arg2);
 }
 
 export function PromoteGroupAdmins(arg1, arg2) {
@@ -264,6 +276,10 @@ export function StartGoogleMessagesLogin(arg1, arg2) {
 
 export function SyncProvider(arg1) {
   return window['go']['main']['App']['SyncProvider'](arg1);
+}
+
+export function UnpinMessage(arg1, arg2) {
+  return window['go']['main']['App']['UnpinMessage'](arg1, arg2);
 }
 
 export function UpdateGroupDescription(arg1, arg2) {

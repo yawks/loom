@@ -324,6 +324,8 @@ export function MessageIRCItem({
                 onDelete={() => handlers.onDeleteClick(message)}
                 onReply={() => handlers.onReplyClick(message)}
                 onForward={() => handlers.onForwardClick(message, photoGroupMessages)}
+                onPin={() => handlers.onPinClick(message)}
+                isPinned={handlers.isMessagePinned(message)}
                 onReact={(emoji) => handlers.onReaction(message, emoji)}
                 onStartThread={() => handlers.onThreadClick(message.protocolMsgId, message)}
                 currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}

@@ -2,7 +2,7 @@
 
 > **Note:** This is a vibecoded project — built fast, iterated freely, and shaped by experimentation rather than a formal spec.
 
-Loom is a desktop application that brings multiple messaging services into a single interface. Connect WhatsApp, Slack, Microsoft Teams, Google Chat, and Google Messages, and manage all your conversations from one place.
+Loom is a desktop application that brings multiple messaging services into a single interface. Connect WhatsApp, Slack, Microsoft Teams, Google Chat, and Google Messages, and manage all your conversations from one place. Loom focuses on text messaging and **does not support making or receiving audio calls**.
 
 ---
 
@@ -38,12 +38,41 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Read receipts | ✓ | — | ✓ | — | — |
 | Contact presence | ✓ | ✓ | ✓ | — | — |
+| Pinned messages | Personal | Shared | — | Preview¹ | — |
 | Pin / mute conversations | ✓ | — | — | — | — |
 | QR code authentication | ✓ | — | — | — | — |
 
 **Teams — authentication:** uses Microsoft's browser-based device-code flow. Loom opens a browser, fills in the temporary code and lets Microsoft handle credentials, MFA and Conditional Access. Passwords and browser cookies are not stored by Loom.
 
 **Teams — presence:** available for one-to-one conversations, refreshed approximately once per minute. Loom also reconnects the event stream and syncs missed messages after the computer resumes from sleep.
+
+¹ Google Chat message pins use a Google Workspace Developer Preview API. They
+only work for accounts enrolled in the Developer Preview Program with a
+registered Google Cloud project; a standard Google Chat account will not expose
+the endpoint.
+
+### Pinned messages
+
+Loom provides a provider-neutral pinned-message panel for compatible
+conversations. Pin and unpin actions are available from each message's action
+bar, while the pin icon in the conversation header opens the complete list.
+Each entry includes an explicit link back to the original message and requires
+confirmation before it can be unpinned.
+
+- **Slack:** pins are shared with everyone in the channel or conversation and
+  stay synchronized with pins created or removed from other Slack clients.
+- **WhatsApp:** Loom maps message pins to WhatsApp's personal starred messages.
+  They are only visible to the current user; the success notification and pin
+  panel identify them as personal.
+- **Google Chat:** shared pins are implemented through the Developer Preview
+  API described above.
+- **Teams and Google Messages:** message pins are not currently supported.
+
+Pinned messages are stored independently from the currently loaded timeline.
+When a pin points to a message outside the local history window, Loom resolves
+the message directly through the provider and opens a bounded historical
+context around it. Returning to recent messages—or switching conversations—
+leaves this historical context.
 
 ### Group and channel management
 

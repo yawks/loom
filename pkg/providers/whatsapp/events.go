@@ -758,6 +758,26 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Channel full, skip
 			}
 		}()
+	case *events.Star:
+		if db.DB == nil || v.Action == nil {
+			return
+		}
+		convID := core.BuildConvID(w.getInstanceId(), v.ChatJID.String())
+		if !v.Action.GetStarred() {
+			db.DB.Where("provider_instance_id = ? AND protocol_msg_id = ?", w.getInstanceId(), v.MessageID).Delete(&models.MessagePin{})
+			return
+		}
+		pin := models.MessagePin{
+			ProviderInstanceID: w.getInstanceId(), ProtocolConvID: convID,
+			ProtocolMsgID: v.MessageID, SenderID: v.SenderJID.String(), MessageIsFromMe: v.IsFromMe,
+			Scope: models.MessagePinScopePersonal, Resolution: models.MessagePinResolutionUnresolved,
+			PinnedAt: &v.Timestamp,
+		}
+		var message models.Message
+		if db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, v.MessageID).First(&message).Error == nil {
+			pin.MessageTimestamp, pin.Resolution = &message.Timestamp, models.MessagePinResolutionResolved
+		}
+		db.DB.Where("provider_instance_id = ? AND protocol_msg_id = ?", pin.ProviderInstanceID, pin.ProtocolMsgID).Assign(pin).FirstOrCreate(&pin)
 	case *events.OfflineSyncCompleted:
 		// Offline sync completed - all data is now synced
 		// This is the FINAL sync event - emit completed status here

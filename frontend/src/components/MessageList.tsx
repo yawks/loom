@@ -1,7 +1,12 @@
 import {
   AddReaction,
   DeleteMessage,
+  GetCapabilities,
+  GetPinnedMessageContext,
+  GetPinnedMessages,
+  PinMessage,
   RemoveReaction,
+  UnpinMessage,
 } from "../../wailsjs/go/main/App";
 import {
   AlertDialog,
@@ -14,9 +19,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ToastContainer, useToast } from "@/components/ui/toast";
+import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
@@ -25,6 +31,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 import type { MessageHandlers } from "./MessageBubbleItem";
 import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
+import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { MessageIRCItem } from "./MessageIRCItem";
 import { ChevronDown, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -77,6 +84,7 @@ export function MessageList({
   const protocol = activeAccount?.protocol;
   const messageLayout = useAppStore((state) => state.messageLayout);
   const capabilities = useAppStore((state) => state.capabilities);
+  const setCapabilities = useAppStore((state) => state.setCapabilities);
   const isGroupFromProvider = !!activeAccount?.isGroup;
 
   // State
@@ -119,6 +127,32 @@ export function MessageList({
   const [revealedDeletedMessages, setRevealedDeletedMessages] = useState<Set<string>>(() => new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
+  const [showPins, setShowPins] = useState(false);
+  const [historicalContext, setHistoricalContext] = useState(false);
+
+  useEffect(() => {
+    setHistoricalContext(false);
+    setShowPins(false);
+  }, [conversationId]);
+
+  const supportsPinMessage = providerInstanceId ? capabilities[providerInstanceId]?.supportsPinMessage ?? false : false;
+
+  // MessageList can be mounted before ContactList has populated the shared
+  // capability cache. Load the active provider here as well so message actions
+  // do not temporarily (or permanently, in alternate layouts) hide features.
+  useEffect(() => {
+    if (!providerInstanceId || capabilities[providerInstanceId]) return;
+    GetCapabilities(providerInstanceId)
+      .then((providerCapabilities) => setCapabilities(providerInstanceId, providerCapabilities))
+      .catch((error) => console.error("Failed to load provider capabilities:", error));
+  }, [capabilities, providerInstanceId, setCapabilities]);
+
+  const { data: pinnedMessages = [], isFetching: pinsLoading, refetch: refetchPins } = useQuery({
+    queryKey: ["message-pins", conversationId],
+    queryFn: () => GetPinnedMessages(conversationId).catch(() => []),
+    enabled: Boolean(conversationId && providerInstanceId && capabilities[providerInstanceId]?.supportsListMessagePins),
+  });
+  const pinnedMessageIds = useMemo(() => new Set(pinnedMessages.map((pin) => pin.protocolMsgId)), [pinnedMessages]);
 
   // Hooks
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -711,6 +745,45 @@ export function MessageList({
     setForwardModalOpen(true);
   }, []);
 
+  const handlePinClick = useCallback(async (message: models.Message) => {
+    if (!supportsPinMessage) return;
+    const messageID = message.protocolMsgId || getMessageDomId(message);
+    try {
+      if (pinnedMessageIds.has(messageID)) {
+        await UnpinMessage(conversationId, messageID);
+        showToast(t("message_unpinned"), "success");
+      } else {
+        const pin = await PinMessage(conversationId, messageID);
+        showToast(t(pin.scope === "personal" ? "message_pinned_personal" : "message_pinned_shared"), "success");
+      }
+      await refetchPins();
+    } catch (error) {
+      console.error("Failed to update message pin:", error);
+      showToast(String(error), "error");
+    }
+  }, [conversationId, pinnedMessageIds, refetchPins, showToast, supportsPinMessage, t]);
+
+  const openPinnedMessage = useCallback(async (pin: models.MessagePin) => {
+    try {
+      const context = await GetPinnedMessageContext(conversationId, pin.protocolMsgId);
+      queryClient.setQueryData<InfiniteData<models.Message[]>>(["messages", conversationId], {
+        pages: [context.messages],
+        pageParams: [undefined],
+      });
+      setHistoricalContext(true);
+      setShowPins(false);
+      setMessageSearchTargetId(pin.protocolMsgId);
+    } catch (error) {
+      showToast(String(error), "error");
+    }
+  }, [conversationId, queryClient, setMessageSearchTargetId, showToast]);
+
+  const closeHistoricalContext = useCallback(async () => {
+    setHistoricalContext(false);
+    queryClient.removeQueries({ queryKey: ["messages", conversationId], exact: true });
+    await queryClient.refetchQueries({ queryKey: ["messages", conversationId], exact: true });
+  }, [conversationId, queryClient]);
+
   const handleConfirmDelete = useCallback(async () => {
     if (!messageToDelete || typeof DeleteMessage !== "function") return;
     const { conversationID, messageID } = messageToDelete;
@@ -777,6 +850,8 @@ export function MessageList({
     onDeleteClick: handleDeleteClick,
     onReplyClick: handleReplyClick,
     onForwardClick: handleForwardClick,
+    onPinClick: handlePinClick,
+    isMessagePinned: (message: models.Message) => pinnedMessageIds.has(message.protocolMsgId || getMessageDomId(message)),
     onReaction: handleReaction,
     onRetrySend: handleRetrySend,
     onDeleteLocalMessage: handleDeleteLocalMessage,
@@ -791,7 +866,7 @@ export function MessageList({
     editingInputRef,
     setOpenActionsMessageId,
     showToast,
-  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleContactAvatarClick, handleNavigateToEdit, handleEditKeyDown, handleEditBlur, setSelectedThreadId, setShowThreads, showToast]);
+  }), [toggleDeletedMessage, handleEditMessage, handleDeleteClick, handleReplyClick, handleForwardClick, handlePinClick, pinnedMessageIds, handleReaction, handleRetrySend, handleDeleteLocalMessage, handleSaveEdit, handleCancelEdit, handleAvatarClick, handleContactAvatarClick, handleNavigateToEdit, handleEditKeyDown, handleEditBlur, setSelectedThreadId, setShowThreads, showToast]);
 
   const commonItemProps = {
     mainMessages,
@@ -840,9 +915,18 @@ export function MessageList({
           conversationId={conversationId}
           contactUserId={messages.find((message) => !message.isFromMe && message.senderId)?.senderId}
           linkedAccounts={selectedConversation.linkedAccounts}
+          activeAccount={activeAccount}
           onToggleThreads={handleToggleThreads}
           onToggleDetails={handleToggleDetails}
+          onTogglePins={() => { void refetchPins(); setShowPins((value) => !value); }}
+          pinCount={pinnedMessages.length}
         />
+        {historicalContext && (
+          <div className="z-20 flex items-center justify-between border-b bg-muted px-4 py-2 text-sm">
+            <span>{t("historical_pin_context")}</span>
+            <Button variant="outline" size="sm" onClick={closeHistoricalContext}>{t("back_to_recent_messages")}</Button>
+          </div>
+        )}
         {(isLoading || (isFetching && (!data?.pages || data.pages.length === 0 || messages.length === 0))) ? (
           <div className="flex-1 flex items-center justify-center bg-background">
             <div className="flex flex-col items-center gap-4">
@@ -979,6 +1063,18 @@ export function MessageList({
           messages={forwardingMessages}
           providerInstanceId={providerInstanceId}
         />
+        {showPins && (
+          <PinnedMessagesPanel
+            pins={pinnedMessages}
+            loading={pinsLoading}
+            onClose={() => setShowPins(false)}
+            onOpen={openPinnedMessage}
+            onUnpin={async (pin) => {
+              try { await UnpinMessage(conversationId, pin.protocolMsgId); await refetchPins(); showToast(t("message_unpinned"), "success"); }
+              catch (error) { showToast(String(error), "error"); }
+            }}
+          />
+        )}
       </div>
     </>
   );

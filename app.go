@@ -2023,6 +2023,132 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	return provider.SendMessage(conversationID, content, nil, nil)
 }
 
+// PinMessage pins a provider message and persists the provider-neutral pin metadata.
+func (a *App) PinMessage(conversationID, messageID string) (*models.MessagePin, error) {
+	provider := a.getProviderForConversation(conversationID)
+	pinProvider, ok := provider.(core.MessagePinProvider)
+	if !ok || !provider.GetCapabilities().SupportsPinMessage {
+		return nil, fmt.Errorf("message pinning is not supported for this provider")
+	}
+	pin, err := pinProvider.PinMessage(conversationID, messageID)
+	if err != nil {
+		return nil, err
+	}
+	if pin.ProviderInstanceID == "" {
+		if idx := strings.Index(conversationID, "::"); idx > 0 {
+			pin.ProviderInstanceID = conversationID[:idx]
+		}
+	}
+	if pin.Resolution == "" {
+		pin.Resolution = models.MessagePinResolutionUnresolved
+	}
+	if db.DB != nil {
+		if err := db.DB.Where("provider_instance_id = ? AND protocol_msg_id = ?", pin.ProviderInstanceID, pin.ProtocolMsgID).
+			Assign(*pin).FirstOrCreate(pin).Error; err != nil {
+			return nil, err
+		}
+	}
+	return pin, nil
+}
+
+// UnpinMessage removes both the remote pin and Loom's persisted metadata.
+func (a *App) UnpinMessage(conversationID, messageID string) error {
+	provider := a.getProviderForConversation(conversationID)
+	pinProvider, ok := provider.(core.MessagePinProvider)
+	if !ok || !provider.GetCapabilities().SupportsPinMessage {
+		return fmt.Errorf("message pinning is not supported for this provider")
+	}
+	if err := pinProvider.UnpinMessage(conversationID, messageID); err != nil {
+		return err
+	}
+	if db.DB != nil {
+		return db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, messageID).Delete(&models.MessagePin{}).Error
+	}
+	return nil
+}
+
+// GetPinnedMessages refreshes provider pin state and resolves locally available messages.
+func (a *App) GetPinnedMessages(conversationID string) ([]models.MessagePin, error) {
+	provider := a.getProviderForConversation(conversationID)
+	pinProvider, ok := provider.(core.MessagePinProvider)
+	if !ok || !provider.GetCapabilities().SupportsListMessagePins {
+		return []models.MessagePin{}, nil
+	}
+	pins, err := pinProvider.ListMessagePins(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range pins {
+		if pins[i].Resolution == "" {
+			pins[i].Resolution = models.MessagePinResolutionUnresolved
+		}
+		if pins[i].Message == nil && db.DB != nil {
+			var message models.Message
+			if db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, pins[i].ProtocolMsgID).
+				Preload("Receipts").Preload("Reactions").First(&message).Error == nil {
+				pins[i].Message = &message
+				pins[i].MessageTimestamp = &message.Timestamp
+				pins[i].Resolution = models.MessagePinResolutionResolved
+			}
+		}
+		if db.DB != nil {
+			_ = db.DB.Where("provider_instance_id = ? AND protocol_msg_id = ?", pins[i].ProviderInstanceID, pins[i].ProtocolMsgID).
+				Assign(pins[i]).FirstOrCreate(&pins[i]).Error
+		}
+	}
+	return pins, nil
+}
+
+// GetPinnedMessageContext resolves a pin independently of the currently loaded
+// renderer history and returns a bounded window around it.
+func (a *App) GetPinnedMessageContext(conversationID, messageID string) (*models.MessageContext, error) {
+	provider := a.getProviderForConversation(conversationID)
+	pinProvider, ok := provider.(core.MessagePinProvider)
+	if !ok {
+		return nil, fmt.Errorf("message pinning is not supported for this provider")
+	}
+	var target models.Message
+	resolvedRemotely := false
+	if db.DB == nil || db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, messageID).
+		Preload("Receipts").Preload("Reactions").First(&target).Error != nil {
+		resolved, err := pinProvider.ResolvePinnedMessage(conversationID, messageID)
+		if err != nil {
+			return nil, err
+		}
+		target = *resolved
+		resolvedRemotely = true
+	}
+	const side = 25
+	// A directly resolved old message may be the only local row in that period.
+	// Ask the provider for both sides before building the bounded DB window.
+	beforeTarget := target.Timestamp.Add(time.Nanosecond)
+	_, _ = provider.GetConversationHistory(conversationID, side, &beforeTarget, nil)
+	before := []models.Message{}
+	after := []models.Message{}
+	if db.DB != nil {
+		_ = db.DB.Where("protocol_conv_id = ? AND timestamp < ?", conversationID, target.Timestamp).
+			Preload("Receipts").Preload("Reactions").Order("timestamp DESC").Limit(side + 1).Find(&before).Error
+		if !resolvedRemotely {
+			_ = db.DB.Where("protocol_conv_id = ? AND timestamp > ?", conversationID, target.Timestamp).
+				Preload("Receipts").Preload("Reactions").Order("timestamp ASC").Limit(side + 1).Find(&after).Error
+		}
+	}
+	hasBefore, hasAfter := len(before) > side, len(after) > side
+	if hasBefore {
+		before = before[:side]
+	}
+	if hasAfter {
+		after = after[:side]
+	}
+	for i, j := 0, len(before)-1; i < j; i, j = i+1, j-1 {
+		before[i], before[j] = before[j], before[i]
+	}
+	messages := append(before, target)
+	messages = append(messages, after...)
+	a.enrichMessagesWithSenderNames(messages)
+	return &models.MessageContext{TargetMessageID: messageID, Messages: messages, HasMoreBefore: hasBefore, HasMoreAfter: hasAfter}, nil
+}
+
 // SendReply sends a quoted reply to a message in the main conversation thread
 func (a *App) SendReply(conversationID string, content string, quotedMessageID string) (*models.Message, error) {
 	provider := a.getProviderForConversation(conversationID)

@@ -299,24 +299,27 @@ type Provider interface {
 
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
-	SupportsThreads            bool `json:"supportsThreads"`
-	SupportsReactions          bool `json:"supportsReactions"`
-	SupportsCustomEmojis       bool `json:"supportsCustomEmojis"`
-	SupportsTypingIndicator    bool `json:"supportsTypingIndicator"`
-	SupportsGroupManagement    bool `json:"supportsGroupManagement"`
-	SupportsAddGroupMembers    bool `json:"supportsAddGroupMembers"`
-	SupportsRemoveGroupMembers bool `json:"supportsRemoveGroupMembers"`
-	SupportsRenameGroup        bool `json:"supportsRenameGroup"`
-	SupportsGroupDescription   bool `json:"supportsGroupDescription"`
-	SupportsGroupPhoto         bool `json:"supportsGroupPhoto"`
-	SupportsGroupAdminRoles    bool `json:"supportsGroupAdminRoles"`
-	SupportsLeaveGroup         bool `json:"supportsLeaveGroup"`
-	SupportsDeleteMessage      bool `json:"supportsDeleteMessage"`
-	SupportsEditMessage        bool `json:"supportsEditMessage"`
-	SupportsReadReceipts       bool `json:"supportsReadReceipts"`
-	SupportsPinConversation    bool `json:"supportsPinConversation"`
-	SupportsMuteConversation   bool `json:"supportsMuteConversation"`
-	SupportsQRCodeAuth         bool `json:"supportsQRCodeAuth"`
+	SupportsThreads            bool   `json:"supportsThreads"`
+	SupportsReactions          bool   `json:"supportsReactions"`
+	SupportsCustomEmojis       bool   `json:"supportsCustomEmojis"`
+	SupportsTypingIndicator    bool   `json:"supportsTypingIndicator"`
+	SupportsGroupManagement    bool   `json:"supportsGroupManagement"`
+	SupportsAddGroupMembers    bool   `json:"supportsAddGroupMembers"`
+	SupportsRemoveGroupMembers bool   `json:"supportsRemoveGroupMembers"`
+	SupportsRenameGroup        bool   `json:"supportsRenameGroup"`
+	SupportsGroupDescription   bool   `json:"supportsGroupDescription"`
+	SupportsGroupPhoto         bool   `json:"supportsGroupPhoto"`
+	SupportsGroupAdminRoles    bool   `json:"supportsGroupAdminRoles"`
+	SupportsLeaveGroup         bool   `json:"supportsLeaveGroup"`
+	SupportsDeleteMessage      bool   `json:"supportsDeleteMessage"`
+	SupportsEditMessage        bool   `json:"supportsEditMessage"`
+	SupportsReadReceipts       bool   `json:"supportsReadReceipts"`
+	SupportsPinConversation    bool   `json:"supportsPinConversation"`
+	SupportsPinMessage         bool   `json:"supportsPinMessage"`
+	SupportsListMessagePins    bool   `json:"supportsListMessagePins"`
+	MessagePinScope            string `json:"messagePinScope"`
+	SupportsMuteConversation   bool   `json:"supportsMuteConversation"`
+	SupportsQRCodeAuth         bool   `json:"supportsQRCodeAuth"`
 	// NativeEmojiReactions indicates the provider's reaction API expects raw Unicode
 	// emoji characters (e.g. "👍") rather than Slack-style names (e.g. "+1").
 	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
@@ -330,6 +333,15 @@ type Capabilities struct {
 	// GroupConversationTypes is a comma-separated list so Capabilities remains
 	// comparable (several provider contract tests compare it as a value).
 	GroupConversationTypes string `json:"groupConversationTypes"`
+}
+
+// MessagePinProvider is implemented only by providers that can mutate remote
+// message pins. Keeping it optional avoids fake unsupported implementations.
+type MessagePinProvider interface {
+	PinMessage(conversationID, messageID string) (*models.MessagePin, error)
+	UnpinMessage(conversationID, messageID string) error
+	ListMessagePins(conversationID string) ([]models.MessagePin, error)
+	ResolvePinnedMessage(conversationID, messageID string) (*models.Message, error)
 }
 
 // GroupDetailsProvider is implemented by providers that expose rich group
