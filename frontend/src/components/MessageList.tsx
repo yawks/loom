@@ -266,7 +266,7 @@ export function MessageList({
   // Effects
   useEffect(() => { setIsTypingInInput(false); }, [selectedConversation?.id, setIsTypingInInput]);
   useEffect(() => { setRevealedDeletedMessages(new Set()); }, [conversationId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSeparatorDismissed(false);
     setUnreadBoundary(null);
   }, [conversationId]);
@@ -358,11 +358,11 @@ export function MessageList({
     });
   }, [conversationId, messages, conversationReadState, markAsReadSilently]);
 
-  // While the window is in the background (and during the short focus grace
-  // period), keep a visual boundary independent from the server read state.
-  // The boundary therefore survives the subsequent mark-as-read operation.
-  useEffect(() => {
-    if (hasWindowFocus && !isInFocusGracePeriod) return;
+  // Capture the unread boundary whenever the selected conversation contains
+  // unread messages, independently from window focus. This layout-phase
+  // snapshot happens before the passive effect that marks the conversation as
+  // read, and remains visible after the server/read-store update.
+  useLayoutEffect(() => {
     const unreadIds = mainMessages
       .map((message) => getMessageDomId(message))
       .filter((messageId) => conversationReadState[messageId] === false);
@@ -384,7 +384,7 @@ export function MessageList({
         count: unreadIds.length,
       };
     });
-  }, [conversationId, mainMessages, conversationReadState, hasWindowFocus, isInFocusGracePeriod]);
+  }, [conversationId, mainMessages, conversationReadState]);
 
   const firstUnreadMessageId = unreadBoundary?.conversationId === conversationId
     ? unreadBoundary.firstMessageId

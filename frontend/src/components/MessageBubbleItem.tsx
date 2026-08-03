@@ -288,7 +288,7 @@ export function MessageBubbleItem({
                   </>
                 )}
                 {message.attachments?.trim() && (
-                  <MessageAttachments attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} />
+                  <MessageAttachments attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} galleryMessages={photoGroupMessages} messageHandlers={handlers} providerInstanceId={providerInstanceId} protocol={protocol} currentUserId={currentUserId} participantNames={participantNames} allMessages={mainMessages} isGroupConversation={isGroupConversation} />
                 )}
                 {!message.body?.trim() && !message.attachments?.trim() && (
                   <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
