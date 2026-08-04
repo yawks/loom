@@ -2213,6 +2213,27 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 	return err
 }
 
+// ForwardAttachment lets a provider preserve a remote attachment when it has
+// a more appropriate native representation (for example a SharePoint link).
+// Providers without such support use the regular download-and-upload path.
+func (a *App) ForwardAttachment(conversationID, sourceURL, filename, mimeType string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	type attachmentForwarder interface {
+		ForwardAttachment(string, string, string, string) error
+	}
+	if forwarder, ok := provider.(attachmentForwarder); ok {
+		return forwarder.ForwardAttachment(conversationID, sourceURL, filename, mimeType)
+	}
+	data, err := a.GetAttachmentData(sourceURL)
+	if err != nil {
+		return err
+	}
+	return a.SendFile(conversationID, data, filename, mimeType)
+}
+
 func (a *App) DisconnectProvider(instanceID string) error {
 	return a.RemoveProvider(instanceID)
 }

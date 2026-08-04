@@ -38,7 +38,7 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Read receipts | ✓ | — | ✓ | — | — |
 | Contact presence | ✓ | ✓ | ✓ | — | — |
-| Pinned messages | Personal | Shared | — | Preview¹ | — |
+| Pinned messages | Personal | Shared | Shared | Preview¹ | — |
 | Pin / mute conversations | ✓ | — | — | — | — |
 | QR code authentication | ✓ | — | — | — | — |
 
@@ -66,7 +66,12 @@ confirmation before it can be unpinned.
   panel identify them as personal.
 - **Google Chat:** shared pins are implemented through the Developer Preview
   API described above.
-- **Teams and Google Messages:** message pins are not currently supported.
+- **Microsoft Teams:** pins are shared with everyone in the chat and stay
+  synchronized with changes made from other Teams clients. Loom reads and
+  updates the chat's `pinnedItems` thread property through the same private
+  Teams web protocol as the rest of the integration. This does not require
+  Microsoft Graph permissions or administrator consent for a Loom app.
+- **Google Messages:** message pins are not currently supported.
 
 Pinned messages are stored independently from the currently loaded timeline.
 When a pin points to a message outside the local history window, Loom resolves

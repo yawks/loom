@@ -617,6 +617,9 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 	if threadID != nil {
 		return nil, unsupported("threads")
 	}
+	if strings.TrimSpace(text) == "" && file == nil {
+		return nil, fmt.Errorf("%s: message has no text or attachment", providerID)
+	}
 	rawConvID := core.StripConvID(conversationID)
 	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	client, _, err := p.connectedClient()
@@ -631,17 +634,41 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 			return nil, fmt.Errorf("%s: attachment is empty", providerID)
 		}
 		mimeType := teamsUploadMimeType(file.FileName, file.MimeType)
-		uploaded, err := client.UploadAttachment(context.Background(), file.FileName, mimeType, file.Data)
-		if err != nil {
-			return nil, fmt.Errorf("%s: upload attachment: %w", providerID, err)
-		}
-		p.rememberAttachmentURL(uploaded.URL)
-		content = teamsAttachmentHTML(uploaded, content)
-		opts.ContentType = "html"
-		attachmentType, _ := teamsAttachmentType(uploaded.Name, uploaded.ContentType)
-		modelAttachment = &models.Attachment{
-			Type: attachmentType, URL: uploaded.URL, FileName: uploaded.Name,
-			FileSize: uploaded.Size, MimeType: uploaded.ContentType,
+		isInlineMedia := strings.HasPrefix(mimeType, "image/") || strings.HasPrefix(mimeType, "video/") ||
+			strings.HasPrefix(mimeType, "audio/")
+		if isInlineMedia {
+			uploaded, uploadErr := client.UploadAttachment(context.Background(), file.FileName, mimeType, file.Data)
+			if uploadErr != nil {
+				return nil, fmt.Errorf("%s: upload attachment: %w", providerID, uploadErr)
+			}
+			p.rememberAttachmentURL(uploaded.URL)
+			content = teamsAttachmentHTML(uploaded, content)
+			opts.ContentType = "html"
+			attachmentType, _ := teamsAttachmentType(uploaded.Name, uploaded.ContentType)
+			modelAttachment = &models.Attachment{
+				Type: attachmentType, URL: uploaded.URL, FileName: uploaded.Name,
+				FileSize: uploaded.Size, MimeType: uploaded.ContentType,
+			}
+		} else {
+			location, locationErr := p.sharePointUploadLocation(client)
+			if locationErr != nil {
+				return nil, locationErr
+			}
+			recipients, recipientsErr := p.sharePointRecipients(client, rawConvID)
+			if recipientsErr != nil {
+				return nil, recipientsErr
+			}
+			uploaded, uploadErr := client.UploadSharedFile(context.Background(), location, file.FileName, file.Data, recipients)
+			if uploadErr != nil {
+				return nil, fmt.Errorf("%s: upload document: %w", providerID, uploadErr)
+			}
+			p.rememberSharedFile(uploaded.FileURL, *uploaded)
+			p.rememberSharedFile(uploaded.ShareURL, *uploaded)
+			opts.SharedFiles = []msteams.SharedFile{*uploaded}
+			modelAttachment = &models.Attachment{
+				Type: "document", URL: uploaded.ShareURL, FileName: uploaded.Name,
+				FileSize: uploaded.Size, MimeType: mimeType,
+			}
 		}
 	}
 	id, err := client.SendMessage(context.Background(), rawConvID, content, opts)
@@ -695,19 +722,21 @@ func teamsAttachmentHTML(attachment *msteams.Attachment, caption string) string 
 	switch {
 	case strings.HasPrefix(attachment.ContentType, "image/"):
 		attachmentHTML = fmt.Sprintf(
-			`<img src="%s" itemtype="http://schema.skype.com/AMSImage" alt="%s">`,
-			fileURL, name,
+			`<p><img itemscope="image" style="vertical-align:bottom" src="%s" alt="%s" `+
+				`itemtype="http://schema.skype.com/AMSImage" id="%s" itemid="%s" `+
+				`href="%s" target-src="%s"></p>`,
+			fileURL, name, html.EscapeString(attachment.ID), html.EscapeString(attachment.ID), fileURL, fileURL,
 		)
 	case strings.HasPrefix(attachment.ContentType, "video/"):
 		attachmentHTML = fmt.Sprintf(
-			`<video src="%s" itemtype="http://schema.skype.com/AMSVideo">%s</video>`,
+			`<video src="%s" itemscope="" itemtype="http://schema.skype.com/AMSVideo">%s</video>`,
 			fileURL, name,
 		)
 	default:
 		attachmentHTML = fmt.Sprintf(
-			`<URIObject type="File.1" uri="%s"><Title>%s</Title><Description/>`+
-				`<OriginalName v="%s"/><FileSize v="%d"/></URIObject>`,
-			fileURL, name, name, attachment.Size,
+			`<URIObject type="File.1" url_thumbnail="" uri="%s" url="%s">`+
+				`<a href="%s">%s</a><OriginalName v="%s"/><FileSize v="%d"/></URIObject>`,
+			fileURL, fileURL, fileURL, name, name, attachment.Size,
 		)
 	}
 	if strings.TrimSpace(caption) == "" {
@@ -879,6 +908,8 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
+		SupportsPinMessage: true, SupportsListMessagePins: true,
+		MessagePinScope:            string(models.MessagePinScopeShared),
 		SupportsGroupManagement:    true,
 		SupportsLeaveGroup:         true,
 		SupportsAddGroupMembers:    true,

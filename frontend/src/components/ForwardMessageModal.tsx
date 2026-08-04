@@ -17,7 +17,7 @@ import { cn, timeToDate } from "@/lib/utils";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-import { GetAllLastMessageTimestamps, GetAttachmentData, GetConfiguredProviders, SendFile, SendMessage } from "../../wailsjs/go/main/App";
+import { ForwardAttachment, GetAllLastMessageTimestamps, GetConfiguredProviders, SendMessage } from "../../wailsjs/go/main/App";
 
 interface ForwardMessageModalProps {
   open: boolean;
@@ -45,6 +45,7 @@ export function ForwardMessageModal({
   const [searchQuery, setSearchQuery] = useState("");
   const [sentIds, setSentIds] = useState<Set<string>>(new Set());
   const [sendingIds, setSendingIds] = useState<Set<string>>(new Set());
+  const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
 
   const contacts = useAppStore((state) => state.metaContacts);
@@ -138,6 +139,7 @@ export function ForwardMessageModal({
       setSearchQuery("");
       setSentIds(new Set());
       setSendingIds(new Set());
+      setFailedIds(new Set());
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [open]);
@@ -146,30 +148,50 @@ export function ForwardMessageModal({
     if (messages.length === 0) return;
     const key = `${entry.account.id}:${entry.conversationId}`;
     setSendingIds((prev) => new Set(prev).add(key));
+    setFailedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
     try {
+      let sentContent = false;
       for (const message of messages) {
-        if (message.body) {
-          await SendMessage(entry.conversationId, message.body);
-        }
+        const files: Array<{ url: string; fileName: string; mimeType: string }> = [];
         if (message.attachments) {
           let parsed: Array<{ type: string; url: string; fileName: string; fileSize: number; mimeType: string; thumbnail?: string }> = [];
           try {
             parsed = JSON.parse(message.attachments);
           } catch {
-            // malformed attachments JSON — skip
+            throw new Error("The forwarded message contains malformed attachment data");
           }
           for (const att of parsed) {
             const url = att.url || att.thumbnail;
-            if (!url) continue;
-            const base64Data = await GetAttachmentData(url);
-            if (!base64Data) continue;
-            await SendFile(entry.conversationId, base64Data, att.fileName || "file", att.mimeType || "application/octet-stream");
+            if (!url) {
+              throw new Error(`Attachment URL is missing for ${att.fileName || "file"}`);
+            }
+            files.push({
+              url,
+              fileName: att.fileName || "file",
+              mimeType: att.mimeType || "application/octet-stream",
+            });
           }
         }
+        if (message.body) {
+          await SendMessage(entry.conversationId, message.body);
+          sentContent = true;
+        }
+        for (const file of files) {
+          await ForwardAttachment(entry.conversationId, file.url, file.fileName, file.mimeType);
+          sentContent = true;
+        }
+      }
+      if (!sentContent) {
+        throw new Error("The forwarded message has no transferable text or attachment");
       }
       setSentIds((prev) => new Set(prev).add(key));
     } catch (err) {
       console.error("Forward failed:", err);
+      setFailedIds((prev) => new Set(prev).add(key));
     } finally {
       setSendingIds((prev) => {
         const next = new Set(prev);
@@ -259,6 +281,7 @@ export function ForwardMessageModal({
               const key = `${entry.account.id}:${entry.conversationId}`;
               const isSent = sentIds.has(key);
               const isSending = sendingIds.has(key);
+              const hasFailed = failedIds.has(key);
               return (
                 <div
                   key={key}
@@ -292,7 +315,7 @@ export function ForwardMessageModal({
                       disabled={isSending}
                       onClick={() => handleSend(entry)}
                     >
-                      {isSending ? "..." : t("send")}
+                      {isSending ? "..." : hasFailed ? t("send_failed") : t("send")}
                     </Button>
                   )}
                 </div>

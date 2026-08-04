@@ -66,6 +66,10 @@ export function ForceSyncCompletion(arg1) {
   return window['go']['main']['App']['ForceSyncCompletion'](arg1);
 }
 
+export function ForwardAttachment(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ForwardAttachment'](arg1, arg2, arg3, arg4);
+}
+
 export function GetAllActiveCalls() {
   return window['go']['main']['App']['GetAllActiveCalls']();
 }

@@ -296,7 +296,12 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				stored.SenderID = message.SenderID
 				stored.SenderName = message.SenderName
 				stored.SenderAvatarURL = message.SenderAvatarURL
-				stored.Attachments = message.Attachments
+				// A Trouter echo can omit attachment content even though the
+				// optimistic outgoing message already contains the uploaded file.
+				// Never erase that durable metadata with an incomplete echo.
+				if message.Attachments != "" || stored.Attachments == "" {
+					stored.Attachments = message.Attachments
+				}
 				stored.ThreadID = message.ThreadID
 				stored.QuotedMessageID = message.QuotedMessageID
 				stored.QuotedSenderID = message.QuotedSenderID

@@ -37,6 +37,8 @@ export function FetchLinkPreview(arg1:string):Promise<main.LinkPreview>;
 
 export function ForceSyncCompletion(arg1:string):Promise<void>;
 
+export function ForwardAttachment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
 export function GetAllActiveCalls():Promise<Record<string, boolean>>;
 
 export function GetAllLastMessageTimestamps():Promise<Record<string, number>>;
