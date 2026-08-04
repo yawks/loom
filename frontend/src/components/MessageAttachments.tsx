@@ -323,6 +323,7 @@ function MosaicVideoAttachment({
   const elementRef = useRef<HTMLButtonElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [thumbnailData, setThumbnailData] = useState<string | null>(null);
+  const [videoPreviewData, setVideoPreviewData] = useState<string | null>(null);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -338,15 +339,24 @@ function MosaicVideoAttachment({
   useEffect(() => {
     if (!isVisible) {
       setThumbnailData(null);
+      setVideoPreviewData(null);
       return;
     }
-    if (!attachment.thumbnail) return;
     let active = true;
-    GetAttachmentData(attachment.thumbnail)
-      .then((data) => { if (active) setThumbnailData(data); })
-      .catch(() => undefined);
+    const loadVideoPreview = () => {
+      GetAttachmentData(attachment.url)
+        .then((data) => { if (active) setVideoPreviewData(data); })
+        .catch(() => undefined);
+    };
+    if (attachment.thumbnail) {
+      GetAttachmentData(attachment.thumbnail)
+        .then((data) => { if (active) setThumbnailData(data); })
+        .catch(loadVideoPreview);
+    } else {
+      loadVideoPreview();
+    }
     return () => { active = false; };
-  }, [attachment.thumbnail, isVisible]);
+  }, [attachment.thumbnail, attachment.url, isVisible]);
 
   return (
     <button
@@ -358,6 +368,20 @@ function MosaicVideoAttachment({
     >
       {thumbnailData ? (
         <img src={thumbnailData} alt="" className="h-full w-full object-cover" />
+      ) : videoPreviewData ? (
+        <video
+          src={videoPreviewData}
+          muted
+          playsInline
+          preload="metadata"
+          className="h-full w-full object-cover"
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            if (Number.isFinite(video.duration) && video.duration > 0) {
+              video.currentTime = Math.min(0.25, video.duration / 10);
+            }
+          }}
+        />
       ) : (
         <Video className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 text-white/60" />
       )}
