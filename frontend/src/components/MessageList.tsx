@@ -1,9 +1,11 @@
 import {
   AddReaction,
+  CancelScheduledMessage,
   DeleteMessage,
   GetCapabilities,
   GetPinnedMessageContext,
   GetPinnedMessages,
+  GetScheduledMessages,
   PinMessage,
   RemoveReaction,
   UnpinMessage,
@@ -22,7 +24,7 @@ import { ToastContainer, useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { FileUploadModal } from "./FileUploadModal";
@@ -33,7 +35,7 @@ import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { MessageIRCItem } from "./MessageIRCItem";
-import { ChevronDown, UploadCloud } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronUp, Trash2, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
@@ -136,6 +138,8 @@ export function MessageList({
   }, [conversationId]);
 
   const supportsPinMessage = providerInstanceId ? capabilities[providerInstanceId]?.supportsPinMessage ?? false : false;
+  const supportsListScheduledMessages = providerInstanceId ? capabilities[providerInstanceId]?.supportsListScheduledMessages ?? false : false;
+  const supportsScheduledMessages = providerInstanceId ? capabilities[providerInstanceId]?.supportsScheduledMessages ?? false : false;
 
   // MessageList can be mounted before ContactList has populated the shared
   // capability cache. Load the active provider here as well so message actions
@@ -153,6 +157,47 @@ export function MessageList({
     enabled: Boolean(conversationId && providerInstanceId && capabilities[providerInstanceId]?.supportsListMessagePins),
   });
   const pinnedMessageIds = useMemo(() => new Set(pinnedMessages.map((pin) => pin.protocolMsgId)), [pinnedMessages]);
+
+  const prevScheduledCountRef = useRef<number>(0);
+  const { data: rawScheduledMessages } = useQuery({
+    queryKey: ["scheduled-messages", conversationId],
+    queryFn: () => GetScheduledMessages(conversationId),
+    enabled: Boolean(conversationId && supportsListScheduledMessages),
+    refetchInterval: 15_000,
+  });
+  const scheduledMessages = rawScheduledMessages ?? [];
+
+  // React Query v5 removed onSuccess from useQuery — use useEffect instead.
+  // When the scheduled count drops, a message was delivered: refresh the conversation.
+  useEffect(() => {
+    const next = scheduledMessages.length;
+    const prev = prevScheduledCountRef.current;
+    prevScheduledCountRef.current = next;
+    if (prev > 0 && next < prev) {
+      queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+    }
+  }, [scheduledMessages.length, conversationId, queryClient]);
+
+  const [expandedScheduledIds, setExpandedScheduledIds] = useState<Set<string>>(new Set());
+
+  const toggleScheduledExpand = useCallback((id: string) => {
+    setExpandedScheduledIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const cancelScheduledMutation = useMutation({
+    mutationFn: ({ protocolConvId, id }: { protocolConvId: string; id: string }) =>
+      CancelScheduledMessage(protocolConvId, id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scheduled-messages", conversationId] }),
+    onError: (error: unknown) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      showToast(msg, "error");
+    },
+  });
 
   // Hooks
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -992,6 +1037,55 @@ export function MessageList({
                   </div>
                 );
               })}
+              {scheduledMessages.length > 0 && (
+                <div className="message-list__scheduled-section mx-4 mb-2 mt-4 space-y-2">
+                  {scheduledMessages.map((msg) => {
+                    const scheduledDate = new Date(msg.scheduledAt as unknown as string);
+                    const dateLabel = scheduledDate.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+                    const isExpanded = expandedScheduledIds.has(msg.id);
+                    return (
+                      <div key={msg.id} className="message-list__scheduled-item rounded-lg border border-dashed border-muted-foreground/40 bg-muted/30 px-3 py-2">
+                        <div className="flex items-start gap-3">
+                          <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          <button
+                            type="button"
+                            className="message-list__scheduled-item__body min-w-0 flex-1 text-left"
+                            onClick={() => toggleScheduledExpand(msg.id)}
+                          >
+                            <p className={cn("text-sm", !isExpanded && "line-clamp-2")}>{msg.body}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{t("scheduled_message_badge", { date: dateLabel })}</p>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <button
+                              type="button"
+                              title={isExpanded ? t("collapse") : t("expand")}
+                              className="rounded p-1 text-muted-foreground hover:bg-muted"
+                              onClick={() => toggleScheduledExpand(msg.id)}
+                            >
+                              {isExpanded
+                                ? <ChevronUp className="h-3.5 w-3.5" />
+                                : <ChevronDown className="h-3.5 w-3.5" />}
+                            </button>
+                            {supportsScheduledMessages && (
+                              <button
+                                type="button"
+                                title={t("cancel_scheduled_message")}
+                                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  cancelScheduledMutation.mutate({ protocolConvId: msg.protocolConvId, id: msg.id });
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="message-list__native-footer h-4" />
             </div>
           </div>

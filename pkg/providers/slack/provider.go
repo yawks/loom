@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,9 +28,16 @@ import (
 	"github.com/slack-go/slack/socketmode"
 )
 
+// slackSession holds credentials obtained via the browser login flow.
+type slackSession struct {
+	Token   string `json:"token"`
+	DCookie string `json:"d_cookie"`
+}
+
 // SlackProvider implements the core.Provider interface for Slack.
 type SlackProvider struct {
 	config             core.ProviderConfig
+	session            *slackSession // set by browser auth; overrides config token/d_cookie
 	client             *slack.Client
 	socketClient       *socketmode.Client
 	rtmClient          *slack.RTM
@@ -151,6 +159,12 @@ func (p *SlackProvider) Init(config core.ProviderConfig) error {
 	}
 
 	p.log("SlackProvider.Init: initializing with instanceID=%s\n", instanceID)
+
+	// Load persisted browser-auth session (may not exist for manual-token users).
+	p.mu.Lock()
+	_ = p.loadSessionLocked()
+	p.mu.Unlock()
+
 	fmt.Printf("SlackProvider.Init: calling SetConfig\n")
 	err = p.SetConfig(config)
 	if err != nil {
@@ -192,6 +206,23 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 
 	token, _ := config.GetString("token")
 	dCookie, _ := config.GetString("d_cookie")
+
+	// A manual token in the config takes priority over the browser-auth session.
+	// This lets the user switch from xoxc (browser) to xoxp/xoxb without being
+	// silently overridden by the stale session file.
+	if token != "" {
+		if p.session != nil {
+			p.session = nil
+			_ = os.Remove(p.sessionPath())
+		}
+	} else if p.session != nil {
+		// No manual token provided → fall back to browser session.
+		token = p.session.Token
+		dCookie = p.session.DCookie
+		p.config["token"] = token
+		p.config["d_cookie"] = dCookie
+	}
+
 	fmt.Printf("SlackProvider.SetConfig: token present=%v, dCookie present=%v\n", token != "", dCookie != "")
 	if token != "" {
 		tokenPreview := token
@@ -249,7 +280,61 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 func (p *SlackProvider) IsAuthenticated() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.client != nil
+	if p.session != nil {
+		return true
+	}
+	token, ok := p.config.GetString("token")
+	return ok && token != ""
+}
+
+func (p *SlackProvider) sessionPath() string {
+	instanceID, _ := p.config.GetString("_instance_id")
+	if instanceID == "" {
+		instanceID = "slack-1"
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "Loom", instanceID, "slack-session.json")
+}
+
+func (p *SlackProvider) loadSessionLocked() error {
+	path := p.sessionPath()
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("slack: read session: %w", err)
+	}
+	var stored slackSession
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return fmt.Errorf("slack: decode session: %w", err)
+	}
+	p.session = &stored
+	return nil
+}
+
+func (p *SlackProvider) saveSessionLocked() error {
+	if p.session == nil {
+		return fmt.Errorf("slack: no session to save")
+	}
+	path := p.sessionPath()
+	if path == "" {
+		return fmt.Errorf("slack: user configuration directory is unavailable")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(p.session)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0600)
 }
 
 // incrementalSyncExistingConversations syncs new messages for conversations that already have message history
@@ -629,52 +714,44 @@ func (p *SlackProvider) Connect() error {
 	// Determine connection mode based on token type
 	token, _ := p.config.GetString("token")
 
-	if strings.HasPrefix(token, "xoxc") {
-		// User Token -> Use RTM (Legacy)
-		p.log("SlackProvider.Connect: Detected User Token (xoxc), initializing RTM client\n")
+	if strings.HasPrefix(token, "xoxc") || strings.HasPrefix(token, "xoxp") {
+		// Web-client (xoxc) and OAuth user (xoxp) tokens both use RTM.
+		// xoxc requires the d cookie in the WebSocket dialer; xoxp authenticates
+		// via the token alone and does not need a cookie.
+		p.log("SlackProvider.Connect: Detected user token (%s...), initializing RTM client\n", token[:5])
 
-		// For RTM with xoxc tokens, we likely need to pass the d cookie in the websocket handshake too
-		// slack-go/slack NewRTM allows passing options, including a custom dialer.
+		rtmOptions := []slack.RTMOption{}
 
-		rtmOptions := []slack.RTMOption{
-			// slack.RTMOptionUseStart(true), // rtm.start is blocked (not_allowed_token_type), let's stick to default rtm.connect
-		}
+		if strings.HasPrefix(token, "xoxc") {
+			dCookie, _ := p.config.GetString("d_cookie")
+			if dCookie != "" {
+				p.log("SlackProvider.Connect: injecting d cookie into RTM dialer\n")
 
-		dCookie, _ := p.config.GetString("d_cookie")
-		if dCookie != "" {
-			p.log("SlackProvider.Connect: injecting d cookie into RTM dialer\n")
+				jar, _ := cookiejar.New(nil)
+				urlObj, _ := url.Parse("https://slack.com")
+				cookies := []*http.Cookie{{Name: "d", Value: dCookie}}
+				if strings.HasPrefix(dCookie, "d=") {
+					cookies[0].Value = dCookie[2:]
+				}
+				jar.SetCookies(urlObj, cookies)
+				urlObj2, _ := url.Parse("https://wss-primary.slack.com")
+				jar.SetCookies(urlObj2, cookies)
 
-			jar, _ := cookiejar.New(nil)
-			urlObj, _ := url.Parse("https://slack.com") // Cookie needs to be set for the domain
-			cookies := []*http.Cookie{
-				{Name: "d", Value: dCookie},
+				dialer := *websocket.DefaultDialer
+				dialer.Jar = jar
+				rtmOptions = append(rtmOptions, slack.RTMOptionDialer(&dialer))
+				p.log("SlackProvider.Connect: Set cookie jar on RTM dialer\n")
 			}
-			// Handle "d=xoxd..." format if present
-			if strings.HasPrefix(dCookie, "d=") {
-				cookies[0].Value = dCookie[2:]
-			}
-			jar.SetCookies(urlObj, cookies)
-
-			// Also set for .slack.com
-			urlObj2, _ := url.Parse("https://wss-primary.slack.com")
-			jar.SetCookies(urlObj2, cookies)
-
-			// Copy DefaultDialer to avoid modifying global state
-			dialer := *websocket.DefaultDialer
-			dialer.Jar = jar
-
-			rtmOptions = append(rtmOptions, slack.RTMOptionDialer(&dialer))
-			p.log("SlackProvider.Connect: Set cookie jar on RTM dialer\n")
 		}
 
 		p.rtmClient = p.client.NewRTM(rtmOptions...)
 		go p.startRTM(connectionCtx)
 	} else {
-		// Bot Token -> Use Socket Mode (Modern)
+		// Bot Token (xoxb) -> Use Socket Mode (Modern)
 		p.log("SlackProvider.Connect: Detected Bot Token (xoxb), initializing Socket Mode client\n")
 		p.socketClient = socketmode.New(
 			p.client,
-			socketmode.OptionDebug(false), // Set to true if detailed logs are needed
+			socketmode.OptionDebug(false),
 			socketmode.OptionLog(p.logger),
 		)
 		go p.startSocketMode(connectionCtx, p.socketClient)
@@ -1277,6 +1354,16 @@ func (p *SlackProvider) Cleanup() error {
 	if err := os.RemoveAll(cacheDir); err != nil {
 		p.log("SlackProvider.Cleanup: WARNING - failed to remove cache directory: %v\n", err)
 	}
+
+	// Remove browser-auth session file.
+	p.mu.Lock()
+	sessionFile := p.sessionPath()
+	p.session = nil
+	p.mu.Unlock()
+	if sessionFile != "" {
+		_ = os.Remove(sessionFile)
+	}
+
 	if p.logger != nil {
 		p.logger.Close()
 		p.logger = nil
@@ -1286,32 +1373,51 @@ func (p *SlackProvider) Cleanup() error {
 }
 
 func (p *SlackProvider) GetCapabilities() core.Capabilities {
+	// Positive allowlist: only officially-supported token types can use scheduling APIs.
+	//   xoxb-* (bot/workspace-app token) → chat.scheduleMessage ✓, scheduledMessages.list ✗
+	//   xoxp-* (OAuth user token)        → both ✓
+	//   xoxc-* (web-client token)        → REST API unreliable; RTM only → both ✗
+	//   anything else (legacy, unknown)  → both ✗
+	token, _ := p.config.GetString("token")
+
+	var canSchedule, canListScheduled bool
+	switch {
+	case strings.HasPrefix(token, "xoxb"):
+		canSchedule = true
+		canListScheduled = false
+	case strings.HasPrefix(token, "xoxp"):
+		canSchedule = true
+		canListScheduled = true
+	}
+
 	return core.Capabilities{
-		SupportsThreads:            true,
-		SupportsReactions:          true,
-		SupportsCustomEmojis:       true,
-		SupportsTypingIndicator:    true,
-		SupportsGroupManagement:    true,
-		SupportsAddGroupMembers:    true,
-		SupportsRemoveGroupMembers: true,
-		SupportsRenameGroup:        true,
-		SupportsGroupDescription:   true,
-		SupportsLeaveGroup:         true,
-		SupportsDeleteMessage:      true,
-		SupportsEditMessage:        true,
-		SupportsReadReceipts:       false,
-		SupportsPinConversation:    false,
-		SupportsPinMessage:         true,
-		SupportsListMessagePins:    true,
-		MessagePinScope:            string(models.MessagePinScopeShared),
-		SupportsMuteConversation:   false,
-		SupportsQRCodeAuth:         false,
-		SupportsContactDirectory:   true,
-		SupportsDirectConversation: true,
-		SupportsGroupConversation:  true,
-		SupportsGroupTitle:         true,
-		RequiresGroupTitle:         true,
-		GroupConversationTypes:     "group_message,private_channel,public_channel",
+		SupportsThreads:               true,
+		SupportsReactions:             true,
+		SupportsCustomEmojis:          true,
+		SupportsTypingIndicator:       true,
+		SupportsGroupManagement:       true,
+		SupportsAddGroupMembers:       true,
+		SupportsRemoveGroupMembers:    true,
+		SupportsRenameGroup:           true,
+		SupportsGroupDescription:      true,
+		SupportsLeaveGroup:            true,
+		SupportsDeleteMessage:         true,
+		SupportsEditMessage:           true,
+		SupportsReadReceipts:          false,
+		SupportsPinConversation:       false,
+		SupportsPinMessage:            true,
+		SupportsListMessagePins:       true,
+		SupportsScheduledMessages:     canSchedule,
+		SupportsListScheduledMessages: canListScheduled,
+		MessagePinScope:               string(models.MessagePinScopeShared),
+		SupportsMuteConversation:      false,
+		SupportsQRCodeAuth:            false,
+		SupportsContactDirectory:      true,
+		SupportsDirectConversation:    true,
+		SupportsGroupConversation:     true,
+		SupportsGroupTitle:            true,
+		RequiresGroupTitle:            true,
+		GroupConversationTypes:        "group_message,private_channel,public_channel",
 	}
 }
 

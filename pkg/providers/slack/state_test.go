@@ -18,3 +18,12 @@ func TestMessagePinCapabilities(t *testing.T) {
 		t.Fatalf("expected shared Slack pins, got %q", capabilities.MessagePinScope)
 	}
 }
+
+func TestScheduledMessageCapabilities(t *testing.T) {
+	provider := NewSlackProvider()
+	var _ core.ScheduledMessageProvider = provider
+	capabilities := provider.GetCapabilities()
+	if !capabilities.SupportsScheduledMessages || !capabilities.SupportsListScheduledMessages {
+		t.Fatalf("expected Slack scheduled message capabilities, got %+v", capabilities)
+	}
+}

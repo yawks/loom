@@ -138,10 +138,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			key := reactionMsg.GetKey()
 			if key != nil {
 				targetMsgID := key.GetID()
-				targetConvID := key.GetRemoteJID()
-				if targetConvID == "" {
-					targetConvID = v.Info.Chat.String()
+				rawTargetConvID := key.GetRemoteJID()
+				if rawTargetConvID == "" {
+					rawTargetConvID = v.Info.Chat.String()
 				}
+				// Use namespaced ID so the DB lookup in app.go (protocol_conv_id column) matches.
+				nsTargetConvID := core.BuildConvID(w.getInstanceId(), rawTargetConvID)
 				emoji := reactionMsg.GetText()
 				senderID := v.Info.Sender.String()
 
@@ -153,7 +155,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Emit reaction event
 				select {
 				case w.eventChan <- core.ReactionEvent{InstanceID: w.getInstanceId(),
-					ConversationID: targetConvID,
+					ConversationID: nsTargetConvID,
 					MessageID:      targetMsgID,
 					UserID:         senderID,
 					Emoji:          emoji,

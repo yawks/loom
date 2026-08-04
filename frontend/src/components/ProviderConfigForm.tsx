@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  AutoLoginSlack,
   AutoLoginTeams,
   AutoPairGoogleMessages,
   CompleteGoogleMessagesLogin,
@@ -332,7 +333,11 @@ export function ProviderConfigForm({
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {Object.entries(schema).map(([key, field]) => (
+            {Object.entries(schema).filter(([key]) => {
+              // Slack fields handled by the dedicated Slack card below
+              if (provider.id === "slack" && ["token", "d_cookie", "workspace_url"].includes(key)) return false;
+              return true;
+            }).map(([key, field]) => (
               <div key={key} className="space-y-1.5">
                 <label className="text-sm font-medium text-foreground">
                   {field.title ?? key}
@@ -518,64 +523,117 @@ export function ProviderConfigForm({
       {provider.id === "slack" && (
         <Card>
           <CardHeader>
-            <CardTitle>{t("connection")}</CardTitle>
-            <CardDescription>
-              {t("slack_connection_description")}
-            </CardDescription>
+            <CardTitle>{t("slack_browser_login_title")}</CardTitle>
+            <CardDescription>{t("slack_browser_login_description")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">{t("slack_workspace_url_label")}</label>
+              <Input
+                placeholder={t("slack_workspace_url_placeholder")}
+                value={values.workspace_url ?? ""}
+                onChange={(e) => handleChange("workspace_url", e.target.value)}
+                disabled={isSaving}
+              />
+              <p className="text-xs text-muted-foreground">{t("slack_workspace_url_hint")}</p>
+            </div>
             <Button
+              className="w-full"
+              disabled={isSaving}
               onClick={async () => {
-                // Disable button immediately to prevent double-clicks
                 setIsSaving(true);
-
                 try {
-                  // Filter out empty values - only save fields that have been filled
-                  const filteredValues: Record<string, string> = {};
-                  for (const [key, value] of Object.entries(values)) {
-                    if (value && value.trim() !== "") {
-                      filteredValues[key] = value;
-                    }
+                  let instanceID = provider.instanceId || currentInstanceID;
+                  if (!instanceID) {
+                    instanceID = await CreateProviderWithOptions(provider.id, {}, instanceName, "", true);
+                    setCurrentInstanceID(instanceID);
                   }
-
-                  // Use existing instanceID if available (from provider or from currentInstanceID if we just saved)
-                  // This prevents creating duplicate instances when clicking "Connect" after "Save"
-                  const existingInstanceID = provider.instanceId || currentInstanceID || "";
-                  const instanceID = await CreateProvider(provider.id, filteredValues, instanceName, existingInstanceID);
-
-                  // Update currentInstanceID so handleSave can use it if called later
-                  setCurrentInstanceID(instanceID);
-
-                  // Connect the provider
-                  await ConnectProvider(instanceID);
-
-                  // Refresh to update the UI
+                  await AutoLoginSlack(instanceID, values.workspace_url?.trim() ?? "");
                   await onRefresh();
-
-                  // Close the modal IMMEDIATELY after connecting
-                  // This prevents double-clicks and shows the sync footer
-                  if (onClose) {
-                    onClose();
-                  }
-
-                  // Start initial sync AFTER closing the modal
-                  // This runs in the background and the footer will show the progress
-                  // Note: The sync-status event listener in ChatLayout will set isSyncing=true
-                  // when it receives fetching_contacts, preventing onboarding from showing
-                  SyncProvider(instanceID).catch((error) => {
-                    console.error("Failed to sync provider:", error);
-                  });
+                  SyncProvider(instanceID).catch((error) => console.error("Failed to sync Slack:", error));
+                  showToast(t("slack_connected"), "success");
+                  if (onClose) onClose();
                 } catch (error) {
-                  console.error("Failed to connect and sync:", error);
-                  showToast(t("configuration_save_error"), "error");
+                  console.error("Failed to log into Slack:", error);
+                  showToast(String(error) || t("slack_connect_error"), "error");
+                } finally {
                   setIsSaving(false);
                 }
               }}
-              disabled={isSaving}
-              className="w-full"
             >
-              {isSaving ? t("connecting") : t("connect")}
+              {isSaving ? t("slack_browser_login_in_progress") : t("slack_browser_login_button")}
             </Button>
+
+            <details className="group">
+              <summary className="cursor-pointer select-none text-sm text-muted-foreground hover:text-foreground">
+                {t("slack_advanced_title")}
+              </summary>
+              <div className="mt-3 space-y-4 border-t pt-3">
+                <p className="text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: t("slack_advanced_description") }} />
+
+                <details className="group/tuto">
+                  <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">
+                    {t("slack_xoxp_tutorial_title")}
+                  </summary>
+                  <ol className="mt-2 space-y-2 pl-4 text-xs text-muted-foreground list-decimal">
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_xoxp_tutorial_step1").replace("<a>", '<a href="https://api.slack.com/apps" target="_blank" class="underline text-foreground">').replace("</a>", "</a>") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_xoxp_tutorial_step2") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_xoxp_tutorial_step3") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_xoxp_tutorial_step4") }} />
+                  </ol>
+                </details>
+
+                {["token", "d_cookie"].map((key) => {
+                  const field = schema[key];
+                  if (!field) return null;
+                  // d_cookie is only needed for xoxc tokens
+                  if (key === "d_cookie" && !values.token?.startsWith("xoxc-")) return null;
+                  return (
+                    <div key={key} className="space-y-1">
+                      <label className="text-sm font-medium">{field.title ?? key}</label>
+                      <Input
+                        placeholder={field.description}
+                        value={values[key] ?? ""}
+                        onChange={(e) => handleChange(key, e.target.value)}
+                        disabled={isSaving}
+                      />
+                      {key === "d_cookie" && (
+                        <p className="text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: t("slack_d_cookie_hint") }} />
+                      )}
+                    </div>
+                  );
+                })}
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  disabled={isSaving}
+                  onClick={async () => {
+                    setIsSaving(true);
+                    try {
+                      const filteredValues: Record<string, string> = {};
+                      for (const [key, value] of Object.entries(values)) {
+                        if (value && value.trim() !== "" && key !== "workspace_url") {
+                          filteredValues[key] = value;
+                        }
+                      }
+                      const existingInstanceID = provider.instanceId || currentInstanceID || "";
+                      const instanceID = await CreateProvider(provider.id, filteredValues, instanceName, existingInstanceID);
+                      setCurrentInstanceID(instanceID);
+                      await ConnectProvider(instanceID);
+                      await onRefresh();
+                      if (onClose) onClose();
+                      SyncProvider(instanceID).catch((error) => console.error("Failed to sync provider:", error));
+                    } catch (error) {
+                      console.error("Failed to connect with token:", error);
+                      showToast(t("configuration_save_error"), "error");
+                      setIsSaving(false);
+                    }
+                  }}
+                >
+                  {isSaving ? t("connecting") : t("slack_advanced_connect_button")}
+                </Button>
+              </div>
+            </details>
           </CardContent>
         </Card>
       )}

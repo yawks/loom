@@ -1123,6 +1123,17 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 					if isCallMsg && oldConvID != convID {
 						fmt.Printf("WhatsApp: [CALL MSG] Updated call message %s ProtocolConvID from %s to %s\n", msg.ProtocolMsgID, oldConvID, convID)
 					}
+					// GORM Save does not cascade to has-many associations, so persist
+					// any reactions that arrived via HistorySync explicitly.
+					if len(msg.Reactions) > 0 {
+						for _, r := range msg.Reactions {
+							var existing models.Reaction
+							if db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, r.UserID, r.Emoji).First(&existing).Error != nil {
+								r.MessageID = msg.ID
+								db.DB.Create(&r)
+							}
+						}
+					}
 				}
 			}
 		}

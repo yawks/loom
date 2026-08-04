@@ -6,7 +6,7 @@ export function MessageUnreadDivider({ count }: { count: number }) {
 
   return (
     <div
-      className="my-3 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary"
+      className="my-3 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-orange-500 dark:text-orange-400"
       role="separator"
       aria-label={label}
     >
