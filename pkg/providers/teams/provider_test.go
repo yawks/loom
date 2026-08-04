@@ -81,6 +81,8 @@ func TestCapabilities(t *testing.T) {
 		SupportsThreads: false, SupportsReactions: true,
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
+		SupportsPinMessage: true, SupportsListMessagePins: true,
+		MessagePinScope:            string(models.MessagePinScopeShared),
 		SupportsGroupManagement:    true,
 		SupportsAddGroupMembers:    true,
 		SupportsRemoveGroupMembers: true,
@@ -95,6 +97,12 @@ func TestCapabilities(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("capabilities=%+v, want %+v", got, want)
+	}
+}
+
+func TestSendMessageRejectsEmptyPayload(t *testing.T) {
+	if _, err := NewProvider().SendMessage("conversation", "", nil, nil); err == nil {
+		t.Fatal("empty Teams message should be rejected before reaching the service")
 	}
 }
 
@@ -335,7 +343,8 @@ func TestTeamsAttachmentHTML(t *testing.T) {
 	document := teamsAttachmentHTML(&msteams.Attachment{
 		Name: "report.pdf", URL: "https://api.asm.skype.com/file", ContentType: "application/pdf", Size: 42,
 	}, "<strong>Report</strong>")
-	for _, expected := range []string{"URIObject", "OriginalName", `FileSize v="42"`, "<strong>Report</strong><br>"} {
+	for _, expected := range []string{"URIObject", `url="https://api.asm.skype.com/file"`,
+		`<a href="https://api.asm.skype.com/file">report.pdf</a>`, "OriginalName", `FileSize v="42"`, "<strong>Report</strong><br>"} {
 		if !strings.Contains(document, expected) {
 			t.Fatalf("document HTML %q does not contain %q", document, expected)
 		}

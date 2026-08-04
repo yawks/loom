@@ -1,6 +1,5 @@
 export namespace core {
-
-
+	
 	export class Capabilities {
 	    supportsThreads: boolean;
 	    supportsReactions: boolean;
@@ -30,13 +29,11 @@ export namespace core {
 	    supportsGroupTitle: boolean;
 	    requiresGroupTitle: boolean;
 	    groupConversationTypes: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.supportsThreads = source["supportsThreads"];
@@ -79,13 +76,11 @@ export namespace core {
 	    isActive: boolean;
 	    configSchema: Record<string, any>;
 	    syncError: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProviderInfo(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -103,25 +98,21 @@ export namespace core {
 }
 
 export namespace gorm {
-
-
+	
 	export class DeletedAt {
 	    Time: time.Time;
 	    Valid: boolean;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DeletedAt(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Time = this.convertValues(source["Time"], time.Time);
 	        this.Valid = source["Valid"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -144,20 +135,17 @@ export namespace gorm {
 }
 
 export namespace main {
-
-
+	
 	export class LinkPreview {
 	    title: string;
 	    description: string;
 	    imageURL: string;
 	    url: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LinkPreview(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.title = source["title"];
@@ -170,19 +158,16 @@ export namespace main {
 }
 
 export namespace models {
-
-
+	
 	export class CommunicationCount {
 	    total: number;
 	    sent: number;
 	    received: number;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CommunicationCount(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.total = source["total"];
@@ -195,13 +180,11 @@ export namespace models {
 	    total: number;
 	    sent: number;
 	    received: number;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CommunicationSeriesPoint(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
@@ -209,8 +192,7 @@ export namespace models {
 	        this.sent = source["sent"];
 	        this.received = source["received"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -242,13 +224,11 @@ export namespace models {
 	    callCount: number;
 	    callDurationSecs: number;
 	    callsWithoutDuration: number;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactCommunicationStats(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.metaContactId = source["metaContactId"];
@@ -275,13 +255,11 @@ export namespace models {
 	    callCount: number;
 	    callDurationSecs: number;
 	    callsWithoutDuration: number;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new InstanceCommunicationStats(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.providerInstanceId = source["providerInstanceId"];
@@ -303,13 +281,11 @@ export namespace models {
 	    series: CommunicationSeriesPoint[];
 	    instances: InstanceCommunicationStats[];
 	    contacts: ContactCommunicationStats[];
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CommunicationStats(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.from = this.convertValues(source["from"], time.Time);
@@ -320,8 +296,7 @@ export namespace models {
 	        this.instances = this.convertValues(source["instances"], InstanceCommunicationStats);
 	        this.contacts = this.convertValues(source["contacts"], ContactCommunicationStats);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -340,8 +315,7 @@ export namespace models {
 		    return a;
 		}
 	}
-
-
+	
 	export class ContactExchangeStats {
 	    isGroup: boolean;
 	    totalMessages: number;
@@ -358,13 +332,11 @@ export namespace models {
 	    lastExchange?: time.Time;
 	    medianContactResponseSecs?: number;
 	    medianMyResponseSecs?: number;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactExchangeStats(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.isGroup = source["isGroup"];
@@ -383,8 +355,7 @@ export namespace models {
 	        this.medianContactResponseSecs = source["medianContactResponseSecs"];
 	        this.medianMyResponseSecs = source["medianMyResponseSecs"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -421,13 +392,11 @@ export namespace models {
 	    statusEmoji?: string;
 	    lastSeen?: time.Time;
 	    providerFields: Record<string, string>;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactProfile(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.userId = source["userId"];
@@ -448,8 +417,7 @@ export namespace models {
 	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
 	        this.providerFields = source["providerFields"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -476,13 +444,11 @@ export namespace models {
 	    timestamp: time.Time;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MessageReceipt(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -493,8 +459,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -520,13 +485,11 @@ export namespace models {
 	    emoji: string;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Reaction(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -536,8 +499,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -590,13 +552,11 @@ export namespace models {
 	    callIsVideo: boolean;
 	    callUrl?: string;
 	    callLinkAction?: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -633,8 +593,7 @@ export namespace models {
 	        this.callUrl = source["callUrl"];
 	        this.callLinkAction = source["callLinkAction"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -662,13 +621,11 @@ export namespace models {
 	    joinedAt: time.Time;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupParticipant(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -680,8 +637,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -713,13 +669,11 @@ export namespace models {
 	    messages: Message[];
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -735,8 +689,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -770,13 +723,11 @@ export namespace models {
 	    conversationId?: string;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LinkedAccount(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -794,8 +745,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -821,13 +771,11 @@ export namespace models {
 	    linkedAccounts: LinkedAccount[];
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MetaContact(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -837,8 +785,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -860,20 +807,17 @@ export namespace models {
 	export class ConversationResolution {
 	    matches: MetaContact[];
 	    created?: MetaContact;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationResolution(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.matches = this.convertValues(source["matches"], MetaContact);
 	        this.created = this.convertValues(source["created"], MetaContact);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -898,13 +842,11 @@ export namespace models {
 	    description: string;
 	    avatarUrl: string;
 	    canSendMessages: boolean;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GroupDetails(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
@@ -914,26 +856,20 @@ export namespace models {
 	        this.canSendMessages = source["canSendMessages"];
 	    }
 	}
-
-
-
-
-
-
-
-
+	
+	
+	
+	
 	export class MessageContext {
 	    targetMessageId: string;
 	    messages: Message[];
 	    hasMoreBefore: boolean;
 	    hasMoreAfter: boolean;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MessageContext(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.targetMessageId = source["targetMessageId"];
@@ -941,8 +877,7 @@ export namespace models {
 	        this.hasMoreBefore = source["hasMoreBefore"];
 	        this.hasMoreAfter = source["hasMoreAfter"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -976,13 +911,11 @@ export namespace models {
 	    message?: Message;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MessagePin(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1000,8 +933,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1020,8 +952,7 @@ export namespace models {
 		    return a;
 		}
 	}
-
-
+	
 	export class MessageSearchResult {
 	    message: Message;
 	    metaContactId: number;
@@ -1029,13 +960,11 @@ export namespace models {
 	    conversationAvatar: string;
 	    protocol: string;
 	    providerInstanceId: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MessageSearchResult(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message = this.convertValues(source["message"], Message);
@@ -1045,8 +974,7 @@ export namespace models {
 	        this.protocol = source["protocol"];
 	        this.providerInstanceId = source["providerInstanceId"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1068,20 +996,17 @@ export namespace models {
 	export class MessageSearchPage {
 	    items: MessageSearchResult[];
 	    hasMore: boolean;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MessageSearchPage(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.items = this.convertValues(source["items"], MessageSearchResult);
 	        this.hasMore = source["hasMore"];
 	    }
-
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1100,22 +1025,18 @@ export namespace models {
 		    return a;
 		}
 	}
-
-
-
-
+	
+	
 	export class OpenConversationRequest {
 	    providerInstanceId: string;
 	    participantIds: string[];
 	    conversationType: string;
 	    title: string;
-
-
+	
 	    static createFrom(source: any = {}) {
 	        return new OpenConversationRequest(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.providerInstanceId = source["providerInstanceId"];
@@ -1128,22 +1049,17 @@ export namespace models {
 }
 
 export namespace time {
-
-
+	
 	export class Time {
-
-
-
-
+	
+	
 	    static createFrom(source: any = {}) {
 	        return new Time(source);
 	    }
-
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-
-
+	
 	    }
 	}
 
