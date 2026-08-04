@@ -1,7 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bold, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
+import { Bold, ChevronDown, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { GetCustomEmojis, GetGroupDetails, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Theme } from "emoji-picker-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,6 +13,8 @@ import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 import { htmlFragmentToText } from "@/lib/messageUtils";
+import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -128,8 +130,11 @@ const saveDraft = (key: string | null, value: string): void => {
 };
 
 export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange, onTextareaMount }: ChatInputProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const { toasts, showToast, closeToast } = useToast();
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  const [isScheduledMessagesOpen, setIsScheduledMessagesOpen] = useState(false);
+  const [isScheduleMenuOpen, setIsScheduleMenuOpen] = useState(false);
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -140,6 +145,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const selectedContact = useAppStore((state) => state.selectedContact);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const theme = useAppStore((state) => state.theme);
+  const capabilities = useAppStore((state) => state.capabilities);
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const showThreads = useAppStore((state) => state.showThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
@@ -155,6 +161,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     );
   }, [selectedContact, selectedProviderFilter]);
   const conversationId = activeAccount?.conversationId || activeAccount?.userId;
+  const supportsScheduledMessages = activeAccount?.providerInstanceId
+    ? capabilities[activeAccount.providerInstanceId]?.supportsScheduledMessages ?? false
+    : false;
+  const supportsListScheduledMessages = activeAccount?.providerInstanceId
+    ? capabilities[activeAccount.providerInstanceId]?.supportsListScheduledMessages ?? false
+    : false;
   const { data: groupDetails } = useQuery<models.GroupDetails>({
     queryKey: ["group-details", conversationId],
     queryFn: () => GetGroupDetails(conversationId ?? ""),
@@ -401,6 +413,60 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       );
     },
   });
+
+  const scheduleMessageMutation = useMutation({
+    mutationFn: ({ convId, text, scheduledAt }: { convId: string; text: string; scheduledAt: Date }) =>
+      ScheduleMessage(convId, text, scheduledAt.toISOString()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scheduled-messages", conversationId] });
+    },
+  });
+
+  const schedulePresets = useMemo(() => {
+    const now = new Date();
+    const presets: Array<{ label: string; date: Date }> = [];
+    for (const hour of [13, 18]) {
+      const date = new Date(now);
+      date.setHours(hour, 0, 0, 0);
+      if (date.getTime() > now.getTime() + 30 * 60 * 1000) {
+        const timeStr = new Intl.DateTimeFormat(i18n.language, { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+        presets.push({ label: t("schedule_later_today", { time: timeStr }), date });
+      }
+    }
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    presets.push({ label: t("schedule_tomorrow"), date: tomorrow });
+    const daysUntilMonday = (1 + 7 - now.getDay()) % 7 || 7;
+    if (daysUntilMonday > 1) {
+      const nextMonday = new Date(now);
+      nextMonday.setDate(now.getDate() + daysUntilMonday);
+      nextMonday.setHours(9, 0, 0, 0);
+      presets.push({ label: t("schedule_monday"), date: nextMonday });
+    }
+    return presets;
+  }, [t, i18n.language]);
+
+  const handleSchedulePreset = async (date: Date) => {
+    if (!conversationId || !message.trim()) return;
+    setIsScheduleMenuOpen(false);
+    const text = message.trim();
+    try {
+      await scheduleMessageMutation.mutateAsync({ convId: conversationId, text, scheduledAt: date });
+      setMessage("");
+      saveDraft(draftStorageKey, "");
+      setIsTypingInInput(false);
+      if (onCancelReply) onCancelReply();
+      const dateLabel = date.toLocaleString(i18n.language, { dateStyle: "medium", timeStyle: "short" });
+      showToast(t("scheduled_message_badge", { date: dateLabel }), "success");
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const msg = raw.includes("not_allowed_token_type")
+        ? t("schedule_not_allowed_token")
+        : raw;
+      showToast(msg, "error");
+    }
+  };
 
   // Auto-resize textarea based on content
   const adjustTextareaHeight = useCallback(() => {
@@ -817,7 +883,22 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }
 
   return (
+    <>
     <div className="flex flex-col">
+      {supportsScheduledMessages && conversationId && (
+        <ScheduledMessagesDialog
+          open={isScheduledMessagesOpen}
+          onOpenChange={setIsScheduledMessagesOpen}
+          conversationId={conversationId}
+          draft={message}
+          supportsListScheduledMessages={supportsListScheduledMessages}
+          onScheduled={() => {
+            setMessage("");
+            saveDraft(draftStorageKey, "");
+            setIsTypingInInput(false);
+          }}
+        />
+      )}
       {/* Reply preview */}
       {replyingToMessage && (
         <div className="px-4 pt-3 pb-2 border-t bg-muted/30 flex items-center gap-3">
@@ -997,16 +1078,49 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         </div>
 
         {hasMessage && (
-          <Button
-            onClick={handleSendMessage}
-            size="icon"
-            className="shrink-0"
-            title={t("send")}
-          >
-            <Send className="h-5 w-5" />
-          </Button>
+          supportsScheduledMessages ? (
+            <div className="chat-input__schedule-send flex shrink-0">
+              <Button onClick={handleSendMessage} size="icon" className="chat-input__send-button rounded-r-none" title={t("send")}>
+                <Send className="h-5 w-5" />
+              </Button>
+              <Popover open={isScheduleMenuOpen} onOpenChange={setIsScheduleMenuOpen}>
+                <PopoverTrigger asChild>
+                  <Button size="icon" className="chat-input__schedule-chevron w-6 rounded-l-none border-l border-l-primary-foreground/20" title={t("schedule_menu_title")}>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent side="top" align="end" className="w-52 p-1">
+                  <p className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">{t("schedule_menu_title")}</p>
+                  {schedulePresets.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className="w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      onClick={() => handleSchedulePreset(preset.date)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <div className="my-1 border-t" />
+                  <button
+                    type="button"
+                    className="w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    onClick={() => { setIsScheduleMenuOpen(false); setIsScheduledMessagesOpen(true); }}
+                  >
+                    {t("schedule_custom_time")}
+                  </button>
+                </PopoverContent>
+              </Popover>
+            </div>
+          ) : (
+            <Button onClick={handleSendMessage} size="icon" className="shrink-0" title={t("send")}>
+              <Send className="h-5 w-5" />
+            </Button>
+          )
         )}
       </div>
     </div>
+    <ToastContainer toasts={toasts} onClose={closeToast} />
+    </>
   );
 }

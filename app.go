@@ -469,15 +469,20 @@ func (a *App) startup(ctx context.Context) {
 		ConfigSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
+				"workspace_url": map[string]interface{}{
+					"type":        "string",
+					"title":       "Workspace URL",
+					"description": "Your Slack workspace URL, e.g. mycompany.slack.com (optional — leave empty to open the generic Slack sign-in page)",
+				},
 				"token": map[string]interface{}{
 					"type":        "string",
-					"title":       "Auth Token",
-					"description": "Bot (xoxb-), User (xoxp-), or Client (xoxc-) Token",
+					"title":       "Auth Token (advanced)",
+					"description": "Bot (xoxb-) or OAuth user (xoxp-) token. Leave empty when using browser login.",
 				},
 				"d_cookie": map[string]interface{}{
 					"type":        "string",
-					"title":       "d Cookie (Optional)",
-					"description": "Required for Client Tokens (xoxc).",
+					"title":       "d Cookie (advanced)",
+					"description": "Required only for manual Client Token (xoxc-) authentication.",
 				},
 				"sync_days": map[string]interface{}{
 					"type":        "number",
@@ -487,7 +492,6 @@ func (a *App) startup(ctx context.Context) {
 					"minimum":     0,
 				},
 			},
-			"required": []string{"token"},
 		},
 	}, func() core.Provider {
 		return providers.NewSlackProvider()
@@ -2023,6 +2027,42 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	return provider.SendMessage(conversationID, content, nil, nil)
 }
 
+func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.Time) (*models.ScheduledMessage, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	scheduler, ok := provider.(core.ScheduledMessageProvider)
+	if !ok || !provider.GetCapabilities().SupportsScheduledMessages {
+		return nil, fmt.Errorf("scheduled messages are not supported for this provider")
+	}
+	return scheduler.ScheduleMessage(conversationID, content, scheduledAt)
+}
+
+func (a *App) GetScheduledMessages(conversationID string) ([]models.ScheduledMessage, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	scheduler, ok := provider.(core.ScheduledMessageProvider)
+	if !ok || !provider.GetCapabilities().SupportsListScheduledMessages {
+		return nil, fmt.Errorf("listing scheduled messages is not supported for this provider")
+	}
+	return scheduler.ListScheduledMessages(conversationID)
+}
+
+func (a *App) CancelScheduledMessage(conversationID, scheduledMessageID string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	scheduler, ok := provider.(core.ScheduledMessageProvider)
+	if !ok || !provider.GetCapabilities().SupportsScheduledMessages {
+		return fmt.Errorf("scheduled messages are not supported for this provider")
+	}
+	return scheduler.CancelScheduledMessage(conversationID, scheduledMessageID)
+}
+
 // PinMessage pins a provider message and persists the provider-neutral pin metadata.
 func (a *App) PinMessage(conversationID, messageID string) (*models.MessagePin, error) {
 	provider := a.getProviderForConversation(conversationID)
@@ -2650,6 +2690,37 @@ func (a *App) AutoLoginTeams(instanceID, tenant string) error {
 	}
 	if err := a.SetActiveProvider(instanceID); err != nil {
 		return fmt.Errorf("activate Microsoft Teams provider: %w", err)
+	}
+	if a.ctx != nil {
+		a.startEventListenerForProvider(a.ctx, instanceID, provider)
+	}
+	return nil
+}
+
+type slackBrowserLogin interface {
+	LoginWithBrowser(context.Context, string) error
+}
+
+// AutoLoginSlack opens Chrome on the Slack login page for the specified
+// workspace (or slack.com/signin if empty). Loom extracts the session cookies
+// and xoxc token once the user has logged in; the browser never exposes
+// credentials to Loom. Existing conversations in the database are preserved.
+func (a *App) AutoLoginSlack(instanceID, workspaceURL string) error {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return err
+	}
+	login, ok := provider.(slackBrowserLogin)
+	if !ok {
+		return fmt.Errorf("provider %s does not support Slack browser login", instanceID)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+	defer cancel()
+	if err := login.LoginWithBrowser(ctx, workspaceURL); err != nil {
+		return err
+	}
+	if err := a.SetActiveProvider(instanceID); err != nil {
+		return fmt.Errorf("activate Slack provider: %w", err)
 	}
 	if a.ctx != nil {
 		a.startEventListenerForProvider(a.ctx, instanceID, provider)

@@ -157,6 +157,109 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	return sentMessage, nil
 }
 
+// ScheduleMessage queues a text message using Slack's native scheduler.
+func (p *SlackProvider) ScheduleMessage(conversationID, text string, scheduledAt time.Time) (*models.ScheduledMessage, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("scheduled message text is required")
+	}
+	if !scheduledAt.After(time.Now()) {
+		return nil, fmt.Errorf("scheduled time must be in the future")
+	}
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+	channelID, err := p.scheduledMessageChannel(conversationID, client)
+	if err != nil {
+		return nil, fmt.Errorf("conversations.open: %w", err)
+	}
+	canonicalText := strings.TrimSpace(text)
+	_, id, err := client.ScheduleMessage(channelID, strconv.FormatInt(scheduledAt.Unix(), 10), slack.MsgOptionText(messageformat.Slack(canonicalText), false))
+	if err != nil {
+		return nil, fmt.Errorf("chat.scheduleMessage: %w", err)
+	}
+	return &models.ScheduledMessage{ID: id, ProviderInstanceID: p.getInstanceId(), ProtocolConvID: core.BuildConvID(p.getInstanceId(), channelID), Body: canonicalText, ScheduledAt: scheduledAt, CreatedAt: time.Now()}, nil
+}
+
+func (p *SlackProvider) ListScheduledMessages(conversationID string) ([]models.ScheduledMessage, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("slack client not initialized")
+	}
+	channelID := ""
+	if conversationID != "" {
+		var err error
+		channelID, err = p.scheduledMessageChannel(conversationID, client)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := make([]models.ScheduledMessage, 0)
+	cursor := ""
+	for {
+		items, next, err := client.GetScheduledMessages(&slack.GetScheduledMessagesParameters{Channel: channelID, Cursor: cursor, Limit: 100})
+		if err != nil {
+			if err.Error() == "not_allowed_token_type" {
+				return result, nil
+			}
+			return nil, err
+		}
+		for _, item := range items {
+			// Normalize the DM channel ID (D…) to the user ID (U…) so that
+			// ProtocolConvID matches the frontend conversation ID format.
+			normalizedChannel := p.normalizeDMConversationID(item.Channel)
+			fmt.Printf("[SCHED DEBUG] ListScheduledMessages: id=%q channel=%q normalized=%q\n", item.ID, item.Channel, normalizedChannel)
+			result = append(result, models.ScheduledMessage{ID: item.ID, ProviderInstanceID: p.getInstanceId(), ProtocolConvID: core.BuildConvID(p.getInstanceId(), normalizedChannel), Body: item.Text, ScheduledAt: time.Unix(int64(item.PostAt), 0), CreatedAt: time.Unix(int64(item.DateCreated), 0)})
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return result, nil
+}
+
+func (p *SlackProvider) CancelScheduledMessage(conversationID, scheduledMessageID string) error {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("slack client not initialized")
+	}
+	channelID, err := p.scheduledMessageChannel(conversationID, client)
+	if err != nil {
+		return err
+	}
+	// xoxp user tokens require as_user:true to delete a message scheduled as the user.
+	token, _ := p.config.GetString("token")
+	asUser := strings.HasPrefix(token, "xoxp")
+	fmt.Printf("[SCHED DEBUG] CancelScheduledMessage: convID=%q msgID=%q channel=%q asUser=%v\n", conversationID, scheduledMessageID, channelID, asUser)
+	_, err = client.DeleteScheduledMessage(&slack.DeleteScheduledMessageParameters{Channel: channelID, ScheduledMessageID: scheduledMessageID, AsUser: asUser})
+	if err != nil {
+		fmt.Printf("[SCHED DEBUG] CancelScheduledMessage: Slack API error: %v\n", err)
+	}
+	return err
+}
+
+func (p *SlackProvider) scheduledMessageChannel(conversationID string, client *slack.Client) (string, error) {
+	channelID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	if strings.HasPrefix(channelID, "U") {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{Users: []string{channelID}, ReturnIM: true})
+		if err != nil {
+			return "", fmt.Errorf("failed to open DM conversation: %w", err)
+		}
+		if channel == nil || channel.ID == "" {
+			return "", fmt.Errorf("failed to resolve Slack DM channel")
+		}
+		channelID = channel.ID
+	}
+	return channelID, nil
+}
+
 // parseSlackBlockQuote extracts quoted message details from Slack block quote syntax (> *Name*\n> text...)
 func (p *SlackProvider) parseSlackBlockQuote(rawText string) (cleanText string, quotedSenderName string, quotedBody string, isQuote bool) {
 	// RTM encodes leading quote markers as &gt;. Decode before parsing so the

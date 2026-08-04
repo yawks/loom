@@ -217,6 +217,17 @@ type Message struct {
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 
+// ScheduledMessage is a provider-neutral representation of a message queued
+// for future delivery by the remote service.
+type ScheduledMessage struct {
+	ID                 string    `json:"id"`
+	ProviderInstanceID string    `json:"providerInstanceId"`
+	ProtocolConvID     string    `json:"protocolConvId"`
+	Body               string    `json:"body"`
+	ScheduledAt        time.Time `json:"scheduledAt"`
+	CreatedAt          time.Time `json:"createdAt"`
+}
+
 // MessagePinScope describes who can see a provider-side message pin.
 type MessagePinScope string
 

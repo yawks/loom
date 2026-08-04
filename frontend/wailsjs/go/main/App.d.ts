@@ -9,9 +9,13 @@ export function AddGroupParticipants(arg1:string,arg2:Array<string>):Promise<voi
 
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function AutoLoginSlack(arg1:string,arg2:string):Promise<void>;
+
 export function AutoLoginTeams(arg1:string,arg2:string):Promise<void>;
 
 export function AutoPairGoogleMessages(arg1:string):Promise<string>;
+
+export function CancelScheduledMessage(arg1:string,arg2:string):Promise<void>;
 
 export function CompleteGoogleMessagesLogin(arg1:string):Promise<void>;
 
@@ -93,6 +97,8 @@ export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 
+export function GetScheduledMessages(arg1:string):Promise<Array<models.ScheduledMessage>>;
+
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
@@ -122,6 +128,8 @@ export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void
 export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
+
+export function ScheduleMessage(arg1:string,arg2:string,arg3:time.Time):Promise<models.ScheduledMessage>;
 
 export function SearchMessages(arg1:string,arg2:number):Promise<models.MessageSearchPage>;
 

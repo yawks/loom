@@ -10,12 +10,20 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
+export function AutoLoginSlack(arg1, arg2) {
+  return window['go']['main']['App']['AutoLoginSlack'](arg1, arg2);
+}
+
 export function AutoLoginTeams(arg1, arg2) {
   return window['go']['main']['App']['AutoLoginTeams'](arg1, arg2);
 }
 
 export function AutoPairGoogleMessages(arg1) {
   return window['go']['main']['App']['AutoPairGoogleMessages'](arg1);
+}
+
+export function CancelScheduledMessage(arg1, arg2) {
+  return window['go']['main']['App']['CancelScheduledMessage'](arg1, arg2);
 }
 
 export function CompleteGoogleMessagesLogin(arg1) {
@@ -178,6 +186,10 @@ export function GetProviderSchema(arg1) {
   return window['go']['main']['App']['GetProviderSchema'](arg1);
 }
 
+export function GetScheduledMessages(arg1) {
+  return window['go']['main']['App']['GetScheduledMessages'](arg1);
+}
+
 export function GetThreadMessages(arg1, arg2) {
   return window['go']['main']['App']['GetThreadMessages'](arg1, arg2);
 }
@@ -236,6 +248,10 @@ export function SaveAttachmentToFile(arg1, arg2) {
 
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
+}
+
+export function ScheduleMessage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ScheduleMessage'](arg1, arg2, arg3);
 }
 
 export function SearchMessages(arg1, arg2) {

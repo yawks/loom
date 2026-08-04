@@ -19,6 +19,8 @@ export namespace core {
 	    supportsPinConversation: boolean;
 	    supportsPinMessage: boolean;
 	    supportsListMessagePins: boolean;
+	    supportsScheduledMessages: boolean;
+	    supportsListScheduledMessages: boolean;
 	    messagePinScope: string;
 	    supportsMuteConversation: boolean;
 	    supportsQRCodeAuth: boolean;
@@ -54,6 +56,8 @@ export namespace core {
 	        this.supportsPinConversation = source["supportsPinConversation"];
 	        this.supportsPinMessage = source["supportsPinMessage"];
 	        this.supportsListMessagePins = source["supportsListMessagePins"];
+	        this.supportsScheduledMessages = source["supportsScheduledMessages"];
+	        this.supportsListScheduledMessages = source["supportsListScheduledMessages"];
 	        this.messagePinScope = source["messagePinScope"];
 	        this.supportsMuteConversation = source["supportsMuteConversation"];
 	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
@@ -1044,6 +1048,47 @@ export namespace models {
 	        this.conversationType = source["conversationType"];
 	        this.title = source["title"];
 	    }
+	}
+	
+	export class ScheduledMessage {
+	    id: string;
+	    providerInstanceId: string;
+	    protocolConvId: string;
+	    body: string;
+	    scheduledAt: time.Time;
+	    createdAt: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScheduledMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.protocolConvId = source["protocolConvId"];
+	        this.body = source["body"];
+	        this.scheduledAt = this.convertValues(source["scheduledAt"], time.Time);
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
