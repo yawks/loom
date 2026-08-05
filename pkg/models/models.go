@@ -192,6 +192,7 @@ type Message struct {
 	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
 	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
+	ThreadReplyCount int              `gorm:"-" json:"threadReplyCount"`                       // Lightweight thread metadata; replies are loaded on demand
 	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
 	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`                        // Sender ID of the quoted message
 	QuotedSenderName string           `json:"quotedSenderName,omitempty"`                      // Sender name of the quoted message
@@ -215,6 +216,13 @@ type Message struct {
 	CallUrl          string           `json:"callUrl,omitempty"`                               // URL to join or view the call in a browser (provider-specific)
 	CallLinkAction   string           `json:"callLinkAction,omitempty"`                        // Generic link action: "join" (default) or "open"
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
+}
+
+// ThreadSummary is lightweight metadata for a message thread. It deliberately
+// excludes the reply content, which is retrieved only when a thread is opened.
+type ThreadSummary struct {
+	ParentMessageID string `json:"parentMessageId"`
+	ReplyCount      int    `json:"replyCount"`
 }
 
 // ScheduledMessage is a provider-neutral representation of a message queued

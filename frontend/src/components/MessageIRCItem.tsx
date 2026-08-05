@@ -42,6 +42,7 @@ interface MessageIRCItemProps {
   currentUserId: string | undefined;
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
+  threadReplyCounts: Record<string, number>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
   photoGroupMessages?: models.Message[];
@@ -70,6 +71,7 @@ export function MessageIRCItem({
   currentUserId,
   participantNames,
   threadsByParent,
+  threadReplyCounts,
   virtuosoRef,
   handlers,
   photoGroupMessages,
@@ -109,8 +111,9 @@ export function MessageIRCItem({
 
   const shouldShowSenderForDeleted = isDeleted && nextMessage?.senderId === message.senderId && nextMessage?.isFromMe === message.isFromMe;
   const showSender = !prevMessage || prevMessage.senderId !== message.senderId || prevMessage.isFromMe !== message.isFromMe || timeDiffMinutes >= 5 || shouldShowSenderForDeleted;
-  const threadMessages = threadsByParent[message.protocolMsgId];
-  const hasThread = (threadMessages?.length ?? 0) > 0;
+  const threadMessages = threadsByParent[message.protocolMsgId] ?? [];
+  const threadReplyCount = threadReplyCounts[message.protocolMsgId] ?? threadMessages.length;
+  const hasThread = threadReplyCount > 0;
   const hasUnreadInThread = hasThread && threadMessages.some(
     (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
   );
@@ -343,6 +346,7 @@ export function MessageIRCItem({
           {hasThread && (
             <MessageThreadPreview
               threadMessages={threadMessages}
+              replyCount={threadReplyCount}
               hasUnread={hasUnreadInThread}
               onThreadClick={() => handlers.onThreadClick(message.protocolMsgId, message)}
               onAvatarClick={handlers.onAvatarClick}

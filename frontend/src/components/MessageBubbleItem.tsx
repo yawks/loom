@@ -65,6 +65,7 @@ interface MessageBubbleItemProps {
   currentUserId: string | undefined;
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
+  threadReplyCounts: Record<string, number>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
   photoGroupMessages?: models.Message[];
@@ -93,6 +94,7 @@ export function MessageBubbleItem({
   currentUserId,
   participantNames,
   threadsByParent,
+  threadReplyCounts,
   virtuosoRef,
   handlers,
   photoGroupMessages,
@@ -126,8 +128,9 @@ export function MessageBubbleItem({
     : message.senderName;
   const displayName = getSenderDisplayName(resolvedSenderName, message.senderId, message.isFromMe, t);
 
-  const threadMessages = threadsByParent[message.protocolMsgId];
-  const hasThread = (threadMessages?.length ?? 0) > 0;
+  const threadMessages = threadsByParent[message.protocolMsgId] ?? [];
+  const threadReplyCount = threadReplyCounts[message.protocolMsgId] ?? threadMessages.length;
+  const hasThread = threadReplyCount > 0;
   const hasUnreadInThread = hasThread && threadMessages.some(
     (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
   );
@@ -334,6 +337,7 @@ export function MessageBubbleItem({
             {hasThread && (
               <MessageThreadPreview
                 threadMessages={threadMessages}
+                replyCount={threadReplyCount}
                 hasUnread={hasUnreadInThread}
                 onThreadClick={() => handlers.onThreadClick(message.protocolMsgId, message)}
                 onAvatarClick={handlers.onAvatarClick}

@@ -202,6 +202,10 @@ export function GetThreadMessages(arg1, arg2) {
   return window['go']['main']['App']['GetThreadMessages'](arg1, arg2);
 }
 
+export function GetThreadSummaries(arg1, arg2) {
+  return window['go']['main']['App']['GetThreadSummaries'](arg1, arg2);
+}
+
 export function GetThreads(arg1) {
   return window['go']['main']['App']['GetThreads'](arg1);
 }
