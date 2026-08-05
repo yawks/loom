@@ -87,7 +87,7 @@ interface MessageReadStore {
    *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
-  registerBatchMessages: (messages: models.Message[]) => void;
+  registerBatchMessages: (messages: models.Message[], isHistorical?: boolean) => void;
   removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
@@ -656,9 +656,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           isRead = true;
         }
       } else {
-        // Fallback: unread if conversation already exists in store, otherwise read (history)
-        const hasExisting = existingState && Object.keys(existingState).filter(k => !k.startsWith("_")).length > 0;
-        isRead = !hasExisting;
+        // A MessageEvent is delivered for a newly received message. It must be
+        // unread even when it is the first message Loom sees for a conversation.
+        // History is registered through syncConversation/registerBatchMessages.
+        isRead = false;
       }
 
       const updatedConversation: ConversationReadState = {
@@ -676,12 +677,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedMap };
     });
   },
-  registerBatchMessages: (messages: models.Message[]) => {
+  registerBatchMessages: (messages: models.Message[], isHistorical = false) => {
     if (messages.length === 0) return;
     set((state) => {
       const updatedReadByConversation = { ...state.readByConversation };
       const changedConversations = new Map<ConversationId, ConversationReadState>();
-      const conversationHasMessages = new Map<ConversationId, boolean>();
       let hasChanges = false;
 
       for (const message of messages) {
@@ -713,12 +713,14 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           const lastReadTimestamp = parseFloat(lastReadTS);
           const messageDate = timeToDate(message.timestamp);
           isRead = !isNaN(lastReadTimestamp) ? messageDate <= new Date(lastReadTimestamp * 1000) : true;
+        } else if (isHistorical) {
+          // Initial imports have no reliable read cursor for every provider.
+          // Treat them as history rather than creating a badge for old messages.
+          isRead = true;
         } else {
-          let hasExisting = conversationHasMessages.get(conversationId);
-          if (hasExisting === undefined) {
-            hasExisting = Object.keys(existingState).some((key) => !key.startsWith("_"));
-          }
-          isRead = !hasExisting;
+          // A non-historical batch contains messages recovered since the last
+          // sync. It is new activity, including when it starts a conversation.
+          isRead = false;
         }
 
         let updatedConversation = changedConversations.get(conversationId);
@@ -738,7 +740,6 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           changedConversations.set(conversationId, updatedConversation);
           updatedReadByConversation[conversationId] = updatedConversation;
         }
-        conversationHasMessages.set(conversationId, true);
         hasChanges = true;
       }
 

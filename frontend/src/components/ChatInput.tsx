@@ -9,12 +9,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import type { InfiniteData } from "@tanstack/react-query";
 import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
-import type { Theme } from "emoji-picker-react";
+import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { orderCustomEmojis, prepareEmojiSuggestions, recordCustomEmojiUsage, recordStandardEmojiUsage } from "@/lib/emojiUsage";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -135,7 +136,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [isScheduledMessagesOpen, setIsScheduledMessagesOpen] = useState(false);
   const [isScheduleMenuOpen, setIsScheduleMenuOpen] = useState(false);
-  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
+  const [customEmojiCatalog, setCustomEmojiCatalog] = useState<{ instanceId: string; emojis: CustomEmoji[] }>({
+    instanceId: "",
+    emojis: [],
+  });
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
@@ -160,7 +164,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         : undefined) ?? accounts[0]
     );
   }, [selectedContact, selectedProviderFilter]);
+
   const conversationId = activeAccount?.conversationId || activeAccount?.userId;
+  const customEmojis = customEmojiCatalog.instanceId === activeAccount?.providerInstanceId
+    ? customEmojiCatalog.emojis
+    : [];
   const supportsScheduledMessages = activeAccount?.providerInstanceId
     ? capabilities[activeAccount.providerInstanceId]?.supportsScheduledMessages ?? false
     : false;
@@ -696,6 +704,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   // Fetch custom emojis when the picker opens
   useEffect(() => {
     if (!isEmojiPickerOpen || !selectedContact) return;
+    prepareEmojiSuggestions();
     if (customEmojis.length > 0) return;
 
     const instanceId = activeAccount?.providerInstanceId;
@@ -709,14 +718,28 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           names: [name],
           imgUrl: url,
         }));
-        setCustomEmojis(emojis);
+        setCustomEmojiCatalog({ instanceId, emojis: orderCustomEmojis(instanceId, emojis) });
       })
       .catch(() => {
         // Silently ignore
       });
   }, [isEmojiPickerOpen, selectedContact, activeAccount, customEmojis.length]);
 
-  const handleEmojiClick = (emojiData: any) => {
+  const handleEmojiClick = (emojiData: EmojiClickData) => {
+    if (emojiData.isCustom) {
+      if (activeAccount?.providerInstanceId) {
+        recordCustomEmojiUsage(activeAccount.providerInstanceId, emojiData.unified);
+        setCustomEmojiCatalog((catalog) => ({
+          instanceId: activeAccount.providerInstanceId,
+          emojis: orderCustomEmojis(
+            activeAccount.providerInstanceId,
+            catalog.instanceId === activeAccount.providerInstanceId ? catalog.emojis : []
+          ),
+        }));
+      }
+    } else {
+      recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
+    }
     const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;
     setMessage((prev) => {
       const newMessage = prev + emojiText;

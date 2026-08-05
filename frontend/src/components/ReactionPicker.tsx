@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { GetCustomEmojis } from "../../wailsjs/go/main/App";
+import { orderCustomEmojis, prepareEmojiSuggestions, recordCustomEmojiUsage, recordStandardEmojiUsage } from "@/lib/emojiUsage";
 
 // Matches the internal CustomEmoji type expected by emoji-picker-react
 interface CustomEmoji {
@@ -36,11 +37,16 @@ export function ReactionPicker({
 }: Readonly<ReactionPickerProps>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
+  const [customEmojiCatalog, setCustomEmojiCatalog] = useState<{ instanceId: string; emojis: CustomEmoji[] }>({
+    instanceId: "",
+    emojis: [],
+  });
+  const customEmojis = customEmojiCatalog.instanceId === instanceId ? customEmojiCatalog.emojis : [];
 
   // Fetch custom emojis when the picker opens (once per session)
   useEffect(() => {
     if (!open || !instanceId) return;
+    prepareEmojiSuggestions();
     if (customEmojis.length > 0) return;
 
     GetCustomEmojis(instanceId)
@@ -51,7 +57,7 @@ export function ReactionPicker({
           names: [name.replaceAll("_", " ")],
           imgUrl: url as string,
         }));
-        setCustomEmojis(emojis);
+        setCustomEmojiCatalog({ instanceId, emojis: orderCustomEmojis(instanceId, emojis) });
       })
       .catch(() => {
         // Silently ignore — the picker still shows standard emojis
@@ -65,9 +71,17 @@ export function ReactionPicker({
 
   const handleEmojiClick = (emojiData: EmojiClickData) => {
     if (emojiData.isCustom) {
+      if (instanceId) {
+        recordCustomEmojiUsage(instanceId, emojiData.unified);
+        setCustomEmojiCatalog((catalog) => ({
+          instanceId,
+          emojis: orderCustomEmojis(instanceId, catalog.instanceId === instanceId ? catalog.emojis : []),
+        }));
+      }
       // Custom emoji — pass as :name: so handleReaction can strip the colons
       onReactionSelect(`:${emojiData.unified}:`);
     } else if (usesNamedReactions && emojiData.names[0]) {
+      recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
       // Named-reaction APIs such as Slack expect a shortcode, not the Unicode glyph.
       // emoji-picker-react puts the Slack/GitHub shortcode first (for example
       // "grinning" for 😀). Reversing our large alias map can instead pick
@@ -78,6 +92,7 @@ export function ReactionPicker({
         .replace(/[\s-]+/g, "_");
       onReactionSelect(`:${slackName}:`);
     } else {
+      recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
       // Standard unicode emoji
       onReactionSelect(emojiData.emoji);
     }

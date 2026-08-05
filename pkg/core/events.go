@@ -48,12 +48,14 @@ func (e MessageEvent) Type() EventType {
 	return EventTypeMessage
 }
 
-// MessageBatchEvent carries multiple new messages from a single conversation sync pass.
-// The frontend processes these together to avoid per-message store and badge updates.
+// MessageBatchEvent carries messages from a single conversation sync pass.
+// IsHistorical lets the frontend distinguish an initial history import from messages
+// recovered since the previous sync, so that the latter retain their unread state.
 type MessageBatchEvent struct {
 	InstanceID     string           `json:"instanceId"`
 	ConversationID string           `json:"conversationId"`
 	Messages       []models.Message `json:"messages"`
+	IsHistorical   bool             `json:"isHistorical"`
 }
 
 // Type returns the event type for MessageBatchEvent.
