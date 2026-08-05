@@ -1831,12 +1831,58 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 
 // GetMessagesForConversation - Renamed from GetMessages to match frontend expected name
 // GetMessagesForConversation returns messages for a conversation
+func (a *App) GetThreadSummaries(conversationID string, parentMessageIDs []string) ([]models.ThreadSummary, error) {
+	if db.DB == nil || len(parentMessageIDs) == 0 {
+		return []models.ThreadSummary{}, nil
+	}
+
+	var summaries []models.ThreadSummary
+	err := db.DB.Model(&models.Message{}).
+		Select("thread_id AS parent_message_id, COUNT(*) AS reply_count").
+		Where("protocol_conv_id = ? AND thread_id IN ? AND thread_id <> protocol_msg_id", conversationID, parentMessageIDs).
+		Group("thread_id").
+		Scan(&summaries).Error
+	if err != nil {
+		return []models.ThreadSummary{}, err
+	}
+	return summaries, nil
+}
+
+// populateThreadReplyCounts attaches only the number of replies to the main
+// messages being displayed. The reply bodies stay out of the timeline until a
+// user opens the corresponding thread.
+func (a *App) populateThreadReplyCounts(conversationID string, messages []models.Message) error {
+	parentMessageIDs := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.ProtocolMsgID != "" {
+			parentMessageIDs = append(parentMessageIDs, message.ProtocolMsgID)
+		}
+	}
+
+	summaries, err := a.GetThreadSummaries(conversationID, parentMessageIDs)
+	if err != nil {
+		return err
+	}
+	counts := make(map[string]int, len(summaries))
+	for _, summary := range summaries {
+		counts[summary.ParentMessageID] = summary.ReplyCount
+	}
+	for i := range messages {
+		messages[i].ThreadReplyCount = counts[messages[i].ProtocolMsgID]
+	}
+	return nil
+}
+
 func (a *App) GetMessagesForConversation(conversationID string) ([]models.Message, error) {
 	if db.DB == nil {
 		return []models.Message{}, nil
 	}
 	var messages []models.Message
+	// The timeline is paginated in main messages, not database rows. A busy
+	// thread can otherwise consume an entire page of 50 rows and leave the
+	// visible conversation with only a handful of top-level messages.
 	err := db.DB.Where("protocol_conv_id = ?", conversationID).
+		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
 		Preload("Receipts").
 		Preload("Reactions").
 		Order("timestamp desc").
@@ -1844,6 +1890,9 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 		Find(&messages).Error
 
 	if err != nil {
+		return []models.Message{}, err
+	}
+	if err := a.populateThreadReplyCounts(conversationID, messages); err != nil {
 		return []models.Message{}, err
 	}
 
@@ -2051,6 +2100,7 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 
 	if db.DB != nil {
 		err = db.DB.Where("protocol_conv_id = ? AND timestamp < ?", conversationID, beforeTimestamp).
+			Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
 			Preload("Receipts").
 			Preload("Reactions").
 			Order("timestamp desc").
@@ -2060,6 +2110,9 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 		if err != nil {
 			fmt.Printf("[GetMessagesForConversationBefore] DB error: %v\n", err)
 		} else if len(messages) > 0 {
+			if countErr := a.populateThreadReplyCounts(conversationID, messages); countErr != nil {
+				return []models.Message{}, countErr
+			}
 			fmt.Printf("[GetMessagesForConversationBefore] Found %d messages in DB\n", len(messages))
 			// Enrich messages with sender names from LinkedAccount
 			a.enrichMessagesWithSenderNames(messages)

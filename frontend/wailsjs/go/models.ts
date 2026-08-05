@@ -534,6 +534,7 @@ export namespace models {
 	    timestamp: time.Time;
 	    isFromMe: boolean;
 	    threadId?: string;
+	    threadReplyCount: number;
 	    quotedMessageId?: string;
 	    quotedSenderId?: string;
 	    quotedSenderName?: string;
@@ -574,6 +575,7 @@ export namespace models {
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
 	        this.isFromMe = source["isFromMe"];
 	        this.threadId = source["threadId"];
+	        this.threadReplyCount = source["threadReplyCount"];
 	        this.quotedMessageId = source["quotedMessageId"];
 	        this.quotedSenderId = source["quotedSenderId"];
 	        this.quotedSenderName = source["quotedSenderName"];
@@ -1090,6 +1092,20 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class ThreadSummary {
+	    parentMessageId: string;
+	    replyCount: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ThreadSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.parentMessageId = source["parentMessageId"];
+	        this.replyCount = source["replyCount"];
+	    }
+	}
 
 }
 
@@ -1109,4 +1125,3 @@ export namespace time {
 	}
 
 }
-

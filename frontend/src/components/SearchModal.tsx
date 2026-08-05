@@ -159,7 +159,9 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
     return map;
   }, [contacts]);
 
-  // Compute activity timestamp for a contact (last message timestamp or recent visit)
+  // Compute actual conversation activity from messages and reactions. A recent
+  // local visit must not make an inactive conversation outrank one with newer
+  // messages in search results.
   const getContactActivityTime = (contact: models.MetaContact): number => {
     let maxTime = 0;
     const accounts = contact.linkedAccounts ?? [];
@@ -173,11 +175,6 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
           if (time > maxTime) maxTime = time;
         }
       }
-    }
-    const visitedIndex = recentlyViewedIds.indexOf(contact.id);
-    if (visitedIndex >= 0) {
-      const visitTime = Date.now() - visitedIndex * 60 * 1000;
-      if (visitTime > maxTime) maxTime = visitTime;
     }
     return maxTime;
   };
@@ -291,13 +288,15 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
       })
       .filter((item) => item.score > 0)
       .sort((a, b) => {
-        // 1. Primary: match tier (Exact match > Starts with > Word boundary > Substring > Fuzzy)
-        if (b.tier !== a.tier) {
-          return b.tier - a.tier;
-        }
-        // 2. Secondary: last message / conversation activity timestamp (most recent activity first)
+        // 1. Primary: actual conversation activity (most recent first). Search
+        // is mainly used to jump back into an active conversation, including
+        // when a short query matches several names.
         if (b.activityTime !== a.activityTime) {
           return b.activityTime - a.activityTime;
+        }
+        // 2. Secondary: match tier (Exact match > Starts with > Word boundary > Substring)
+        if (b.tier !== a.tier) {
+          return b.tier - a.tier;
         }
         // 3. Tertiary: detailed relevance score
         if (b.score !== a.score) {
@@ -309,7 +308,7 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
       .map((item) => item.contact);
 
     return matching;
-  }, [contacts, searchQuery, lastMessageDates, recentlyViewedIds]);
+  }, [contacts, searchQuery, lastMessageDates]);
   const displayedContacts = useMemo(
     () => showAllContactResults ? filteredContacts : filteredContacts.slice(0, 5),
     [filteredContacts, showAllContactResults]

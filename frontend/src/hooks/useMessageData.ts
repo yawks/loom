@@ -156,6 +156,15 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     return { mainMessages: sortedMain, threadsByParent: threads };
   }, [messages, messagesKey]);
 
+  const threadReplyCounts = useMemo(
+    () => Object.fromEntries(
+      mainMessages
+        .filter((message) => message.protocolMsgId && message.threadReplyCount > 0)
+        .map((message) => [message.protocolMsgId, message.threadReplyCount])
+    ),
+    [mainMessages]
+  );
+
   const currentUserId = useMemo(() => {
     for (const msg of messages) {
       if (msg.isFromMe && msg.senderId) return msg.senderId;
@@ -251,6 +260,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     messages,
     mainMessages,
     threadsByParent,
+    threadReplyCounts,
     isGroupConversation,
     currentUserId,
     participantNames,

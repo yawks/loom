@@ -423,8 +423,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
 
   const scheduleMessageMutation = useMutation({
-    mutationFn: ({ convId, text, scheduledAt }: { convId: string; text: string; scheduledAt: Date }) =>
-      ScheduleMessage(convId, text, scheduledAt.toISOString()),
+    mutationFn: ({ convId, text, scheduledAt, parentMsgId }: {
+      convId: string;
+      text: string;
+      scheduledAt: Date;
+      parentMsgId: string;
+    }) => ScheduleMessage(convId, text, scheduledAt.toISOString(), parentMsgId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scheduled-messages", conversationId] });
     },

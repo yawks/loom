@@ -217,6 +217,7 @@ export function MessageList({
     messages,
     mainMessages,
     threadsByParent,
+    threadReplyCounts,
     isGroupConversation,
     currentUserId,
     participantNames,
@@ -932,6 +933,7 @@ export function MessageList({
     currentUserId,
     participantNames,
     threadsByParent,
+    threadReplyCounts,
     virtuosoRef,
     handlers,
   };

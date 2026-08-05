@@ -105,6 +105,8 @@ export function GetScheduledMessages(arg1:string):Promise<Array<models.Scheduled
 
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 
+export function GetThreadSummaries(arg1:string,arg2:Array<string>):Promise<Array<models.ThreadSummary>>;
+
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
 
 export function LeaveGroup(arg1:string):Promise<void>;

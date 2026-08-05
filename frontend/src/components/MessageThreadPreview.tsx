@@ -10,6 +10,7 @@ const MAX_AVATARS = 5;
 
 interface MessageThreadPreviewProps {
   readonly threadMessages: models.Message[];
+  readonly replyCount?: number;
   readonly className?: string;
   readonly hasUnread?: boolean;
   readonly onThreadClick: () => void;
@@ -18,6 +19,7 @@ interface MessageThreadPreviewProps {
 
 export function MessageThreadPreview({
   threadMessages,
+  replyCount: suppliedReplyCount,
   className,
   hasUnread = false,
   onThreadClick,
@@ -37,7 +39,7 @@ export function MessageThreadPreview({
 
   const visibleParticipants = uniqueParticipants.slice(0, MAX_AVATARS);
   const overflow = uniqueParticipants.length - MAX_AVATARS;
-  const replyCount = threadMessages.length;
+  const replyCount = suppliedReplyCount ?? threadMessages.length;
 
   return (
     <div

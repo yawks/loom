@@ -56,13 +56,14 @@ const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Pr
 interface ThreadListItemProps {
   parentMessage: models.Message;
   replies: models.Message[];
+  replyCount: number;
   providerInstanceId: string | undefined;
   onClick: () => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onContactAvatarClick: (message: models.Message, name: string) => void;
 }
 
-function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerInstanceId, onClick, onAvatarClick, onContactAvatarClick }: ThreadListItemProps) {
+function ThreadListItem({ parentMessage, replies, replyCount, providerInstanceId: _providerInstanceId, onClick, onAvatarClick, onContactAvatarClick }: ThreadListItemProps) {
   const { t } = useTranslation();
   const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
   const timestamp = timeToDate(parentMessage.timestamp);
@@ -102,6 +103,7 @@ function ThreadListItem({ parentMessage, replies, providerInstanceId: _providerI
       <div className="pl-8">
         <MessageThreadPreview
           threadMessages={replies}
+          replyCount={replyCount}
           onThreadClick={() => {}}
           onAvatarClick={onAvatarClick}
         />
@@ -276,33 +278,15 @@ export function ThreadView() {
     }
   }, [conversationId, threadListMessages, threadListIsFetching, threadListHasMore]);
 
-  const threadsParentList = useMemo(() => {
-    const threadReplies: Record<string, models.Message[]> = {};
-    threadListMessages.forEach((msg) => {
-      const isReply = msg.threadId && msg.threadId !== msg.protocolMsgId;
-      if (isReply && msg.threadId) {
-        if (!threadReplies[msg.threadId]) threadReplies[msg.threadId] = [];
-        threadReplies[msg.threadId].push(msg);
-      }
-    });
+  const threadListItems = useMemo(() => {
     return threadListMessages
-      .filter(
-        (msg) =>
-          (!msg.threadId || msg.threadId === msg.protocolMsgId) &&
-          msg.protocolMsgId &&
-          (threadReplies[msg.protocolMsgId]?.length ?? 0) > 0
-      )
-      .map((msg) => ({
-        parentMessage: msg,
-        replies: (threadReplies[msg.protocolMsgId!] ?? []).sort(
-          (a, b) => timeToDate(a.timestamp).getTime() - timeToDate(b.timestamp).getTime()
-        ),
+      .filter((message) => message.protocolMsgId && message.threadReplyCount > 0)
+      .map((parentMessage) => ({
+        parentMessage,
+        replies: [],
+        replyCount: parentMessage.threadReplyCount,
       }))
-      .sort((a, b) => {
-        const aLatest = Math.max(...a.replies.map((r) => timeToDate(r.timestamp).getTime()));
-        const bLatest = Math.max(...b.replies.map((r) => timeToDate(r.timestamp).getTime()));
-        return bLatest - aLatest;
-      });
+      .sort((a, b) => timeToDate(b.parentMessage.timestamp).getTime() - timeToDate(a.parentMessage.timestamp).getTime());
   }, [threadListMessages]);
 
   // Scroll-position preservation when older messages are prepended to the list
@@ -315,7 +299,7 @@ export function ThreadView() {
     const delta = el.scrollHeight - prevScrollMetricsRef.current.scrollHeight;
     if (delta > 0) el.scrollTop = prevScrollMetricsRef.current.scrollTop + delta;
     prevScrollMetricsRef.current = null;
-  }, [threadsParentList]);
+  }, [threadListItems]);
 
   // Auto-fill: keep fetching until the list overflows (user can then scroll to get more)
   useEffect(() => {
@@ -330,7 +314,7 @@ export function ThreadView() {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedThreadId, threadsParentList.length, threadListHasMore, threadListIsFetching]);
+  }, [selectedThreadId, threadListItems.length, threadListHasMore, threadListIsFetching]);
 
   const handleThreadListScroll = useCallback(() => {
     const el = threadListScrollRef.current;
@@ -358,7 +342,7 @@ export function ThreadView() {
     return () => {
       resizeObserver.disconnect();
     };
-  }, [selectedThreadId, threadsParentList.length]);
+  }, [selectedThreadId, threadListItems.length]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const threadContentRef = useRef<HTMLDivElement>(null);
@@ -641,17 +625,18 @@ export function ThreadView() {
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
           )}
-          {threadsParentList.length === 0 && !threadListIsFetching ? (
+          {threadListItems.length === 0 && !threadListIsFetching ? (
             <div className="text-center text-muted-foreground py-8 px-4">
               {t("no_threads_in_conversation")}
             </div>
           ) : (
             <div className="thread-view__list-items">
-              {threadsParentList.map(({ parentMessage, replies }) => (
+              {threadListItems.map(({ parentMessage, replies, replyCount }) => (
                 <ThreadListItem
                   key={parentMessage.protocolMsgId}
                   parentMessage={parentMessage}
                   replies={replies}
+                  replyCount={replyCount}
                   providerInstanceId={providerInstanceId}
                   onClick={() => handleOpenThread(parentMessage.protocolMsgId!)}
                   onAvatarClick={handleAvatarClick}
@@ -681,8 +666,11 @@ export function ThreadView() {
             <X className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          {t("loading") || "Loading…"}
+        <div className="flex-1 space-y-4 p-4 animate-pulse" aria-label={t("loading") || "Loading…"}>
+          <div className="h-4 w-1/3 rounded bg-muted" />
+          <div className="h-20 rounded-lg bg-muted" />
+          <div className="h-12 rounded-lg bg-muted" />
+          <div className="h-12 w-4/5 rounded-lg bg-muted" />
         </div>
       </div>
     );
