@@ -1,4 +1,4 @@
-import { SendFile, SendMessage, SendReply } from "../../wailsjs/go/main/App";
+import { SendFile, SendMessage, SendReply, SendThreadFile } from "../../wailsjs/go/main/App";
 import { useCallback, useState } from "react";
 
 import type { InfiniteData } from "@tanstack/react-query";
@@ -57,7 +57,7 @@ export interface UploadState {
   error?: string | null;
 }
 
-export function useFileUpload(conversationId: string, showToast?: (message: string, type?: "error" | "info" | "success") => void) {
+export function useFileUpload(conversationId: string, showToast?: (message: string, type?: "error" | "info" | "success") => void, threadId?: string) {
   const queryClient = useQueryClient();
   const [isDragging, setIsDragging] = useState(false);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
@@ -105,7 +105,11 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
   const refreshMessages = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
     queryClient.refetchQueries({ queryKey: ["messages", conversationId] });
-  }, [queryClient, conversationId]);
+    if (threadId) {
+      queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
+      queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
+    }
+  }, [queryClient, conversationId, threadId]);
 
   const handleFileUpload = useCallback(async (files: File[], filePaths?: string[]) => {
     const hasFilePaths = Boolean(filePaths && filePaths.length > 0);
@@ -344,7 +348,9 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
           progressPercent: Math.round(((currentItemIndex - 0.1) / totalCount) * 100),
         }));
 
-        if (typeof SendFile === "function") {
+        if (threadId) {
+          await SendThreadFile(conversationId, fileData, fileName, fileMimeType, threadId);
+        } else if (typeof SendFile === "function") {
           await SendFile(conversationId, fileData, fileName, fileMimeType);
         } else {
           throw new Error("SendFile API is not available");
@@ -385,7 +391,7 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
     }, 500);
 
     refreshMessages();
-  }, [conversationId, refreshMessages]);
+  }, [conversationId, threadId, refreshMessages]);
 
   // Optimistic message state helpers (used for retry/delete local)
   const markMessageState = useCallback(

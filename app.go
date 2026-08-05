@@ -1500,6 +1500,35 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 			continue
 		}
 		if meta, ok := db.ContactStore.FindMetaContact(account.MetaContactID); ok {
+			if strings.TrimSpace(meta.DisplayName) == "" {
+				names := make([]string, 0, len(request.ParticipantIDs))
+				seenNames := make(map[string]bool, len(request.ParticipantIDs))
+				for _, participantID := range request.ParticipantIDs {
+					for _, contact := range directory {
+						if len(contact.LinkedAccounts) == 0 || !strings.EqualFold(contact.LinkedAccounts[0].UserID, participantID) {
+							continue
+						}
+						name := strings.TrimSpace(contact.DisplayName)
+						key := strings.ToLower(name)
+						if name != "" && !seenNames[key] {
+							seenNames[key] = true
+							names = append(names, name)
+						}
+						break
+					}
+				}
+				if generatedName := strings.Join(names, ", "); generatedName != "" {
+					meta.DisplayName = generatedName
+					account.Username = generatedName
+					if db.DB != nil {
+						_ = db.DB.Model(&models.MetaContact{}).Where("id = ?", meta.ID).Update("display_name", generatedName).Error
+						_ = db.DB.Model(&models.LinkedAccount{}).Where("id = ?", account.ID).Update("username", generatedName).Error
+						_ = db.DB.Model(&models.Conversation{}).Where("protocol_conv_id = ?", convID).Update("group_name", generatedName).Error
+					}
+					db.ContactStore.UpsertMetaContact(meta)
+					db.ContactStore.UpsertLinkedAccount(account)
+				}
+			}
 			account.ConversationID = convID
 			meta.LinkedAccounts = []models.LinkedAccount{account}
 			resolution.Matches = append(resolution.Matches, meta)
@@ -1936,6 +1965,26 @@ func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage
 
 // GetMessagesForConversationBefore returns messages before a specific timestamp for pagination
 // GetThreadMessages retrieves all messages in a thread
+func hasAttachmentWithEmptyURL(messages []models.Message) bool {
+	for _, msg := range messages {
+		if msg.Attachments == "" {
+			continue
+		}
+		var atts []struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal([]byte(msg.Attachments), &atts); err != nil {
+			continue
+		}
+		for _, att := range atts {
+			if att.URL == "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (a *App) GetThreadMessages(conversationID string, threadID string) ([]models.Message, error) {
 	fmt.Printf("[GetThreadMessages] Getting thread messages for conversation %s, thread %s\n", conversationID, threadID)
 
@@ -1951,6 +2000,29 @@ func (a *App) GetThreadMessages(conversationID string, threadID string) ([]model
 		if err == nil && len(messages) > 0 {
 			// Enrich messages with sender names
 			a.enrichMessagesWithSenderNames(messages)
+			provider := a.getProviderForConversation(conversationID)
+			// If any message has an attachment with an empty URL (e.g. a file sent to a
+			// thread before the retroactive fix), re-fetch from the provider so that
+			// storeMessagesForConversation can merge in the real URLs. Slack threads
+			// are also refreshed because older persisted Block Kit messages contain
+			// only the image label; there is no URL in the stored row by which to
+			// recognize and repair them locally.
+			_, isSlack := provider.(*slack.SlackProvider)
+			if provider != nil && (hasAttachmentWithEmptyURL(messages) || isSlack) {
+				if fresh, ferr := provider.GetThreads(threadID); ferr == nil && len(fresh) > 0 {
+					a.enrichMessagesWithSenderNames(fresh)
+					// Delete orphan records whose protocol_msg_id is a file ID
+					// (e.g. "F0BMYJWPDPU") rather than a proper message timestamp.
+					// These are created by SendFile when polling fails and then
+					// superseded by the real message once the events poller runs.
+					if db.DB != nil {
+						db.DB.Where("thread_id = ? AND protocol_msg_id NOT LIKE '%.%'", threadID).
+							Delete(&models.Message{})
+					}
+					fmt.Printf("[GetThreadMessages] Re-fetched %d thread messages from provider to resolve empty attachment URLs\n", len(fresh))
+					return fresh, nil
+				}
+			}
 			fmt.Printf("[GetThreadMessages] Loaded %d thread messages from database\n", len(messages))
 			return messages, nil
 		}
@@ -2027,7 +2099,7 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	return provider.SendMessage(conversationID, content, nil, nil)
 }
 
-func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.Time) (*models.ScheduledMessage, error) {
+func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.Time, parentMsgID string) (*models.ScheduledMessage, error) {
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
@@ -2036,7 +2108,7 @@ func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.T
 	if !ok || !provider.GetCapabilities().SupportsScheduledMessages {
 		return nil, fmt.Errorf("scheduled messages are not supported for this provider")
 	}
-	return scheduler.ScheduleMessage(conversationID, content, scheduledAt)
+	return scheduler.ScheduleMessage(conversationID, content, scheduledAt, parentMsgID)
 }
 
 func (a *App) GetScheduledMessages(conversationID string) ([]models.ScheduledMessage, error) {
@@ -2250,6 +2322,39 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
 	_, err = provider.SendFile(conversationID, attachment, nil)
+	return err
+}
+
+func (a *App) SendThreadFile(conversationID string, base64Data string, filename string, mimeType string, threadID string) error {
+	if idx := strings.Index(base64Data, ","); idx != -1 {
+		base64Data = base64Data[idx+1:]
+	}
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return err
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+		ext := strings.ToLower(filepath.Ext(filename))
+		if ext == ".png" {
+			mimeType = "image/png"
+		} else if ext == ".jpg" || ext == ".jpeg" {
+			mimeType = "image/jpeg"
+		} else if ext == ".pdf" {
+			mimeType = "application/pdf"
+		}
+	}
+	attachment := &core.Attachment{
+		FileName: filename,
+		Data:     data,
+		FileSize: len(data),
+		MimeType: mimeType,
+	}
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	_, err = provider.SendFile(conversationID, attachment, &threadID)
 	return err
 }
 
@@ -2695,6 +2800,40 @@ func (a *App) AutoLoginTeams(instanceID, tenant string) error {
 		a.startEventListenerForProvider(a.ctx, instanceID, provider)
 	}
 	return nil
+}
+
+type googleChatGaiaBrowserLogin interface {
+	LoginWithGaiaBrowser(context.Context) (map[string]string, error)
+	GetWebCookies() (map[string]string, error)
+}
+
+// AutoLoginGoogleChatGaia opens Chrome on Google Chat login page to capture
+// session cookies required for server-side scheduled messages via Web RPC.
+func (a *App) AutoLoginGoogleChatGaia(instanceID string) (map[string]string, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	login, ok := provider.(googleChatGaiaBrowserLogin)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support Gaia browser login", instanceID)
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+	defer cancel()
+	return login.LoginWithGaiaBrowser(ctx)
+}
+
+// GetGoogleChatWebCookies returns saved Google Chat web session cookies if present.
+func (a *App) GetGoogleChatWebCookies(instanceID string) (map[string]string, error) {
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	login, ok := provider.(googleChatGaiaBrowserLogin)
+	if !ok {
+		return nil, fmt.Errorf("provider %s does not support Gaia browser login", instanceID)
+	}
+	return login.GetWebCookies()
 }
 
 type slackBrowserLogin interface {

@@ -56,6 +56,15 @@ type GoogleChatProvider struct {
 	threadNameByMsgID   map[string]string
 	threadNameByMsgIDMu sync.RWMutex
 
+	// spaceWebIDCache maps REST space name ("spaces/XXX") to the web client space ID
+	// extracted from SpaceUri (e.g. "_q55RHW5d6o" from "https://...chat/r/spaces/_q55RHW5d6o").
+	// Required to build correct create_unsent_message payloads.
+	spaceWebIDCache map[string]string
+	spaceIsDMCache  map[string]bool
+	spaceWebIDMu    sync.RWMutex
+
+	webClient *googleChatWebClient
+
 	lastSeen   map[string]time.Time
 	lastSeenMu sync.Mutex
 
@@ -65,14 +74,19 @@ type GoogleChatProvider struct {
 }
 
 var _ core.Provider = (*GoogleChatProvider)(nil)
+var _ core.ScheduledMessageProvider = (*GoogleChatProvider)(nil)
 
 func NewGoogleChatProvider() *GoogleChatProvider {
-	return &GoogleChatProvider{
+	p := &GoogleChatProvider{
 		eventChan:         make(chan core.ProviderEvent, 500),
 		userCache:         make(map[string]cachedUser),
 		threadNameByMsgID: make(map[string]string),
 		lastSeen:          make(map[string]time.Time),
+		spaceWebIDCache:   make(map[string]string),
+		spaceIsDMCache:    make(map[string]bool),
 	}
+	p.webClient = newGoogleChatWebClient(p.getInstanceID(), nil, p.handleWebAuthExpired)
+	return p
 }
 
 // --- Lifecycle ---
@@ -148,6 +162,11 @@ func (p *GoogleChatProvider) connectWithToken(ctx context.Context, oauthConf *oa
 	p.apiClient = httpClient
 	p.mu.Unlock()
 
+	// Load saved web cookies if available for scheduled messages
+	if cookies, err := p.loadWebCookies(); err == nil && len(cookies) > 0 {
+		p.webClient.SetCookies(cookies)
+	}
+
 	if err := p.fetchSelf(); err != nil {
 		p.log("GoogleChatProvider.Connect: fetchSelf failed: %v\n", err)
 	} else {
@@ -194,6 +213,7 @@ func (p *GoogleChatProvider) Disconnect() error {
 
 func (p *GoogleChatProvider) Cleanup() error {
 	_ = os.Remove(p.tokenFilePath())
+	_ = os.Remove(p.webCookiesFilePath())
 	if p.logger != nil {
 		p.logger.Close()
 		p.logger = nil
@@ -225,26 +245,51 @@ func (p *GoogleChatProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
 
 func (p *GoogleChatProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads:            true,
-		SupportsReactions:          true,
-		SupportsLeaveGroup:         true,
-		SupportsDeleteMessage:      true,
-		SupportsEditMessage:        true,
-		SupportsPinMessage:         true,
-		SupportsListMessagePins:    true,
-		MessagePinScope:            string(models.MessagePinScopeShared),
-		SupportsQRCodeAuth:         false,
-		NativeEmojiReactions:       true,
-		SupportsRenameGroup:        true,
-		SupportsAddGroupMembers:    true,
-		SupportsRemoveGroupMembers: true,
-		SupportsGroupAdminRoles:    true,
-		SupportsContactDirectory:   true,
-		SupportsGroupConversation:  true,
-		SupportsGroupTitle:         true,
-		RequiresGroupTitle:         true,
-		GroupConversationTypes:     "group",
+		SupportsThreads:               true,
+		SupportsReactions:             true,
+		SupportsLeaveGroup:            true,
+		SupportsDeleteMessage:         true,
+		SupportsEditMessage:           true,
+		SupportsPinMessage:            true,
+		SupportsListMessagePins:       true,
+		SupportsScheduledMessages:     true,
+		SupportsListScheduledMessages: true,
+		MessagePinScope:               string(models.MessagePinScopeShared),
+		SupportsQRCodeAuth:            false,
+		NativeEmojiReactions:          true,
+		SupportsRenameGroup:           true,
+		SupportsAddGroupMembers:       true,
+		SupportsRemoveGroupMembers:    true,
+		SupportsGroupAdminRoles:       true,
+		SupportsContactDirectory:      true,
+		SupportsGroupConversation:     true,
+		SupportsGroupTitle:            true,
+		RequiresGroupTitle:            true,
+		GroupConversationTypes:        "group",
 	}
+}
+
+func (p *GoogleChatProvider) LoginWithGaiaBrowser(ctx context.Context) (map[string]string, error) {
+	cookies, err := FetchGoogleChatCookiesViaLogin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("googlechat: gaia login failed: %w", err)
+	}
+
+	if err := p.saveWebCookies(cookies); err != nil {
+		p.log("GoogleChatProvider: save web cookies failed: %v\n", err)
+	}
+
+	p.webClient.SetCookies(cookies)
+	p.emit(core.ContactStatusEvent{
+		InstanceID: p.getInstanceID(),
+		UserID:     "system",
+		Status:     "connected",
+	})
+	return cookies, nil
+}
+
+func (p *GoogleChatProvider) GetWebCookies() (map[string]string, error) {
+	return p.loadWebCookies()
 }
 
 func (p *GoogleChatProvider) GetCustomEmojis() (map[string]string, error) {
@@ -287,6 +332,44 @@ func (p *GoogleChatProvider) saveToken(token *oauth2.Token) error {
 		return err
 	}
 	return os.WriteFile(p.tokenFilePath(), data, 0600)
+}
+
+func (p *GoogleChatProvider) webCookiesFilePath() string {
+	configDir, _ := os.UserConfigDir()
+	return filepath.Join(configDir, "Loom", "googlechat-"+p.getInstanceID()+"-cookies.json")
+}
+
+func (p *GoogleChatProvider) loadWebCookies() (map[string]string, error) {
+	data, err := os.ReadFile(p.webCookiesFilePath())
+	if err != nil {
+		return nil, err
+	}
+	var cookies map[string]string
+	if err := json.Unmarshal(data, &cookies); err != nil {
+		return nil, err
+	}
+	return cookies, nil
+}
+
+func (p *GoogleChatProvider) saveWebCookies(cookies map[string]string) error {
+	data, err := json.Marshal(cookies)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(p.webCookiesFilePath())
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(p.webCookiesFilePath(), data, 0600)
+}
+
+func (p *GoogleChatProvider) handleWebAuthExpired() {
+	p.log("GoogleChatProvider: web session cookies expired — emitting auth_expired status event\n")
+	p.emit(core.ContactStatusEvent{
+		InstanceID: p.getInstanceID(),
+		UserID:     "system",
+		Status:     "auth_expired",
+	})
 }
 
 // --- Helpers ---

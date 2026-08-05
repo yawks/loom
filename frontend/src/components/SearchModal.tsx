@@ -73,7 +73,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
 
   const { data: configuredProviders = [] } = useQuery({
     queryKey: ["configuredProviders"],
-    queryFn: () => GetConfiguredProviders().catch(() => []),
+    queryFn: GetConfiguredProviders,
+    // SearchModal stays mounted while it is closed. Fetching only when it opens
+    // prevents an empty startup response from being kept until a later refetch.
+    enabled: open,
   });
 
   // Fetch all last message timestamps for recency calculation (like ContactList last_message sort)
@@ -122,6 +125,12 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
     }
     return map;
   }, [configuredProviders]);
+
+  const getProviderProtocol = (account: models.LinkedAccount) =>
+    providerProtocolById.get(account.providerInstanceId) || account.protocol;
+
+  const getProviderName = (account: models.LinkedAccount) =>
+    providerNameById.get(account.providerInstanceId) || account.protocol;
 
   // Load persistent IDs when modal opens
   useEffect(() => {
@@ -699,10 +708,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                               <span className="search-modal__contact-providers flex items-center gap-1 text-xs opacity-40 truncate">
                                 {contact.linkedAccounts.map((a, i) => (
                                   <span key={a.providerInstanceId + i} className="search-modal__contact-provider-entry flex items-center gap-0.5">
-                                    {providerProtocolById.get(a.providerInstanceId) && (
-                                      <ProtocolIcon protocol={providerProtocolById.get(a.providerInstanceId)!} size={12} />
+                                    {getProviderProtocol(a) && (
+                                      <ProtocolIcon protocol={getProviderProtocol(a)} size={12} />
                                     )}
-                                    {providerNameById.get(a.providerInstanceId) ?? a.providerInstanceId}
+                                    {getProviderName(a)}
                                     {i < contact.linkedAccounts.length - 1 && <span className="mx-0.5">·</span>}
                                   </span>
                                 ))}
@@ -786,10 +795,10 @@ export function SearchModal({ open, onOpenChange }: SearchModalProps) {
                           <span className="search-modal__contact-providers flex items-center gap-1 text-xs opacity-40 truncate">
                             {contact.linkedAccounts.map((a, i) => (
                               <span key={a.providerInstanceId + i} className="search-modal__contact-provider-entry flex items-center gap-0.5">
-                                {providerProtocolById.get(a.providerInstanceId) && (
-                                  <ProtocolIcon protocol={providerProtocolById.get(a.providerInstanceId)!} size={12} />
+                                {getProviderProtocol(a) && (
+                                  <ProtocolIcon protocol={getProviderProtocol(a)} size={12} />
                                 )}
-                                {providerNameById.get(a.providerInstanceId) ?? a.providerInstanceId}
+                                {getProviderName(a)}
                                 {i < contact.linkedAccounts.length - 1 && <span className="mx-0.5">·</span>}
                               </span>
                             ))}

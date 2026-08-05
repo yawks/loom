@@ -24,6 +24,7 @@ type Space struct {
 	Type        string `json:"type"`
 	DisplayName string `json:"displayName"`
 	SpaceType   string `json:"spaceType"`
+	SpaceUri    string `json:"spaceUri"` // e.g. "https://mail.google.com/chat/r/spaces/WEB_CLIENT_ID"
 }
 
 type SpaceListResponse struct {

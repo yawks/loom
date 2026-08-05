@@ -409,7 +409,58 @@ func (p *Provider) CreateGroup(groupName string, participantIDs []string) (*mode
 	if err != nil {
 		return nil, err
 	}
-	return &models.Conversation{ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: true, GroupName: chat.Topic}, nil
+	participants := make([]models.GroupParticipant, 0, len(participantIDs)+1)
+	seen := make(map[string]bool, len(participantIDs)+1)
+	addParticipant := func(userID string, isAdmin bool) {
+		key := strings.ToLower(strings.TrimSpace(userID))
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		participants = append(participants, models.GroupParticipant{
+			UserID: userID, IsAdmin: isAdmin, IsSelf: strings.EqualFold(userID, client.UserMRI()), JoinedAt: time.Now(),
+		})
+	}
+	for _, member := range chat.Members {
+		addParticipant(member.MRI, strings.EqualFold(member.Role, "Admin") || strings.EqualFold(member.Role, "Owner"))
+	}
+	addParticipant(client.UserMRI(), true)
+	for _, participantID := range participantIDs {
+		addParticipant(participantID, true)
+	}
+	displayName := strings.TrimSpace(chat.Topic)
+	if displayName == "" {
+		displayName = p.createdGroupDisplayName(client, participantIDs)
+	}
+	return &models.Conversation{
+		ProtocolConvID: core.BuildConvID(p.instance, chat.ID), IsGroup: true,
+		GroupName: displayName, GroupParticipants: participants,
+	}, nil
+}
+
+func (p *Provider) createdGroupDisplayName(client *msteams.Client, participantIDs []string) string {
+	names := make([]string, 0, len(participantIDs))
+	seen := make(map[string]bool, len(participantIDs))
+	for _, participantID := range participantIDs {
+		if strings.EqualFold(participantID, client.UserMRI()) {
+			continue
+		}
+		name := strings.TrimSpace(client.CachedDisplayName(participantID))
+		if name == "" || isTechnicalConversationName(name, participantID) {
+			if profile, err := client.GetUser(context.Background(), participantID); err == nil && profile != nil {
+				name = strings.TrimSpace(profile.DisplayName)
+			}
+		}
+		if name == "" {
+			name = participantID
+		}
+		key := strings.ToLower(name)
+		if !seen[key] {
+			seen[key] = true
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 func (p *Provider) UpdateGroupName(conversationID, newName string) error {
@@ -909,6 +960,7 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
+		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
 		MessagePinScope:            string(models.MessagePinScopeShared),
 		SupportsGroupManagement:    true,
 		SupportsLeaveGroup:         true,
@@ -1011,7 +1063,7 @@ func teamsDMParticipantMRI(threadID, selfMRI string) string {
 
 func isVirtualTeamsThread(threadID string) bool {
 	switch strings.ToLower(strings.TrimSpace(threadID)) {
-	case "48:calllogs", "48:mentions", "48:notifications", "48:notes":
+	case "48:calllogs", "48:mentions", "48:notifications", "48:notes", "48:drafts":
 		return true
 	default:
 		return false

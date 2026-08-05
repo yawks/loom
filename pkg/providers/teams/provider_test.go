@@ -82,6 +82,7 @@ func TestCapabilities(t *testing.T) {
 		SupportsTypingIndicator: true, SupportsDeleteMessage: true,
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
+		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
 		MessagePinScope:            string(models.MessagePinScopeShared),
 		SupportsGroupManagement:    true,
 		SupportsAddGroupMembers:    true,
@@ -156,13 +157,27 @@ func TestMRILookupKey(t *testing.T) {
 }
 
 func TestVirtualTeamsThreads(t *testing.T) {
-	for _, threadID := range []string{"48:calllogs", "48:mentions", "48:notifications"} {
+	for _, threadID := range []string{"48:calllogs", "48:mentions", "48:notifications", "48:notes", "48:drafts"} {
 		if !isVirtualTeamsThread(threadID) {
 			t.Errorf("%q should be virtual", threadID)
 		}
 	}
 	if isVirtualTeamsThread("19:group@thread.v2") {
 		t.Fatal("normal group thread must not be filtered")
+	}
+}
+
+func TestCreatedUnnamedGroupDisplayName(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{UserMRI: "8:orgid:self", SkypeToken: "token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	client.CacheDisplayName("8:orgid:alice", "Alice Martin")
+	client.CacheDisplayName("8:orgid:bob", "Bob Durand")
+	got := NewProvider().createdGroupDisplayName(client, []string{"8:orgid:alice", "8:orgid:bob"})
+	if got != "Alice Martin, Bob Durand" {
+		t.Fatalf("group display name=%q", got)
 	}
 }
 
@@ -319,6 +334,28 @@ func TestTeamsHTMLTableToMarkdown(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("table markdown %q does not contain %q", got, expected)
 		}
+	}
+}
+
+func TestTeamsHTMLRichPresentation(t *testing.T) {
+	got := teamsHTMLToMarkdown(
+		`<p><span style="color:#c4314b;background-color:rgb(255, 240, 200);font-size:18px;text-decoration:underline">` +
+			`<strong>Important</strong></span> <font color="blue" size="5">Grand</font></p>`,
+	)
+	for _, expected := range []string{
+		`<loom-style color="#c4314b" background="rgb(255, 240, 200)" size="18px" underline="true">**Important**</loom-style>`,
+		`<loom-style color="blue" size="24px">Grand</loom-style>`,
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("rich text %q does not contain %q", got, expected)
+		}
+	}
+}
+
+func TestTeamsHTMLInlineEmoji(t *testing.T) {
+	got := teamsHTMLToMarkdown(`<p>Hello <img itemtype="http://schema.skype.com/Emoji" itemid="wink" src="emoji.png"></p>`)
+	if got != "Hello 😉" {
+		t.Fatalf("inline emoji body=%q", got)
 	}
 }
 

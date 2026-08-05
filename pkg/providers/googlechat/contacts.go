@@ -51,6 +51,15 @@ func (p *GoogleChatProvider) GetContacts() ([]models.LinkedAccount, error) {
 		avatarURL := ""
 		userID := space.Name
 
+		// Cache web client space ID for scheduled messages (create_unsent_message uses a
+		// different ID format than the REST API).
+		if webID := extractSpaceWebID(space.SpaceUri); webID != "" {
+			p.spaceWebIDMu.Lock()
+			p.spaceWebIDCache[space.Name] = webID
+			p.spaceIsDMCache[space.Name] = isDM
+			p.spaceWebIDMu.Unlock()
+		}
+
 		p.log("GoogleChatProvider.GetContacts: space=%s type=%s spaceType=%s displayName=%q isDM=%v\n",
 			space.Name, space.Type, space.SpaceType, space.DisplayName, isDM)
 
@@ -424,4 +433,29 @@ func (p *GoogleChatProvider) persistContact(acct models.LinkedAccount, convID st
 			db.ContactStore.SetConversation(linkedAccount.ID, nsConvID)
 		}
 	}
+}
+
+// extractSpaceWebID returns the web client space ID from a spaceUri like
+// "https://mail.google.com/chat/r/spaces/_q55RHW5d6o" or
+// "https://mail.google.com/chat/r/spaces/-zrGTiAAAAE?cls=11".
+func extractSpaceWebID(spaceUri string) string {
+	if spaceUri == "" {
+		return ""
+	}
+	// Strip query string and fragment before extracting path segment.
+	uri := spaceUri
+	if i := strings.IndexByte(uri, '?'); i != -1 {
+		uri = uri[:i]
+	}
+	if i := strings.IndexByte(uri, '#'); i != -1 {
+		uri = uri[:i]
+	}
+	uri = strings.TrimRight(uri, "/")
+	if idx := strings.LastIndex(uri, "/"); idx != -1 {
+		id := uri[idx+1:]
+		if id != "" && id != "spaces" {
+			return id
+		}
+	}
+	return ""
 }

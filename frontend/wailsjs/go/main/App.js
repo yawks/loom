@@ -10,6 +10,10 @@ export function AddReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddReaction'](arg1, arg2, arg3);
 }
 
+export function AutoLoginGoogleChatGaia(arg1) {
+  return window['go']['main']['App']['AutoLoginGoogleChatGaia'](arg1);
+}
+
 export function AutoLoginSlack(arg1, arg2) {
   return window['go']['main']['App']['AutoLoginSlack'](arg1, arg2);
 }
@@ -142,6 +146,10 @@ export function GetCustomEmojis(arg1) {
   return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
 
+export function GetGoogleChatWebCookies(arg1) {
+  return window['go']['main']['App']['GetGoogleChatWebCookies'](arg1);
+}
+
 export function GetGroupDetails(arg1) {
   return window['go']['main']['App']['GetGroupDetails'](arg1);
 }
@@ -250,8 +258,8 @@ export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
-export function ScheduleMessage(arg1, arg2, arg3) {
-  return window['go']['main']['App']['ScheduleMessage'](arg1, arg2, arg3);
+export function ScheduleMessage(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ScheduleMessage'](arg1, arg2, arg3, arg4);
 }
 
 export function SearchMessages(arg1, arg2) {
@@ -272,6 +280,10 @@ export function SendMessage(arg1, arg2) {
 
 export function SendReply(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendReply'](arg1, arg2, arg3);
+}
+
+export function SendThreadFile(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SendThreadFile'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SendThreadMessage(arg1, arg2, arg3) {

@@ -35,7 +35,7 @@ export function ScheduledMessagesDialog({ open, onOpenChange, conversationId, dr
     enabled: open && Boolean(conversationId) && supportsListScheduledMessages,
   });
   const schedule = useMutation({
-    mutationFn: () => ScheduleMessage(conversationId, draft.trim(), new Date(scheduledAt).toISOString()),
+    mutationFn: () => ScheduleMessage(conversationId, draft.trim(), new Date(scheduledAt).toISOString(), ""),
     onSuccess: async () => {
       onScheduled();
       await queryClient.invalidateQueries({ queryKey });

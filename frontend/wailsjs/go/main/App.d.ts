@@ -9,6 +9,8 @@ export function AddGroupParticipants(arg1:string,arg2:Array<string>):Promise<voi
 
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function AutoLoginGoogleChatGaia(arg1:string):Promise<Record<string, string>>;
+
 export function AutoLoginSlack(arg1:string,arg2:string):Promise<void>;
 
 export function AutoLoginTeams(arg1:string,arg2:string):Promise<void>;
@@ -75,6 +77,8 @@ export function GetConversationsWithMessages():Promise<Array<string>>;
 
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
+export function GetGoogleChatWebCookies(arg1:string):Promise<Record<string, string>>;
+
 export function GetGroupDetails(arg1:string):Promise<models.GroupDetails>;
 
 export function GetGroupParticipants(arg1:string):Promise<Array<models.GroupParticipant>>;
@@ -129,7 +133,7 @@ export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
 
-export function ScheduleMessage(arg1:string,arg2:string,arg3:time.Time):Promise<models.ScheduledMessage>;
+export function ScheduleMessage(arg1:string,arg2:string,arg3:time.Time,arg4:string):Promise<models.ScheduledMessage>;
 
 export function SearchMessages(arg1:string,arg2:number):Promise<models.MessageSearchPage>;
 
@@ -140,6 +144,8 @@ export function SendFile(arg1:string,arg2:string,arg3:string,arg4:string):Promis
 export function SendMessage(arg1:string,arg2:string):Promise<models.Message>;
 
 export function SendReply(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
+
+export function SendThreadFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function SendThreadMessage(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 

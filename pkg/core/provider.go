@@ -340,7 +340,7 @@ type Capabilities struct {
 // ScheduledMessageProvider is implemented by providers whose remote API can
 // queue, list and cancel messages for future delivery.
 type ScheduledMessageProvider interface {
-	ScheduleMessage(conversationID, text string, scheduledAt time.Time) (*models.ScheduledMessage, error)
+	ScheduleMessage(conversationID, text string, scheduledAt time.Time, parentMsgID string) (*models.ScheduledMessage, error)
 	ListScheduledMessages(conversationID string) ([]models.ScheduledMessage, error)
 	CancelScheduledMessage(conversationID, scheduledMessageID string) error
 }

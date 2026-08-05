@@ -158,7 +158,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 }
 
 // ScheduleMessage queues a text message using Slack's native scheduler.
-func (p *SlackProvider) ScheduleMessage(conversationID, text string, scheduledAt time.Time) (*models.ScheduledMessage, error) {
+func (p *SlackProvider) ScheduleMessage(conversationID, text string, scheduledAt time.Time, _ string) (*models.ScheduledMessage, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("scheduled message text is required")
 	}
@@ -511,29 +511,56 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	var protocolMsgID = fileUpload.ID // Fallback
 	var timestamp = time.Now()
 
-	// Poll for the message containing this file
-	// Retry up to 5 times with short delays
+	// Poll for the message containing this file.
+	// When sending to a thread the file message lives in the thread replies, not
+	// in the main channel history — use GetConversationReplies in that case.
+	var resolvedFileURL string
+	var resolvedFileThumbnail string
 	for i := 0; i < 5; i++ {
 		time.Sleep(500 * time.Millisecond)
-		historyParams := &slack.GetConversationHistoryParameters{
-			ChannelID: actualChannelID,
-			Limit:     10, // Check last 10 messages
-		}
-		history, err := client.GetConversationHistory(historyParams)
-		if err != nil {
-			p.log("SlackProvider.SendFile: Error fetching history to find file message: %v\n", err)
-			continue
+
+		var messagesToSearch []slack.Message
+
+		if threadID != nil {
+			repliesParams := &slack.GetConversationRepliesParameters{
+				ChannelID: actualChannelID,
+				Timestamp: *threadID,
+				Limit:     20,
+			}
+			replies, _, _, err := client.GetConversationReplies(repliesParams)
+			if err != nil {
+				p.log("SlackProvider.SendFile: Error fetching thread replies to find file message: %v\n", err)
+				continue
+			}
+			messagesToSearch = replies
+		} else {
+			historyParams := &slack.GetConversationHistoryParameters{
+				ChannelID: actualChannelID,
+				Limit:     10,
+			}
+			history, err := client.GetConversationHistory(historyParams)
+			if err != nil {
+				p.log("SlackProvider.SendFile: Error fetching history to find file message: %v\n", err)
+				continue
+			}
+			messagesToSearch = history.Messages
 		}
 
 		found := false
-		for _, msg := range history.Messages {
-			// Check if this message contains our file
+		for _, msg := range messagesToSearch {
 			for _, f := range msg.Files {
 				if f.ID == fileUpload.ID {
 					protocolMsgID = msg.Timestamp
 					ts := parseSlackTimestamp(msg.Timestamp)
 					if !ts.IsZero() {
 						timestamp = ts
+					}
+					resolvedFileURL = slackFileDownloadURL(f)
+					for _, thumb := range []string{f.Thumb1024, f.Thumb960, f.Thumb480, f.Thumb360} {
+						if thumb != "" {
+							resolvedFileThumbnail = thumb
+							break
+						}
 					}
 					found = true
 					break
@@ -567,15 +594,14 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 		attachmentType = "document"
 	}
 
-	// For now, create a message with file info
-	// Note: We don't have a URL yet since the file was just uploaded
-	// The URL will be available when we fetch the message via polling
 	attachments := []models.Attachment{
 		{
-			Type:     attachmentType,
-			FileName: file.FileName,
-			FileSize: int64(file.FileSize),
-			MimeType: file.MimeType,
+			Type:      attachmentType,
+			URL:       resolvedFileURL,
+			Thumbnail: resolvedFileThumbnail,
+			FileName:  file.FileName,
+			FileSize:  int64(file.FileSize),
+			MimeType:  file.MimeType,
 		},
 	}
 	attachmentsJSON, _ := json.Marshal(attachments)
@@ -1119,7 +1145,8 @@ func (p *SlackProvider) lookbackSyncConversation(convID string, before, since ti
 // attachmentFromSlackFile converts a slack.File into a models.Attachment.
 // Used both by SendFile (after polling) and handleRTMMessageEvent (file_share events).
 func attachmentFromSlackFile(f slack.File) (models.Attachment, bool) {
-	if f.URLPrivate == "" {
+	fileURL := slackFileDownloadURL(f)
+	if fileURL == "" {
 		return models.Attachment{}, false
 	}
 	attachmentType := "document"
@@ -1152,12 +1179,19 @@ func attachmentFromSlackFile(f slack.File) (models.Attachment, bool) {
 
 	return models.Attachment{
 		Type:      attachmentType,
-		URL:       f.URLPrivate,
+		URL:       fileURL,
 		Thumbnail: thumbnail,
 		FileName:  f.Name,
 		FileSize:  int64(f.Size),
 		MimeType:  f.Mimetype,
 	}, true
+}
+
+func slackFileDownloadURL(f slack.File) string {
+	if f.URLPrivateDownload != "" {
+		return f.URLPrivateDownload
+	}
+	return f.URLPrivate
 }
 
 // mergeAttachments combines existing and new attachments, removing duplicates by URL.
@@ -1472,6 +1506,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Process Files (slack.File objects)
 	// Use file ID as primary key for deduplication, fallback to URL
 	for _, file := range msg.Files {
+		fileURL := slackFileDownloadURL(file)
 		// Primary deduplication: use file ID if available, otherwise use URL
 		var dedupKey string
 		if file.ID != "" {
@@ -1483,7 +1518,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 			seenFileIDs[dedupKey] = true
 			// p.log("SlackProvider.convertMessage: Processing file #%d (ID: %s, URL: %s, Name: %s, Size: %d, MimeType: %s)\n", i, file.ID, file.URLPrivate, file.Name, file.Size, file.Mimetype)
 		} else {
-			dedupKey = file.URLPrivate
+			dedupKey = fileURL
 			if seenURLs[dedupKey] {
 				// p.log("SlackProvider.convertMessage: SKIPPING duplicate file #%d (URL: %s, Name: %s) - already seen\n", i, file.URLPrivate, file.Name)
 				continue
@@ -1494,7 +1529,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 
 		attachment := models.Attachment{
 			Type:     file.Mimetype,
-			URL:      file.URLPrivate,
+			URL:      fileURL,
 			FileName: file.Name,
 			FileSize: int64(file.Size),
 			MimeType: file.Mimetype,
@@ -1586,6 +1621,53 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 			}
 		}
 		// Note: Audio and video are typically in msg.Files, not in attachments
+	}
+
+	// Block Kit images are independent from legacy msg.Attachments. This is the
+	// representation commonly used by apps/bots, including inside thread
+	// replies. Previously we only extracted their alt/title into the body, so
+	// Loom rendered a text block with the image name instead of the image.
+	appendBlockImage := func(imageURL, fileName string) {
+		if imageURL == "" || seenURLs[imageURL] {
+			return
+		}
+		seenURLs[imageURL] = true
+		attachments = append(attachments, models.Attachment{
+			Type:     "image",
+			URL:      imageURL,
+			FileName: fileName,
+			MimeType: "image/*",
+		})
+	}
+	appendImagesFromBlocks := func(blocks slack.Blocks) {
+		for _, block := range blocks.BlockSet {
+			switch b := block.(type) {
+			case *slack.ImageBlock:
+				name := b.AltText
+				if b.Title != nil && b.Title.Text != "" {
+					name = b.Title.Text
+				}
+				imageURL := b.ImageURL
+				if imageURL == "" && b.SlackFile != nil {
+					imageURL = b.SlackFile.URL
+				}
+				appendBlockImage(imageURL, name)
+			case *slack.SectionBlock:
+				if b.Accessory == nil || b.Accessory.ImageElement == nil {
+					continue
+				}
+				image := b.Accessory.ImageElement
+				imageURL := image.ImageURL
+				if imageURL == "" && image.SlackFile != nil {
+					imageURL = image.SlackFile.URL
+				}
+				appendBlockImage(imageURL, image.AltText)
+			}
+		}
+	}
+	appendImagesFromBlocks(msg.Blocks)
+	for _, slackAttachment := range msg.Attachments {
+		appendImagesFromBlocks(slackAttachment.Blocks)
 	}
 
 	// p.log("SlackProvider.convertMessage: Final attachments count: %d\n", len(attachments))
