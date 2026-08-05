@@ -203,14 +203,16 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
 
   // Safety net: ensure all last messages are registered in the message read store
-  const registerIncomingMessage = useMessageReadStore((state) => state.registerIncomingMessage);
+  const registerBatchMessages = useMessageReadStore((state) => state.registerBatchMessages);
   useEffect(() => {
-    Object.values(lastMessages).forEach((msg) => {
-      if (msg) {
-        registerIncomingMessage(msg);
-      }
-    });
-  }, [lastMessages, registerIncomingMessage]);
+    const messages = Object.values(lastMessages).filter(
+      (message): message is models.Message => message !== null
+    );
+    // These are loaded from the contact-list cache, not received events.
+    // Registering them as history prevents a first render from manufacturing
+    // unread badges for old conversations.
+    registerBatchMessages(messages, true);
+  }, [lastMessages, registerBatchMessages]);
 
   // Filter contacts by selected provider
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);

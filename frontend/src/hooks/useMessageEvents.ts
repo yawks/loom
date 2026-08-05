@@ -195,10 +195,15 @@ export function useMessageEvents() {
     const unsubscribeBatch = EventsOn("new-messages-batch", (batchJSON: string) => {
       if (!isMounted) return;
       try {
-        const batch: { instanceId: string; conversationId: string; messages: models.Message[] } = JSON.parse(batchJSON);
+        const batch: {
+          instanceId: string;
+          conversationId: string;
+          messages: models.Message[];
+          isHistorical?: boolean;
+        } = JSON.parse(batchJSON);
         if (!batch.messages?.length) return;
 
-        registerBatchMessages(batch.messages);
+        registerBatchMessages(batch.messages, batch.isHistorical === true);
 
         // Update last-message and timestamp caches in one pass per conversation
         const lastMessageByConv: Record<string, models.Message> = {};

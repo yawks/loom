@@ -232,7 +232,12 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			return err
 		}
 		if len(messages) > 0 {
-			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: messages})
+			p.emit(core.MessageBatchEvent{
+				InstanceID:     instance,
+				ConversationID: chat.ID,
+				Messages:       messages,
+				IsHistorical:   since.IsZero(),
+			})
 		}
 	}
 	if err := p.repairStoredHTMLFormatting(); err != nil {

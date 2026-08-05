@@ -160,7 +160,12 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			return err
 		}
 		if len(messages) > 0 {
-			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: remote.GetConversationID(), Messages: messages})
+			p.emit(core.MessageBatchEvent{
+				InstanceID:     instance,
+				ConversationID: remote.GetConversationID(),
+				Messages:       messages,
+				IsHistorical:   since.IsZero(),
+			})
 		}
 	}
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: "Google Messages sync completed", Progress: 100})
