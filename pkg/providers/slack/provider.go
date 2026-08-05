@@ -961,58 +961,21 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 		}
 	}
 
-	// File not in cache, download it
-	// Get token from config for authentication
-	token, _ := config.GetString("token")
-	if token == "" {
-		return "", fmt.Errorf("slack token not found")
+	// File not in cache, download it with the already configured Slack client.
+	// This matters for browser sessions (xoxc + d cookie): the client's custom
+	// transport injects the cookie on every request, including requests created
+	// while following redirects from files.slack.com. A Cookie header attached
+	// only to the initial request can be stripped by net/http on a cross-host
+	// redirect, which makes Slack answer with its HTML login page.
+	downloadURL := normalizeSlackDownloadURL(fileURL)
+	var downloaded bytes.Buffer
+	if err := client.GetFile(downloadURL, &downloaded); err != nil {
+		return "", fmt.Errorf("failed to download Slack file: %w", err)
 	}
-
-	// Create HTTP request with authentication
-	req, err := http.NewRequest("GET", fileURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add authorization header
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// Create HTTP client (use the same transport as Slack client if available)
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// If we have a d cookie, add it to the request
-	dCookie, _ := config.GetString("d_cookie")
-	if dCookie != "" {
-		cookieValue := dCookie
-		if strings.HasPrefix(cookieValue, "d=") {
-			cookieValue = cookieValue[2:]
-		}
-		req.Header.Set("Cookie", fmt.Sprintf("d=%s", cookieValue))
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to download file: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download file: status %d", resp.StatusCode)
-	}
-
-	// Reject HTML responses — Slack returns an HTML login/error page (with HTTP 200)
-	// when the token is expired or the URL is unauthorized.
-	contentType := resp.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "text/html") {
-		return "", fmt.Errorf("slack returned HTML instead of file data (token may be expired): %s", fileURL)
-	}
-
-	// Read file content
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
+	data := downloaded.Bytes()
+	contentType := http.DetectContentType(data)
+	if strings.HasPrefix(contentType, "text/html") || bytes.HasPrefix(bytes.TrimSpace(data), []byte("<!DOCTYPE html")) {
+		return "", fmt.Errorf("slack returned HTML instead of file data (browser session is not authorized for files.slack.com): %s", fileURL)
 	}
 
 	// Save to cache
@@ -1050,6 +1013,26 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 	// Encode to base64
 	base64Data := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
+}
+
+// normalizeSlackDownloadURL upgrades url_private links to the binary
+// url_private_download form. Slack may answer the former with an HTTP 200 login
+// page even when the API token is otherwise valid.
+func normalizeSlackDownloadURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "files.slack.com") {
+		return rawURL
+	}
+	if !strings.HasPrefix(u.Path, "/files-pri/") || strings.Contains(u.Path, "/download/") {
+		return rawURL
+	}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) < 4 {
+		return rawURL
+	}
+	parts = append(parts[:3], append([]string{"download"}, parts[3:]...)...)
+	u.Path = strings.Join(parts, "/")
+	return u.String()
 }
 
 // GetEmojiURL returns the URL for a Slack emoji, or empty string if not found

@@ -22,6 +22,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Loader2, X } from "lucide-react";
+import { FileUploadModal } from "./FileUploadModal";
+import { useFileUpload } from "@/hooks/useFileUpload";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
@@ -368,6 +370,17 @@ export function ThreadView() {
   const [openActionsMessageId, setOpenActionsMessageId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<models.Message | null>(null);
+
+  const {
+    isFileUploadModalOpen,
+    setIsFileUploadModalOpen,
+    pendingFiles,
+    setPendingFiles,
+    pendingFilePaths,
+    setPendingFilePaths,
+    uploadState,
+    handleFileUpload,
+  } = useFileUpload(conversationId, showToast, selectedThreadId ?? undefined);
 
   const handleClose = () => {
     setSelectedThreadId(null);
@@ -1067,13 +1080,25 @@ export function ThreadView() {
       <div className="border-t shrink-0">
         <ChatInput
           key={`thread-${conversationId}-${selectedThreadId}`}
-          onFileUploadRequest={() => { }}
+          onFileUploadRequest={(files, filePaths) => {
+            setPendingFiles(files);
+            setPendingFilePaths(filePaths || []);
+            setIsFileUploadModalOpen(true);
+          }}
           replyingToMessage={replyingToMessage}
           onCancelReply={() => setReplyingToMessage(null)}
           onNavigateToEdit={handleNavigateToEdit}
           onTextareaMount={(textarea) => { composerRef.current = textarea; }}
           threadId={selectedThreadId || undefined}
           onHeightChange={correctThreadBottomImmediately}
+        />
+        <FileUploadModal
+          open={isFileUploadModalOpen}
+          onOpenChange={setIsFileUploadModalOpen}
+          files={pendingFiles}
+          filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
+          uploadState={uploadState}
+          onConfirm={handleFileUpload}
         />
       </div>
 

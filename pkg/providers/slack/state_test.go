@@ -21,6 +21,7 @@ func TestMessagePinCapabilities(t *testing.T) {
 
 func TestScheduledMessageCapabilities(t *testing.T) {
 	provider := NewSlackProvider()
+	_ = provider.Init(core.ProviderConfig{"token": "xoxp-123456789"})
 	var _ core.ScheduledMessageProvider = provider
 	capabilities := provider.GetCapabilities()
 	if !capabilities.SupportsScheduledMessages || !capabilities.SupportsListScheduledMessages {

@@ -877,3 +877,135 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: missedMsgs})
 	}
 }
+
+// ScheduleMessage queues a message to be sent at a future time via Google Chat Web RPC.
+// parentMsgID is the ProtocolMsgID of the thread-parent message (e.g. "gc-1/spaces/X/messages/Y").
+// When non-empty the message is scheduled as a thread reply; leave empty for top-level messages.
+func (p *GoogleChatProvider) ScheduleMessage(conversationID, text string, scheduledAt time.Time, parentMsgID string) (*models.ScheduledMessage, error) {
+	if p.webClient == nil {
+		return nil, fmt.Errorf("googlechat: web client uninitialized")
+	}
+
+	rawConvID := strings.TrimPrefix(core.StripConvID(conversationID), "/")
+
+	// Resolve the REST space name: use the space from conversationID directly.
+	restSpaceName := rawConvID
+
+	// Look up cached web client space ID (populated during GetContacts).
+	p.spaceWebIDMu.RLock()
+	webSpaceID := p.spaceWebIDCache[restSpaceName]
+	p.spaceWebIDMu.RUnlock()
+
+	// Cache miss: fetch the space from REST API to get its spaceUri.
+	if webSpaceID == "" {
+		var space Space
+		if err := p.apiGet("/"+restSpaceName, nil, &space); err == nil {
+			webSpaceID = extractSpaceWebID(space.SpaceUri)
+			dmType := space.SpaceType == "DIRECT_MESSAGE" || space.Type == "DM"
+			p.spaceWebIDMu.Lock()
+			if webSpaceID != "" {
+				p.spaceWebIDCache[restSpaceName] = webSpaceID
+			}
+			p.spaceIsDMCache[restSpaceName] = dmType
+			p.spaceWebIDMu.Unlock()
+		}
+	}
+
+	if webSpaceID == "" {
+		return nil, fmt.Errorf("googlechat: could not resolve web client space ID for %q — try reloading contacts", restSpaceName)
+	}
+
+	// Resolve thread context from parentMsgID (the thread-root message's ProtocolMsgID).
+	// parentMsgID may carry a provider namespace prefix (e.g. "gc-1/spaces/X/messages/Y").
+	// Strategy:
+	//   1. Strip any namespace prefix — find "spaces/" and take from there.
+	//   2. Look up the Google Chat thread name via getMessageThreadName.
+	//   3. The web thread ID = last path component of the thread name.
+	//   4. The web parent-message ID = last path component of the message name (before any ".").
+	//   5. For DMs with no parentMsgID the implicit thread ID = REST space ID suffix.
+	var threadID, parentMsgWebID string
+	if parentMsgID != "" {
+		// Strip namespace prefix: take from "spaces/" onward.
+		restMsgName := parentMsgID
+		if idx := strings.Index(parentMsgID, "spaces/"); idx >= 0 {
+			restMsgName = parentMsgID[idx:]
+		}
+		// Extract thread name, then the web thread ID from it.
+		threadName := p.getMessageThreadName(restMsgName)
+		p.logger.Logf("googlechat: ScheduleMessage thread lookup — parentMsgID=%q restMsgName=%q threadName=%q", parentMsgID, restMsgName, threadName)
+		if threadName != "" {
+			// threadName = "spaces/SPACE/threads/THREAD_WEB_ID"
+			threadID = threadName[strings.LastIndex(threadName, "/")+1:]
+		}
+		// Extract web parent-message ID: last path component, before any period.
+		msgID := restMsgName[strings.LastIndex(restMsgName, "/")+1:]
+		if dot := strings.IndexByte(msgID, '.'); dot >= 0 {
+			msgID = msgID[:dot]
+		}
+		parentMsgWebID = msgID
+	}
+	if threadID == "" {
+		// Top-level messages also carry the stable space/thread key in the web
+		// payload. It is the REST space suffix in the observed web requests.
+		threadID = strings.TrimPrefix(restSpaceName, "spaces/")
+	}
+
+	p.logger.Logf("googlechat: ScheduleMessage resolved — webSpaceID=%q threadID=%q parentMsgWebID=%q", webSpaceID, threadID, parentMsgWebID)
+	return p.webClient.ScheduleMessage(webSpaceID, threadID, parentMsgWebID, text, rawConvID, scheduledAt)
+}
+
+// ListScheduledMessages returns queued scheduled messages for a space via Google Chat Web RPC.
+func (p *GoogleChatProvider) ListScheduledMessages(conversationID string) ([]models.ScheduledMessage, error) {
+	if p.webClient == nil {
+		return nil, fmt.Errorf("googlechat: web client uninitialized")
+	}
+
+	rawConvID := strings.TrimPrefix(core.StripConvID(conversationID), "/")
+
+	var restSpaceName, threadID string
+	for _, sep := range []string{"/threads/", "/thread/"} {
+		if parts := strings.SplitN(rawConvID, sep, 2); len(parts) == 2 {
+			restSpaceName = parts[0]
+			threadID = parts[1]
+			break
+		}
+	}
+	if restSpaceName == "" {
+		restSpaceName = rawConvID
+	}
+
+	p.spaceWebIDMu.RLock()
+	webSpaceID := p.spaceWebIDCache[restSpaceName]
+	isDM := p.spaceIsDMCache[restSpaceName]
+	p.spaceWebIDMu.RUnlock()
+
+	if webSpaceID == "" {
+		var space Space
+		if err := p.apiGet("/"+restSpaceName, nil, &space); err == nil {
+			webSpaceID = extractSpaceWebID(space.SpaceUri)
+			dmType := space.SpaceType == "DIRECT_MESSAGE" || space.Type == "DM"
+			p.spaceWebIDMu.Lock()
+			if webSpaceID != "" {
+				p.spaceWebIDCache[restSpaceName] = webSpaceID
+			}
+			p.spaceIsDMCache[restSpaceName] = dmType
+			p.spaceWebIDMu.Unlock()
+			isDM = dmType
+		}
+	}
+
+	if isDM && threadID == "" {
+		threadID = strings.TrimPrefix(restSpaceName, "spaces/")
+	}
+
+	return p.webClient.ListScheduledMessages(rawConvID, webSpaceID, threadID)
+}
+
+// CancelScheduledMessage cancels a queued scheduled message via Google Chat Web RPC.
+func (p *GoogleChatProvider) CancelScheduledMessage(conversationID, scheduledMessageID string) error {
+	if p.webClient == nil {
+		return fmt.Errorf("googlechat: web client uninitialized")
+	}
+	rawConvID := strings.TrimPrefix(core.StripConvID(conversationID), "/")
+	return p.webClient.CancelScheduledMessage(rawConvID, scheduledMessageID)
+}

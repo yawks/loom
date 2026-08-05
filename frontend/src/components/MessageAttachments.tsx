@@ -11,6 +11,8 @@ import {
   Play,
   Video,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -413,6 +415,41 @@ export function MessageAttachments({
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+
+  const resetView = () => { setZoomLevel(1); setPanOffset({ x: 0, y: 0 }); };
+
+  const handleZoomIn = () => setZoomLevel((z) => Math.min(4, Math.round((z + 0.25) * 100) / 100));
+  const handleZoomOut = () => {
+    setZoomLevel((z) => {
+      const next = Math.max(0.5, Math.round((z - 0.25) * 100) / 100);
+      if (next <= 1) setPanOffset({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  const handlePanMouseDown = (e: React.MouseEvent) => {
+    if (zoomLevel <= 1 || e.button !== 0) return;
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: panOffset.x, panY: panOffset.y };
+    setIsDragging(true);
+  };
+
+  const handlePanMouseMove = (e: React.MouseEvent) => {
+    if (!dragRef.current) return;
+    setPanOffset({
+      x: dragRef.current.panX + (e.clientX - dragRef.current.startX),
+      y: dragRef.current.panY + (e.clientY - dragRef.current.startY),
+    });
+  };
+
+  const handlePanMouseUp = () => {
+    dragRef.current = null;
+    setIsDragging(false);
+  };
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [loadingVideoIndex, setLoadingVideoIndex] = useState<number | null>(null);
   const attachmentsElementRef = useRef<HTMLDivElement>(null);
@@ -616,6 +653,7 @@ export function MessageAttachments({
 
   const navigateMosaic = async (direction: -1 | 1) => {
     if (selectedImageIndex === null || visualMediaAttachments.length < 2) return;
+    resetView();
     const nextIndex = (selectedImageIndex + direction + visualMediaAttachments.length) % visualMediaAttachments.length;
     const attachment = visualMediaAttachments[nextIndex];
     try {
@@ -780,7 +818,10 @@ export function MessageAttachments({
               {isImage ? (
                 <VisibleImageAttachment
                   attachment={attachment}
-                  onOpen={setSelectedImage}
+                  onOpen={(dataUrl) => {
+                    setSelectedImage(dataUrl);
+                    if (galleryMessages?.length) setSelectedImageIndex(0);
+                  }}
                   onDownload={() => { void handleDownload(attachment); }}
                 />
               ) : isVideo ? (
@@ -906,36 +947,103 @@ export function MessageAttachments({
       )}
       </div>
 
-      <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); }}>
+      <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); resetView(); }}>
         <DialogContent
-          className="max-w-4xl max-h-[90vh] p-0"
+          className="max-w-4xl max-h-[90vh] p-0 overflow-hidden"
           onKeyDown={(event) => {
-            if (selectedImageIndex === null) return;
             if (event.key === "ArrowLeft") {
+              if (selectedImageIndex === null) return;
               event.preventDefault();
               void navigateMosaic(-1);
             } else if (event.key === "ArrowRight") {
+              if (selectedImageIndex === null) return;
               event.preventDefault();
               void navigateMosaic(1);
+            } else if (event.key === "+" || event.key === "=") {
+              event.preventDefault();
+              handleZoomIn();
+            } else if (event.key === "-") {
+              event.preventDefault();
+              handleZoomOut();
+            } else if (event.key === "0") {
+              event.preventDefault();
+              resetView();
             }
           }}
         >
           <DialogTitle className="sr-only">Image Preview</DialogTitle>
           {selectedImage && (
-            <div className="relative">
+            <div
+              className="relative overflow-hidden"
+              style={{ cursor: zoomLevel > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
+              onMouseDown={handlePanMouseDown}
+              onMouseMove={handlePanMouseMove}
+              onMouseUp={handlePanMouseUp}
+              onMouseLeave={handlePanMouseUp}
+              onWheel={(e) => {
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? 0.25 : -0.25;
+                setZoomLevel((z) => {
+                  const next = Math.min(4, Math.max(0.5, Math.round((z + delta) * 100) / 100));
+                  if (next <= 1) setPanOffset({ x: 0, y: 0 });
+                  return next;
+                });
+              }}
+            >
               {galleryActions}
               {galleryReactions}
               <button
-                onClick={() => { setSelectedImage(null); setSelectedImageIndex(null); }}
+                onClick={() => { setSelectedImage(null); setSelectedImageIndex(null); resetView(); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
               >
                 <X className="h-5 w-5" />
               </button>
-              <img
-                src={selectedImage}
-                alt="Preview"
-                className="w-full h-auto max-h-[85vh] object-contain"
-              />
+              <div className="flex items-center justify-center" style={{ maxHeight: "85vh", overflow: "hidden" }}>
+                <img
+                  src={selectedImage}
+                  alt="Preview"
+                  className="w-full h-auto max-h-[85vh] object-contain select-none"
+                  style={{
+                    transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+                    transformOrigin: "center center",
+                    transition: isDragging ? "none" : "transform 0.15s ease",
+                  }}
+                  draggable={false}
+                />
+              </div>
+              <div className="message-attachment__zoom-controls absolute bottom-3 right-3 z-20 flex gap-1">
+                <button
+                  type="button"
+                  onClick={handleZoomOut}
+                  disabled={zoomLevel <= 0.5}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:bg-black/90 disabled:opacity-40"
+                  aria-label="Zoom arrière"
+                  title="Zoom arrière (−)"
+                >
+                  <ZoomOut className="h-5 w-5" />
+                </button>
+                {(zoomLevel !== 1 || panOffset.x !== 0 || panOffset.y !== 0) && (
+                  <button
+                    type="button"
+                    onClick={resetView}
+                    className="flex h-9 min-w-9 items-center justify-center rounded-full bg-black/70 px-2 text-xs font-semibold text-white shadow-lg transition hover:bg-black/90"
+                    aria-label="Réinitialiser la vue"
+                    title="Réinitialiser la vue (0)"
+                  >
+                    {Math.round(zoomLevel * 100)}%
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleZoomIn}
+                  disabled={zoomLevel >= 4}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white shadow-lg transition hover:bg-black/90 disabled:opacity-40"
+                  aria-label="Zoom avant"
+                  title="Zoom avant (+)"
+                >
+                  <ZoomIn className="h-5 w-5" />
+                </button>
+              </div>
               {selectedImageIndex !== null && visualMediaAttachments.length > 1 && (
                 <>
                   <button

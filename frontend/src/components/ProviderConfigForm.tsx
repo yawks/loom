@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  AutoLoginGoogleChatGaia,
   AutoLoginSlack,
   AutoLoginTeams,
   AutoPairGoogleMessages,
@@ -7,6 +8,7 @@ import {
   ConnectProvider,
   CreateProvider,
   CreateProviderWithOptions,
+  GetGoogleChatWebCookies,
   GetProviderQRCode,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
@@ -90,10 +92,23 @@ export function ProviderConfigForm({
   const { toasts, showToast, closeToast } = useToast();
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
   const [qrCode, setQrCode] = useState("");
-	const [pairingEmoji, setPairingEmoji] = useState("");
+  const [pairingEmoji, setPairingEmoji] = useState("");
   const [isPollingQR, setIsPollingQR] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [webCookies, setWebCookies] = useState<Record<string, string> | null>(null);
   const autoConnectFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (provider.id === "googlechat" && currentInstanceID) {
+      GetGoogleChatWebCookies(currentInstanceID)
+        .then((cookies) => {
+          if (cookies && Object.keys(cookies).length > 0) {
+            setWebCookies(cookies);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [provider.id, currentInstanceID]);
 
   useEffect(() => {
     setValues((prev) => {
@@ -358,6 +373,75 @@ export function ProviderConfigForm({
               {isSaving ? t("saving") : t("save")}
             </Button>
           </CardFooter>
+        </Card>
+      )}
+
+      {provider.id === "googlechat" && (
+        <Card className="mt-4">
+          <CardHeader>
+            <CardTitle>Messages différés (Optionnel)</CardTitle>
+            <CardDescription>
+              Google Chat ne propose pas de programmation d'envois via son API officielle REST. Pour autoriser les envois différés côté serveur, connectez votre session Web Google via Chrome (Gaia).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Les identifiants OAuth2 Client ID / Secret ci-dessus restent requis pour l'accès aux messages et à l'historique standard.
+            </p>
+
+            {webCookies && Object.keys(webCookies).length > 0 && (
+              <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-green-600 dark:text-green-400">
+                  <span>✓</span> Session Web active ({Object.keys(webCookies).length} cookies capturés)
+                </div>
+                <div className="space-y-1 border-t pt-2 text-xs font-mono">
+                  {Object.entries(webCookies).map(([name, val]) => (
+                    <div key={name} className="flex justify-between items-center text-muted-foreground">
+                      <span className="font-semibold text-foreground">{name}:</span>
+                      <span className="truncate max-w-[200px]" title={val}>
+                        {val.length > 12 ? `${val.slice(0, 6)}...${val.slice(-6)}` : val}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={isSaving}
+              onClick={async () => {
+                setIsSaving(true);
+                try {
+                  let instanceID = provider.instanceId || currentInstanceID;
+                  if (!instanceID) {
+                    const filteredValues: Record<string, string> = {};
+                    for (const [key, value] of Object.entries(values)) {
+                      if (value && value.trim() !== "") {
+                        filteredValues[key] = value;
+                      }
+                    }
+                    instanceID = await CreateProviderWithOptions(provider.id, filteredValues, instanceName, "", true);
+                    setCurrentInstanceID(instanceID);
+                  }
+                  const extracted = await AutoLoginGoogleChatGaia(instanceID);
+                  if (extracted) {
+                    setWebCookies(extracted);
+                  }
+                  await onRefresh();
+                  showToast("Session Web Google Chat connectée (Messages différés activés)", "success");
+                } catch (error) {
+                  console.error("Failed to log into Google Chat Gaia:", error);
+                  showToast(String(error) || "Impossible de se connecter à la session Web Google Chat", "error");
+                } finally {
+                  setIsSaving(false);
+                }
+              }}
+            >
+              {isSaving ? "Connexion Web en cours…" : webCookies ? "Re-connecter la session Web Google" : "Se connecter avec Google (Activer les messages différés)"}
+            </Button>
+          </CardContent>
         </Card>
       )}
 

@@ -40,8 +40,11 @@ export function MessageThreadPreview({
   const replyCount = threadMessages.length;
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onThreadClick}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onThreadClick(); }}
       style={{ fontFamily: '"Inter Variable", Arial, Helvetica, sans-serif', fontSize: "0.55rem" }}
       className={cn(
         "message-thread-preview flex items-center gap-1.5 p-1 leading-none rounded-md transition-colors cursor-pointer text-left max-w-[80%]",
@@ -97,6 +100,6 @@ export function MessageThreadPreview({
       >
         {replyCount === 1 ? `1 ${t("single_reply")}` : t("multiple_replies", { count: replyCount })}
       </span>
-    </button>
+    </div>
   );
 }

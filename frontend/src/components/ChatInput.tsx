@@ -1,20 +1,20 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, ChevronDown, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Theme } from "emoji-picker-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import type { InfiniteData } from "@tanstack/react-query";
+import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
+import type { Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
+import { htmlFragmentToText } from "@/lib/messageUtils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
-import { htmlFragmentToText } from "@/lib/messageUtils";
-import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
-import { ToastContainer, useToast } from "@/components/ui/toast";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -180,7 +180,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   );
   const [message, setMessage] = useState(() => readDraft(draftStorageKey));
   const queryClient = useQueryClient();
-  
+
   // Focus textarea when a conversation is selected
   useEffect(() => {
     if (selectedContact) {
@@ -222,7 +222,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         );
         return { tempId, conversationId, isThreadMessage: true, previousTimestamp };
       }
-      
+
       // Get current user info from existing messages, fall back to props passed from MessageList
       let currentUserInfo: { senderId?: string; senderName?: string; senderAvatarUrl?: string } = {
         senderName: currentUserName,
@@ -452,7 +452,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     setIsScheduleMenuOpen(false);
     const text = message.trim();
     try {
-      await scheduleMessageMutation.mutateAsync({ convId: conversationId, text, scheduledAt: date });
+      await scheduleMessageMutation.mutateAsync({ convId: conversationId, text, scheduledAt: date, parentMsgId: threadId ?? "" });
       setMessage("");
       saveDraft(draftStorageKey, "");
       setIsTypingInInput(false);
@@ -524,7 +524,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     setMessage(newValue);
     saveDraft(draftStorageKey, newValue);
     adjustTextareaHeight();
-    
+
     // Hide unread divider when user starts typing
     if (newValue.trim().length > 0) {
       setIsTypingInInput(true);
@@ -1068,7 +1068,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               }}
               disabled={isThreadOpen}
               placeholder={t("type_a_message")}
-              className="w-full min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              className="block w-full min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               rows={1}
               autoCorrect="off"
               autoComplete="off"

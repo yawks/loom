@@ -506,7 +506,7 @@ func (p *Provider) removeVirtualConversations() error {
 	if db.DB == nil {
 		return nil
 	}
-	virtualIDs := []string{"48:calllogs", "48:mentions", "48:notifications", "48:notes"}
+	virtualIDs := []string{"48:calllogs", "48:mentions", "48:notifications", "48:notes", "48:drafts"}
 	var deletedAccountIDs []uint
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		var accounts []models.LinkedAccount

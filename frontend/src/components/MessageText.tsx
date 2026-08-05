@@ -1,5 +1,5 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
-import React, { type ReactElement, useMemo, memo } from "react";
+import React, { type CSSProperties, type ReactElement, type ReactNode, useMemo, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
 import { CodeBlock } from "./CodeBlock";
@@ -17,6 +17,29 @@ interface SlackInlineQuote {
   sender: string;
   quotedText: string;
   body: string;
+}
+
+const SAFE_RICH_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
+
+function richTextStyle(element: Element): CSSProperties {
+  const style: CSSProperties = {};
+  const color = element.getAttribute("color")?.trim();
+  const background = element.getAttribute("background")?.trim();
+  if (color && SAFE_RICH_COLOR.test(color)) style.color = color;
+  if (background && SAFE_RICH_COLOR.test(background)) style.backgroundColor = background;
+
+  const size = element.getAttribute("size")?.trim().match(/^([0-9]+(?:\.[0-9]+)?)(px|pt|em|rem|%)$/i);
+  if (size) {
+    const value = Number(size[1]);
+    const unit = size[2].toLowerCase();
+    const limits: Record<string, [number, number]> = {
+      px: [8, 48], pt: [6, 36], em: [0.5, 3], rem: [0.5, 3], "%": [50, 300],
+    };
+    const [minimum, maximum] = limits[unit];
+    style.fontSize = `${Math.min(maximum, Math.max(minimum, value))}${unit}`;
+  }
+  if (element.getAttribute("underline") === "true") style.textDecorationLine = "underline";
+  return style;
 }
 
 // Slack serializes Loom's quoted replies as a Markdown block quote. Parse it
@@ -120,7 +143,11 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean,
       }
       return <img src={src} alt={alt ?? ""} {...props} />;
     },
-    p: ({ ...props }) => (isInline ? <span {...props} /> : <p className="m-0" {...props} />),
+    p: ({ className, ...props }) => (
+      isInline
+        ? <span className={className} {...props} />
+        : <p className={cn("m-0", !preview && "[&+p]:mt-[1.5em]", className)} {...props} />
+    ),
     br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
     div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
     blockquote: ({ ...props }) => (
@@ -170,12 +197,18 @@ export const MessageText = memo(function MessageText({
     // Preprocessing
     // Preserve Loom's explicit underline extension while stripping provider
     // HTML. Standard Markdown intentionally has no underline syntax.
-    const underlineProtected = text
+    const richTags: string[] = [];
+    const richProtected = text.replace(/<\/?loom-style\b[^>]*>/gi, (tag) => {
+      const index = richTags.push(tag) - 1;
+      return `LOOM_RICH_TAG_${index}_`;
+    });
+    const underlineProtected = richProtected
       .replace(/<u>/gi, "LOOM_UNDERLINE_OPEN")
       .replace(/<\/u>/gi, "LOOM_UNDERLINE_CLOSE");
     let processedText = transformUrls(htmlFragmentToText(underlineProtected))
       .replaceAll("LOOM_UNDERLINE_OPEN", "<u>")
-      .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>");
+      .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>")
+      .replace(/LOOM_RICH_TAG_(\d+)_/g, (_, index) => richTags[Number(index)] ?? "");
     // Last-resort compatibility for cached Slack replies that reach this
     // component without reply metadata. Do this before emoji splitting and
     // Markdown parsing so neither stage can expose the protocol's `>` syntax.
@@ -308,18 +341,23 @@ export const MessageText = memo(function MessageText({
   );
 
   const renderMarkdown = (content: string, isInline = false) => {
-    const parts = content.split(/(<u>[\s\S]*?<\/u>)/gi);
-    if (parts.length === 1) return renderMarkdownBase(content, isInline);
-    return (
-      <>
-        {parts.map((part, index) => {
-          const match = part.match(/^<u>([\s\S]*?)<\/u>$/i);
-          return match
-            ? <u key={index}>{renderMarkdownBase(match[1], true)}</u>
-            : <React.Fragment key={index}>{renderMarkdownBase(part, isInline)}</React.Fragment>;
-        })}
-      </>
-    );
+    if (!/<(?:u|loom-style)\b/i.test(content)) return renderMarkdownBase(content, isInline);
+    const documentNode = new DOMParser().parseFromString(content, "text/html");
+    const renderNodes = (nodes: NodeListOf<ChildNode> | ChildNode[], inline: boolean): ReactNode[] =>
+      Array.from(nodes).map((node, index) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return <React.Fragment key={index}>{renderMarkdownBase(node.textContent ?? "", inline)}</React.Fragment>;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return null;
+        const element = node as Element;
+        const children = renderNodes(element.childNodes, true);
+        if (element.tagName.toLowerCase() === "u") return <u key={index}>{children}</u>;
+        if (element.tagName.toLowerCase() === "loom-style") {
+          return <span key={index} style={richTextStyle(element)}>{children}</span>;
+        }
+        return <React.Fragment key={index}>{children}</React.Fragment>;
+      });
+    return <>{renderNodes(documentNode.body.childNodes, isInline)}</>;
   };
 
   if (slackInlineQuote) {

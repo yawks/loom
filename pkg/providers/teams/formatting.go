@@ -1,15 +1,21 @@
 package teams
 
 import (
+	"fmt"
+	stdhtml "html"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
+	"go.mau.fi/mautrix-teams/pkg/msteams"
 	"golang.org/x/net/html"
 )
 
 // teamsHTMLToMarkdown preserves the formatting understood by Loom's Markdown
 // renderer while discarding Teams-specific HTML wrappers and attributes.
 func teamsHTMLToMarkdown(input string) string {
+	input = msteams.ReplaceInlineEmojis(input)
 	root, err := html.Parse(strings.NewReader("<body>" + input + "</body>"))
 	if err != nil {
 		return input
@@ -27,6 +33,10 @@ func teamsHTMLToMarkdown(input string) string {
 			out.WriteByte('\n')
 			return
 		}
+		style := teamsNodeStyle(node)
+		if style != "" {
+			out.WriteString(style)
+		}
 		switch tag {
 		case "br":
 			out.WriteByte('\n')
@@ -35,6 +45,8 @@ func teamsHTMLToMarkdown(input string) string {
 			out.WriteString("**")
 		case "em", "i":
 			out.WriteByte('*')
+		case "u":
+			out.WriteString("<u>")
 		case "code":
 			out.WriteByte('`')
 		case "li":
@@ -48,6 +60,8 @@ func teamsHTMLToMarkdown(input string) string {
 			render(child)
 		}
 		switch tag {
+		case "u":
+			out.WriteString("</u>")
 		case "strong", "b":
 			out.WriteString("**")
 		case "em", "i":
@@ -63,9 +77,87 @@ func teamsHTMLToMarkdown(input string) string {
 				out.WriteByte(')')
 			}
 		}
+		if style != "" {
+			out.WriteString("</loom-style>")
+		}
 	}
 	render(root)
 	return strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
+}
+
+var safeCSSValue = regexp.MustCompile(`(?i)^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$`)
+var safeFontSize = regexp.MustCompile(`(?i)^[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|%)$`)
+
+// teamsNodeStyle serializes Teams presentation attributes into Loom's generic
+// rich-text extension. Only inert, validated CSS values cross the provider
+// boundary; arbitrary HTML and CSS are never passed to the frontend.
+func teamsNodeStyle(node *html.Node) string {
+	if node.Type != html.ElementNode {
+		return ""
+	}
+	styles := parseInlineStyle(rawHTMLAttribute(node, "style"))
+	color := firstNonEmptyStyle(styles["color"], rawHTMLAttribute(node, "color"))
+	background := firstNonEmptyStyle(styles["background-color"], styles["background"], rawHTMLAttribute(node, "bgcolor"))
+	size := styles["font-size"]
+	if size == "" && strings.EqualFold(node.Data, "font") {
+		size = htmlFontSize(rawHTMLAttribute(node, "size"))
+	}
+	underline := strings.Contains(strings.ToLower(styles["text-decoration"]), "underline") ||
+		strings.Contains(strings.ToLower(styles["text-decoration-line"]), "underline")
+	attributes := make([]string, 0, 4)
+	if safeCSSValue.MatchString(strings.TrimSpace(color)) {
+		attributes = append(attributes, `color="`+stdhtml.EscapeString(strings.TrimSpace(color))+`"`)
+	}
+	if safeCSSValue.MatchString(strings.TrimSpace(background)) {
+		attributes = append(attributes, `background="`+stdhtml.EscapeString(strings.TrimSpace(background))+`"`)
+	}
+	if safeFontSize.MatchString(strings.TrimSpace(size)) {
+		attributes = append(attributes, `size="`+stdhtml.EscapeString(strings.TrimSpace(size))+`"`)
+	}
+	if underline {
+		attributes = append(attributes, `underline="true"`)
+	}
+	if len(attributes) == 0 {
+		return ""
+	}
+	return "<loom-style " + strings.Join(attributes, " ") + ">"
+}
+
+func parseInlineStyle(value string) map[string]string {
+	out := make(map[string]string)
+	for _, declaration := range strings.Split(value, ";") {
+		parts := strings.SplitN(declaration, ":", 2)
+		if len(parts) == 2 {
+			out[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
+		}
+	}
+	return out
+}
+
+func rawHTMLAttribute(node *html.Node, key string) string {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyStyle(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func htmlFontSize(value string) string {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 1 || n > 7 {
+		return ""
+	}
+	return fmt.Sprintf("%dpx", []int{10, 13, 16, 18, 24, 32, 48}[n-1])
 }
 
 func tableToMarkdown(table *html.Node) string {
