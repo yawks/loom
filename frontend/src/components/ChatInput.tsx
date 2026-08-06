@@ -1,6 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, ChevronDown, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
-import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastContainer, useToast } from "@/components/ui/toast";
@@ -178,6 +178,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const supportsListScheduledMessages = activeAccount?.providerInstanceId
     ? capabilities[activeAccount.providerInstanceId]?.supportsListScheduledMessages ?? false
     : false;
+  const supportsTypingIndicator = activeAccount?.providerInstanceId
+    ? capabilities[activeAccount.providerInstanceId]?.supportsTypingIndicator ?? false
+    : false;
   const { data: groupDetails } = useQuery<models.GroupDetails>({
     queryKey: ["group-details", conversationId],
     queryFn: () => GetGroupDetails(conversationId ?? ""),
@@ -197,6 +200,25 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     hasTextRef.current = hasText;
     setIsTypingInInput(hasText);
   }, [setIsTypingInInput]);
+
+  const hasTypingText = message.trim().length > 0;
+  useEffect(() => {
+    if (!conversationId || !supportsTypingIndicator || !hasTypingText) return;
+
+    const sendTyping = () => {
+      void SendTypingIndicator(conversationId, true).catch((error) => {
+        console.warn("Failed to send typing indicator:", error);
+      });
+    };
+    sendTyping();
+    const refreshTimer = window.setInterval(sendTyping, 4000);
+    return () => {
+      window.clearInterval(refreshTimer);
+      void SendTypingIndicator(conversationId, false).catch((error) => {
+        console.warn("Failed to clear typing indicator:", error);
+      });
+    };
+  }, [conversationId, hasTypingText, supportsTypingIndicator]);
 
   const scheduleDraftSave = useCallback((key: string | null, value: string) => {
     if (draftSaveRef.current) {

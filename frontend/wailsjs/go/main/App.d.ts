@@ -153,6 +153,8 @@ export function SendThreadMessage(arg1:string,arg2:string,arg3:string):Promise<m
 
 export function SendThreadReply(arg1:string,arg2:string,arg3:string,arg4:string):Promise<models.Message>;
 
+export function SendTypingIndicator(arg1:string,arg2:boolean):Promise<void>;
+
 export function SetActiveProvider(arg1:string):Promise<void>;
 
 export function SetContactAlias(arg1:string,arg2:string):Promise<void>;

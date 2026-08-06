@@ -101,6 +101,28 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestTypingEventUsesCanonicalConversationID(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	client.CacheDisplayName("8:orgid:alice", "Alice")
+
+	provider := NewProvider()
+	provider.instance = "teams-work"
+	provider.handleRemoteEvent(client, msteams.Event{
+		Type: msteams.EventTypeTyping, ThreadID: "19:group@thread.v2", TypingFrom: "8:orgid:alice",
+	})
+
+	event := (<-provider.eventChan).(core.TypingEvent)
+	if event.ConversationID != "teams-work::19:group@thread.v2" || event.UserName != "Alice" || !event.IsTyping {
+		t.Fatalf("unexpected typing event: %+v", event)
+	}
+}
+
 func TestSendMessageRejectsEmptyPayload(t *testing.T) {
 	if _, err := NewProvider().SendMessage("conversation", "", nil, nil); err == nil {
 		t.Fatal("empty Teams message should be rejected before reaching the service")
