@@ -910,14 +910,15 @@ func (p *Provider) RemoveReaction(conversationID, messageID, emoji string) error
 }
 
 func (p *Provider) SendTypingIndicator(conversationID string, isTyping bool) error {
-	if !isTyping {
-		return nil
-	}
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return err
 	}
-	return client.SendTyping(context.Background(), core.StripConvID(conversationID))
+	threadID := core.StripConvID(conversationID)
+	if isTyping {
+		return client.SendTyping(context.Background(), threadID)
+	}
+	return client.SendClearTyping(context.Background(), threadID)
 }
 
 func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
@@ -1520,8 +1521,11 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 			}
 		}
 	case msteams.EventTypeTyping:
+		if event.TypingFrom == "" || event.TypingFrom == client.UserMRI() {
+			return
+		}
 		p.emit(core.TypingEvent{
-			InstanceID: p.instance, ConversationID: event.ThreadID,
+			InstanceID: p.instance, ConversationID: core.BuildConvID(p.instance, event.ThreadID),
 			UserID: event.TypingFrom, UserName: client.CachedDisplayName(event.TypingFrom),
 			IsTyping: !event.TypingStop,
 		})

@@ -2731,6 +2731,14 @@ func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
 	return provider.MarkMessageAsRead(conversationID, messageID)
 }
 
+func (a *App) SendTypingIndicator(conversationID string, isTyping bool) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	return provider.SendTypingIndicator(conversationID, isTyping)
+}
+
 func (a *App) MarkConversationAsRead(conversationID string) error {
 	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
