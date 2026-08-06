@@ -53,3 +53,20 @@ func TestExtractTextKeepsContextImageAltText(t *testing.T) {
 		t.Fatalf("context image or text was lost: %q", got)
 	}
 }
+
+func TestApplyRichTextStyleMovesEdgeSpacesOutsideMarkdownMarkers(t *testing.T) {
+	style := &slackapi.RichTextSectionTextStyle{Bold: true}
+	for _, test := range []struct {
+		text string
+		want string
+	}{
+		{"Note ", "**Note** "},
+		{"4.Mise en place de reporting : (0,5J) ", "**4.Mise en place de reporting : (0,5J)** "},
+		{" seulement ", " **seulement** "},
+		{" ", " "},
+	} {
+		if got := applyRichTextStyle(test.text, style); got != test.want {
+			t.Errorf("applyRichTextStyle(%q) = %q, want %q", test.text, got, test.want)
+		}
+	}
+}

@@ -34,6 +34,12 @@ func (p *SlackProvider) startRTM(ctx context.Context) {
 			return
 		case msg := <-p.rtmClient.IncomingEvents:
 			switch ev := msg.Data.(type) {
+			case *slack.ConnectingEvent:
+				p.log("SlackProvider.startRTM: connecting (attempt %d, previous connections: %d)\n", ev.Attempt, ev.ConnectionCount)
+
+			case *slack.ConnectionErrorEvent:
+				p.log("SlackProvider.startRTM: connection failed on attempt %d: %v (retry in %s)\n", ev.Attempt, ev.ErrorObj, ev.Backoff)
+
 			case *slack.ConnectedEvent:
 				p.log("SlackProvider.startRTM: RTM Connected: %s (Connections: %d)\n", ev.Info.User.ID, ev.ConnectionCount)
 
@@ -140,8 +146,9 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		return
 	}
 
-	// Skip messages with no text/user (e.g. subtype messages we don't care about)
-	if ev.User == "" && ev.Text == "" {
+	// Huddle system messages commonly have neither text nor a top-level user.
+	// Keep those so they can be rendered as call notifications in Loom.
+	if ev.User == "" && ev.Text == "" && !isSlackHuddleSubtype(ev.SubType) {
 		return
 	}
 
@@ -201,16 +208,11 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	}
 
 	// Extract huddle join URL from raw text before any preprocessing.
-	callUrl := ""
-	callLinkAction := ""
-	if m := huddleURLRegex.FindStringSubmatch(ev.Text); len(m) >= 2 {
-		callUrl = m[1]
-		callLinkAction = "join"
-	}
+	callUrl, callLinkAction := p.huddleLink(ev.Text, ev.Channel)
 
 	// Check if this is a huddle-related message.
 	callType := ""
-	if ev.SubType == "sh_room_created" {
+	if isSlackHuddleSubtype(ev.SubType) {
 		isGroup := !strings.HasPrefix(ev.Channel, "D")
 		if isGroup {
 			callType = "incoming_group_call"
@@ -235,6 +237,9 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 				}
 			}
 		}
+	}
+	if callType == "" {
+		callUrl, callLinkAction = "", ""
 	}
 
 	// Build attachments from files attached to this RTM event (file_share subtype).

@@ -217,6 +217,13 @@ export function useMessageEvents() {
         }
         for (const convId of Object.keys(lastMessageByConv)) {
           queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", convId] });
+          // Batch events are used by Slack's incremental-sync fallback when RTM
+          // did not deliver an event. Refresh an already-open conversation so
+          // calls and messages recovered this way become visible immediately.
+          queryClient.invalidateQueries({ queryKey: ["messages", convId] });
+        }
+        if (batch.messages.some((message) => Boolean(message.callType?.trim()))) {
+          queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });
         }
         queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => {
           const updated = { ...(old || {}) };

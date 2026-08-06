@@ -121,7 +121,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         // Invalidate active calls queries to update call badges
-        queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+        queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });
       }, 500); // 500ms debounce
     });
 
@@ -172,7 +172,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
       refreshTimeoutRef.current = setTimeout(() => {
         // Invalidate active calls queries when a new message arrives
         // This ensures the badge disappears immediately when CallTerminate updates the message
-        queryClient.invalidateQueries({ queryKey: ["activeCalls"] });
+        queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });
 
         // Invalidate last message queries to update sorting and previews
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
@@ -482,7 +482,10 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             );
             const activeAccount =
               providerAccount ??
-              (sortBy === "unread" ? unreadAccount : undefined) ??
+              // A meta-contact can group several providers. Prefer the account
+              // that owns an unread message so its badge is calculated against
+              // the right conversation even outside the "Unread" view.
+              unreadAccount ??
               contact.linkedAccounts[0];
             const typingAccount = contact.linkedAccounts.find(
               (account) => (typingByConversation[accountConversationId(account)]?.length ?? 0) > 0

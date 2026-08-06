@@ -121,16 +121,11 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	)
 
 	// Extract huddle join URL from raw text before any preprocessing.
-	callUrl := ""
-	callLinkAction := ""
-	if m := huddleURLRegex.FindStringSubmatch(ev.Text); len(m) >= 2 {
-		callUrl = m[1]
-		callLinkAction = "join"
-	}
+	callUrl, callLinkAction := p.huddleLink(ev.Text, ev.Channel)
 
 	// Check if this is a huddle-related message.
 	callType := ""
-	if ev.SubType == "sh_room_created" {
+	if isSlackHuddleSubtype(ev.SubType) {
 		isGroup := !strings.HasPrefix(ev.Channel, "D")
 		if isGroup {
 			callType = "incoming_group_call"
@@ -155,6 +150,9 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 				}
 			}
 		}
+	}
+	if callType == "" {
+		callUrl, callLinkAction = "", ""
 	}
 
 	// Build thread ID: non-empty thread_ts means this is part of a thread.
