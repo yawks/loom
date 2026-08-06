@@ -1095,11 +1095,11 @@ export namespace models {
 	export class ThreadSummary {
 	    parentMessageId: string;
 	    replyCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ThreadSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.parentMessageId = source["parentMessageId"];
@@ -1125,3 +1125,4 @@ export namespace time {
 	}
 
 }
+

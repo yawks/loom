@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,20 +32,25 @@ const providerID = "googlemessages"
 type Provider struct {
 	unsupportedProvider
 
-	mu        sync.RWMutex
-	config    core.ProviderConfig
-	client    *libgm.Client
-	auth      *libgm.AuthData
-	pairing   *libgm.PairingSession
-	eventChan chan core.ProviderEvent
-	instance  string
-	emoji     string
+	mu                sync.RWMutex
+	config            core.ProviderConfig
+	client            *libgm.Client
+	auth              *libgm.AuthData
+	pairing           *libgm.PairingSession
+	eventChan         chan core.ProviderEvent
+	instance          string
+	emoji             string
+	fullMediaRequests map[string]struct{}
 }
 
 var _ core.Provider = (*Provider)(nil)
 
 func NewProvider() *Provider {
-	return &Provider{eventChan: make(chan core.ProviderEvent, 500), config: make(core.ProviderConfig)}
+	return &Provider{
+		eventChan:         make(chan core.ProviderEvent, 500),
+		config:            make(core.ProviderConfig),
+		fullMediaRequests: make(map[string]struct{}),
+	}
 }
 
 func (p *Provider) Init(config core.ProviderConfig) error {
@@ -514,12 +520,20 @@ func (p *Provider) mediaAttachmentsJSON(remote *gmproto.Message) string {
 	attachments := make([]models.Attachment, 0)
 	for _, info := range remote.GetMessageInfo() {
 		media := info.GetMediaContent()
-		if media == nil || media.GetMediaID() == "" || len(media.GetDecryptionKey()) == 0 {
+		if media == nil {
 			continue
 		}
 		attachment, err := p.downloadMediaAttachment(client, remote.GetMessageID(), media)
 		if err == nil {
 			attachments = append(attachments, attachment)
+		} else {
+			log.Printf("[%s] unable to download media for message %s: %v", providerID, remote.GetMessageID(), err)
+		}
+		// Google frequently sends only a thumbnail first. Asking for the full
+		// image causes a later message update containing the full media ID; that
+		// update replaces the thumbnail attachment in Loom.
+		if (media.GetMediaID() == "" || len(media.GetDecryptionKey()) == 0) && info.GetActionMessageID() != "" {
+			p.requestFullMedia(client, remote.GetMessageID(), info.GetActionMessageID())
 		}
 	}
 	if len(attachments) == 0 {
@@ -553,15 +567,37 @@ func (p *Provider) downloadMediaAttachment(client *libgm.Client, messageID strin
 	if err != nil {
 		return models.Attachment{}, err
 	}
-	sum := sha256.Sum256([]byte(messageID + "\x00" + media.GetMediaID()))
+	var mediaID string
+	var decryptionKey, data []byte
+	usingThumbnail := false
+	if media.GetMediaID() != "" && len(media.GetDecryptionKey()) > 0 {
+		mediaID = media.GetMediaID()
+		decryptionKey = media.GetDecryptionKey()
+	} else if len(media.GetMediaData()) > 0 {
+		data = media.GetMediaData()
+	} else if media.GetThumbnailMediaID() != "" && len(media.GetThumbnailDecryptionKey()) > 0 {
+		mediaID = media.GetThumbnailMediaID()
+		decryptionKey = media.GetThumbnailDecryptionKey()
+		usingThumbnail = true
+	}
+	if mediaID == "" && len(data) == 0 {
+		return models.Attachment{}, fmt.Errorf("media is not available yet")
+	}
+	cacheID := mediaID
+	if cacheID == "" {
+		cacheID = "inline"
+	}
+	sum := sha256.Sum256([]byte(messageID + "\x00" + cacheID))
 	cachePath := filepath.Join(cacheDir, fmt.Sprintf("%x", sum[:]))
 	if extension := filepath.Ext(fileName); extension != "" {
 		cachePath += extension
 	}
 	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
-		data, err := client.DownloadMedia(media.GetMediaID(), media.GetDecryptionKey())
-		if err != nil {
-			return models.Attachment{}, err
+		if len(data) == 0 {
+			data, err = client.DownloadMedia(mediaID, decryptionKey)
+			if err != nil {
+				return models.Attachment{}, err
+			}
 		}
 		if err := os.WriteFile(cachePath, data, 0600); err != nil {
 			return models.Attachment{}, err
@@ -570,7 +606,9 @@ func (p *Provider) downloadMediaAttachment(client *libgm.Client, messageID strin
 		return models.Attachment{}, err
 	}
 	attachment := models.Attachment{Type: attachmentTypeFromMIME(mimeType), URL: cachePath, FileName: fileName, FileSize: media.GetSize(), MimeType: mimeType}
-	if media.GetThumbnailMediaID() != "" && len(media.GetThumbnailDecryptionKey()) > 0 {
+	if usingThumbnail {
+		attachment.Thumbnail = cachePath
+	} else if media.GetThumbnailMediaID() != "" && len(media.GetThumbnailDecryptionKey()) > 0 {
 		extension := filepath.Ext(cachePath)
 		thumbnailPath := strings.TrimSuffix(cachePath, extension) + ".thumb" + extension
 		if _, err := os.Stat(thumbnailPath); os.IsNotExist(err) {
@@ -583,6 +621,31 @@ func (p *Provider) downloadMediaAttachment(client *libgm.Client, messageID strin
 		}
 	}
 	return attachment, nil
+}
+
+func (p *Provider) requestFullMedia(client *libgm.Client, messageID, actionMessageID string) {
+	requestID := messageID + "\x00" + actionMessageID
+	p.mu.Lock()
+	if p.fullMediaRequests == nil {
+		p.fullMediaRequests = make(map[string]struct{})
+	}
+	if _, exists := p.fullMediaRequests[requestID]; exists {
+		p.mu.Unlock()
+		return
+	}
+	p.fullMediaRequests[requestID] = struct{}{}
+	p.mu.Unlock()
+
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			delete(p.fullMediaRequests, requestID)
+			p.mu.Unlock()
+		}()
+		if _, err := client.GetFullSizeImage(messageID, actionMessageID); err != nil {
+			log.Printf("[%s] unable to request full media for message %s: %v", providerID, messageID, err)
+		}
+	}()
 }
 
 func (p *Provider) mediaCacheDir() (string, error) {
@@ -624,7 +687,10 @@ func (p *Provider) MarkMessageAsRead(conversationID, messageID string) error {
 	if conversationID == "" || messageID == "" {
 		return fmt.Errorf("%s: conversation ID and message ID are required", providerID)
 	}
-	if err := client.MarkRead(conversationID, messageID); err != nil {
+	// Conversation IDs stored by Loom are namespaced with the provider instance,
+	// while Google Messages expects its original conversation ID on the wire.
+	rawConvID := core.StripConvID(conversationID)
+	if err := client.MarkRead(rawConvID, messageID); err != nil {
 		return fmt.Errorf("%s: mark message as read: %w", providerID, err)
 	}
 	return nil
@@ -637,20 +703,25 @@ func (p *Provider) MarkConversationAsRead(conversationID string) error {
 	if client == nil || !p.IsAuthenticated() {
 		return fmt.Errorf("%s: not authenticated", providerID)
 	}
-	response, err := client.FetchMessages(conversationID, 1, nil)
+	if conversationID == "" {
+		return fmt.Errorf("%s: conversation ID is required", providerID)
+	}
+	rawConvID := core.StripConvID(conversationID)
+	response, err := client.FetchMessages(rawConvID, 1, nil)
 	if err != nil {
 		return fmt.Errorf("%s: fetch latest message for read marker: %w", providerID, err)
 	}
 	if len(response.GetMessages()) == 0 || response.GetMessages()[0].GetMessageID() == "" {
 		return nil
 	}
-	return p.MarkMessageAsRead(conversationID, response.GetMessages()[0].GetMessageID())
+	return p.MarkMessageAsRead(rawConvID, response.GetMessages()[0].GetMessageID())
 }
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
 		SupportsReactions:     true,
 		SupportsDeleteMessage: true,
+		SupportsReadReceipts:  true,
 		NativeEmojiReactions:  true,
 	}
 }

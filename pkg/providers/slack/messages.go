@@ -22,6 +22,36 @@ import (
 // Slack encodes URLs as <https://...|label>, so we match the URL part only.
 var huddleURLRegex = regexp.MustCompile(`<(https://[^|>]*slack\.com/huddle[^|>]*)[|>]`)
 
+func isSlackHuddleSubtype(subtype string) bool {
+	switch subtype {
+	case "sh_room_created", "huddle_thread":
+		return true
+	default:
+		return false
+	}
+}
+
+// slackConversationURL returns a browser link to the Slack conversation where
+// an event happened. Huddle system events frequently omit their join URL, so
+// this link still lets the user open the relevant conversation in Slack Web.
+func (p *SlackProvider) slackConversationURL(channelID string) string {
+	channelID = core.StripConvID(channelID)
+	if p.teamID == "" || channelID == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://app.slack.com/client/%s/%s", p.teamID, channelID)
+}
+
+func (p *SlackProvider) huddleLink(rawText, channelID string) (string, string) {
+	if match := huddleURLRegex.FindStringSubmatch(rawText); len(match) >= 2 {
+		return match[1], "join"
+	}
+	if conversationURL := p.slackConversationURL(channelID); conversationURL != "" {
+		return conversationURL, "open"
+	}
+	return "", ""
+}
+
 // SendMessage sends a text message to a given conversation.
 func (p *SlackProvider) SendMessage(conversationID string, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
 	canonicalText := text
@@ -1684,18 +1714,13 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 
 	// Extract huddle join URL from the raw text before any preprocessing.
 	// Slack encodes the URL as <https://...slack.com/huddle/...|label>.
-	callUrl := ""
-	callLinkAction := ""
-	if m := huddleURLRegex.FindStringSubmatch(msg.Text); len(m) >= 2 {
-		callUrl = m[1]
-		callLinkAction = "join"
-	}
+	callUrl, callLinkAction := p.huddleLink(msg.Text, conversationID)
 
 	// Check if this is a huddle-related message
 	// Slack huddles are typically indicated by system messages with specific text patterns
 	// or by checking if the message subtype indicates a huddle
 	callType := ""
-	if msg.SubType == "sh_room_created" {
+	if isSlackHuddleSubtype(msg.SubType) {
 		isGroup := !strings.HasPrefix(normalizedConversationID, "D")
 		if isGroup {
 			callType = "incoming_group_call"
@@ -1742,6 +1767,9 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 				callType = "missed_voice"
 			}
 		}
+	}
+	if callType == "" {
+		callUrl, callLinkAction = "", ""
 	}
 
 	// Detect Slack blockquote formatting
@@ -1846,15 +1874,32 @@ func applyRichTextStyle(text string, style *slack.RichTextSectionTextStyle) stri
 	case style.Code:
 		return "`" + text + "`"
 	case style.Bold && style.Italic:
-		return "***" + text + "***"
+		return wrapSlackRichTextStyle(text, "***")
 	case style.Bold:
-		return "**" + text + "**"
+		return wrapSlackRichTextStyle(text, "**")
 	case style.Italic:
-		return "_" + text + "_"
+		return wrapSlackRichTextStyle(text, "_")
 	case style.Strike:
-		return "~~" + text + "~~"
+		return wrapSlackRichTextStyle(text, "~~")
 	}
 	return text
+}
+
+// Slack includes adjacent spaces in styled rich-text elements. CommonMark does
+// not recognize emphasis when whitespace touches the inside of a delimiter,
+// so preserve that whitespace outside the generated Markdown markers.
+func wrapSlackRichTextStyle(text, delimiter string) string {
+	trimmed := strings.Trim(text, " \t")
+	if trimmed == "" {
+		return text
+	}
+	leadingLength := len(text) - len(strings.TrimLeft(text, " \t"))
+	trailingLength := len(text) - len(strings.TrimRight(text, " \t"))
+	result := text[:leadingLength] + delimiter + trimmed + delimiter
+	if trailingLength > 0 {
+		result += text[len(text)-trailingLength:]
+	}
+	return result
 }
 
 // richTextSectionToText converts a RichTextSection's elements to a plain-text/markdown string.

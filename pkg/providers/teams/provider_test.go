@@ -352,6 +352,40 @@ func TestTeamsHTMLRichPresentation(t *testing.T) {
 	}
 }
 
+func TestTeamsHTMLFormattingMovesEdgeSpacesOutsideMarkdownMarkers(t *testing.T) {
+	got := teamsHTMLToMarkdown(
+		`<p>+<strong> il nous a remonté plusieurs régressions sur la partie téléphone hier</strong>,</p>` +
+			`<p><strong>anonymisation </strong><a href="https://zaion-team.atlassian.net/browse/BUILD-5852">https://zaion-team.atlassian.net/browse/BUILD-5852</a> + <strong>P3 </strong>:</p>` +
+			`<p>Vision client :<em> 2 tickets rejetés + 4 tickets à faire </em></p>`,
+	)
+	want := "+ **il nous a remonté plusieurs régressions sur la partie téléphone hier**,\n" +
+		"**anonymisation** [https://zaion-team.atlassian.net/browse/BUILD-5852](https://zaion-team.atlassian.net/browse/BUILD-5852) + **P3** :\n" +
+		"Vision client : *2 tickets rejetés + 4 tickets à faire*"
+	if got != want {
+		t.Fatalf("Teams formatting = %q, want %q", got, want)
+	}
+}
+
+func TestTeamsHTMLNormalizesLiteralMalformedBold(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{
+			`<p>Bonjour MEP **backend **VSR **GENERATION-WB-PB** </p>`,
+			`Bonjour MEP **backend** VSR **GENERATION-WB-PB**`,
+		},
+		{
+			`<p>**Risque : **Faible** **</p>`,
+			`**Risque :** Faible`,
+		},
+	} {
+		if got := teamsHTMLToMarkdown(test.input); got != test.want {
+			t.Errorf("teamsHTMLToMarkdown(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
 func TestTeamsHTMLInlineEmoji(t *testing.T) {
 	got := teamsHTMLToMarkdown(`<p>Hello <img itemtype="http://schema.skype.com/Emoji" itemid="wink" src="emoji.png"></p>`)
 	if got != "Hello 😉" {

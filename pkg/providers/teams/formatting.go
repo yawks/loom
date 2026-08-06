@@ -16,11 +16,12 @@ import (
 // renderer while discarding Teams-specific HTML wrappers and attributes.
 func teamsHTMLToMarkdown(input string) string {
 	input = msteams.ReplaceInlineEmojis(input)
+	input = normalizeTeamsMarkdown(input)
 	root, err := html.Parse(strings.NewReader("<body>" + input + "</body>"))
 	if err != nil {
 		return input
 	}
-	var out strings.Builder
+	out := &strings.Builder{}
 	var render func(*html.Node)
 	render = func(node *html.Node) {
 		if node.Type == html.TextNode {
@@ -37,14 +38,49 @@ func teamsHTMLToMarkdown(input string) string {
 		if style != "" {
 			out.WriteString(style)
 		}
+		// Teams commonly includes the spaces surrounding formatted text inside
+		// the <strong>/<em> element. CommonMark requires emphasis delimiters to
+		// touch non-whitespace, so keep those spaces but move them outside the
+		// Markdown markers.
+		if tag == "strong" || tag == "b" || tag == "em" || tag == "i" {
+			previousOut := out
+			formatted := &strings.Builder{}
+			out = formatted
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				render(child)
+			}
+			out = previousOut
+			body := formatted.String()
+			trimmed := strings.Trim(body, " \t")
+			if trimmed == "" {
+				out.WriteString(body)
+				if style != "" {
+					out.WriteString("</loom-style>")
+				}
+				return
+			}
+			leadingLength := len(body) - len(strings.TrimLeft(body, " \t"))
+			trailingLength := len(body) - len(strings.TrimRight(body, " \t"))
+			out.WriteString(body[:leadingLength])
+			delimiter := "*"
+			if tag == "strong" || tag == "b" {
+				delimiter = "**"
+			}
+			out.WriteString(delimiter)
+			out.WriteString(trimmed)
+			out.WriteString(delimiter)
+			if trailingLength > 0 {
+				out.WriteString(body[len(body)-trailingLength:])
+			}
+			if style != "" {
+				out.WriteString("</loom-style>")
+			}
+			return
+		}
 		switch tag {
 		case "br":
 			out.WriteByte('\n')
 			return
-		case "strong", "b":
-			out.WriteString("**")
-		case "em", "i":
-			out.WriteByte('*')
 		case "u":
 			out.WriteString("<u>")
 		case "code":
@@ -62,10 +98,6 @@ func teamsHTMLToMarkdown(input string) string {
 		switch tag {
 		case "u":
 			out.WriteString("</u>")
-		case "strong", "b":
-			out.WriteString("**")
-		case "em", "i":
-			out.WriteByte('*')
 		case "code":
 			out.WriteByte('`')
 		case "p", "div", "li":
@@ -83,6 +115,17 @@ func teamsHTMLToMarkdown(input string) string {
 	}
 	render(root)
 	return strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
+}
+
+var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t]+)\*\*`)
+var teamsEmptyStrong = regexp.MustCompile(`\*\*[ \t]+\*\*`)
+
+// normalizeTeamsMarkdown repairs Markdown-like text embedded literally in a
+// Teams HTML message. This happens when Teams mixes rich-text elements with
+// already-serialized Markdown in the same payload.
+func normalizeTeamsMarkdown(input string) string {
+	input = teamsStrongTrailingSpace.ReplaceAllString(input, `**$1**$2`)
+	return teamsEmptyStrong.ReplaceAllString(input, "")
 }
 
 var safeCSSValue = regexp.MustCompile(`(?i)^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$`)

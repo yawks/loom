@@ -79,3 +79,10 @@ func TestGoogleMessagesReceipts(t *testing.T) {
 		})
 	}
 }
+
+func TestGoogleMessagesCapabilitiesIncludeReadReceipts(t *testing.T) {
+	provider := NewProvider()
+	if !provider.GetCapabilities().SupportsReadReceipts {
+		t.Fatal("Google Messages must advertise read receipt support")
+	}
+}
