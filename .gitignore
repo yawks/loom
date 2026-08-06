@@ -39,6 +39,7 @@ frontend/dist/
 frontend/build/
 frontend/.vite/
 frontend/.wails/
+Loom.dmg
 
 # Node.js dependencies
 node_modules/

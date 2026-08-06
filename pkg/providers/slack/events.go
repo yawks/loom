@@ -77,6 +77,10 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			} else if !newLastPollTime.IsZero() {
 				lastPollTime = newLastPollTime
 			}
+			// Huddle updates keep the original message timestamp and are therefore
+			// invisible to forward-only message polling. Check only locally active
+			// huddles so their end and duration are still captured without RTM.
+			p.pollActiveHuddles(ctx)
 		case <-reactionTicker.C:
 			// Poll for new reactions on recent messages
 			p.pollNewReactions()
@@ -124,101 +128,101 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 
 		// Process matches
 		for _, match := range search.Matches {
-		// Parse timestamp
-		tsFloat, err := strconv.ParseFloat(match.Timestamp, 64)
-		if err != nil {
-			continue
-		}
-		secs := int64(tsFloat)
-		nsecs := int64((tsFloat - float64(secs)) * 1e9)
-		ts := time.Unix(secs, nsecs)
-
-		// Update latest timestamp seen
-		if ts.After(latestTimestamp) {
-			latestTimestamp = ts
-		}
-
-		// Skip messages older than or equal to 'since' (overlap safety)
-		if !ts.After(since) {
-			continue
-		}
-
-		conversationID := match.Channel.ID
-		if conversationID == "" {
-			continue
-		}
-
-		// Normalize DM channel IDs ("D...") to User IDs ("U...") for consistency
-		// This ensures messages match the conversationId stored in contacts
-		conversationID = core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(conversationID))
-
-		// Check if we know this conversation (users or channels)
-		// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh
-		if db.DB != nil {
-			var count int64
-			db.DB.Model(&models.LinkedAccount{}).Where("user_id = ?", conversationID).Count(&count)
-			if count == 0 {
-				newConversationsFound = true
-				p.log("SlackProvider.pollGlobalUpdates: Discovering new conversation: %s\n", conversationID)
+			// Parse timestamp
+			tsFloat, err := strconv.ParseFloat(match.Timestamp, 64)
+			if err != nil {
+				continue
 			}
-		}
+			secs := int64(tsFloat)
+			nsecs := int64((tsFloat - float64(secs)) * 1e9)
+			ts := time.Unix(secs, nsecs)
 
-		// Convert to Model Message
-		msg := models.Message{
-			ProtocolMsgID:  match.Timestamp, // Match TS is unique ID
-			ProtocolConvID: conversationID,
-			Body:           match.Text,
-			SenderID:       match.User,
-			SenderName:     match.Username, // Search returns username
-			Timestamp:      ts,
-			IsFromMe:       false, // We'll double check below
-		}
+			// Update latest timestamp seen
+			if ts.After(latestTimestamp) {
+				latestTimestamp = ts
+			}
 
-		// Detect thread replies via permalink: thread reply URLs contain ?thread_ts=<parent_ts>
-		// The SearchMessage struct has no ThreadTimestamp field, so the permalink is the only
-		// way to know at search time whether this is a reply (vs a parent that started a thread).
-		if match.Permalink != "" {
-			if u, err := url.Parse(match.Permalink); err == nil {
-				if threadTS := u.Query().Get("thread_ts"); threadTS != "" && threadTS != match.Timestamp {
-					msg.ThreadID = &threadTS
+			// Skip messages older than or equal to 'since' (overlap safety)
+			if !ts.After(since) {
+				continue
+			}
+
+			conversationID := match.Channel.ID
+			if conversationID == "" {
+				continue
+			}
+
+			// Normalize DM channel IDs ("D...") to User IDs ("U...") for consistency
+			// This ensures messages match the conversationId stored in contacts
+			conversationID = core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(conversationID))
+
+			// Check if we know this conversation (users or channels)
+			// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh
+			if db.DB != nil {
+				var count int64
+				db.DB.Model(&models.LinkedAccount{}).Where("user_id = ?", conversationID).Count(&count)
+				if count == 0 {
+					newConversationsFound = true
+					p.log("SlackProvider.pollGlobalUpdates: Discovering new conversation: %s\n", conversationID)
 				}
 			}
-		}
 
-		// Refine Sender Name/Avatar using cache
-		if msg.SenderID != "" {
-			p.userCacheMu.RLock()
-			user, ok := p.userCache[msg.SenderID]
-			p.userCacheMu.RUnlock()
-			if ok {
-				if user.RealName != "" {
-					msg.SenderName = user.RealName
+			// Convert to Model Message
+			msg := models.Message{
+				ProtocolMsgID:  match.Timestamp, // Match TS is unique ID
+				ProtocolConvID: conversationID,
+				Body:           match.Text,
+				SenderID:       match.User,
+				SenderName:     match.Username, // Search returns username
+				Timestamp:      ts,
+				IsFromMe:       false, // We'll double check below
+			}
+
+			// Detect thread replies via permalink: thread reply URLs contain ?thread_ts=<parent_ts>
+			// The SearchMessage struct has no ThreadTimestamp field, so the permalink is the only
+			// way to know at search time whether this is a reply (vs a parent that started a thread).
+			if match.Permalink != "" {
+				if u, err := url.Parse(match.Permalink); err == nil {
+					if threadTS := u.Query().Get("thread_ts"); threadTS != "" && threadTS != match.Timestamp {
+						msg.ThreadID = &threadTS
+					}
 				}
-				if user.Profile.Image48 != "" {
-					msg.SenderAvatarURL = user.Profile.Image48
+			}
+
+			// Refine Sender Name/Avatar using cache
+			if msg.SenderID != "" {
+				p.userCacheMu.RLock()
+				user, ok := p.userCache[msg.SenderID]
+				p.userCacheMu.RUnlock()
+				if ok {
+					if user.RealName != "" {
+						msg.SenderName = user.RealName
+					}
+					if user.Profile.Image48 != "" {
+						msg.SenderAvatarURL = user.Profile.Image48
+					}
 				}
 			}
-		}
 
-		// Check IsFromMe
-		authTest, err := client.AuthTest()
-		if err == nil && authTest.UserID == msg.SenderID {
-			msg.IsFromMe = true
-		}
-
-		// Deduplicate: Check if message exists in DB
-		if db.DB != nil {
-			var exists int64
-			db.DB.Model(&models.Message{}).Where("protocol_msg_id = ?", msg.ProtocolMsgID).Count(&exists)
-			if exists > 0 {
-				continue // Already have it
+			// Check IsFromMe
+			authTest, err := client.AuthTest()
+			if err == nil && authTest.UserID == msg.SenderID {
+				msg.IsFromMe = true
 			}
 
-			// Store new message
-			if err := db.DB.Create(&msg).Error; err != nil {
-				p.log("SlackProvider.pollGlobalUpdates: Failed to save message %s: %v\n", msg.ProtocolMsgID, err)
+			// Deduplicate: Check if message exists in DB
+			if db.DB != nil {
+				var exists int64
+				db.DB.Model(&models.Message{}).Where("protocol_msg_id = ?", msg.ProtocolMsgID).Count(&exists)
+				if exists > 0 {
+					continue // Already have it
+				}
+
+				// Store new message
+				if err := db.DB.Create(&msg).Error; err != nil {
+					p.log("SlackProvider.pollGlobalUpdates: Failed to save message %s: %v\n", msg.ProtocolMsgID, err)
+				}
 			}
-		}
 
 			// Emit event
 			select {

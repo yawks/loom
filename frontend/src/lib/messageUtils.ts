@@ -94,7 +94,7 @@ export function getColorFromString(str: string | undefined | null): string {
   if (safe.length === 0) return "hsl(0, 0%, 50%)";
   let hash = 0;
   for (let i = 0; i < safe.length; i++) {
-    hash = safe.charCodeAt(i) + ((hash << 5) - hash);
+    hash = safe.charCodeAt(i) + ((hash << 2) - hash);
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue}, 70%, 50%)`;

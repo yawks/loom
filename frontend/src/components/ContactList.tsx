@@ -659,7 +659,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                     if (lastMessage?.body) {
                       return (
                         <div className={cn(
-                          "contact-list__item-preview text-xs mt-0.5 text-left overflow-hidden whitespace-nowrap text-ellipsis",
+                          "contact-list__item-preview mt-0.5 block h-4 max-h-4 overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs leading-4 [&_*]:inline [&_br]:hidden [&_li]:list-none [&_ol]:m-0 [&_ol]:p-0 [&_ul]:m-0 [&_ul]:p-0",
                           isSelected ? "opacity-75" : "text-sidebar-muted-foreground"
                         )}>
                           <MessageText
