@@ -141,6 +141,17 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	// Handle message_changed: another user edited a message in this channel.
 	if ev.SubType == "message_changed" {
 		if ev.Channel != "" && ev.SubMessage != nil && ev.SubMessage.Timestamp != "" {
+			if isSlackHuddleSubtype(ev.SubMessage.SubType) {
+				ctx, cancel := huddleRoomContext()
+				room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.SubMessage.Timestamp)
+				cancel()
+				if err == nil && p.handleHuddleRoomUpdate(ev.Channel, ev.SubMessage.Timestamp, room) {
+					return
+				}
+				if err != nil {
+					p.log("SlackProvider: failed to fetch updated huddle %s: %v\n", ev.SubMessage.Timestamp, err)
+				}
+			}
 			p.handleRTMMessageChanged(ev.Channel, ev.SubMessage.Timestamp, ev.SubMessage.Text)
 		}
 		return
@@ -300,6 +311,13 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		QuotedMessageID:  quotedMessageID,
 		QuotedSenderName: quotedSenderName,
 		QuotedBody:       quotedBody,
+	}
+	if isSlackHuddleSubtype(ev.SubType) {
+		ctx, cancel := huddleRoomContext()
+		if room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.Timestamp); err == nil {
+			applySlackHuddleRoom(&msg, room)
+		}
+		cancel()
 	}
 
 	// Create the event

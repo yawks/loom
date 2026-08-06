@@ -342,6 +342,34 @@ export const MessageText = memo(function MessageText({
 
   const renderMarkdown = (content: string, isInline = false) => {
     if (!/<(?:u|loom-style)\b/i.test(content)) return renderMarkdownBase(content, isInline);
+
+
+    // Parsing each rich-text element separately detaches a Markdown list marker
+    // from the colored text that follows it (`- <loom-style>text</loom-style>`).
+    // Keep rich Teams lists as one React list and only parse the contents of each
+    // item independently, so color remains inline with its bullet.
+    const nonEmptyLines = content.split("\n").filter((line) => line.trim() !== "");
+    const unorderedItems = nonEmptyLines.map((line) => line.match(/^\s*[-+]\s+(.+)$/));
+    if (unorderedItems.length > 0 && unorderedItems.every(Boolean)) {
+      return (
+        <ul className="list-disc pl-5 my-1 space-y-0.5">
+          {unorderedItems.map((match, index) => (
+            <li className="leading-snug" key={index}>{renderMarkdown(match?.[1] ?? "", true)}</li>
+          ))}
+        </ul>
+      );
+    }
+    const orderedItems = nonEmptyLines.map((line) => line.match(/^\s*\d+[.)]\s+(.+)$/));
+    if (orderedItems.length > 0 && orderedItems.every(Boolean)) {
+      return (
+        <ol className="list-decimal pl-5 my-1 space-y-0.5">
+          {orderedItems.map((match, index) => (
+            <li className="leading-snug" key={index}>{renderMarkdown(match?.[1] ?? "", true)}</li>
+          ))}
+        </ol>
+      );
+    }
+
     const documentNode = new DOMParser().parseFromString(content, "text/html");
     const renderNodes = (nodes: NodeListOf<ChildNode> | ChildNode[], inline: boolean): ReactNode[] =>
       Array.from(nodes).map((node, index) => {
@@ -373,7 +401,11 @@ export const MessageText = memo(function MessageText({
   }
 
   if (typeof parsedContent === "string") {
-    return <div className={cn(className, "max-w-full overflow-hidden")}>{renderMarkdown(parsedContent)}</div>;
+    return (
+      <div className={cn(className, "max-w-full overflow-hidden")}>
+        {renderMarkdown(parsedContent, preview)}
+      </div>
+    );
   }
 
   return (

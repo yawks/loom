@@ -39,6 +39,10 @@ type SlackProvider struct {
 	config             core.ProviderConfig
 	session            *slackSession // set by browser auth; overrides config token/d_cookie
 	client             *slack.Client
+	apiHTTPClient      *http.Client // HTTP client matching Slack API cookie/auth configuration
+	authToken          string       // Token used for raw endpoints not modeled by slack-go v0.17
+	apiBaseURL         string       // Slack Web API base URL (overridden by tests)
+	apiClientMu        sync.RWMutex // Protects apiHTTPClient and authToken independently of p.mu
 	socketClient       *socketmode.Client
 	rtmClient          *slack.RTM
 	mu                 sync.RWMutex
@@ -247,6 +251,7 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 			slack.OptionLog(p.logger),
 		}
 
+		apiHTTPClient := http.DefaultClient
 		if dCookie != "" {
 			fmt.Printf("SlackProvider.SetConfig: setting up cookie transport with d cookie\n")
 			// Create custom HTTP client that sends the d cookie
@@ -265,10 +270,16 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 					Cookie:    cookieHeader,
 				},
 			}
+			apiHTTPClient = client
 			opts = append(opts, slack.OptionHTTPClient(client))
 		}
 
 		p.client = slack.New(token, opts...)
+		p.apiClientMu.Lock()
+		p.apiHTTPClient = apiHTTPClient
+		p.authToken = token
+		p.apiBaseURL = "https://slack.com/api"
+		p.apiClientMu.Unlock()
 		fmt.Printf("SlackProvider.SetConfig: Slack client created\n")
 	} else {
 		fmt.Printf("SlackProvider.SetConfig: WARNING - no token provided\n")

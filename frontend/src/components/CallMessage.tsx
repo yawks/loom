@@ -1,9 +1,9 @@
 import { Clock, ExternalLink, Phone, PhoneOutgoing, Video, VideoOff, X } from "lucide-react";
 
+import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 
 // Custom icon component for missed calls: Phone with X overlay
 const PhoneWithX = ({ className }: { className?: string }) => (
@@ -250,7 +250,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   } else {
     // IRC layout
     return (
-      <div className="flex flex-col gap-1 px-2 py-1 text-xs text-muted-foreground italic">
+      <div className="flex flex-col gap-1 px-2 py-1 pt-3 ml-13 text-xs text-muted-foreground italic">
         <div className="flex items-center gap-2">
           <Icon className="h-3 w-3" />
           <span className="text-muted-foreground/80">*** {callInfo.text}</span>

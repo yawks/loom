@@ -72,6 +72,17 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 
 // handleMessageEvent processes a new message from Slack
 func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
+	if ev.SubType == "message_changed" && ev.Message != nil && ev.Message.Timestamp != "" && isSlackHuddleSubtype(ev.Message.SubType) {
+		ctx, cancel := huddleRoomContext()
+		room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.Message.Timestamp)
+		cancel()
+		if err == nil && p.handleHuddleRoomUpdate(ev.Channel, ev.Message.Timestamp, room) {
+			return
+		}
+		if err != nil {
+			p.log("SlackProvider: failed to fetch updated socket huddle %s: %v\n", ev.Message.Timestamp, err)
+		}
+	}
 	// Skip messages from the bot itself to avoid loops (though the UI should handle duplicates ideally)
 	// User ID isn't directly on the provider, we might want to store it.
 	// For now, let's process everything.
@@ -196,6 +207,13 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		QuotedMessageID:  quotedMessageID,
 		QuotedSenderName: quotedSenderName,
 		QuotedBody:       quotedBody,
+	}
+	if isSlackHuddleSubtype(ev.SubType) {
+		ctx, cancel := huddleRoomContext()
+		if room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.TimeStamp); err == nil {
+			applySlackHuddleRoom(&msg, room)
+		}
+		cancel()
 	}
 
 	// Check if this conversation already has messages in DB (to decide if we need an initial sync).

@@ -160,7 +160,7 @@ function ThreadParentMessage({
     );
   }
 
-  const senderColor = getColorFromString(message.senderId);
+  const senderColor = getColorFromString(displayName);
   const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
   return (
     <div className="flex items-start">
@@ -902,7 +902,7 @@ export function ThreadView() {
                 prevMessage.isFromMe !== message.isFromMe ||
                 timeDiffMinutes >= 5;
               const displayName = getSenderDisplayName(message.senderName, message.senderId, message.isFromMe, t);
-              const senderColor = getColorFromString(message.senderId);
+              const senderColor = getColorFromString(displayName);
               const timeString = `${timestamp.getHours().toString().padStart(2, "0")}:${timestamp.getMinutes().toString().padStart(2, "0")}`;
 
               return (

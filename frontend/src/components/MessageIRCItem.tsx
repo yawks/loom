@@ -101,7 +101,7 @@ export function MessageIRCItem({
     ? (participantNames.get(message.senderId) || message.senderName)
     : message.senderName;
   const displayName = getSenderDisplayName(resolvedSenderName, message.senderId, message.isFromMe, t);
-  const senderColor = getColorFromString(message.senderId);
+  const senderColor = getColorFromString(displayName);
 
 
   const prevTimestamp = prevMessage ? timeToDate(prevMessage.timestamp) : null;

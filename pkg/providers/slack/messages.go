@@ -847,6 +847,16 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 
 	for _, msg := range history.Messages {
 		convertedMsg := p.convertMessage(msg, actualChannelID)
+		if isSlackHuddleSubtype(msg.SubType) {
+			ctx, cancel := huddleRoomContext()
+			room, roomErr := p.fetchHuddleRoom(ctx, actualChannelID, msg.Timestamp)
+			cancel()
+			if roomErr == nil {
+				applySlackHuddleRoom(&convertedMsg, room)
+			} else {
+				p.log("SlackProvider.GetConversationHistory: failed to enrich huddle %s: %v\n", msg.Timestamp, roomErr)
+			}
+		}
 
 		// Detect corruption: a non-self sender resolved to our own name via the DB cache.
 		// p.client is stable here (we hold the read lock), so we call the API directly.
@@ -1080,8 +1090,16 @@ func (p *SlackProvider) storeMessagesForConversation(convID string, messages []m
 					mergedAttachments := p.mergeAttachments(existingMsg.Attachments, msg.Attachments)
 					msg.Attachments = mergedAttachments
 				}
-				// Preserve CallType if updating and new one is empty
-				if msg.CallType == "" && existingMsg.CallType != "" {
+				// Never let a later history payload regress a completed huddle back to
+				// incoming merely because its room metadata could not be enriched.
+				if existingMsg.CallType == "call_ended" && msg.CallType != "call_ended" {
+					msg.CallType = existingMsg.CallType
+					msg.CallDurationSecs = existingMsg.CallDurationSecs
+					msg.CallOutcome = existingMsg.CallOutcome
+					msg.CallParticipants = existingMsg.CallParticipants
+					msg.CallUrl = existingMsg.CallUrl
+					msg.CallLinkAction = existingMsg.CallLinkAction
+				} else if msg.CallType == "" && existingMsg.CallType != "" {
 					msg.CallType = existingMsg.CallType
 				}
 				// Preserve body if the new event carries none (e.g. RTM file_share has empty text)

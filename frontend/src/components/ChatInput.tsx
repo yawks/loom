@@ -142,6 +142,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const draftSaveRef = useRef<{ key: string | null; value: string; timeoutId: number } | null>(null);
+  const hasTextRef = useRef(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [isLinkEditorOpen, setIsLinkEditorOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("https://");
@@ -188,6 +191,39 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   );
   const [message, setMessage] = useState(() => readDraft(draftStorageKey));
   const queryClient = useQueryClient();
+
+  const updateTypingState = useCallback((hasText: boolean) => {
+    if (hasTextRef.current === hasText) return;
+    hasTextRef.current = hasText;
+    setIsTypingInInput(hasText);
+  }, [setIsTypingInInput]);
+
+  const scheduleDraftSave = useCallback((key: string | null, value: string) => {
+    if (draftSaveRef.current) {
+      window.clearTimeout(draftSaveRef.current.timeoutId);
+    }
+    const timeoutId = window.setTimeout(() => {
+      saveDraft(key, value);
+      if (draftSaveRef.current?.timeoutId === timeoutId) draftSaveRef.current = null;
+    }, 250);
+    draftSaveRef.current = { key, value, timeoutId };
+  }, []);
+
+  const saveDraftImmediately = useCallback((key: string | null, value: string) => {
+    if (draftSaveRef.current) {
+      window.clearTimeout(draftSaveRef.current.timeoutId);
+      draftSaveRef.current = null;
+    }
+    saveDraft(key, value);
+  }, []);
+
+  useEffect(() => () => {
+    const pending = draftSaveRef.current;
+    if (!pending) return;
+    window.clearTimeout(pending.timeoutId);
+    saveDraft(pending.key, pending.value);
+    draftSaveRef.current = null;
+  }, [draftStorageKey]);
 
   // Focus textarea when a conversation is selected
   useEffect(() => {
@@ -466,8 +502,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     try {
       await scheduleMessageMutation.mutateAsync({ convId: conversationId, text, scheduledAt: date, parentMsgId: threadId ?? "" });
       setMessage("");
-      saveDraft(draftStorageKey, "");
-      setIsTypingInInput(false);
+      saveDraftImmediately(draftStorageKey, "");
+      updateTypingState(false);
       if (onCancelReply) onCancelReply();
       const dateLabel = date.toLocaleString(i18n.language, { dateStyle: "medium", timeStyle: "short" });
       showToast(t("scheduled_message_badge", { date: dateLabel }), "success");
@@ -523,26 +559,34 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     }
   }, [onHeightChange]);
 
+  const scheduleTextareaResize = useCallback(() => {
+    if (resizeFrameRef.current !== null) return;
+    resizeFrameRef.current = requestAnimationFrame(() => {
+      resizeFrameRef.current = null;
+      adjustTextareaHeight();
+    });
+  }, [adjustTextareaHeight]);
+
+  useEffect(() => () => {
+    if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+  }, []);
+
   // Restore the draft associated with the currently displayed conversation/thread.
   useEffect(() => {
     const draft = readDraft(draftStorageKey);
     setMessage(draft);
-    setIsTypingInInput(draft.trim().length > 0);
-    requestAnimationFrame(() => adjustTextareaHeight());
-  }, [adjustTextareaHeight, draftStorageKey, setIsTypingInInput]);
+    updateTypingState(draft.trim().length > 0);
+    scheduleTextareaResize();
+  }, [draftStorageKey, scheduleTextareaResize, updateTypingState]);
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
     setMessage(newValue);
-    saveDraft(draftStorageKey, newValue);
-    adjustTextareaHeight();
+    scheduleDraftSave(draftStorageKey, newValue);
+    scheduleTextareaResize();
 
     // Hide unread divider when user starts typing
-    if (newValue.trim().length > 0) {
-      setIsTypingInInput(true);
-    } else {
-      setIsTypingInInput(false);
-    }
+    updateTypingState(newValue.trim().length > 0);
   };
 
   const updateTextSelection = useCallback(() => {
@@ -561,15 +605,15 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     const selected = message.slice(start, end);
     const nextMessage = message.slice(0, start) + before + selected + after + message.slice(end);
     setMessage(nextMessage);
-    saveDraft(draftStorageKey, nextMessage);
-    setIsTypingInInput(nextMessage.trim().length > 0);
+    saveDraftImmediately(draftStorageKey, nextMessage);
+    updateTypingState(nextMessage.trim().length > 0);
     setTextSelection(null);
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(start + before.length, end + before.length);
       adjustTextareaHeight();
     });
-  }, [adjustTextareaHeight, draftStorageKey, message, setIsTypingInInput, textSelection]);
+  }, [adjustTextareaHeight, draftStorageKey, message, saveDraftImmediately, textSelection, updateTypingState]);
 
   const formatSelectedLines = useCallback((ordered: boolean) => {
     const textarea = textareaRef.current;
@@ -584,15 +628,15 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       .join("\n");
     const nextMessage = message.slice(0, lineStart) + formatted + message.slice(lineEnd);
     setMessage(nextMessage);
-    saveDraft(draftStorageKey, nextMessage);
-    setIsTypingInInput(true);
+    saveDraftImmediately(draftStorageKey, nextMessage);
+    updateTypingState(true);
     setTextSelection(null);
     requestAnimationFrame(() => {
       textarea.focus();
       textarea.setSelectionRange(lineStart, lineStart + formatted.length);
       adjustTextareaHeight();
     });
-  }, [adjustTextareaHeight, draftStorageKey, message, setIsTypingInInput, textSelection]);
+  }, [adjustTextareaHeight, draftStorageKey, message, saveDraftImmediately, textSelection, updateTypingState]);
 
   const openLinkEditor = useCallback(() => {
     if (!textSelection) return;
@@ -618,8 +662,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const text = message.trim();
       const quotedMessageId = replyingToMessage?.protocolMsgId;
       setMessage("");
-      saveDraft(draftStorageKey, "");
-      setIsTypingInInput(false); // Reset typing state after sending
+      saveDraftImmediately(draftStorageKey, "");
+      updateTypingState(false); // Reset typing state after sending
       if (textareaRef.current) {
         const previousHeight = textareaRef.current.offsetHeight;
         const minHeight =
@@ -747,10 +791,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;
     setMessage((prev) => {
       const newMessage = prev + emojiText;
-      saveDraft(draftStorageKey, newMessage);
+      saveDraftImmediately(draftStorageKey, newMessage);
       return newMessage;
     });
-    setIsTypingInInput(true);
+    updateTypingState(true);
     setIsEmojiPickerOpen(false);
     // Adjust height after emoji is added
     setTimeout(adjustTextareaHeight, 0);
@@ -921,8 +965,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           supportsListScheduledMessages={supportsListScheduledMessages}
           onScheduled={() => {
             setMessage("");
-            saveDraft(draftStorageKey, "");
-            setIsTypingInInput(false);
+            saveDraftImmediately(draftStorageKey, "");
+            updateTypingState(false);
           }}
         />
       )}
