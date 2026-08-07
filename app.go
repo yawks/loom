@@ -916,7 +916,14 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 									})
 								}
 							} else {
-								db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).Delete(&models.Reaction{})
+								query := db.DB.Where("message_id = ? AND user_id = ?", message.ID, e.UserID)
+								// WhatsApp represents a remote reaction removal with an empty
+								// emoji. In that case, remove the sender's current reaction(s)
+								// instead of looking for an impossible empty-emoji row.
+								if e.Emoji != "" {
+									query = query.Where("emoji = ?", e.Emoji)
+								}
+								query.Delete(&models.Reaction{})
 							}
 						}
 					}
