@@ -1263,6 +1263,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 		}
 
 		converted := make([]models.Message, 0, len(historyMsgs))
+		historyReactions := make([]core.ReactionEvent, 0)
 		for _, hMsg := range historyMsgs {
 			if hMsg == nil || hMsg.GetMessage() == nil {
 				continue
@@ -1274,6 +1275,28 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			evt, err := w.client.ParseWebMessage(chatJID, webMsgInfo)
 			if err != nil {
 				fmt.Printf("WhatsApp: Failed to parse history message for %s: %v\n", convID, err)
+				continue
+			}
+			// Reactions received while Loom was offline are represented as standalone
+			// messages in incremental history syncs. convertMessage intentionally skips
+			// them, so capture them here and emit them after their target messages have
+			// been persisted below.
+			if reactionMsg := evt.Message.GetReactionMessage(); reactionMsg != nil {
+				if key := reactionMsg.GetKey(); key != nil && key.GetID() != "" {
+					senderID := evt.Info.Sender.String()
+					if evt.Info.IsFromMe && w.client.Store != nil && w.client.Store.ID != nil {
+						senderID = w.client.Store.ID.String()
+					}
+					historyReactions = append(historyReactions, core.ReactionEvent{
+						InstanceID:     w.getInstanceId(),
+						ConversationID: core.BuildConvID(w.getInstanceId(), convID),
+						MessageID:      key.GetID(),
+						UserID:         senderID,
+						Emoji:          reactionMsg.GetText(),
+						Added:          reactionMsg.GetText() != "",
+						Timestamp:      evt.Info.Timestamp.Unix(),
+					})
+				}
 				continue
 			}
 			if w.tryHandleProtocolMessage(evt, false) {
@@ -1352,6 +1375,34 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			select {
 			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: latest}:
 			default:
+			}
+		}
+
+		// Process standalone reactions only after storing this history batch. This
+		// lets the app resolve reactions whose target message is part of the same
+		// sync, while also supporting targets already present in the database.
+		for _, reaction := range historyReactions {
+			if db.DB != nil {
+				var target models.Message
+				if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", reaction.MessageID, reaction.ConversationID).First(&target).Error; err == nil {
+					if reaction.Added {
+						row := models.Reaction{
+							MessageID: target.ID,
+							UserID:    reaction.UserID,
+							Emoji:     reaction.Emoji,
+							CreatedAt: time.Unix(reaction.Timestamp, 0),
+							UpdatedAt: time.Unix(reaction.Timestamp, 0),
+						}
+						db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", target.ID, reaction.UserID, reaction.Emoji).FirstOrCreate(&row)
+					} else {
+						db.DB.Where("message_id = ? AND user_id = ?", target.ID, reaction.UserID).Delete(&models.Reaction{})
+					}
+				}
+			}
+			select {
+			case w.eventChan <- reaction:
+			default:
+				fmt.Printf("WhatsApp: WARNING - Failed to emit history reaction for message %s (channel full)\n", reaction.MessageID)
 			}
 		}
 	}

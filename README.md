@@ -36,7 +36,7 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | Edit message | ✓ | ✓ | ✓ | ✓ | — |
 | Delete message | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Read receipts | ✓ | — | ✓ | — | — |
+| Read receipts | ✓ | — | ✓ | — | ✓² |
 | Contact presence | ✓ | ✓ | ✓ | — | — |
 | Pinned messages | Personal | Shared | Shared | Preview¹ | — |
 | Pin / mute conversations | ✓ | — | — | — | — |
@@ -46,10 +46,34 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 
 **Teams — presence:** available for one-to-one conversations, refreshed approximately once per minute. Loom also reconnects the event stream and syncs missed messages after the computer resumes from sleep.
 
+**Teams — typing indicators:** supported in both directions. Loom displays
+typing events received from one-to-one and group conversations, automatically
+expires stale indicators, and sends periodically refreshed typing notifications
+to Teams while the local composer contains text. The notification is cleared
+when the composer is emptied, the message is sent, or the user changes
+conversation.
+
+**Google Messages — media:** attachments sent or received on the paired phone
+are downloaded into Loom's private per-account cache. Loom handles full media,
+inline media, and thumbnail-first updates. When Google initially exposes only a
+thumbnail, Loom displays it immediately, requests the full-size file, and
+updates the message when the complete attachment becomes available.
+
+**Google Messages — read receipts:** opening a conversation in Loom advances
+the Google Messages read marker. For outgoing messages, Loom maps Google's
+`OUTGOING_DELIVERED` and `OUTGOING_DISPLAYED` updates to delivered and read
+states, persists them locally, and updates the message status in real time.
+Displayed/read confirmation depends on RCS and on the remote participant's read
+receipt settings. Google exposes an aggregate conversation status rather than
+per-participant receipts for RCS groups.
+
 ¹ Google Chat message pins use a Google Workspace Developer Preview API. They
 only work for accounts enrolled in the Developer Preview Program with a
 registered Google Cloud project; a standard Google Chat account will not expose
 the endpoint.
+
+² Google Messages read confirmation is available when Google reports the RCS
+message as displayed; SMS/MMS conversations do not provide the same read state.
 
 ### Pinned messages
 
