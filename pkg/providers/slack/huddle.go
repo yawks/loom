@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/slack-go/slack"
 )
 
 // slackHuddleRoom backports the stable subset of slack.HuddleRoom introduced
@@ -106,7 +109,8 @@ func applySlackHuddleRoom(message *models.Message, room *slackHuddleRoom) {
 	if room.HasEnded || room.DateEnd > 0 {
 		message.CallType = "call_ended"
 		message.CallOutcome = "CONNECTED"
-		message.CallLinkAction = "open"
+		message.CallUrl = ""
+		message.CallLinkAction = ""
 		if room.DateStart > 0 && room.DateEnd > room.DateStart {
 			duration := room.DateEnd - room.DateStart
 			if duration > int64(^uint32(0)>>1) {
@@ -137,12 +141,6 @@ func (p *SlackProvider) handleHuddleRoomUpdate(channelID, messageTS string, room
 		return false
 	}
 	applySlackHuddleRoom(&message, room)
-	if room.HasEnded || room.DateEnd > 0 {
-		// A finished huddle should open its conversation, not a stale join URL.
-		if conversationURL := p.slackConversationURL(channelID); conversationURL != "" {
-			message.CallUrl = conversationURL
-		}
-	}
 	if err := db.DB.Omit("Reactions").Save(&message).Error; err != nil {
 		p.log("SlackProvider: failed to update ended huddle %s: %v\n", messageTS, err)
 		return true
@@ -196,6 +194,83 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 		if room.HasEnded || room.DateEnd > 0 {
 			p.handleHuddleRoomUpdate(channelID, message.ProtocolMsgID, room)
 		}
+	}
+}
+
+// pollLatestHuddles discovers newly started huddles without search.messages.
+// Slack includes the latest message in conversations.list results; while a
+// huddle is active its huddle_thread message is normally the conversation's
+// latest item. This costs one paginated conversations.list pass rather than a
+// history request for every conversation.
+func (p *SlackProvider) pollLatestHuddles(ctx context.Context) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || db.DB == nil {
+		return
+	}
+
+	cursor := ""
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		channels, nextCursor, err := client.GetConversations(&slack.GetConversationsParameters{
+			Types:           []string{"public_channel", "private_channel", "mpim", "im"},
+			Limit:           1000,
+			Cursor:          cursor,
+			ExcludeArchived: true,
+		})
+		if err != nil {
+			p.log("SlackProvider.pollLatestHuddles: failed listing conversations: %v\n", err)
+			return
+		}
+
+		for _, channel := range channels {
+			latest := channel.Latest
+			if latest == nil || latest.Timestamp == "" || !isSlackHuddleSubtype(latest.SubType) {
+				continue
+			}
+			normalizedConvID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(channel.ID))
+			var count int64
+			if err := db.DB.Model(&models.Message{}).
+				Where("protocol_conv_id = ? AND protocol_msg_id = ?", normalizedConvID, latest.Timestamp).
+				Count(&count).Error; err != nil || count > 0 {
+				continue
+			}
+
+			timestamp, err := strconv.ParseFloat(latest.Timestamp, 64)
+			if err != nil {
+				p.log("SlackProvider.pollLatestHuddles: invalid timestamp %q: %v\n", latest.Timestamp, err)
+				continue
+			}
+			seconds := int64(timestamp)
+			startedAt := time.Unix(seconds, int64((timestamp-float64(seconds))*1e9))
+			// Leave a full second of margin: Slack timestamps have microsecond
+			// precision and converting through float64 can round a few nanoseconds.
+			since := startedAt.Add(-time.Second)
+			messages, err := p.GetConversationHistory(channel.ID, 10, nil, &since)
+			if err != nil {
+				p.log("SlackProvider.pollLatestHuddles: failed fetching huddle %s in %s: %v\n", latest.Timestamp, channel.ID, err)
+				continue
+			}
+			for _, message := range messages {
+				if message.ProtocolMsgID != latest.Timestamp || message.CallType == "" {
+					continue
+				}
+				select {
+				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: message}:
+					p.log("SlackProvider.pollLatestHuddles: discovered huddle %s in %s\n", latest.Timestamp, channel.ID)
+				default:
+					p.log("SlackProvider.pollLatestHuddles: event channel full for huddle %s\n", latest.Timestamp)
+				}
+			}
+		}
+
+		if nextCursor == "" {
+			return
+		}
+		cursor = nextCursor
 	}
 }
 

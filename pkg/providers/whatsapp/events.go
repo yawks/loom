@@ -48,6 +48,11 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		default:
 		}
 	case *events.JoinedGroup:
+		// GetContacts normally discovers groups through GetJoinedGroups, but that
+		// list is cached for an hour. Record a newly joined group immediately so
+		// the refresh triggered by GroupChangeEvent can expose it without waiting
+		// for the cache to expire.
+		w.cacheJoinedGroup(v.JID, v.Name)
 		go w.cacheGroupParticipants(v.JID)
 		select {
 		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), v.JID.String()), ChangeType: core.GroupChangeCreated, GroupName: v.Name, Timestamp: time.Now().Unix()}:
@@ -187,6 +192,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: WARNING - convertMessage returned nil for message %s\n", msgID)
 			break
 		}
+		msgID = msg.ProtocolMsgID
 
 		// Check if message with same ID already exists
 		var existingMsg *models.Message
@@ -231,6 +237,33 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// If message exists, it might be an edit - check if content changed
 		if existingMsg != nil {
 			fmt.Printf("WhatsApp: Found existing message %s: old body='%s', new body='%s'\n", msgID, existingMsg.Body, msg.Body)
+			if v.Message.GetLiveLocationMessage() != nil {
+				existingMsg.Attachments = msg.Attachments
+				if msg.Body != "" {
+					existingMsg.Body = msg.Body
+				}
+				w.mu.Lock()
+				if messages, ok := w.conversationMessages[convID]; ok {
+					for index := range messages {
+						if messages[index].ProtocolMsgID == msgID {
+							messages[index] = *existingMsg
+							break
+						}
+					}
+				}
+				w.mu.Unlock()
+				if db.DB != nil {
+					db.DB.Model(&models.Message{}).Where("protocol_msg_id = ?", msgID).Updates(map[string]interface{}{
+						"attachments": existingMsg.Attachments,
+						"body":        existingMsg.Body,
+					})
+				}
+				select {
+				case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *existingMsg}:
+				default:
+				}
+				break
+			}
 			if msg.Body != existingMsg.Body && msg.Body != "" {
 				// This is an edited message - update it
 				fmt.Printf("WhatsApp: Detected edited message %s (content changed from '%s' to '%s')\n", msgID, existingMsg.Body, msg.Body)

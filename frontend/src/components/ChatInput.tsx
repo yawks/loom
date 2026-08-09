@@ -142,7 +142,6 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const resizeFrameRef = useRef<number | null>(null);
   const draftSaveRef = useRef<{ key: string | null; value: string; timeoutId: number } | null>(null);
   const hasTextRef = useRef(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
@@ -581,31 +580,19 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     }
   }, [onHeightChange]);
 
-  const scheduleTextareaResize = useCallback(() => {
-    if (resizeFrameRef.current !== null) return;
-    resizeFrameRef.current = requestAnimationFrame(() => {
-      resizeFrameRef.current = null;
-      adjustTextareaHeight();
-    });
-  }, [adjustTextareaHeight]);
-
-  useEffect(() => () => {
-    if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
-  }, []);
-
   // Restore the draft associated with the currently displayed conversation/thread.
   useEffect(() => {
     const draft = readDraft(draftStorageKey);
     setMessage(draft);
     updateTypingState(draft.trim().length > 0);
-    scheduleTextareaResize();
-  }, [draftStorageKey, scheduleTextareaResize, updateTypingState]);
+    requestAnimationFrame(adjustTextareaHeight);
+  }, [adjustTextareaHeight, draftStorageKey, updateTypingState]);
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
     setMessage(newValue);
     scheduleDraftSave(draftStorageKey, newValue);
-    scheduleTextareaResize();
+    adjustTextareaHeight();
 
     // Hide unread divider when user starts typing
     updateTypingState(newValue.trim().length > 0);

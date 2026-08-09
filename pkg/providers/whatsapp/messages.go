@@ -309,12 +309,104 @@ func (w *WhatsAppProvider) extractAttachments(evt *events.Message) []models.Atta
 			fmt.Printf("WhatsApp: extractAttachments: Failed to download sticker attachment\n")
 		}
 	}
+	if location := msg.GetLocationMessage(); location != nil {
+		latitude, longitude := location.GetDegreesLatitude(), location.GetDegreesLongitude()
+		updatedAt := evt.Info.Timestamp
+		attachment := models.Attachment{
+			Type:         "location",
+			URL:          openStreetMapURL(latitude, longitude),
+			Latitude:     &latitude,
+			Longitude:    &longitude,
+			LocationName: location.GetName(),
+			Address:      location.GetAddress(),
+			IsLive:       location.GetIsLive(),
+			Accuracy:     location.GetAccuracyInMeters(),
+			UpdatedAt:    &updatedAt,
+		}
+		if expiration := location.GetContextInfo().GetExpiration(); expiration > 0 {
+			expiresAt := evt.Info.Timestamp.Add(time.Duration(expiration) * time.Second)
+			attachment.ExpiresAt = &expiresAt
+		}
+		attachments = append(attachments, attachment)
+	}
+	if location := msg.GetLiveLocationMessage(); location != nil {
+		latitude, longitude := location.GetDegreesLatitude(), location.GetDegreesLongitude()
+		updatedAt := evt.Info.Timestamp
+		attachment := models.Attachment{
+			Type:      "location",
+			URL:       openStreetMapURL(latitude, longitude),
+			Latitude:  &latitude,
+			Longitude: &longitude,
+			IsLive:    true,
+			Accuracy:  location.GetAccuracyInMeters(),
+			UpdatedAt: &updatedAt,
+		}
+		if expiration := location.GetContextInfo().GetExpiration(); expiration > 0 {
+			expiresAt := evt.Info.Timestamp.Add(time.Duration(expiration) * time.Second)
+			attachment.ExpiresAt = &expiresAt
+		}
+		attachments = append(attachments, attachment)
+	}
 
 	if len(attachments) == 0 {
 		fmt.Printf("WhatsApp: extractAttachments: No attachments found in message %s\n", evt.Info.ID)
 	}
 
 	return attachments
+}
+
+func openStreetMapURL(latitude, longitude float64) string {
+	return fmt.Sprintf("https://www.openstreetmap.org/?mlat=%.7f&mlon=%.7f#map=16/%.7f/%.7f", latitude, longitude, latitude, longitude)
+}
+
+func formatContactCard(contact *waE2E.ContactMessage) string {
+	if contact == nil {
+		return ""
+	}
+
+	name := strings.TrimSpace(contact.GetDisplayName())
+	phones := make([]string, 0, 1)
+	for _, line := range strings.Split(strings.ReplaceAll(contact.GetVcard(), "\r\n", "\n"), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToUpper(strings.SplitN(key, ";", 2)[0]) {
+		case "FN":
+			if name == "" {
+				name = strings.TrimSpace(value)
+			}
+		case "TEL":
+			if phone := strings.TrimSpace(value); phone != "" {
+				phones = append(phones, phone)
+			}
+		}
+	}
+
+	if name == "" {
+		name = "Contact"
+	}
+	result := "👤 " + name
+	for _, phone := range phones {
+		result += "\n📞 " + phone
+	}
+	return result
+}
+
+func formatContactCards(msg *waE2E.Message) string {
+	if contact := msg.GetContactMessage(); contact != nil {
+		return formatContactCard(contact)
+	}
+	if contacts := msg.GetContactsArrayMessage(); contacts != nil {
+		cards := make([]string, 0, len(contacts.GetContacts()))
+		for _, contact := range contacts.GetContacts() {
+			if card := formatContactCard(contact); card != "" {
+				cards = append(cards, card)
+			}
+		}
+		return strings.Join(cards, "\n\n")
+	}
+	return ""
 }
 
 func (w *WhatsAppProvider) tryHandleProtocolMessage(evt *events.Message, emitEvent bool) bool {
@@ -736,6 +828,14 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	// Get message ID
 	msgID := evt.Info.ID
+	// Live-location updates reference the original shared-location message.
+	// Reuse that ID so every update refreshes a single card instead of adding a
+	// new bubble for each coordinate sample.
+	if liveLocation := msg.GetLiveLocationMessage(); liveLocation != nil {
+		if originalID := liveLocation.GetContextInfo().GetStanzaID(); originalID != "" {
+			msgID = originalID
+		}
+	}
 
 	// Get sender ID and resolve to canonical phone number (handles LID -> phone number conversion)
 	senderID := evt.Info.Sender.String()
@@ -813,6 +913,13 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		body = msg.GetConversation()
 	} else if msg.GetExtendedTextMessage() != nil {
 		body = msg.GetExtendedTextMessage().GetText()
+	} else {
+		body = formatContactCards(msg)
+	}
+	if location := msg.GetLocationMessage(); location != nil && body == "" {
+		body = location.GetComment()
+	} else if location := msg.GetLiveLocationMessage(); location != nil && body == "" {
+		body = location.GetCaption()
 	}
 
 	// Extract quoted message information from ContextInfo
@@ -836,6 +943,14 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		contextInfo = msg.GetDocumentMessage().GetContextInfo()
 	} else if msg.GetStickerMessage() != nil && msg.GetStickerMessage().GetContextInfo() != nil {
 		contextInfo = msg.GetStickerMessage().GetContextInfo()
+	} else if msg.GetContactMessage() != nil && msg.GetContactMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetContactMessage().GetContextInfo()
+	} else if msg.GetContactsArrayMessage() != nil && msg.GetContactsArrayMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetContactsArrayMessage().GetContextInfo()
+	} else if msg.GetLocationMessage() != nil && msg.GetLocationMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetLocationMessage().GetContextInfo()
+	} else if msg.GetLiveLocationMessage() != nil && msg.GetLiveLocationMessage().GetContextInfo() != nil {
+		contextInfo = msg.GetLiveLocationMessage().GetContextInfo()
 	}
 
 	if contextInfo != nil {
@@ -1062,15 +1177,18 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 		return combined[i].Timestamp.Before(combined[j].Timestamp)
 	})
 
-	seens := make(map[string]struct{}, len(combined))
+	seenIndexes := make(map[string]int, len(combined))
 	dedup := make([]models.Message, 0, len(combined))
 	for _, msg := range combined {
 		key := msg.ProtocolMsgID
 		if key != "" {
-			if _, exists := seens[key]; exists {
+			if index, exists := seenIndexes[key]; exists {
+				// A live-location sample (or another newer representation of the
+				// same protocol message) must replace the cached older value.
+				dedup[index] = msg
 				continue
 			}
-			seens[key] = struct{}{}
+			seenIndexes[key] = len(dedup)
 		}
 		dedup = append(dedup, msg)
 	}
@@ -1370,11 +1488,23 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			total := w.storeMessagesForConversation(convID, converted)
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
 
-			// Emit event for the latest message so the UI can update previews
-			latest := converted[len(converted)-1]
-			select {
-			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: latest}:
-			default:
+			// HistorySync messages must not masquerade as real-time MessageEvents:
+			// registerIncomingMessage treats those as unread. WhatsApp provides an
+			// authoritative unread count per conversation, so split the batch at
+			// that cursor. The read prefix is historical; only the unread suffix is
+			// registered as recovered activity.
+			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount())
+			if len(readMessages) > 0 {
+				select {
+				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: readMessages, IsHistorical: true}:
+				default:
+				}
+			}
+			if len(unreadMessages) > 0 {
+				select {
+				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: unreadMessages}:
+				default:
+				}
 			}
 		}
 
@@ -1406,6 +1536,18 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			}
 		}
 	}
+}
+
+func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32) ([]models.Message, []models.Message) {
+	if len(messages) == 0 || unreadCount == 0 {
+		return messages, nil
+	}
+	count := int(unreadCount)
+	if count > len(messages) {
+		count = len(messages)
+	}
+	split := len(messages) - count
+	return messages[:split], messages[split:]
 }
 
 func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error) {

@@ -3,10 +3,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Eye,
   File,
-  FileText,
   Image as ImageIcon,
   Loader2,
+  MapPin,
   Music,
   Play,
   Video,
@@ -80,6 +81,22 @@ interface Attachment {
   fileSize: number;
   mimeType: string;
   thumbnail?: string;
+  latitude?: number;
+  longitude?: number;
+  locationName?: string;
+  address?: string;
+  isLive?: boolean;
+  accuracy?: number;
+  locationUpdatedAt?: string;
+  expiresAt?: string;
+}
+
+function openStreetMapEmbedURL(latitude: number, longitude: number): string {
+  const delta = 0.008;
+  const bbox = [longitude - delta, latitude - delta, longitude + delta, latitude + delta]
+    .map((coordinate) => coordinate.toFixed(7))
+    .join(",");
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${latitude.toFixed(7)}%2C${longitude.toFixed(7)}`;
 }
 
 interface MessageAttachmentsProps {
@@ -105,7 +122,51 @@ function formatFileSize(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-function getFileIcon(mimeType: string, type: string) {
+type FileKind = "pdf" | "presentation" | "document" | "spreadsheet" | "other";
+
+type FileBadgeIconProps = React.SVGProps<SVGSVGElement> & {
+  accent: string;
+  label: string;
+  labelSize?: number;
+};
+
+function FileBadgeIcon({ accent, label, labelSize = 13, ...props }: FileBadgeIconProps) {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true" {...props}>
+      <path d="M7 2.75h11.5L25 9.3v19.95H7z" fill="white" fillOpacity=".96" stroke={accent} strokeWidth="1.5" />
+      <path d="M18.5 2.75V9.3H25" fill={accent} fillOpacity=".2" stroke={accent} strokeWidth="1.5" strokeLinejoin="round" />
+      <rect x="2" y="10" width="22" height="17" rx="2.5" fill={accent} />
+      <text
+        x="13"
+        y="22.2"
+        fill="white"
+        fontFamily="Inter, Arial, sans-serif"
+        fontSize={labelSize}
+        fontWeight="700"
+        textAnchor="middle"
+      >
+        {label}
+      </text>
+    </svg>
+  );
+}
+
+const PdfFileIcon = (props: React.SVGProps<SVGSVGElement>) => <FileBadgeIcon {...props} accent="#e53935" label="PDF" labelSize={7.5} />;
+const PowerPointFileIcon = (props: React.SVGProps<SVGSVGElement>) => <FileBadgeIcon {...props} accent="#d24726" label="P" />;
+const WordFileIcon = (props: React.SVGProps<SVGSVGElement>) => <FileBadgeIcon {...props} accent="#185abd" label="W" />;
+const ExcelFileIcon = (props: React.SVGProps<SVGSVGElement>) => <FileBadgeIcon {...props} accent="#107c41" label="X" />;
+
+function getFileKind(fileName: string, mimeType: string): FileKind {
+  const extension = getFileExtension(fileName).toLowerCase();
+
+  if (extension === "pdf" || mimeType === "application/pdf") return "pdf";
+  if (["ppt", "pptx", "odp"].includes(extension) || mimeType.includes("presentation") || mimeType.includes("powerpoint")) return "presentation";
+  if (["doc", "docx", "odt", "rtf"].includes(extension) || mimeType.includes("wordprocessing") || mimeType.includes("msword")) return "document";
+  if (["xls", "xlsx", "ods", "csv"].includes(extension) || mimeType.includes("excel") || mimeType.includes("spreadsheet")) return "spreadsheet";
+  return "other";
+}
+
+function getFileIcon(fileName: string, mimeType: string, type: string) {
   if (type === "image" || mimeType.startsWith("image/")) {
     return ImageIcon;
   }
@@ -115,16 +176,11 @@ function getFileIcon(mimeType: string, type: string) {
   if (type === "audio" || mimeType.startsWith("audio/")) {
     return Music;
   }
-  if (mimeType === "application/pdf") {
-    return FileText;
-  }
-  if (
-    mimeType.includes("excel") ||
-    mimeType.includes("spreadsheet") ||
-    mimeType.includes("xls")
-  ) {
-    return FileText;
-  }
+  const fileKind = getFileKind(fileName, mimeType);
+  if (fileKind === "pdf") return PdfFileIcon;
+  if (fileKind === "presentation") return PowerPointFileIcon;
+  if (fileKind === "document") return WordFileIcon;
+  if (fileKind === "spreadsheet") return ExcelFileIcon;
   return File;
 }
 
@@ -414,6 +470,8 @@ export function MessageAttachments({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
+  const [loadingPdfIndex, setLoadingPdfIndex] = useState<number | null>(null);
+  const [isPdfFrameLoading, setIsPdfFrameLoading] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -601,12 +659,14 @@ export function MessageAttachments({
     }
   };
 
-  const handlePdfClick = async (attachment: Attachment) => {
-    if (attachment.mimeType === "application/pdf" && attachment.url) {
+  const handlePdfClick = async (attachment: Attachment, index: number) => {
+    if (getFileKind(attachment.fileName, attachment.mimeType) === "pdf" && attachment.url && loadingPdfIndex === null) {
       const url = attachment.url;
+      setLoadingPdfIndex(index);
       try {
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
+          setIsPdfFrameLoading(true);
           setSelectedPdf(dataUrl);
         }
       } catch (error) {
@@ -618,6 +678,8 @@ export function MessageAttachments({
             console.error("Failed to open PDF URL:", browserError);
           }
         }
+      } finally {
+        setLoadingPdfIndex(null);
       }
     }
   };
@@ -763,6 +825,49 @@ export function MessageAttachments({
       ) : (
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
+          if (attachment.type === "location" && attachment.latitude !== undefined && attachment.longitude !== undefined) {
+            const liveActive = attachment.isLive && (!attachment.expiresAt || new Date(attachment.expiresAt).getTime() > Date.now());
+            return (
+              <div key={`${attachment.url}-${index}`} className="w-[320px] max-w-full overflow-hidden rounded-lg border border-border bg-background/60 shadow-sm">
+                <iframe
+                  title={attachment.locationName || t("location_map")}
+                  src={openStreetMapEmbedURL(attachment.latitude, attachment.longitude)}
+                  className="h-44 w-full border-0 bg-muted"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+                <button
+                  type="button"
+                  className="flex w-full items-start gap-3 p-3 text-left transition-colors hover:bg-muted/60"
+                  onClick={() => BrowserOpenURL(attachment.url)}
+                >
+                  <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2 text-sm font-medium">
+                      {attachment.locationName || t("shared_location")}
+                      {attachment.isLive && (
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${liveActive ? "bg-red-500 text-white" : "bg-muted text-muted-foreground"}`}>
+                          {liveActive ? t("live_location") : t("live_location_ended")}
+                        </span>
+                      )}
+                    </span>
+                    {attachment.address && <span className="mt-0.5 block text-xs text-muted-foreground">{attachment.address}</span>}
+                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                      {attachment.latitude.toFixed(5)}, {attachment.longitude.toFixed(5)}
+                      {attachment.accuracy ? ` · ±${attachment.accuracy} m` : ""}
+                    </span>
+                    {attachment.locationUpdatedAt && attachment.isLive && (
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        {t("location_updated", { time: new Date(attachment.locationUpdatedAt).toLocaleString() })}
+                      </span>
+                    )}
+                    <span className="mt-1 block text-xs font-medium text-primary">OpenStreetMap ↗</span>
+                  </span>
+                </button>
+              </div>
+            );
+          }
+
           // Use VoiceMessage for voice messages (type "voice" or audio files that are likely voice messages)
           // Check type "voice" first, then check if it's a small audio file
           if (attachment.type === "voice") {
@@ -800,11 +905,11 @@ export function MessageAttachments({
             )
           }
 
-          const Icon = getFileIcon(attachment.mimeType, attachment.type);
+          const Icon = getFileIcon(attachment.fileName, attachment.mimeType, attachment.type);
           const isImage = attachment.type === "image" || attachment.mimeType?.startsWith("image/");
           const isVideo = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
           const isAudio = attachment.type === "audio";
-          const isPdf = attachment.mimeType === "application/pdf";
+          const isPdf = getFileKind(attachment.fileName, attachment.mimeType) === "pdf";
           const audioUrl = getCachedAttachment(attachment.url);
           const videoThumbnailDataUrl = isVisible && attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
 
@@ -903,7 +1008,8 @@ export function MessageAttachments({
                     ? "bg-blue-600 text-white border-blue-700"
                     : "bg-muted text-foreground border-border"
                     } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
-                  onClick={() => handlePdfClick(attachment)}
+                  onClick={() => { void handlePdfClick(attachment, index); }}
+                  aria-busy={loadingPdfIndex === index}
                 >
                   <Icon className="h-8 w-8 shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -914,9 +1020,27 @@ export function MessageAttachments({
                       <p className="text-xs opacity-70">{formatFileSize(attachment.fileSize)}</p>
                     )}
                   </div>
-                  {hoveredIndex === index && (
-                    <Download className="h-5 w-5 shrink-0" />
-                  )}
+                  <div className={`flex shrink-0 items-center gap-1 transition-opacity ${hoveredIndex === index || loadingPdfIndex === index ? "opacity-100" : "opacity-0"}`}>
+                    <button
+                      type="button"
+                      className="rounded-full p-1.5 hover:bg-black/10 disabled:cursor-wait"
+                      onClick={(event) => { event.stopPropagation(); void handlePdfClick(attachment, index); }}
+                      disabled={loadingPdfIndex !== null}
+                      title="Aperçu du PDF"
+                      aria-label="Aperçu du PDF"
+                    >
+                      {loadingPdfIndex === index ? <Loader2 className="h-5 w-5 animate-spin" /> : <Eye className="h-5 w-5" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full p-1.5 hover:bg-black/10"
+                      onClick={(event) => { event.stopPropagation(); void handleDownload(attachment); }}
+                      title="Télécharger"
+                      aria-label="Télécharger"
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div
@@ -1138,21 +1262,27 @@ export function MessageAttachments({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={selectedPdf !== null} onOpenChange={() => setSelectedPdf(null)}>
+      <Dialog open={selectedPdf !== null} onOpenChange={() => { setSelectedPdf(null); setIsPdfFrameLoading(false); }}>
         <DialogContent className="max-w-6xl max-h-[90vh] p-0">
           <DialogTitle className="sr-only">PDF Preview</DialogTitle>
           {selectedPdf && (
             <div className="relative w-full h-full">
               <button
-                onClick={() => setSelectedPdf(null)}
+                onClick={() => { setSelectedPdf(null); setIsPdfFrameLoading(false); }}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
               >
                 <X className="h-5 w-5" />
               </button>
+              {isPdfFrameLoading && (
+                <div className="absolute inset-0 z-[5] flex items-center justify-center bg-background/80" role="status" aria-label={t("loading")}>
+                  <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+                </div>
+              )}
               <iframe
                 src={selectedPdf}
                 className="w-full h-[85vh] border-0"
                 title="PDF Preview"
+                onLoad={() => setIsPdfFrameLoading(false)}
               />
             </div>
           )}

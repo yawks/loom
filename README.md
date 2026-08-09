@@ -36,9 +36,10 @@ When you add a new account, Loom fetches a few dozen recent messages to give you
 | Edit message | ✓ | ✓ | ✓ | ✓ | — |
 | Delete message | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File attachments & inline media | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Read receipts | ✓ | — | ✓ | — | ✓² |
+| Shared locations | ✓¹ | — | — | — | — |
+| Read receipts | ✓ | — | ✓ | — | ✓³ |
 | Contact presence | ✓ | ✓ | ✓ | — | — |
-| Pinned messages | Personal | Shared | Shared | Preview¹ | — |
+| Pinned messages | Personal | Shared | Shared | Preview² | — |
 | Pin / mute conversations | ✓ | — | — | — | — |
 | QR code authentication | ✓ | — | — | — | — |
 
@@ -67,12 +68,35 @@ Displayed/read confirmation depends on RCS and on the remote participant's read
 receipt settings. Google exposes an aggregate conversation status rather than
 per-participant receipts for RCS groups.
 
-¹ Google Chat message pins use a Google Workspace Developer Preview API. They
+¹ WhatsApp locations use an embedded OpenStreetMap preview. Static positions
+and live-location updates are displayed; opening the card shows the coordinates
+on OpenStreetMap.
+
+### Known WhatsApp message-format limitations
+
+Loom currently handles WhatsApp text, standard media and files, contact cards,
+static and live locations, reactions, replies, edits, deletions, and supported
+call records. The following user-visible WhatsApp formats are not yet rendered
+with their native content:
+
+- polls and poll votes;
+- circular video messages (PTV);
+- group invitations;
+- button, list, and interactive-message responses;
+- WhatsApp Business products, orders, payments, and invoices;
+- events and scheduled-call invitations;
+- Lottie stickers and some newly introduced WhatsApp containers.
+
+Unsupported formats may appear as an empty message if WhatsApp does not provide
+a text fallback. History sync can only recover them when WhatsApp sends the
+original payload again.
+
+² Google Chat message pins use a Google Workspace Developer Preview API. They
 only work for accounts enrolled in the Developer Preview Program with a
 registered Google Cloud project; a standard Google Chat account will not expose
 the endpoint.
 
-² Google Messages read confirmation is available when Google reports the RCS
+³ Google Messages read confirmation is available when Google reports the RCS
 message as displayed; SMS/MMS conversations do not provide the same read state.
 
 ### Pinned messages

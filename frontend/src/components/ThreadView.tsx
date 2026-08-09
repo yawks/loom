@@ -1087,6 +1087,7 @@ export function ThreadView() {
           filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
           uploadState={uploadState}
           onConfirm={handleFileUpload}
+          onUploadComplete={focusComposer}
         />
       </div>
 
