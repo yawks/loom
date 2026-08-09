@@ -1138,6 +1138,7 @@ export function MessageList({
           filePaths={pendingFilePaths.length > 0 ? pendingFilePaths : undefined}
           uploadState={uploadState}
           onConfirm={handleFileUpload}
+          onUploadComplete={focusComposer}
         />
         <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
           <AlertDialogContent>

@@ -203,6 +203,30 @@ func TestCreatedUnnamedGroupDisplayName(t *testing.T) {
 	}
 }
 
+func TestConversationSyncLowerBoundUsesConversationWatermark(t *testing.T) {
+	global := time.Date(2026, 8, 9, 22, 30, 0, 0, time.UTC)
+	conversation := time.Date(2026, 8, 7, 15, 17, 30, 0, time.UTC)
+	lower := teamsSyncLowerBound(global, &conversation)
+	if want := time.Date(2026, 8, 7, 15, 12, 30, 0, time.UTC); !lower.Equal(want) {
+		t.Fatalf("conversation lower bound=%s, want %s", lower, want)
+	}
+	if got := teamsSyncLowerBound(global, nil); !got.IsZero() {
+		t.Fatalf("new conversation lower bound=%s, want zero", got)
+	}
+}
+
+func TestOldestTeamsMessageTimeHandlesFilteredEmptyPage(t *testing.T) {
+	if got := oldestTeamsMessageTime(nil); !got.IsZero() {
+		t.Fatalf("empty page oldest=%s, want zero", got)
+	}
+	newer := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	older := newer.Add(-time.Hour)
+	got := oldestTeamsMessageTime([]msteams.Message{{Created: newer}, {}, {Created: older}})
+	if !got.Equal(older) {
+		t.Fatalf("oldest=%s, want %s", got, older)
+	}
+}
+
 func TestTeamsPresenceStatus(t *testing.T) {
 	for _, test := range []struct {
 		availability string

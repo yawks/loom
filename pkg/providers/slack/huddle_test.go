@@ -84,7 +84,7 @@ func TestFetchAndApplyEndedHuddle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message := models.Message{CallType: "incoming_call"}
+	message := models.Message{CallType: "incoming_call", CallUrl: "https://app.slack.com/huddle/example", CallLinkAction: "join"}
 	applySlackHuddleRoom(&message, room)
 	if message.CallType != "call_ended" || message.CallOutcome != "CONNECTED" {
 		t.Fatalf("ended huddle = type %q, outcome %q", message.CallType, message.CallOutcome)
@@ -94,6 +94,9 @@ func TestFetchAndApplyEndedHuddle(t *testing.T) {
 	}
 	if message.CallParticipants != `["U1","U2"]` {
 		t.Fatalf("participants = %s", message.CallParticipants)
+	}
+	if message.CallUrl != "" || message.CallLinkAction != "" {
+		t.Fatalf("ended huddle retained link %q with action %q", message.CallUrl, message.CallLinkAction)
 	}
 }
 
@@ -128,6 +131,8 @@ func TestHandleHuddleRoomUpdatePersistsDuration(t *testing.T) {
 		ProtocolMsgID:  "100.000001",
 		Timestamp:      startedAt,
 		CallType:       "incoming_group_call",
+		CallUrl:        "https://app.slack.com/huddle/example",
+		CallLinkAction: "join",
 	}
 	if err := db.DB.Create(&start).Error; err != nil {
 		t.Fatal(err)
@@ -143,6 +148,9 @@ func TestHandleHuddleRoomUpdatePersistsDuration(t *testing.T) {
 	}
 	if stored.CallType != "call_ended" || stored.CallDurationSecs == nil || *stored.CallDurationSecs != 180 {
 		t.Fatalf("stored call = type %q, duration %v", stored.CallType, stored.CallDurationSecs)
+	}
+	if stored.CallUrl != "" || stored.CallLinkAction != "" {
+		t.Fatalf("stored ended huddle retained link %q with action %q", stored.CallUrl, stored.CallLinkAction)
 	}
 	if !stored.Timestamp.Equal(startedAt) {
 		t.Fatalf("start timestamp changed to %s", stored.Timestamp)

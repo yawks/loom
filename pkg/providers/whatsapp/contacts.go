@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/models"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow/types"
@@ -526,7 +527,10 @@ func (w *WhatsAppProvider) filterAccountsWithHistory(accounts []models.LinkedAcc
 
 	filtered := make([]models.LinkedAccount, 0, len(accounts))
 	for _, acc := range accounts {
-		if w.hasConversationHistory(acc.UserID) {
+		// Joined groups are valid conversations even before WhatsApp transfers a
+		// first message for them. Filtering them by local history would make a new
+		// invitation disappear again immediately after JoinedGroup cached it.
+		if acc.IsGroup || w.hasConversationHistory(acc.UserID) {
 			filtered = append(filtered, acc)
 		}
 	}
@@ -744,6 +748,49 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 	})
 
 	return linkedAccounts, nil
+}
+
+// cacheJoinedGroup updates every directory cache used by GetContacts. JoinedGroup
+// can arrive while the GetJoinedGroups cache is still considered fresh, so merely
+// emitting a frontend refresh is not enough to make the new group visible.
+func (w *WhatsAppProvider) cacheJoinedGroup(jid types.JID, name string) {
+	if jid.IsEmpty() || jid.Server != types.GroupServer {
+		return
+	}
+
+	displayName := strings.TrimSpace(name)
+	if displayName == "" {
+		displayName = jid.String()
+	}
+	instanceID := w.getInstanceId()
+	now := time.Now()
+	account := models.LinkedAccount{
+		Protocol:           "whatsapp",
+		ProviderInstanceID: instanceID,
+		UserID:             jid.String(),
+		Username:           displayName,
+		IsGroup:            true,
+		Status:             "offline",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+
+	w.mu.Lock()
+	w.knownGroups[account.UserID] = displayName
+	w.conversations[account.UserID] = account
+	found := false
+	for index := range w.groupsCache {
+		if w.groupsCache[index].UserID == account.UserID {
+			w.groupsCache[index] = account
+			found = true
+			break
+		}
+	}
+	if !found {
+		w.groupsCache = append(w.groupsCache, account)
+	}
+	w.groupsCacheTimestamp = &now
+	w.mu.Unlock()
 }
 
 // subscribeToContactPresence subscribes to presence updates for all DM contacts

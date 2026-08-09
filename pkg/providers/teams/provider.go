@@ -206,7 +206,8 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			ConversationID: chat.ID, Message: "Syncing Microsoft Teams history",
 			Progress: (index * 100) / max(1, len(chats)),
 		})
-		messages, err := p.GetConversationHistory(chat.ID, 0, nil, &since)
+		conversationSince := p.conversationSyncSince(chat.ID, since)
+		messages, err := p.GetConversationHistory(chat.ID, 0, nil, &conversationSince)
 		if err != nil {
 			if isSkippableHistoryError(err) {
 				skipped++
@@ -236,7 +237,7 @@ func (p *Provider) SyncHistory(since time.Time) error {
 				InstanceID:     instance,
 				ConversationID: chat.ID,
 				Messages:       messages,
-				IsHistorical:   since.IsZero(),
+				IsHistorical:   conversationSince.IsZero(),
 			})
 		}
 	}
@@ -250,6 +251,39 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: completionMessage, Progress: 100})
 	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	return nil
+}
+
+// conversationSyncSince prevents the provider-wide watermark from creating
+// permanent holes in quieter or newly-discovered chats. A conversation with
+// local messages resumes from its own newest message (with overlap); a chat
+// absent from the message store receives a full initial backfill.
+func (p *Provider) conversationSyncSince(conversationID string, globalSince time.Time) time.Time {
+	if db.DB == nil {
+		return globalSince
+	}
+	var newest models.Message
+	err := db.DB.Select("timestamp").Where(
+		"protocol_conv_id = ? AND deleted_at IS NULL",
+		core.BuildConvID(p.instance, core.StripConvID(conversationID)),
+	).Order("timestamp DESC").Limit(1).Find(&newest).Error
+	if err != nil {
+		return globalSince
+	}
+	if newest.Timestamp.IsZero() {
+		return teamsSyncLowerBound(globalSince, nil)
+	}
+	return teamsSyncLowerBound(globalSince, &newest.Timestamp)
+}
+
+func teamsSyncLowerBound(globalSince time.Time, newest *time.Time) time.Time {
+	if newest == nil || newest.IsZero() {
+		return time.Time{}
+	}
+	lowerBound := *newest
+	if !globalSince.IsZero() && globalSince.Before(lowerBound) {
+		lowerBound = globalSince
+	}
+	return lowerBound.Add(-5 * time.Minute)
 }
 
 func isSkippableHistoryError(err error) bool {
@@ -628,7 +662,7 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 		beforeValue = *before
 	}
 	out := make([]models.Message, 0, min(maxMessages, 200))
-	for len(out) < maxMessages {
+	for page := 0; len(out) < maxMessages && page < 500; page++ {
 		pageSize := min(100, maxMessages-len(out))
 		result, err := client.FetchHistory(context.Background(), conversationID, msteams.HistoryOptions{
 			Before: beforeValue, Limit: pageSize, Cursor: cursor,
@@ -653,11 +687,11 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 			}
 			out = append(out, message)
 		}
-		if !result.HasMore || result.Next == "" || result.Next == cursor || len(result.Messages) == 0 {
+		if !result.HasMore || result.Next == "" || result.Next == cursor {
 			break
 		}
 		if since != nil {
-			oldest := result.Messages[len(result.Messages)-1].Created
+			oldest := oldestTeamsMessageTime(result.Messages)
 			if !oldest.IsZero() && oldest.Before(*since) {
 				break
 			}
@@ -667,6 +701,17 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
 	p.enrichReplyMetadata(out)
 	return out, nil
+}
+
+func oldestTeamsMessageTime(messages []msteams.Message) time.Time {
+	var oldest time.Time
+	for _, message := range messages {
+		if message.Created.IsZero() || (!oldest.IsZero() && !message.Created.Before(oldest)) {
+			continue
+		}
+		oldest = message.Created
+	}
+	return oldest
 }
 
 func (p *Provider) SendMessage(conversationID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {

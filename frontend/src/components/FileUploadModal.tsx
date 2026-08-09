@@ -21,6 +21,7 @@ interface FileUploadModalProps {
   filePaths?: string[]; // Optional file paths for clipboard/drag&drop files in Wails
   uploadState?: UploadState;
   onConfirm: (files: File[], filePaths?: string[]) => void;
+  onUploadComplete?: () => void;
 }
 
 export function FileUploadModal({
@@ -30,6 +31,7 @@ export function FileUploadModal({
   filePaths,
   uploadState,
   onConfirm,
+  onUploadComplete,
 }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [selectedFiles, setSelectedFiles] = useState<File[]>(files);
@@ -103,8 +105,11 @@ export function FileUploadModal({
       setSelectedFiles([]);
       setSelectedFilePaths([]);
       onOpenChange(false);
+      if (!uploadState?.error) {
+        requestAnimationFrame(() => onUploadComplete?.());
+      }
     }
-  }, [isUploading, onOpenChange]);
+  }, [isUploading, onOpenChange, onUploadComplete, uploadState?.error]);
 
   useEffect(() => {
     if (!open || isUploading) {
