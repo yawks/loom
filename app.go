@@ -947,6 +947,17 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
 					}
 				case core.PresenceEvent:
+					if db.DB != nil && e.UserID != "" {
+						updates := map[string]interface{}{
+							"status": map[bool]string{true: "online", false: "offline"}[e.IsOnline],
+						}
+						if e.LastSeen > 0 {
+							updates["last_seen"] = time.Unix(e.LastSeen, 0)
+						}
+						db.DB.Model(&models.LinkedAccount{}).
+							Where("provider_instance_id = ? AND user_id = ?", e.InstanceID, e.UserID).
+							Updates(updates)
+					}
 					presenceJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "presence", string(presenceJSON))

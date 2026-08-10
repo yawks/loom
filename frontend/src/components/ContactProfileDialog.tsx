@@ -9,6 +9,7 @@ import { timeToDate } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Emoji } from "./Emoji";
 import type { ContactProfileTarget } from "@/lib/store";
+import { usePresenceStore } from "@/lib/presenceStore";
 
 interface ContactProfileDialogProps {
   conversationId: string;
@@ -108,6 +109,9 @@ function PresenceBadge({
 
 export function ContactProfileDialog({ conversationId, participant, onClose }: ContactProfileDialogProps) {
   const { t, i18n } = useTranslation();
+  const liveLastSeen = usePresenceStore((state) => participant?.userId
+    ? state.lastSeenMap[participant.userId]
+    : undefined);
   const enabled = Boolean(participant && conversationId);
   const profileQuery = useQuery<models.ContactProfile>({
     queryKey: ["contact-profile", conversationId, participant?.userId],
@@ -126,6 +130,7 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
   const stats = statsQuery.data;
   const name = profile?.displayName || participant?.displayName || "";
   const avatar = profile?.avatarUrl || participant?.avatarUrl;
+  const lastSeen = liveLastSeen ? new Date(liveLastSeen * 1000) : profile?.lastSeen;
   return (
     <Dialog open={participant !== null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
@@ -165,7 +170,7 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
                 <InfoRow icon={<BriefcaseBusiness className="h-4 w-4" />} label={t("contact_profile.job_title")} value={profile.jobTitle} />
                 <InfoRow icon={<Building2 className="h-4 w-4" />} label={t("contact_profile.company")} value={[profile.company, profile.department].filter(Boolean).join(" · ")} />
                 <InfoRow icon={<MapPin className="h-4 w-4" />} label={t("contact_profile.address")} value={profile.address} />
-                <InfoRow icon={<Clock3 className="h-4 w-4" />} label={t("contact_profile.last_seen")} value={profile.lastSeen ? formatDate(profile.lastSeen, i18n.language) : ""} />
+                <InfoRow icon={<Clock3 className="h-4 w-4" />} label={t("contact_profile.last_seen")} value={lastSeen ? formatDate(lastSeen, i18n.language) : ""} />
                 <InfoRow icon={<Activity className="h-4 w-4" />} label={t("contact_profile.activity")} value={profile.providerFields?.activity} />
               </div>
             )}

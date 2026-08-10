@@ -4,6 +4,7 @@ import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { timeToDate } from "@/lib/utils";
 
 // Custom icon component for missed calls: Phone with X overlay
 const PhoneWithX = ({ className }: { className?: string }) => (
@@ -41,7 +42,14 @@ function formatDuration(seconds: number): string {
 }
 
 export function CallMessage({ message, layout, isGroup = false }: CallMessageProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const callTimestamp = timeToDate(message.timestamp);
+  const callTime = Number.isNaN(callTimestamp.getTime())
+    ? ""
+    : new Intl.DateTimeFormat(i18n.language, {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(callTimestamp);
 
   // Parse participants JSON if available
   const participants = useMemo(() => {
@@ -58,6 +66,8 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   // Determine call type and icon
   const getCallInfo = () => {
     const callType = message.callType || "";
+    const isStaleIncoming = (callType === "incoming_call" || callType === "incoming_group_call")
+      && Date.now() - timeToDate(message.timestamp).getTime() > 3 * 60 * 1000;
     const isOutgoing = callType.startsWith("outgoing_");
     const isVideo = message.callIsVideo || callType.includes("video");
     const duration = message.callDurationSecs;
@@ -174,6 +184,16 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
     }
 
     // No summary — use basic call type
+    if (isStaleIncoming) {
+      return {
+        icon: isVideo ? VideoOff : PhoneWithX,
+        text: isVideo
+          ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+          : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
+        duration: null,
+        participantCount: 0,
+      };
+    }
     if (callType === "incoming_call" || callType === "incoming_group_call") {
       return {
         icon: Phone,
@@ -220,7 +240,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         <div className="flex flex-col items-center gap-1 px-4 py-2 rounded-full bg-muted/50 border border-border/50 text-muted-foreground text-sm">
           <div className="flex items-center gap-2">
             <Icon className="h-4 w-4" />
-            <span>{callInfo.text}</span>
+            <span>{callTime && <span className="opacity-70">{callTime} · </span>}{callInfo.text}</span>
             {message.callUrl && (
               <button
                 onClick={() => BrowserOpenURL(message.callUrl!)}
@@ -253,7 +273,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       <div className="flex flex-col gap-1 px-2 py-1 pt-3 ml-13 text-xs text-muted-foreground italic">
         <div className="flex items-center gap-2">
           <Icon className="h-3 w-3" />
-          <span className="text-muted-foreground/80">*** {callInfo.text}</span>
+          <span className="text-muted-foreground/80">{callTime && `${callTime} · `}{callInfo.text}</span>
           {message.callUrl && (
             <button
               onClick={() => BrowserOpenURL(message.callUrl!)}
