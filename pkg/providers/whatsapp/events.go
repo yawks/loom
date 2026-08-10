@@ -874,13 +874,21 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			return
 		}
 
-		// The conversation ID is the CallCreator (resolved to JID if it was a LID)
-		convID := core.BuildConvID(w.getInstanceId(), resolvedID)
+		// Group call offers carry both the creator and the group. Keep the creator
+		// as the sender, but attach the call message to the group conversation.
+		// Otherwise the group call incorrectly appears as a direct call from the
+		// person who started it.
+		conversationJID := resolvedID
+		if !v.GroupJID.IsEmpty() {
+			conversationJID = v.GroupJID.String()
+		}
+		convID := core.BuildConvID(w.getInstanceId(), conversationJID)
 
-		fmt.Printf("WhatsApp: Using conversation ID %s (resolved from CallCreator %s) for call %s\n", convID, v.CallCreator.String(), callID)
+		fmt.Printf("WhatsApp: Using conversation ID %s (creator %s, group %s) for call %s\n",
+			convID, v.CallCreator.String(), v.GroupJID.String(), callID)
 
 		// Determine if it's a group call
-		isGroup := strings.Contains(resolvedID, "@g.us")
+		isGroup := !v.GroupJID.IsEmpty() || strings.Contains(conversationJID, "@g.us")
 
 		// Determine call type based on call offer
 		// CallOffer is an incoming call (ringing), not a missed call yet
@@ -963,12 +971,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		//  - outgoing call → the person/group we called (v.From or v.GroupJID)
 		//  - incoming call → the person who called us (v.CallCreator)
 		var rawConvJIDStr string
-		if isOutgoing {
-			if !v.GroupJID.IsEmpty() {
-				rawConvJIDStr = v.GroupJID.String()
-			} else {
-				rawConvJIDStr = v.From.String()
-			}
+		if !v.GroupJID.IsEmpty() {
+			rawConvJIDStr = v.GroupJID.String()
+		} else if isOutgoing {
+			rawConvJIDStr = v.From.String()
 		} else {
 			rawConvJIDStr = v.CallCreator.String()
 		}
@@ -982,8 +988,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.storeContactMapping(rawConvJIDStr, resolvedID)
 		}
 
-		resolvedJID, parseErr := types.ParseJID(resolvedID)
-		if parseErr != nil {
+		if _, parseErr := types.ParseJID(resolvedID); parseErr != nil {
 			fmt.Printf("WhatsApp: Failed to parse resolved JID %s: %v\n", resolvedID, parseErr)
 			return
 		}
@@ -1094,9 +1099,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 					senderID = w.client.Store.ID.String()
 				}
 			} else {
-				senderID = resolvedJID.String()
-				if resolvedJID.Server == "lid" {
-					senderID = v.CallCreator.String()
+				senderID = v.CallCreator.String()
+				if resolvedCreator, resolveErr := w.resolveContactID(senderID); resolveErr == nil {
+					senderID = resolvedCreator
 				}
 			}
 
@@ -1113,8 +1118,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				CallOutcome:    callOutcome,
 			}
 
-			if !isOutgoing && resolvedJID.Server != "lid" {
-				callMessage.SenderName = w.lookupDisplayName(resolvedJID, "")
+			if !isOutgoing {
+				if senderJID, senderErr := types.ParseJID(senderID); senderErr == nil && senderJID.Server != "lid" {
+					callMessage.SenderName = w.lookupDisplayName(senderJID, "")
+				}
 			}
 			if callMessage.SenderName == "" && senderID != "" {
 				if name, err := w.GetContactName(senderID); err == nil && name != "" {
