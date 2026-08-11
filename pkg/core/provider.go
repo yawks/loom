@@ -389,3 +389,10 @@ type CurrentUserProvider interface {
 type ContactStatusRefresher interface {
 	RefreshContactStatuses(userIDs []string) map[string]string
 }
+
+// GlobalHistorySyncer is implemented by providers that can explicitly ask the
+// primary device to re-send history for every locally known conversation.
+// It is reserved for user-triggered full resyncs because it can be expensive.
+type GlobalHistorySyncer interface {
+	SyncAllHistory(since time.Time) error
+}

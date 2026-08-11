@@ -5,9 +5,11 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"fmt"
+	"strings"
 	"time"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/types"
 )
 
 func (w *WhatsAppProvider) loadLastSyncTimestamp() {
@@ -122,6 +124,78 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 		go w.lookbackSync()
 	}
 
+	return nil
+}
+
+// SyncAllHistory performs the expensive, user-requested audit of the whole
+// WhatsApp instance. Reconnecting recovers messages newer than our local tip;
+// these on-demand requests additionally ask the primary phone for the 50
+// messages preceding each conversation's local tip, which repairs holes in an
+// otherwise partially delivered offline sync.
+func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
+	if err := w.SyncHistory(since); err != nil {
+		return err
+	}
+	if db.DB == nil {
+		return nil
+	}
+
+	w.mu.RLock()
+	client := w.client
+	w.mu.RUnlock()
+	if client == nil || !client.IsConnected() || !client.IsLoggedIn() {
+		return fmt.Errorf("client is not connected")
+	}
+
+	type historyAnchor struct {
+		ProtocolConvID string
+		ProtocolMsgID  string
+		Timestamp      time.Time
+		IsFromMe       bool
+	}
+	var anchors []historyAnchor
+	prefix := w.getInstanceId() + "::%"
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	err := db.DB.Raw(`
+		SELECT protocol_conv_id, protocol_msg_id, timestamp, is_from_me
+		FROM (
+			SELECT protocol_conv_id, protocol_msg_id, timestamp, is_from_me,
+				ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num
+			FROM messages
+			WHERE protocol_conv_id LIKE ? AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'
+		)
+		WHERE row_num = 1
+		ORDER BY timestamp DESC`, prefix, cutoff).Scan(&anchors).Error
+	if err != nil {
+		return fmt.Errorf("load history anchors: %w", err)
+	}
+
+	w.log("WhatsApp: Global history audit requesting recent history for %d conversations\n", len(anchors))
+	requested := 0
+	failed := 0
+	for _, anchor := range anchors {
+		rawConvID := strings.TrimPrefix(anchor.ProtocolConvID, w.getInstanceId()+"::")
+		chatJID, parseErr := types.ParseJID(rawConvID)
+		if parseErr != nil {
+			failed++
+			continue
+		}
+		request := client.BuildHistorySyncRequest(&types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: anchor.IsFromMe},
+			ID:            types.MessageID(anchor.ProtocolMsgID),
+			Timestamp:     anchor.Timestamp,
+		}, 50)
+		if _, sendErr := client.SendPeerMessage(w.ctx, request); sendErr != nil {
+			failed++
+			w.log("WhatsApp: History audit request failed for %s: %v\n", rawConvID, sendErr)
+			continue
+		}
+		requested++
+	}
+	w.log("WhatsApp: Global history audit sent %d requests (%d failed)\n", requested, failed)
+	if requested == 0 && failed > 0 {
+		return fmt.Errorf("all %d history audit requests failed", failed)
+	}
 	return nil
 }
 

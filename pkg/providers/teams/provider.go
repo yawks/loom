@@ -1417,7 +1417,9 @@ func (p *Provider) toCallModelMessage(client *msteams.Client, remote msteams.Mes
 	}
 	if strings.Contains(eventType, "ended") || strings.Contains(remote.Content, "<ended") {
 		message.CallType = "call_ended"
-		message.CallOutcome = "CONNECTED"
+		// This is a conversation-wide meeting event. It does not prove that the
+		// authenticated user joined; personal CallLog records carry that signal.
+		message.CallOutcome = "ENDED"
 		message.Body = "Call ended"
 	}
 	if remote.CallLog != nil {

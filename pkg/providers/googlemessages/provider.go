@@ -149,6 +149,8 @@ func (p *Provider) SyncHistory(since time.Time) error {
 		return fmt.Errorf("%s: list conversations: %w", providerID, err)
 	}
 	conversations := response.GetConversations()
+	initialSync := p.isInitialHistorySync()
+	remainingMessages := 100
 	for index, remote := range conversations {
 		if remote.GetConversationID() == "" {
 			continue
@@ -156,11 +158,24 @@ func (p *Provider) SyncHistory(since time.Time) error {
 		if err := p.storeConversation(remote); err != nil {
 			return err
 		}
+		// The initial sync keeps the existing broad backfill. Later syncs only
+		// inspect conversations that the phone marks unread, with one global
+		// 100-message budget for the whole provider instance.
+		if !initialSync && (!remote.GetUnread() || remainingMessages == 0) {
+			continue
+		}
 		progress := (index * 100) / max(1, len(conversations))
 		p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingHistory, ConversationID: remote.GetConversationID(), Message: "Syncing Google Messages history", Progress: progress})
-		messages, err := p.GetConversationHistory(remote.GetConversationID(), 0, nil, &since)
+		limit := 0
+		if !initialSync {
+			limit = remainingMessages
+		}
+		messages, err := p.GetConversationHistory(remote.GetConversationID(), limit, nil, &since)
 		if err != nil {
 			return err
+		}
+		if !initialSync {
+			remainingMessages -= len(messages)
 		}
 		if err := p.storeMessages(messages); err != nil {
 			return err
@@ -170,13 +185,30 @@ func (p *Provider) SyncHistory(since time.Time) error {
 				InstanceID:     instance,
 				ConversationID: remote.GetConversationID(),
 				Messages:       messages,
-				IsHistorical:   since.IsZero(),
+				IsHistorical:   initialSync,
 			})
 		}
 	}
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: "Google Messages sync completed", Progress: 100})
 	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	return nil
+}
+
+func (p *Provider) isInitialHistorySync() bool {
+	if db.DB == nil {
+		return true
+	}
+	p.mu.RLock()
+	instance := p.instance
+	p.mu.RUnlock()
+	var count int64
+	db.DB.Model(&models.Message{}).
+		Joins("JOIN conversations ON conversations.protocol_conv_id = messages.protocol_conv_id").
+		Joins("JOIN linked_accounts ON linked_accounts.id = conversations.linked_account_id").
+		Where("linked_accounts.provider_instance_id = ?", instance).
+		Limit(1).
+		Count(&count)
+	return count == 0
 }
 
 func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {

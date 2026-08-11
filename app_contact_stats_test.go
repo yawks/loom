@@ -59,3 +59,37 @@ func TestGetContactExchangeStatsUsesCompleteConversationTurns(t *testing.T) {
 		t.Fatalf("unexpected contact response median: %v", stats.MedianContactResponseSecs)
 	}
 }
+
+func TestGetContactExchangeStatsExcludesUnjoinedGroupCalls(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Conversation{}, &models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	conversation := models.Conversation{ProtocolConvID: "test::group@g.us", IsGroup: true}
+	if err := database.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	duration := int32(120)
+	messages := []models.Message{
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "missed", ConversationID: conversation.ID, Timestamp: time.Now(), CallType: "missed_group_voice", CallOutcome: "MISSED", CallDurationSecs: &duration},
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "joined", ConversationID: conversation.ID, Timestamp: time.Now().Add(time.Minute), CallType: "missed_group_voice", CallOutcome: "CONNECTED", CallDurationSecs: &duration},
+	}
+	if err := database.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := (&App{}).GetContactExchangeStats(conversation.ProtocolConvID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Calls != 1 || stats.MissedCalls != 0 || stats.TotalCallDurationSecs != 120 {
+		t.Fatalf("unexpected group call stats: %+v", stats)
+	}
+}
