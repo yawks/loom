@@ -264,7 +264,7 @@ func TestCallPayloadIsConvertedToCallMessage(t *testing.T) {
 			`<conversationUrl>https://api.flightproxy.teams.microsoft.com/api/call</conversationUrl>` +
 			`<a href="https://teams.microsoft.com/meet/123?p=abc&amp;x=1">Join</a>`,
 	}, "thread-1")
-	if message.CallOutcome != "CONNECTED" || message.CallDurationSecs == nil || *message.CallDurationSecs != 1849 {
+	if message.CallOutcome != "ENDED" || message.CallDurationSecs == nil || *message.CallDurationSecs != 1849 {
 		t.Fatalf("call summary was not parsed: %+v", message)
 	}
 	if message.CallType != "call_ended" {

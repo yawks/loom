@@ -756,10 +756,12 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 		return
 	}
 
-	// A socket can still look connected to the application after a laptop wake
-	// even though the underlying network session is dead. Reconnect before the
-	// catch-up sync so both missed messages and subsequent live events resume.
-	if reason == "system wake" {
+	// A socket can still look connected after sleep even though its network
+	// session is dead. A manual global audit also reconnects first: this recovers
+	// messages newer than every local conversation tip before the provider asks
+	// the phone for older segments around those tips.
+	_, isGlobalHistorySync := provider.(core.GlobalHistorySyncer)
+	if reason == "system wake" || (reason == "manual" && isGlobalHistorySync) {
 		_ = provider.Disconnect()
 		if err := provider.Connect(); err != nil {
 			log.Printf("[App] %s initial reconnect for %s failed: %v", reason, instanceID, err)
@@ -788,15 +790,25 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 			a.startEventListenerForProvider(a.ctx, instanceID, provider)
 		}
 
-		if err := provider.SyncHistory(since); err == nil {
+		var syncErr error
+		if reason == "manual" {
+			if globalSyncer, ok := provider.(core.GlobalHistorySyncer); ok {
+				syncErr = globalSyncer.SyncAllHistory(since)
+			} else {
+				syncErr = provider.SyncHistory(since)
+			}
+		} else {
+			syncErr = provider.SyncHistory(since)
+		}
+		if syncErr == nil {
 			if db.DB != nil {
 				db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("last_sync_at", time.Now())
 			}
 			a.clearProviderError(instanceID)
 			return
 		} else {
-			lastErr = err
-			log.Printf("[App] %s sync attempt %d for %s failed: %v", reason, attempt+1, instanceID, err)
+			lastErr = syncErr
+			log.Printf("[App] %s sync attempt %d for %s failed: %v", reason, attempt+1, instanceID, syncErr)
 		}
 	}
 
@@ -3444,8 +3456,15 @@ func (a *App) GetContactExchangeStats(conversationID, participantID string) (mod
 		return stats, nil
 	}
 	var conversation models.Conversation
+	includeConversationWideCallEvents := true
 	if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conversation).Error; err == nil {
 		stats.IsGroup = conversation.IsGroup
+		if conversation.IsGroup {
+			var account models.LinkedAccount
+			if err := db.DB.Select("protocol").First(&account, conversation.LinkedAccountID).Error; err == nil {
+				includeConversationWideCallEvents = !strings.EqualFold(account.Protocol, "teams")
+			}
+		}
 	}
 	includeOwnMessages := !stats.IsGroup
 	if stats.IsGroup && participantID != "" {
@@ -3476,15 +3495,23 @@ func (a *App) GetContactExchangeStats(conversationID, participantID string) (mod
 			COALESCE(SUM(CASE WHEN is_from_me = 0 AND (? = '' OR sender_id = ?) THEN 1 ELSE 0 END), 0) AS received_messages,
 			COUNT(DISTINCT date(timestamp)) AS active_days,
 			COALESCE(SUM(CASE WHEN attachments IS NOT NULL AND TRIM(attachments) NOT IN ('', '[]', 'null') THEN 1 ELSE 0 END), 0) AS attachment_messages,
-			COALESCE(SUM(CASE WHEN call_type <> '' THEN 1 ELSE 0 END), 0) AS calls,
-			COALESCE(SUM(CASE WHEN call_type LIKE 'missed_%' OR UPPER(call_outcome) = 'MISSED' THEN 1 ELSE 0 END), 0) AS missed_calls,
-			COALESCE(SUM(call_duration_secs), 0) AS total_call_duration_secs,
+			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+				((LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%') OR UPPER(call_outcome) = 'CONNECTED')
+				THEN 1 ELSE 0 END), 0) AS calls,
+			COALESCE(SUM(CASE WHEN (call_type LIKE 'missed_%' OR UPPER(call_outcome) = 'MISSED') AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+				(LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%')
+				THEN 1 ELSE 0 END), 0) AS missed_calls,
+			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+				((LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%') OR UPPER(call_outcome) = 'CONNECTED')
+				THEN call_duration_secs ELSE 0 END), 0) AS total_call_duration_secs,
 			CAST(ROUND(julianday(MIN(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS first_exchange_millis,
 			CAST(ROUND(julianday(MAX(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS last_exchange_millis
 		FROM messages
 		WHERE protocol_conv_id = ? AND deleted_at IS NULL AND is_deleted = 0
 			AND ((is_from_me = 1 AND ? = 1) OR (is_from_me = 0 AND (? = '' OR sender_id = ?)))
-	`, includeOwnMessages, participantID, participantID, conversationID, includeOwnMessages, participantID, participantID).Scan(&aggregate).Error
+	`, includeOwnMessages, participantID, participantID,
+		includeConversationWideCallEvents, includeConversationWideCallEvents, includeConversationWideCallEvents,
+		conversationID, includeOwnMessages, participantID, participantID).Scan(&aggregate).Error
 	if err != nil {
 		return stats, err
 	}
@@ -3640,15 +3667,16 @@ func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationSta
 	}
 
 	type callRow struct {
-		MetaContactID                                                                                  uint
-		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName, ProtocolConvID, CallType string
-		Timestamp                                                                                      time.Time
-		Duration                                                                                       *int32
+		MetaContactID                                                                                               uint
+		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName, ProtocolConvID, CallType, CallOutcome string
+		Timestamp                                                                                                   time.Time
+		Duration                                                                                                    *int32
+		IsGroup                                                                                                     bool
 	}
 	var calls []callRow
 	err = db.DB.Raw(`SELECT mc.id meta_contact_id, mc.display_name, mc.avatar_url, la.provider_instance_id,
 		la.protocol provider_id, COALESCE(NULLIF(pc.instance_name,''),la.provider_instance_id) instance_name,
-		m.protocol_conv_id, m.call_type, m.timestamp, m.call_duration_secs duration
+		m.protocol_conv_id, m.call_type, m.call_outcome, m.timestamp, m.call_duration_secs duration, c.is_group
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN linked_accounts la ON la.id=c.linked_account_id
 		JOIN meta_contacts mc ON mc.id=la.meta_contact_id LEFT JOIN provider_configurations pc ON pc.instance_id=la.provider_instance_id
 		WHERE m.timestamp>=? AND m.timestamp<? AND m.deleted_at IS NULL AND m.is_deleted=0 AND COALESCE(m.call_type,'')<>''
@@ -3680,6 +3708,15 @@ func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationSta
 	}
 	for _, row := range calls {
 		t := strings.ToLower(row.CallType)
+		// Teams emits a conversation-wide CallEnded activity for meetings. Its
+		// CONNECTED outcome describes the meeting, not the current user's presence.
+		// Personal Teams call logs are separate records and remain countable.
+		if row.IsGroup && strings.EqualFold(row.ProviderID, "teams") && t == "call_ended" {
+			continue
+		}
+		if isGroupCallType(row.ProtocolConvID, t) && !strings.EqualFold(row.CallOutcome, "CONNECTED") {
+			continue
+		}
 		isStart := t == "scheduled_start" || t == "incoming_call" || t == "incoming_group_call"
 		if isStart && row.Duration == nil {
 			pending[row.ProtocolConvID] = row
@@ -3714,6 +3751,10 @@ func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationSta
 	sort.Slice(stats.Instances, func(i, j int) bool { return stats.Instances[i].Total > stats.Instances[j].Total })
 	sort.Slice(stats.Contacts, func(i, j int) bool { return stats.Contacts[i].Total > stats.Contacts[j].Total })
 	return stats, nil
+}
+
+func isGroupCallType(protocolConvID, callType string) bool {
+	return strings.Contains(strings.ToLower(callType), "group") || strings.Contains(strings.ToLower(protocolConvID), "@g.us")
 }
 
 func extraString(extra map[string]interface{}, keys ...string) string {

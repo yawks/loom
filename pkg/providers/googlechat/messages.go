@@ -15,6 +15,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"Loom/pkg/providers/messageformat"
+	"gorm.io/gorm"
 )
 
 func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, beforeTS *time.Time, sinceTS *time.Time) ([]models.Message, error) {
@@ -80,14 +81,57 @@ func (p *GoogleChatProvider) GetConversationHistory(convID string, limit int, be
 
 	selfID := p.getSelfID()
 	messages := make([]models.Message, 0, len(rawMsgs))
+	reactionSnapshots := make(map[string][]models.Reaction, len(rawMsgs))
 	for _, msg := range rawMsgs {
 		m := p.convertMessage(msg, convID, selfID)
 		m.ThreadID = resolveThreadID(msg, threadRoots)
+		// Message resources only expose reaction counts. Fetch the reaction
+		// resources themselves so we can persist the users behind each emoji.
+		// An empty summary is authoritative and clears reactions removed while
+		// Loom was not running.
+		if len(msg.EmojiReactionSummaries) == 0 {
+			m.Reactions = nil
+			reactionSnapshots[msg.Name] = nil
+		} else if reactions, err := p.listMessageReactions(msg.Name); err != nil {
+			p.log("GoogleChatProvider.GetConversationHistory: list reactions for %s: %v\n", msg.Name, err)
+			m.Reactions = nil
+		} else {
+			m.Reactions = reactions
+			reactionSnapshots[msg.Name] = reactions
+		}
 		messages = append(messages, m)
 	}
 
-	p.storeMessagesForConversation(convID, messages)
+	p.storeMessagesForConversation(convID, messages, reactionSnapshots)
 	return messages, nil
+}
+
+func (p *GoogleChatProvider) listMessageReactions(messageName string) ([]models.Reaction, error) {
+	var reactions []models.Reaction
+	pageToken := ""
+	for {
+		params := url.Values{"pageSize": {"100"}}
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+		var resp ReactionListResponse
+		if err := p.apiGet("/"+messageName+"/reactions", params, &resp); err != nil {
+			return nil, err
+		}
+		for _, reaction := range resp.Reactions {
+			if reaction.User == nil || reaction.Emoji == nil || reaction.Emoji.Unicode == "" {
+				continue
+			}
+			reactions = append(reactions, models.Reaction{
+				UserID: strings.TrimPrefix(reaction.User.Name, "users/"),
+				Emoji:  reaction.Emoji.Unicode,
+			})
+		}
+		pageToken = resp.NextPageToken
+		if pageToken == "" {
+			return reactions, nil
+		}
+	}
 }
 
 func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
@@ -533,7 +577,7 @@ func (p *GoogleChatProvider) isGroupSpace(convID string) bool {
 }
 
 // storeMessagesForConversation persists a batch of messages to the DB.
-func (p *GoogleChatProvider) storeMessagesForConversation(convID string, messages []models.Message) {
+func (p *GoogleChatProvider) storeMessagesForConversation(convID string, messages []models.Message, snapshots ...map[string][]models.Reaction) {
 	if convID == "" || len(messages) == 0 || db.DB == nil {
 		return
 	}
@@ -591,11 +635,8 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		toCreate = append(toCreate, m)
 	}
 
-	if len(toCreate) == 0 {
-		return
-	}
-
 	const batchSize = 100
+	hasReactionSnapshots := len(snapshots) > 0
 	for i := 0; i < len(toCreate); i += batchSize {
 		end := i + batchSize
 		if end > len(toCreate) {
@@ -603,24 +644,62 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		}
 		batch := toCreate[i:end]
 		var withReactions []models.Message
-		for idx := range batch {
-			if len(batch[idx].Reactions) > 0 {
-				withReactions = append(withReactions, batch[idx])
+		if hasReactionSnapshots {
+			for idx := range batch {
+				// Reactions are reconciled below for both new and existing messages.
 				batch[idx].Reactions = nil
+			}
+		} else {
+			for idx := range batch {
+				if len(batch[idx].Reactions) > 0 {
+					withReactions = append(withReactions, batch[idx])
+					batch[idx].Reactions = nil
+				}
 			}
 		}
 		if err := db.DB.Create(&batch).Error; err != nil {
 			p.log("GoogleChatProvider.storeMessages: batch create: %v\n", err)
 			continue
 		}
-		for _, m := range withReactions {
+		for _, message := range withReactions {
 			var stored models.Message
-			if db.DB.Where("protocol_msg_id = ?", m.ProtocolMsgID).First(&stored).Error == nil {
-				for i := range m.Reactions {
-					m.Reactions[i].MessageID = stored.ID
+			if db.DB.Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&stored).Error == nil {
+				for idx := range message.Reactions {
+					message.Reactions[idx].MessageID = stored.ID
 				}
-				db.DB.Create(&m.Reactions)
+				db.DB.Create(&message.Reactions)
 			}
+		}
+	}
+
+	// Re-reading a message during incremental sync must also refresh its
+	// reactions. Previously existing messages were skipped here, which left any
+	// reactions added while the app was closed invisible after startup.
+	var reactionSnapshots map[string][]models.Reaction
+	if len(snapshots) > 0 {
+		reactionSnapshots = snapshots[0]
+	}
+	for protocolMsgID, reactions := range reactionSnapshots {
+		var stored models.Message
+		if db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, nsConvID).First(&stored).Error != nil {
+			continue
+		}
+		err := db.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("message_id = ?", stored.ID).Delete(&models.Reaction{}).Error; err != nil {
+				return err
+			}
+			if len(reactions) == 0 {
+				return nil
+			}
+			storedReactions := append([]models.Reaction(nil), reactions...)
+			for i := range storedReactions {
+				storedReactions[i].ID = 0
+				storedReactions[i].MessageID = stored.ID
+			}
+			return tx.Create(&storedReactions).Error
+		})
+		if err != nil {
+			p.log("GoogleChatProvider.storeMessages: reconcile reactions for %s: %v\n", protocolMsgID, err)
 		}
 	}
 }
@@ -860,7 +939,12 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 		existingSet[id] = true
 	}
 
-	before := lastTS
+	// The API filter is strictly "createTime < before". Move the upper bound one
+	// nanosecond past lastTS so the most recent stored message is fetched again:
+	// reactions can change without changing the message's createTime. Using
+	// lastTS directly left that boundary message out of both the forward sync
+	// (createTime > lastTS) and the lookback (createTime < lastTS).
+	before := googleChatLookbackUpperBound(lastTS)
 	lookbackMsgs, err := p.GetConversationHistory(convID, 500, &before, &lookbackSince)
 	if err != nil {
 		p.log("GoogleChatProvider.incrementalSync: lookback failed for %s: %v\n", convID, err)
@@ -876,6 +960,10 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 	if len(missedMsgs) > 0 {
 		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: missedMsgs})
 	}
+}
+
+func googleChatLookbackUpperBound(lastTS time.Time) time.Time {
+	return lastTS.Add(time.Nanosecond)
 }
 
 // ScheduleMessage queues a message to be sent at a future time via Google Chat Web RPC.
