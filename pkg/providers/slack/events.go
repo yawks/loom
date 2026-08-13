@@ -66,6 +66,10 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 
 	// Track last poll timestamp
 	lastPollTime := time.Now()
+	// Slack search does not reliably return messages from the special DM with
+	// yourself. Keep an independent cursor for that conversation so messages
+	// sent from another Slack client still reach Loom without a manual sync.
+	lastSelfDMPollTime := lastPollTime.Add(-10 * time.Second)
 
 	for {
 		select {
@@ -83,6 +87,12 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			} else if !newLastPollTime.IsZero() {
 				lastPollTime = newLastPollTime
 			}
+			newSelfDMPollTime, err := p.pollSelfDMUpdates(lastSelfDMPollTime)
+			if err != nil {
+				p.log("SlackProvider.startPolling: Error polling self DM: %v\n", err)
+			} else if newSelfDMPollTime.After(lastSelfDMPollTime) {
+				lastSelfDMPollTime = newSelfDMPollTime
+			}
 			// Huddle updates keep the original message timestamp and are therefore
 			// invisible to forward-only message polling. Check only locally active
 			// huddles so their end and duration are still captured without RTM.
@@ -94,6 +104,86 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			p.pollNewReactions()
 		}
 	}
+}
+
+// pollSelfDMUpdates checks Slack's special "DM with yourself" conversation.
+// search.messages can omit that conversation, while conversations.history (the
+// endpoint used by manual sync) includes it.
+func (p *SlackProvider) pollSelfDMUpdates(since time.Time) (time.Time, error) {
+	p.mu.RLock()
+	client := p.client
+	selfUserID := p.selfUserID
+	selfDMChannelID := p.selfDMChannelID
+	p.mu.RUnlock()
+	if client == nil || selfUserID == "" {
+		return since, nil
+	}
+
+	if selfDMChannelID == "" {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users:    []string{selfUserID},
+			ReturnIM: true,
+		})
+		if err != nil {
+			return since, fmt.Errorf("open self DM: %w", err)
+		}
+		if channel == nil || channel.ID == "" {
+			return since, nil
+		}
+		selfDMChannelID = channel.ID
+		p.mu.Lock()
+		p.selfDMChannelID = selfDMChannelID
+		p.mu.Unlock()
+	}
+
+	oldest := float64(since.Unix()) + float64(since.Nanosecond())/1e9
+	history, err := client.GetConversationHistory(&slack.GetConversationHistoryParameters{
+		ChannelID: selfDMChannelID,
+		Oldest:    fmt.Sprintf("%.6f", oldest),
+		Inclusive: false,
+		Limit:     100,
+	})
+	if err != nil {
+		return since, fmt.Errorf("get self DM history: %w", err)
+	}
+
+	latest := since
+	// Slack returns history newest-first. Emit oldest-first for stable UI order.
+	for i := len(history.Messages) - 1; i >= 0; i-- {
+		slackMessage := history.Messages[i]
+		timestamp := parseSlackTimestamp(slackMessage.Timestamp)
+		if !timestamp.After(since) {
+			continue
+		}
+		if timestamp.After(latest) {
+			latest = timestamp
+		}
+
+		msg := p.convertMessage(slackMessage, selfDMChannelID)
+		exists := false
+		if db.DB != nil {
+			var count int64
+			if err := db.DB.Model(&models.Message{}).
+				Where("protocol_msg_id = ? AND protocol_conv_id = ?", msg.ProtocolMsgID, msg.ProtocolConvID).
+				Count(&count).Error; err != nil {
+				p.log("SlackProvider.pollSelfDMUpdates: failed checking message %s: %v\n", msg.ProtocolMsgID, err)
+			} else {
+				exists = count > 0
+			}
+		}
+		if exists {
+			continue
+		}
+
+		p.storeMessagesForConversation(msg.ProtocolConvID, []models.Message{msg})
+		select {
+		case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: msg}:
+		default:
+			p.log("SlackProvider.pollSelfDMUpdates: event channel full for message %s\n", msg.ProtocolMsgID)
+		}
+	}
+
+	return latest, nil
 }
 
 // pollGlobalUpdates searches for all messages received since the last poll time.

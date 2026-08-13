@@ -65,6 +65,7 @@ type SlackProvider struct {
 	dmChannelCache     map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
 	dmChannelCacheMu   sync.RWMutex            // Mutex for DM channel cache
 	selfUserID         string                  // Cached authenticated user ID (from AuthTest)
+	selfDMChannelID    string                  // Cached channel ID for Slack's DM with yourself
 	teamID             string                  // Cached workspace ID used to build Slack web conversation links
 }
 
@@ -716,6 +717,9 @@ func (p *SlackProvider) Connect() error {
 		return err
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
+	if p.selfUserID != authInfo.UserID {
+		p.selfDMChannelID = ""
+	}
 	p.selfUserID = authInfo.UserID
 	p.teamID = authInfo.TeamID
 	if p.connectionCancel != nil {

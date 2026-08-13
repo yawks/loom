@@ -337,21 +337,23 @@ type Reaction struct {
 
 // Attachment represents a file attached to a message.
 type Attachment struct {
-	Type         string     `json:"type"`                // "image", "video", "audio", "document", "sticker"
-	URL          string     `json:"url"`                 // Local file path or remote URL
-	FileName     string     `json:"fileName"`            // Original filename
-	FileSize     int64      `json:"fileSize"`            // File size in bytes
-	MimeType     string     `json:"mimeType"`            // MIME type (e.g., "image/jpeg", "application/pdf")
-	Thumbnail    string     `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
-	Duration     uint32     `json:"duration,omitempty"`  // Duration in seconds (for audio/video)
-	Latitude     *float64   `json:"latitude,omitempty"`  // Latitude for location attachments
-	Longitude    *float64   `json:"longitude,omitempty"` // Longitude for location attachments
-	LocationName string     `json:"locationName,omitempty"`
-	Address      string     `json:"address,omitempty"`
-	IsLive       bool       `json:"isLive,omitempty"`
-	Accuracy     uint32     `json:"accuracy,omitempty"`
-	UpdatedAt    *time.Time `json:"locationUpdatedAt,omitempty"`
-	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	Type          string     `json:"type"`                // "image", "video", "audio", "document", "sticker"
+	URL           string     `json:"url"`                 // Local file path or remote URL
+	FileName      string     `json:"fileName"`            // Original filename
+	FileSize      int64      `json:"fileSize"`            // File size in bytes
+	MimeType      string     `json:"mimeType"`            // MIME type (e.g., "image/jpeg", "application/pdf")
+	Thumbnail     string     `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
+	Duration      uint32     `json:"duration,omitempty"`  // Duration in seconds (for audio/video)
+	Latitude      *float64   `json:"latitude,omitempty"`  // Latitude for location attachments
+	Longitude     *float64   `json:"longitude,omitempty"` // Longitude for location attachments
+	LocationName  string     `json:"locationName,omitempty"`
+	Address       string     `json:"address,omitempty"`
+	IsLive        bool       `json:"isLive,omitempty"`
+	Accuracy      uint32     `json:"accuracy,omitempty"`
+	UpdatedAt     *time.Time `json:"locationUpdatedAt,omitempty"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
+	ContactName   string     `json:"contactName,omitempty"`
+	ContactPhones []string   `json:"contactPhones,omitempty"`
 }
 
 // ProviderConfiguration stores the configuration of a provider instance.
