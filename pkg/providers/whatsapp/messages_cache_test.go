@@ -96,6 +96,30 @@ func TestConvertMessageUnwrapsBotForwardedText(t *testing.T) {
 	}
 }
 
+func TestConvertMessageUsesImageCaptionAsBody(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	chat := types.NewJID("33600000000", types.DefaultUserServer)
+	event := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "captioned-image",
+			Timestamp:     time.Unix(1_700_000_000, 0),
+		},
+		Message: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+			Caption: proto.String("Voici la photo"),
+		}},
+	}
+
+	got := provider.convertMessage(event)
+	if got == nil {
+		t.Fatal("convertMessage returned nil")
+	}
+	if got.Body != "Voici la photo" {
+		t.Fatalf("body = %q, want image caption", got.Body)
+	}
+}
+
 func TestConvertMessageFormatsContactCard(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"
@@ -116,8 +140,18 @@ func TestConvertMessageFormatsContactCard(t *testing.T) {
 	if got == nil {
 		t.Fatal("convertMessage returned nil")
 	}
-	if got.Body != "👤 Alice Martin\n📞 +33612345678" {
-		t.Fatalf("body = %q", got.Body)
+	if got.Body != "" {
+		t.Fatalf("body = %q, want empty body for structured contact", got.Body)
+	}
+	var attachments []models.Attachment
+	if err := json.Unmarshal([]byte(got.Attachments), &attachments); err != nil {
+		t.Fatalf("unmarshal attachments: %v", err)
+	}
+	if len(attachments) != 1 || attachments[0].Type != "contact" || attachments[0].ContactName != "Alice Martin" {
+		t.Fatalf("attachments = %#v", attachments)
+	}
+	if len(attachments[0].ContactPhones) != 1 || attachments[0].ContactPhones[0] != "+33612345678" {
+		t.Fatalf("contact phones = %#v", attachments[0].ContactPhones)
 	}
 }
 

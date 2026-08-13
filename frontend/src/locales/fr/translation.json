@@ -168,6 +168,8 @@
   "live_location": "En direct",
   "live_location_ended": "Terminé",
   "location_updated": "Mise à jour : {{time}}",
+  "shared_contact": "Contact partagé",
+  "call": "Appeler",
   "configuration_saved": "Configuration enregistrée avec succès.",
   "configuration_save_error": "Impossible d'enregistrer la configuration. Veuillez réessayer.",
   "instance_name": "Nom de l'instance",

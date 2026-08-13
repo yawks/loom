@@ -166,6 +166,8 @@
   "live_location": "Live",
   "live_location_ended": "Ended",
   "location_updated": "Updated: {{time}}",
+  "shared_contact": "Shared contact",
+  "call": "Call",
   "configuration_saved": "Configuration saved successfully.",
   "configuration_save_error": "Unable to save the configuration. Please try again.",
   "instance_name": "Instance Name",

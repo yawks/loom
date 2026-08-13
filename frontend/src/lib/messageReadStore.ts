@@ -602,10 +602,29 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
   markAsReadSilently: (conversationId, messageId) => {
     if (!conversationId || !messageId) return;
     set((state) => {
-      const conversationState = state.readByConversation[conversationId];
+      let resolvedConversationId = conversationId;
+      let conversationState = state.readByConversation[resolvedConversationId];
+
+      // WhatsApp self-read receipts can identify the chat by its LID while the
+      // message state is keyed by the equivalent phone-number JID. Message IDs
+      // are stable across both forms, so resolve within the same provider
+      // instance when the receipt's conversation key does not contain it.
+      if (!conversationState || conversationState[messageId] === undefined) {
+        const separator = conversationId.indexOf("::");
+        const instancePrefix = separator >= 0 ? conversationId.slice(0, separator + 2) : "";
+        const matchingConversation = Object.entries(state.readByConversation).find(
+          ([candidateId, candidateState]) =>
+            (!instancePrefix || candidateId.startsWith(instancePrefix)) &&
+            candidateState[messageId] !== undefined
+        );
+        if (matchingConversation) {
+          [resolvedConversationId, conversationState] = matchingConversation;
+        }
+      }
+
       if (!conversationState || conversationState[messageId] === true) return state;
       const updatedConversation = { ...conversationState, [messageId]: true };
-      const updatedMap = { ...state.readByConversation, [conversationId]: updatedConversation };
+      const updatedMap = { ...state.readByConversation, [resolvedConversationId]: updatedConversation };
       persistStateDebounced(updatedMap);
       return { readByConversation: updatedMap };
     });
@@ -700,12 +719,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         const marker = threadMarker(messageId);
         const needsThreadMarker =
           isThreadReply(message) && existingState[marker] !== true;
-        if (existingState[messageId] !== undefined && !needsThreadMarker) continue;
+        // An authoritative historical/read batch must be allowed to repair a
+        // stale unread flag left while Loom was offline.
+        const repairsUnreadState = isHistorical && existingState[messageId] === false;
+        if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
         let isRead = existingState[messageId];
         const isCallMessage = message.callType && message.callType.trim() !== "";
-        if (isRead !== undefined) {
+        if (repairsUnreadState) {
+          isRead = true;
+        } else if (isRead !== undefined) {
           // Keep the existing value when only adding the thread marker.
         } else if (isCallMessage || message.isFromMe) {
           isRead = true;

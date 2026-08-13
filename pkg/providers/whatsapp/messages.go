@@ -347,6 +347,15 @@ func (w *WhatsAppProvider) extractAttachments(evt *events.Message) []models.Atta
 		}
 		attachments = append(attachments, attachment)
 	}
+	for index, contact := range contactMessages(msg) {
+		name, phones := parseContactCard(contact)
+		attachments = append(attachments, models.Attachment{
+			Type:          "contact",
+			URL:           fmt.Sprintf("contact:%s:%d", evt.Info.ID, index),
+			ContactName:   name,
+			ContactPhones: phones,
+		})
+	}
 
 	if len(attachments) == 0 {
 		fmt.Printf("WhatsApp: extractAttachments: No attachments found in message %s\n", evt.Info.ID)
@@ -364,6 +373,18 @@ func formatContactCard(contact *waE2E.ContactMessage) string {
 		return ""
 	}
 
+	name, phones := parseContactCard(contact)
+	result := "👤 " + name
+	for _, phone := range phones {
+		result += "\n📞 " + phone
+	}
+	return result
+}
+
+func parseContactCard(contact *waE2E.ContactMessage) (string, []string) {
+	if contact == nil {
+		return "Contact", nil
+	}
 	name := strings.TrimSpace(contact.GetDisplayName())
 	phones := make([]string, 0, 1)
 	for _, line := range strings.Split(strings.ReplaceAll(contact.GetVcard(), "\r\n", "\n"), "\n") {
@@ -386,11 +407,17 @@ func formatContactCard(contact *waE2E.ContactMessage) string {
 	if name == "" {
 		name = "Contact"
 	}
-	result := "👤 " + name
-	for _, phone := range phones {
-		result += "\n📞 " + phone
+	return name, phones
+}
+
+func contactMessages(msg *waE2E.Message) []*waE2E.ContactMessage {
+	if contact := msg.GetContactMessage(); contact != nil {
+		return []*waE2E.ContactMessage{contact}
 	}
-	return result
+	if contacts := msg.GetContactsArrayMessage(); contacts != nil {
+		return contacts.GetContacts()
+	}
+	return nil
 }
 
 func formatContactCards(msg *waE2E.Message) string {
@@ -913,7 +940,12 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		body = msg.GetConversation()
 	} else if msg.GetExtendedTextMessage() != nil {
 		body = msg.GetExtendedTextMessage().GetText()
-	} else {
+	} else if msg.GetImageMessage() != nil {
+		// WhatsApp stores the text sent with an image as its caption rather than
+		// as a Conversation/ExtendedTextMessage. Keep it as the message body so
+		// the frontend renders the text bubble alongside the image attachment.
+		body = msg.GetImageMessage().GetCaption()
+	} else if len(contactMessages(msg)) == 0 {
 		body = formatContactCards(msg)
 	}
 	if location := msg.GetLocationMessage(); location != nil && body == "" {

@@ -29,11 +29,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// pendingSyncInfo holds the information needed to trigger a sync after the frontend is ready.
-type pendingSyncInfo struct {
+// pendingProviderStartup holds the work that may touch the network. Provider
+// instances are restored during startup so the frontend can immediately read
+// their configuration and local history, but authentication, connection and
+// synchronization wait until the DOM is ready.
+type pendingProviderStartup struct {
 	provider   core.Provider
 	instanceID string
 	since      time.Time
+	isActive   bool
 }
 
 // History remains fully persisted in SQLite. The frontend only needs a recent
@@ -76,15 +80,15 @@ type linkPreviewEntry struct {
 
 // App struct
 type App struct {
-	ctx               context.Context
-	mockMode          bool
-	provider          core.Provider // Active provider (for UI actions)
-	providerManager   *core.ProviderManager
-	eventCancels      map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
-	systemTray        *menu.Menu
-	pendingSyncs      []pendingSyncInfo // syncs deferred until domReady
-	metaContactsCache metaContactsCache
-	mu                sync.RWMutex
+	ctx                     context.Context
+	mockMode                bool
+	provider                core.Provider // Active provider (for UI actions)
+	providerManager         *core.ProviderManager
+	eventCancels            map[string]context.CancelFunc // Map of instanceID -> cancelFunc for event listeners
+	systemTray              *menu.Menu
+	pendingProviderStartups []pendingProviderStartup // network work deferred until domReady
+	metaContactsCache       metaContactsCache
+	mu                      sync.RWMutex
 
 	// Short-lived server-side caches for expensive full-table-scan queries.
 	// The frontend has 30s staleTime but mounts multiple components simultaneously
@@ -113,7 +117,7 @@ type App struct {
 	syncInProgressMu sync.Mutex
 
 	// providerErrors holds the last startup error per provider instance (instanceID → message).
-	// Populated in startup() when a provider fails IsAuthenticated or Connect.
+	// Populated after domReady when a provider fails IsAuthenticated or Connect.
 	// Exposed via GetConfiguredProviders so the sidebar can show a warning badge without
 	// relying on a one-shot event that might fire before the listener is registered.
 	providerErrors   map[string]string
@@ -579,31 +583,10 @@ func (a *App) startup(ctx context.Context) {
 			instanceID = fmt.Sprintf("%s-1", providerConfig.ProviderID)
 		}
 
-		isAuth := provider.IsAuthenticated()
-		if isAuth {
-			if err := provider.Connect(); err != nil {
-				log.Printf("Warning: Failed to connect provider %s: %v", providerConfig.ProviderID, err)
-				a.setProviderError(instanceID, fmt.Sprintf("Connection failed: %v", err))
-				continue
-			}
-			// Start event listener for all connected providers
-			a.startEventListenerForProvider(ctx, instanceID, provider)
-		} else {
-			if providerConfig.IsActive {
-				if db.DB != nil {
-					db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", false)
-				}
-				providerConfig.IsActive = false
-			}
-			a.setProviderError(instanceID, "Session expired — please re-authenticate")
-			continue
-		}
-
 		if providerConfig.IsActive {
 			a.mu.Lock()
 			a.provider = provider
 			a.mu.Unlock()
-			a.providerManager.SetActiveProvider(instanceID)
 		}
 
 		// Collect pending syncs for all connected providers
@@ -617,13 +600,15 @@ func (a *App) startup(ctx context.Context) {
 			// First time: sync last 365 days
 			syncSince = time.Now().Add(-365 * 24 * time.Hour)
 		}
-		if !syncSince.IsZero() && provider != nil {
-			a.pendingSyncs = append(a.pendingSyncs, pendingSyncInfo{
-				provider:   provider,
-				instanceID: instanceID,
-				since:      syncSince,
-			})
-		}
+		// Connecting a provider can perform network I/O and take several seconds.
+		// Queue every restored provider, even when no history sync is needed, so
+		// startup never waits for the network before Wails can render the UI.
+		a.pendingProviderStartups = append(a.pendingProviderStartups, pendingProviderStartup{
+			provider:   provider,
+			instanceID: instanceID,
+			since:      syncSince,
+			isActive:   providerConfig.IsActive,
+		})
 	}
 	a.setupSystemTray(ctx)
 	go a.startWakeDetector()
@@ -838,16 +823,38 @@ func (a *App) clearProviderError(instanceID string) {
 }
 
 func (a *App) domReady(ctx context.Context) {
-	syncs := a.pendingSyncs
-	a.pendingSyncs = nil
+	startups := a.pendingProviderStartups
+	a.pendingProviderStartups = nil
 
-	for _, si := range syncs {
-		go func(syncInfo pendingSyncInfo) {
+	for _, startup := range startups {
+		go func(providerStartup pendingProviderStartup) {
 			// Small delay to let React mount and register EventsOn("sync-status") listener.
 			time.Sleep(500 * time.Millisecond)
-			fmt.Printf("App.domReady: starting sync for %s since %s\n", syncInfo.instanceID, syncInfo.since.Format(time.RFC3339))
-			a.syncProviderHistory(syncInfo.instanceID, syncInfo.since, "startup")
-		}(si)
+
+			if !providerStartup.provider.IsAuthenticated() {
+				if providerStartup.isActive && db.DB != nil {
+					db.DB.Model(&models.ProviderConfiguration{}).
+						Where("instance_id = ?", providerStartup.instanceID).
+						Update("is_active", false)
+				}
+				a.setProviderError(providerStartup.instanceID, "Session expired — please re-authenticate")
+				return
+			}
+
+			if err := providerStartup.provider.Connect(); err != nil {
+				log.Printf("Warning: Failed to connect provider %s: %v", providerStartup.instanceID, err)
+				a.setProviderError(providerStartup.instanceID, fmt.Sprintf("Connection failed: %v", err))
+				return
+			}
+			a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
+
+			if providerStartup.since.IsZero() {
+				a.clearProviderError(providerStartup.instanceID)
+				return
+			}
+			fmt.Printf("App.domReady: starting sync for %s since %s\n", providerStartup.instanceID, providerStartup.since.Format(time.RFC3339))
+			a.syncProviderHistory(providerStartup.instanceID, providerStartup.since, "startup")
+		}(startup)
 	}
 }
 

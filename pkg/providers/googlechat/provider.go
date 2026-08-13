@@ -41,6 +41,11 @@ type cachedUser struct {
 type GoogleChatProvider struct {
 	config core.ProviderConfig
 	mu     sync.RWMutex
+	// syncMu serializes contact discovery and history catch-up. At startup both
+	// Connect and the app-level startup sync can request discovery; letting them
+	// overlap can make the history query observe a partially refreshed contact
+	// graph and skip conversations until the next manual sync.
+	syncMu sync.Mutex
 	logger *logging.ProviderLogger
 
 	oauthConf *oauth2.Config
@@ -177,7 +182,9 @@ func (p *GoogleChatProvider) connectWithToken(ctx context.Context, oauthConf *oa
 
 	// Initial contact + conversation sync
 	go func() {
+		p.syncMu.Lock()
 		contacts, err := p.GetContacts()
+		p.syncMu.Unlock()
 		if err != nil {
 			p.log("GoogleChatProvider: initial GetContacts error: %v\n", err)
 		} else {
@@ -223,10 +230,15 @@ func (p *GoogleChatProvider) Cleanup() error {
 
 func (p *GoogleChatProvider) SyncHistory(since time.Time) error {
 	if p.getHTTPClient() == nil {
-		return nil
+		return fmt.Errorf("googlechat: not connected")
 	}
+	// Do not report success to the app (which advances LastSyncAt) until the
+	// actual catch-up has completed. This also waits for Connect's initial
+	// contact discovery instead of racing it.
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
 	if _, err := p.GetContacts(); err != nil {
-		p.log("GoogleChatProvider.SyncHistory: GetContacts: %v\n", err)
+		return fmt.Errorf("googlechat: refresh contacts: %w", err)
 	}
 	p.emit(core.ContactStatusEvent{
 		InstanceID: p.getInstanceID(),
@@ -235,7 +247,7 @@ func (p *GoogleChatProvider) SyncHistory(since time.Time) error {
 	})
 	// Per-conversation forward sync + 24h lookback to catch messages that were
 	// missed because they were read on another client before this sync ran.
-	go p.incrementalSync()
+	p.incrementalSync()
 	return nil
 }
 
