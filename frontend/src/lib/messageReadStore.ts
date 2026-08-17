@@ -87,7 +87,7 @@ interface MessageReadStore {
    *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
-  registerBatchMessages: (messages: models.Message[], isHistorical?: boolean) => void;
+  registerBatchMessages: (messages: models.Message[], isHistorical?: boolean, forceRead?: boolean) => void;
   removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
@@ -340,15 +340,18 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
                   console.log(`messageReadStore: Message ${messageId} marked as UNREAD (msg: ${messageDate.toISOString()}, lastRead: ${lastReadDate.toISOString()})`);
                 }
               } else {
-                // Invalid lastReadTS, fall back to marking as read
-                console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}, marking all as read`);
-                nextState[messageId] = true;
+                // With an existing local timeline, an unknown ID is recovered
+                // activity and must not silently become read because a provider
+                // cursor is malformed.
+                console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}`);
+                nextState[messageId] = !hasExisting;
               }
             } else {
-              // No lastReadTS: mark all messages as read by default on initial sync
-              // This prevents showing old messages as unread when we don't have provider's read marker yet
-              nextState[messageId] = true;
-              console.log(`messageReadStore: No lastReadTS for ${conversationId}, marking message ${messageId} as read by default`);
+              // With no provider cursor, only the first local import is assumed
+              // historical. Once the conversation already exists, IDs that
+              // appear later are recovered incoming messages and stay unread.
+              nextState[messageId] = !hasExisting;
+              console.log(`messageReadStore: No lastReadTS for ${conversationId}, marking new message ${messageId} as ${hasExisting ? "unread" : "historical/read"}`);
             }
           }
           hasChanged = true;
@@ -696,7 +699,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedMap };
     });
   },
-  registerBatchMessages: (messages: models.Message[], isHistorical = false) => {
+  registerBatchMessages: (messages: models.Message[], isHistorical = false, forceRead = false) => {
     if (messages.length === 0) return;
     set((state) => {
       const updatedReadByConversation = { ...state.readByConversation };
@@ -719,15 +722,20 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         const marker = threadMarker(messageId);
         const needsThreadMarker =
           isThreadReply(message) && existingState[marker] !== true;
-        // An authoritative historical/read batch must be allowed to repair a
-        // stale unread flag left while Loom was offline.
-        const repairsUnreadState = isHistorical && existingState[messageId] === false;
+        // A duplicate history batch is not proof that a message was read. In
+        // particular, WhatsApp may deliver a live MessageEvent and repeat the
+        // same message in a HistorySync seconds later. Only an explicit
+        // provider read-through signal may overwrite an existing unread state.
+        const repairsUnreadState =
+          forceRead && existingState[messageId] === false;
         if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
         let isRead = existingState[messageId];
         const isCallMessage = message.callType && message.callType.trim() !== "";
         if (repairsUnreadState) {
+          // An action by the current user proves this history prefix was seen
+          // on another linked client. This updates local state only.
           isRead = true;
         } else if (isRead !== undefined) {
           // Keep the existing value when only adding the thread marker.

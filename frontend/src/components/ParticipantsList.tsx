@@ -1,6 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Loader2, Plus, ShieldCheck, ShieldMinus, UserMinus, X } from "lucide-react";
-import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNames, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAlias } from "../../wailsjs/go/main/App";
+import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNames, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAliasForConversation } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -30,16 +30,24 @@ interface ParticipantsListProps {
   onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => void;
   onParticipantsCountChange?: (count: number) => void;
   providerInstanceId: string;
+  isGroup: boolean;
   canAddMembers: boolean;
   canRemoveMembers: boolean;
   canManageAdmins: boolean;
 }
 
 // Fetch function that loads both group participants and their names
-async function fetchParticipantsData(conversationId: string): Promise<{
+async function fetchParticipantsData(conversationId: string, isGroup: boolean): Promise<{
   groupParticipants: models.GroupParticipant[];
   participantNames: Record<string, string>;
 }> {
+  // Direct conversations derive their participants from messages. Calling the
+  // provider's group endpoint for them is both unnecessary and an error for
+  // providers such as WhatsApp.
+  if (!isGroup) {
+    return { groupParticipants: [], participantNames: {} };
+  }
+
   let groupParticipants;
   try {
     groupParticipants = await GetGroupParticipants(conversationId);
@@ -113,6 +121,7 @@ export function ParticipantsList({
   onAvatarClick,
   onParticipantsCountChange,
   providerInstanceId,
+  isGroup,
   canAddMembers,
   canRemoveMembers,
   canManageAdmins,
@@ -134,8 +143,8 @@ export function ParticipantsList({
     groupParticipants: models.GroupParticipant[];
     participantNames: Record<string, string>;
   }, Error>({
-    queryKey: ["participantsData", conversationId],
-    queryFn: () => fetchParticipantsData(conversationId),
+    queryKey: ["participantsData", conversationId, isGroup],
+    queryFn: () => fetchParticipantsData(conversationId, isGroup),
     refetchInterval: 15000,
   });
 
@@ -422,7 +431,7 @@ export function ParticipantsList({
             alias={aliases[participant.senderId]}
             onAvatarClick={onAvatarClick}
             onAliasChange={async (newAlias: string) => {
-              await SetContactAlias(participant.senderId, newAlias);
+              await SetContactAliasForConversation(participant.senderId, conversationId, newAlias);
               queryClient.invalidateQueries({ queryKey: ["contactAliases"] });
               queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
             }}

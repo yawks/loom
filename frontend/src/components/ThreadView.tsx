@@ -27,7 +27,7 @@ import { useFileUpload } from "@/hooks/useFileUpload";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
-import { getColorFromString, getMessageDomId, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { useAppStore } from "@/lib/store";
@@ -828,7 +828,7 @@ export function ThreadView() {
                                   message.isFromMe ? "text-white/90" : "text-purple-700 dark:text-purple-400"
                                 )}
                               >
-                                {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                                {getQuotedSenderDisplayName(message, selectedThreadParentMessage ? [selectedThreadParentMessage, ...sortedThreadMessages] : sortedThreadMessages, undefined, currentUserId, t("you"), t("contact"))}
                               </div>
                               <div className={cn("text-xs md:text-sm line-clamp-2 text-left", message.isFromMe ? "text-white/80" : "text-foreground/80")}>
                                 <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
@@ -1002,7 +1002,7 @@ export function ThreadView() {
                             {message.quotedMessageId && message.quotedBody && (
                               <div className="mb-2 pl-3 pr-2 py-1.5 border-l-[3px] border-purple-600 dark:border-purple-400 bg-muted/40 hover:bg-muted/70 rounded-r transition-colors text-left">
                                 <div className="text-xs font-semibold text-purple-700 dark:text-purple-400 mb-0.5 text-left flex items-center gap-1.5">
-                                  {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                                  {getQuotedSenderDisplayName(message, selectedThreadParentMessage ? [selectedThreadParentMessage, ...sortedThreadMessages] : sortedThreadMessages, undefined, currentUserId, t("you"), t("contact"))}
                                 </div>
                                 <div className="text-xs md:text-sm text-foreground/80 line-clamp-2 text-left">
                                   <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />

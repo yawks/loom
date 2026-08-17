@@ -44,6 +44,7 @@ type Provider struct {
 }
 
 var _ core.Provider = (*Provider)(nil)
+var _ core.PhoneConversationCreator = (*Provider)(nil)
 
 func NewProvider() *Provider {
 	return &Provider{
@@ -174,17 +175,21 @@ func (p *Provider) SyncHistory(since time.Time) error {
 		if err != nil {
 			return err
 		}
+		newMessages := messages
+		if !initialSync {
+			newMessages = googleMessagesNotYetStored(messages)
+		}
 		if !initialSync {
 			remainingMessages -= len(messages)
 		}
 		if err := p.storeMessages(messages); err != nil {
 			return err
 		}
-		if len(messages) > 0 {
+		if len(newMessages) > 0 {
 			p.emit(core.MessageBatchEvent{
 				InstanceID:     instance,
 				ConversationID: remote.GetConversationID(),
-				Messages:       messages,
+				Messages:       newMessages,
 				IsHistorical:   initialSync,
 			})
 		}
@@ -192,6 +197,37 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: "Google Messages sync completed", Progress: 100})
 	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	return nil
+}
+
+func googleMessagesNotYetStored(messages []models.Message) []models.Message {
+	if len(messages) == 0 || db.DB == nil {
+		return messages
+	}
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.ProtocolMsgID != "" {
+			ids = append(ids, message.ProtocolMsgID)
+		}
+	}
+	if len(ids) == 0 {
+		return messages
+	}
+	var storedIDs []string
+	if err := db.DB.Model(&models.Message{}).Where("protocol_msg_id IN ?", ids).Pluck("protocol_msg_id", &storedIDs).Error; err != nil {
+		// Failing open is safer than losing a genuinely new notification.
+		return messages
+	}
+	stored := make(map[string]struct{}, len(storedIDs))
+	for _, id := range storedIDs {
+		stored[id] = struct{}{}
+	}
+	result := make([]models.Message, 0, len(messages))
+	for _, message := range messages {
+		if _, exists := stored[message.ProtocolMsgID]; !exists {
+			result = append(result, message)
+		}
+	}
+	return result
 }
 
 func (p *Provider) isInitialHistorySync() bool {
@@ -227,6 +263,59 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 		contacts = append(contacts, p.linkedAccount(remote))
 	}
 	return contacts, nil
+}
+
+// GetGroupParticipants also serves direct conversations. This lets Loom show
+// and locally rename a phone-number recipient before they have replied.
+func (p *Provider) GetGroupParticipants(conversationID string) ([]models.GroupParticipant, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return nil, fmt.Errorf("%s: not authenticated", providerID)
+	}
+	remote, err := client.GetConversation(core.StripConvID(conversationID))
+	if err != nil {
+		return nil, fmt.Errorf("%s: get conversation participants: %w", providerID, err)
+	}
+	participants := make([]models.GroupParticipant, 0, len(remote.GetParticipants()))
+	for _, participant := range remote.GetParticipants() {
+		if !participant.GetIsVisible() {
+			continue
+		}
+		id := participant.GetID().GetParticipantID()
+		if id == "" {
+			continue
+		}
+		participants = append(participants, models.GroupParticipant{UserID: id, IsSelf: participant.GetIsMe()})
+	}
+	return participants, nil
+}
+
+func (p *Provider) GetContactName(contactID string) (string, error) {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return "", fmt.Errorf("%s: not authenticated", providerID)
+	}
+	response, err := client.ListConversations(1000, gmproto.ListConversationsRequest_INBOX)
+	if err != nil {
+		return "", err
+	}
+	for _, conversation := range response.GetConversations() {
+		for _, participant := range conversation.GetParticipants() {
+			if participant.GetID().GetParticipantID() != contactID {
+				continue
+			}
+			for _, name := range []string{participant.GetFullName(), participant.GetFormattedNumber(), participant.GetID().GetNumber()} {
+				if strings.TrimSpace(name) != "" {
+					return name, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("%s: contact %s not found", providerID, contactID)
 }
 
 func (p *Provider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error) {
@@ -751,11 +840,64 @@ func (p *Provider) MarkConversationAsRead(conversationID string) error {
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsReactions:     true,
-		SupportsDeleteMessage: true,
-		SupportsReadReceipts:  true,
-		NativeEmojiReactions:  true,
+		SupportsReactions:            true,
+		SupportsDeleteMessage:        true,
+		SupportsReadReceipts:         true,
+		NativeEmojiReactions:         true,
+		SupportsContactDirectory:     true,
+		SupportsDirectConversation:   true,
+		SupportsPhoneNumberRecipient: true,
 	}
+}
+
+// CreatePhoneConversation starts or resolves a direct SMS/RCS conversation.
+// The phone number does not need to exist in the Android contacts database.
+func (p *Provider) CreatePhoneConversation(phoneNumber string) (*models.Conversation, error) {
+	phoneNumber = strings.TrimSpace(phoneNumber)
+	phoneNumber = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "", ".", "").Replace(phoneNumber)
+	if !validPhoneNumber(phoneNumber) {
+		return nil, fmt.Errorf("%s: invalid phone number", providerID)
+	}
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return nil, fmt.Errorf("%s: not authenticated", providerID)
+	}
+	response, err := client.GetOrCreateConversation(&gmproto.GetOrCreateConversationRequest{
+		Numbers: []*gmproto.ContactNumber{{MysteriousInt: 2, Number: phoneNumber, Number2: phoneNumber}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: create phone conversation: %w", providerID, err)
+	}
+	remote := response.GetConversation()
+	if remote.GetConversationID() == "" {
+		return nil, fmt.Errorf("%s: no conversation returned (status: %s)", providerID, response.GetStatus())
+	}
+	if err := p.storeConversation(remote); err != nil {
+		return nil, err
+	}
+	return &models.Conversation{
+		ProtocolConvID: remote.GetConversationID(), IsGroup: false, GroupName: remote.GetName(),
+	}, nil
+}
+
+func validPhoneNumber(value string) bool {
+	international := strings.HasPrefix(value, "+")
+	digits := strings.TrimPrefix(value, "+")
+	minimumLength := 3
+	if international {
+		minimumLength = 6
+	}
+	if len(digits) < minimumLength || len(digits) > 15 {
+		return false
+	}
+	for _, char := range digits {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // SendMessage sends text and/or one media attachment. Google Messages has no

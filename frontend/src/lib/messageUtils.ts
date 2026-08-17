@@ -1,5 +1,6 @@
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "./utils";
+import { getUserDisplayName } from "./userDisplayNames";
 
 export const htmlFragmentToText = (text: string): string => {
   // Do not treat Slack links such as <https://example.com|label> as HTML.
@@ -20,6 +21,43 @@ export const getMessageDomId = (message: models.Message): string => {
   if (message.protocolMsgId?.trim()) return message.protocolMsgId;
   if (message.id) return `message-${message.id}`;
   return `ts-${timeToDate(message.timestamp).getTime()}`;
+};
+
+const comparableParticipantId = (userId?: string): string =>
+  (userId || "").replace(/:\d+@s\.whatsapp\.net$/, "@s.whatsapp.net");
+
+export const getQuotedSenderDisplayName = (
+  message: models.Message,
+  allMessages: models.Message[],
+  participantNames: Map<string, string> | undefined,
+  currentUserId: string | undefined,
+  youLabel: string,
+  contactLabel: string,
+): string => {
+  const explicitName = message.quotedSenderName?.trim();
+  if (explicitName) return explicitName;
+
+  const quotedId = message.quotedMessageId?.trim();
+  const quotedMessage = quotedId
+    ? allMessages.find((candidate) =>
+        candidate.protocolMsgId === quotedId || getMessageDomId(candidate) === quotedId
+      )
+    : undefined;
+  const quotedSenderId = message.quotedSenderId || quotedMessage?.senderId || "";
+  const isCurrentUser = Boolean(
+    quotedMessage?.isFromMe ||
+    (quotedSenderId && currentUserId &&
+      comparableParticipantId(quotedSenderId) === comparableParticipantId(currentUserId))
+  );
+  if (isCurrentUser) return youLabel;
+
+  const senderName = quotedMessage?.senderName?.trim();
+  if (senderName) return senderName;
+
+  if (quotedSenderId) {
+    return getUserDisplayName(quotedSenderId, { participantNames, allMessages });
+  }
+  return contactLabel;
 };
 
 // Slack has no native quoted-reply field: it serializes a reply as a block quote.

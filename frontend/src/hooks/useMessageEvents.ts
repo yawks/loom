@@ -200,10 +200,11 @@ export function useMessageEvents() {
           conversationId: string;
           messages: models.Message[];
           isHistorical?: boolean;
+          forceRead?: boolean;
         } = JSON.parse(batchJSON);
         if (!batch.messages?.length) return;
 
-        registerBatchMessages(batch.messages, batch.isHistorical === true);
+        registerBatchMessages(batch.messages, batch.isHistorical === true, batch.forceRead === true);
 
         // Update last-message and timestamp caches in one pass per conversation
         const lastMessageByConv: Record<string, models.Message> = {};

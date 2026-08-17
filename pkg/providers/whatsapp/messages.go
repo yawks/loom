@@ -829,27 +829,18 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	// Track groups from messages
 	if chatJID.Server == types.GroupServer {
-		// Try to get group info from client to get the name
-		// Do this without holding the lock to avoid deadlocks
-		if w.client != nil {
-			groupInfo, err := w.client.GetGroupInfo(w.ctx, chatJID)
-			if err == nil && groupInfo != nil {
-				w.mu.Lock()
-				w.knownGroups[convID] = groupInfo.Name
-				w.mu.Unlock()
-				// Cache group participants asynchronously to avoid blocking
-				// This avoids deadlocks since cacheGroupParticipants also takes locks
-				go w.cacheGroupParticipants(chatJID)
-			} else {
-				w.mu.RLock()
-				_, exists := w.knownGroups[convID]
-				w.mu.RUnlock()
-				if !exists {
-					w.mu.Lock()
-					w.knownGroups[convID] = convID
-					w.mu.Unlock()
-				}
-			}
+		// Never fetch group metadata synchronously from the message handler. A slow
+		// GetGroupInfo request would block storage and delivery of this message (and
+		// every event queued behind it). Keep a placeholder immediately and refresh
+		// metadata in the background only when this group wasn't known yet.
+		w.mu.Lock()
+		_, known := w.knownGroups[convID]
+		if !known {
+			w.knownGroups[convID] = convID
+		}
+		w.mu.Unlock()
+		if !known && w.client != nil {
+			go w.cacheGroupParticipants(chatJID)
 		}
 	}
 
@@ -958,6 +949,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	// ContextInfo can be present in ExtendedTextMessage, ImageMessage, VideoMessage, etc.
 	var quotedMessageID *string
 	var quotedSenderID *string
+	var quotedSenderName string
 	var quotedBody *string
 
 	var contextInfo *waE2E.ContextInfo
@@ -1070,6 +1062,45 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		}
 	}
 
+	// Resolve the quoted author before emitting a live message. History loading
+	// performs a second enrichment pass, but without this the first render falls
+	// back to the generic "Contact" label until the conversation is reloaded.
+	if quotedSenderID != nil && *quotedSenderID != "" {
+		if quotedSenderJID, err := types.ParseJID(*quotedSenderID); err == nil {
+			if quotedSenderJID.Server == types.DefaultUserServer {
+				quotedSenderJID = quotedSenderJID.ToNonAD()
+			}
+			resolvedID := quotedSenderJID.String()
+			if chatJID.Server == types.GroupServer {
+				if resolved, resolveErr := w.resolveContactIDForGroup(resolvedID, chatJID); resolveErr == nil && resolved != "" {
+					resolvedID = resolved
+				}
+			} else if resolved, resolveErr := w.resolveContactID(resolvedID); resolveErr == nil && resolved != "" {
+				resolvedID = resolved
+			}
+			*quotedSenderID = resolvedID
+			if resolvedJID, parseErr := types.ParseJID(resolvedID); parseErr == nil {
+				if chatJID.Server == types.GroupServer {
+					quotedSenderName = w.lookupSenderNameInGroup(resolvedJID, chatJID)
+				} else {
+					quotedSenderName = w.lookupSenderName(resolvedJID)
+				}
+			}
+		}
+	}
+	if quotedSenderName == "" && quotedMessageID != nil && db.DB != nil {
+		var quoted models.Message
+		if err := db.DB.Select("sender_id", "sender_name").
+			Where("protocol_msg_id = ? AND protocol_conv_id = ?", *quotedMessageID, core.BuildConvID(w.getInstanceId(), convID)).
+			First(&quoted).Error; err == nil {
+			quotedSenderName = quoted.SenderName
+			if (quotedSenderID == nil || *quotedSenderID == "") && quoted.SenderID != "" {
+				quotedID := quoted.SenderID
+				quotedSenderID = &quotedID
+			}
+		}
+	}
+
 	// Get timestamp
 	timestamp := evt.Info.Timestamp
 
@@ -1117,9 +1148,10 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		}
 	}
 
-	// Update LinkedAccount name in database for 1-on-1 chats when we discover a name
-	// This ensures the name appears in the sidebar
-	if !isFromMe && chatJID.Server != types.GroupServer && senderName != "" && senderName != senderID {
+	// Persist real profile names discovered on messages, including group
+	// participants. Otherwise a phone-number placeholder in LinkedAccount can
+	// permanently hide a PushName that is already visible on message senders.
+	if !isFromMe && senderName != "" && senderName != senderID && !isPhoneNumber(senderName) {
 		w.updateLinkedAccountName(senderID, senderName)
 	}
 
@@ -1433,9 +1465,9 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// been persisted below.
 			if reactionMsg := evt.Message.GetReactionMessage(); reactionMsg != nil {
 				if key := reactionMsg.GetKey(); key != nil && key.GetID() != "" {
-					senderID := evt.Info.Sender.String()
+					senderID := w.canonicalReactionUserID(evt.Info.Sender.String())
 					if evt.Info.IsFromMe && w.client.Store != nil && w.client.Store.ID != nil {
-						senderID = w.client.Store.ID.String()
+						senderID = w.canonicalReactionUserID(w.client.Store.ID.String())
 					}
 					historyReactions = append(historyReactions, core.ReactionEvent{
 						InstanceID:     w.getInstanceId(),
@@ -1511,6 +1543,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 		}
 
 		if len(converted) > 0 {
+			newMessageIDs := whatsappUnstoredMessageIDs(converted)
 			// Infer receipts for group messages based on participant activity
 			// This must be done BEFORE storing to ensure receipts are persisted
 			if len(convID) > 5 && convID[len(convID)-5:] == "@g.us" {
@@ -1525,7 +1558,36 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// authoritative unread count per conversation, so split the batch at
 			// that cursor. The read prefix is historical; only the unread suffix is
 			// registered as recovered activity.
-			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount())
+			isOnDemand := history.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
+			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount(), isOnDemand)
+			w.mu.RLock()
+			hasPreviousSync := w.lastSyncTimestamp != nil
+			w.mu.RUnlock()
+			if hasPreviousSync {
+				readThroughOwnMessage := historyMessagesReadThroughOwnMessage(converted)
+				forcedReadIDs := make(map[string]struct{}, len(readThroughOwnMessage))
+				for _, message := range readThroughOwnMessage {
+					forcedReadIDs[message.ProtocolMsgID] = struct{}{}
+				}
+				readMessages, unreadMessages = reclassifyNewIncomingWhatsAppMessages(
+					readMessages, unreadMessages, newMessageIDs, forcedReadIDs,
+				)
+			}
+			// WhatsApp may retain a stale unread count when another linked client
+			// read the conversation while Loom was offline. Sending a message is a
+			// stronger signal: the timeline up to that message was necessarily seen.
+			if readThroughOwnMessage := historyMessagesReadThroughOwnMessage(converted); len(readThroughOwnMessage) > 0 {
+				select {
+				case w.eventChan <- core.MessageBatchEvent{
+					InstanceID:     w.getInstanceId(),
+					ConversationID: core.BuildConvID(w.getInstanceId(), convID),
+					Messages:       readThroughOwnMessage,
+					IsHistorical:   true,
+					ForceRead:      true,
+				}:
+				default:
+				}
+			}
 			if len(readMessages) > 0 {
 				select {
 				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: readMessages, IsHistorical: true}:
@@ -1570,7 +1632,76 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 	}
 }
 
-func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32) ([]models.Message, []models.Message) {
+func whatsappUnstoredMessageIDs(messages []models.Message) map[string]struct{} {
+	result := make(map[string]struct{})
+	if len(messages) == 0 || db.DB == nil {
+		return result
+	}
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.ProtocolMsgID != "" {
+			ids = append(ids, message.ProtocolMsgID)
+		}
+	}
+	if len(ids) == 0 {
+		return result
+	}
+	var storedIDs []string
+	if err := db.DB.Model(&models.Message{}).Where("protocol_msg_id IN ?", ids).Pluck("protocol_msg_id", &storedIDs).Error; err != nil {
+		return result
+	}
+	stored := make(map[string]struct{}, len(storedIDs))
+	for _, id := range storedIDs {
+		stored[id] = struct{}{}
+	}
+	for _, id := range ids {
+		if _, exists := stored[id]; !exists {
+			result[id] = struct{}{}
+		}
+	}
+	return result
+}
+
+func reclassifyNewIncomingWhatsAppMessages(
+	readMessages, unreadMessages []models.Message,
+	newMessageIDs, forcedReadIDs map[string]struct{},
+) ([]models.Message, []models.Message) {
+	keptRead := make([]models.Message, 0, len(readMessages))
+	for _, message := range readMessages {
+		_, isNew := newMessageIDs[message.ProtocolMsgID]
+		_, isForcedRead := forcedReadIDs[message.ProtocolMsgID]
+		if isNew && !message.IsFromMe && !isForcedRead {
+			unreadMessages = append(unreadMessages, message)
+			continue
+		}
+		keptRead = append(keptRead, message)
+	}
+	sort.SliceStable(unreadMessages, func(i, j int) bool {
+		return unreadMessages[i].Timestamp.Before(unreadMessages[j].Timestamp)
+	})
+	return keptRead, unreadMessages
+}
+
+func historyMessagesReadThroughOwnMessage(messages []models.Message) []models.Message {
+	lastOwnMessage := -1
+	for index := range messages {
+		if messages[index].IsFromMe {
+			lastOwnMessage = index
+		}
+	}
+	if lastOwnMessage < 0 {
+		return nil
+	}
+	return messages[:lastOwnMessage+1]
+}
+
+func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32, isOnDemand bool) ([]models.Message, []models.Message) {
+	// ON_DEMAND payloads don't carry a reliable unread count. They are emitted
+	// after Loom has already imported the conversation, so unknown IDs represent
+	// recovered activity. Existing IDs keep their local state in the frontend.
+	if isOnDemand {
+		return nil, messages
+	}
 	if len(messages) == 0 || unreadCount == 0 {
 		return messages, nil
 	}

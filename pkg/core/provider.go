@@ -327,11 +327,12 @@ type Capabilities struct {
 	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
 	// Conversation creation capabilities are intentionally more precise than
 	// SupportsGroupManagement, which also covers editing existing groups.
-	SupportsContactDirectory   bool `json:"supportsContactDirectory"`
-	SupportsDirectConversation bool `json:"supportsDirectConversation"`
-	SupportsGroupConversation  bool `json:"supportsGroupConversation"`
-	SupportsGroupTitle         bool `json:"supportsGroupTitle"`
-	RequiresGroupTitle         bool `json:"requiresGroupTitle"`
+	SupportsContactDirectory     bool `json:"supportsContactDirectory"`
+	SupportsDirectConversation   bool `json:"supportsDirectConversation"`
+	SupportsPhoneNumberRecipient bool `json:"supportsPhoneNumberRecipient"`
+	SupportsGroupConversation    bool `json:"supportsGroupConversation"`
+	SupportsGroupTitle           bool `json:"supportsGroupTitle"`
+	RequiresGroupTitle           bool `json:"requiresGroupTitle"`
 	// GroupConversationTypes is a comma-separated list so Capabilities remains
 	// comparable (several provider contract tests compare it as a value).
 	GroupConversationTypes string `json:"groupConversationTypes"`
@@ -378,6 +379,12 @@ type ContactSearcher interface {
 // conversation ID cannot be derived from the target user ID alone.
 type DirectConversationCreator interface {
 	CreateDirectConversation(participantID string) (*models.Conversation, error)
+}
+
+// PhoneConversationCreator is implemented by providers that can start a direct
+// conversation from a phone number that is not present in their directory.
+type PhoneConversationCreator interface {
+	CreatePhoneConversation(phoneNumber string) (*models.Conversation, error)
 }
 
 type CurrentUserProvider interface {

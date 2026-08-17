@@ -13,11 +13,11 @@ import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
-import { getMessageDomId, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
-import { mergePhotoGroupAttachments } from "@/lib/photoMessageGroups";
+import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -122,6 +122,9 @@ export function MessageBubbleItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
+  const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
+    ? mergePhotoGroupBody(photoGroupMessages)
+    : message.body;
 
   const resolvedSenderName = (!message.isFromMe && message.senderId)
     ? (participantNames.get(message.senderId) || message.senderName)
@@ -134,7 +137,7 @@ export function MessageBubbleItem({
   const hasUnreadInThread = hasThread && threadMessages.some(
     (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
   );
-  const previewUrl = (!isDeleted && message.body) ? extractFirstUrl(message.body) : null;
+  const previewUrl = (!isDeleted && displayedBody) ? extractFirstUrl(displayedBody) : null;
 
   const baseBubbleColorClass = message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground";
   const deletedPlaceholderClass = message.isFromMe ? "bg-blue-950/80 text-blue-100" : "bg-muted/70 text-muted-foreground";
@@ -279,16 +282,16 @@ export function MessageBubbleItem({
                           "text-xs font-semibold mb-0.5 text-left flex items-center gap-1.5",
                           message.isFromMe ? "text-white/90" : "text-purple-700 dark:text-purple-400"
                         )}>
-                          {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                          {getQuotedSenderDisplayName(message, mainMessages, participantNames, currentUserId, t("you"), t("contact"))}
                         </div>
                         <div className={cn("text-xs md:text-sm line-clamp-2 text-left", message.isFromMe ? "text-white/80" : "text-foreground/80")}>
                           <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
                         </div>
                       </div>
                     )}
-                    {message.body?.trim() && (
+                    {displayedBody?.trim() && (
                       <>
-                        <MessageText text={message.body} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
+                        <MessageText text={displayedBody} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
                         {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                       </>
                     )}
@@ -297,7 +300,7 @@ export function MessageBubbleItem({
                 {message.attachments?.trim() && (
                   <MessageAttachments attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} galleryMessages={photoGroupMessages} messageHandlers={handlers} providerInstanceId={providerInstanceId} protocol={protocol} currentUserId={currentUserId} participantNames={participantNames} allMessages={mainMessages} isGroupConversation={isGroupConversation} />
                 )}
-                {!message.body?.trim() && !message.attachments?.trim() && (
+                {!displayedBody?.trim() && !message.attachments?.trim() && (
                   <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
                 )}
                 <div className="flex flex-col mt-1">

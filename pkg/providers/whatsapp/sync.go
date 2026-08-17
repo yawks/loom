@@ -219,6 +219,9 @@ func (w *WhatsAppProvider) lookbackSync() {
 		Scan(&rows)
 
 	w.log("WhatsApp: lookbackSync: triggering contacts refresh for %d recent conversations\n", len(rows))
+	for _, row := range rows {
+		w.emitStoredReadThroughOwnMessage(row.ProtocolConvID)
+	}
 
 	if len(rows) > 0 {
 		// Emit a single refresh event instead of one MessageEvent per conversation.
@@ -229,6 +232,39 @@ func (w *WhatsAppProvider) lookbackSync() {
 		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "sync_complete"}:
 		default:
 		}
+	}
+}
+
+// emitStoredReadThroughOwnMessage repairs stale local unread state even when
+// WhatsApp does not resend an already-consumed HistorySync payload. The read
+// store is bounded to the same per-conversation scale as this query.
+func (w *WhatsAppProvider) emitStoredReadThroughOwnMessage(conversationID string) {
+	if db.DB == nil || conversationID == "" {
+		return
+	}
+	var lastOwn models.Message
+	if err := db.DB.Where("protocol_conv_id = ? AND is_from_me = 1 AND deleted_at IS NULL", conversationID).
+		Order("timestamp DESC").First(&lastOwn).Error; err != nil {
+		return
+	}
+	var messages []models.Message
+	if err := db.DB.Where("protocol_conv_id = ? AND timestamp <= ? AND deleted_at IS NULL", conversationID, lastOwn.Timestamp).
+		Order("timestamp DESC").Limit(maxMessagesPerConversation).Find(&messages).Error; err != nil || len(messages) == 0 {
+		return
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	select {
+	case w.eventChan <- core.MessageBatchEvent{
+		InstanceID:     w.getInstanceId(),
+		ConversationID: conversationID,
+		Messages:       messages,
+		IsHistorical:   true,
+		ForceRead:      true,
+	}:
+	default:
+		w.log("WhatsApp: read-through repair event dropped for %s (channel full)\n", conversationID)
 	}
 }
 
@@ -279,6 +315,7 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 			w.log("WhatsApp: Could not determine user ID for reaction, skipping\n")
 			continue
 		}
+		userID = w.canonicalReactionUserID(userID)
 
 		// Get emoji text
 		emoji := reaction.GetText()

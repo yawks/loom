@@ -56,6 +56,9 @@ type MessageBatchEvent struct {
 	ConversationID string           `json:"conversationId"`
 	Messages       []models.Message `json:"messages"`
 	IsHistorical   bool             `json:"isHistorical"`
+	// ForceRead marks an explicit local read boundary inferred by a provider.
+	// The frontend must not send remote receipts for these messages.
+	ForceRead bool `json:"forceRead,omitempty"`
 }
 
 // Type returns the event type for MessageBatchEvent.

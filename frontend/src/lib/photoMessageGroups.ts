@@ -93,3 +93,10 @@ export function mergePhotoGroupAttachments(messages: models.Message[]): string {
     }
   }));
 }
+
+export function mergePhotoGroupBody(messages: models.Message[]): string {
+  return messages
+    .map((message) => message.body?.trim() || "")
+    .filter(Boolean)
+    .join("\n");
+}

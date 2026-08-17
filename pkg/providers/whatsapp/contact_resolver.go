@@ -105,6 +105,17 @@ func (w *WhatsAppProvider) resolveContactID(contactID string) (string, error) {
 	return contactID, nil
 }
 
+// canonicalReactionUserID keeps reaction authors consistent with message
+// senders. WhatsApp commonly uses a LID for group reactions even when the
+// participant is already known by their phone-number JID.
+func (w *WhatsAppProvider) canonicalReactionUserID(userID string) string {
+	resolved, err := w.resolveContactID(userID)
+	if err == nil && resolved != "" {
+		return resolved
+	}
+	return userID
+}
+
 // resolveContactIDForGroup resolves a contact ID in a group context.
 // In groups, we also check the groupParticipants cache.
 func (w *WhatsAppProvider) resolveContactIDForGroup(contactID string, groupJID types.JID) (string, error) {
