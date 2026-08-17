@@ -346,6 +346,8 @@
   "optional_group_title": "Optional group title",
   "search_contacts": "Search contacts...",
   "no_contacts_found": "No contacts found",
+  "message_phone_number": "Send a message to {{number}}",
+  "not_in_contacts": "Number not in contacts",
   "loading_contacts": "Loading contacts...",
   "create_group": "Create Group",
   "open_chat": "Open Chat",

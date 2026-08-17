@@ -14,7 +14,8 @@ import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import { Emoji } from "./Emoji";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { GetAllLastMessageTimestamps, GetCapabilities, GetConfiguredProviders, GetProviderContacts, OpenConversation, SearchProviderContacts } from "../../wailsjs/go/main/App";
-import type { core, models } from "../../wailsjs/go/models";
+import { models } from "../../wailsjs/go/models";
+import type { core } from "../../wailsjs/go/models";
 
 interface NewConversationModalProps {
   open: boolean;
@@ -24,6 +25,7 @@ interface NewConversationModalProps {
 type ExtendedCapabilities = core.Capabilities & {
   supportsContactDirectory: boolean;
   supportsDirectConversation: boolean;
+  supportsPhoneNumberRecipient: boolean;
   supportsGroupConversation: boolean;
   supportsGroupTitle: boolean;
   requiresGroupTitle: boolean;
@@ -31,6 +33,11 @@ type ExtendedCapabilities = core.Capabilities & {
 };
 
 const contactKey = (contact: models.MetaContact) => contact.linkedAccounts[0]?.userId ?? String(contact.id);
+
+const normalizePhoneNumber = (value: string) => {
+  const compact = value.trim().replace(/[\s().-]/g, "");
+  return /^(?:\d{3,15}|\+\d{6,15})$/.test(compact) ? compact : "";
+};
 
 function ContactAvatar({ contact, checked = false, compact = false }: { contact: models.MetaContact; checked?: boolean; compact?: boolean }) {
   const account = contact.linkedAccounts[0];
@@ -92,7 +99,10 @@ export function NewConversationModal({ open, onOpenChange }: NewConversationModa
       const supported = (await Promise.all(items.map(async (item) => ({
         item,
         caps: await GetCapabilities(item.instanceId).catch(() => null),
-      })))).filter(({ caps }) => (caps as ExtendedCapabilities | null)?.supportsContactDirectory).map(({ item }) => item);
+      })))).filter(({ caps }) => {
+        const capabilities = caps as ExtendedCapabilities | null;
+        return capabilities?.supportsContactDirectory || capabilities?.supportsPhoneNumberRecipient;
+      }).map(({ item }) => item);
       setProviders(supported);
     });
   }, [open]);
@@ -131,6 +141,12 @@ export function NewConversationModal({ open, onOpenChange }: NewConversationModa
     }
     let cancelled = false;
     const query = search.trim();
+    if (capabilities?.supportsPhoneNumberRecipient) {
+      setContacts(initialContacts);
+      setResolvedSearch(query);
+      setLoadingSearchContacts(false);
+      return;
+    }
     setLoadingSearchContacts(true);
     const timeout = window.setTimeout(() => {
       void SearchProviderContacts(providerId, query)
@@ -143,15 +159,38 @@ export function NewConversationModal({ open, onOpenChange }: NewConversationModa
 
   const filtered = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    const matching = query.length >= 2
+    const matching = query.length >= 2 && !capabilities?.supportsPhoneNumberRecipient
       ? [...contacts]
-      : contacts.filter((contact) => !query || contact.displayName.toLocaleLowerCase().includes(query));
+      : contacts.filter((contact) => !query ||
+        contact.displayName.toLocaleLowerCase().includes(query) ||
+        contact.linkedAccounts?.some((account) =>
+          account.username?.toLocaleLowerCase().includes(query) ||
+          account.userId?.toLocaleLowerCase().includes(query)));
     return matching.sort((a, b) => {
       const aTime = lastMessageTimestamps[a.linkedAccounts[0]?.conversationId ?? ""] ?? 0;
       const bTime = lastMessageTimestamps[b.linkedAccounts[0]?.conversationId ?? ""] ?? 0;
       return bTime - aTime || a.displayName.localeCompare(b.displayName);
     });
-  }, [contacts, search, lastMessageTimestamps]);
+  }, [contacts, search, lastMessageTimestamps, capabilities]);
+
+  const phoneNumber = capabilities?.supportsPhoneNumberRecipient
+    ? normalizePhoneNumber(search)
+    : "";
+  const selectedProviderProtocol = providers.find((provider) => provider.instanceId === providerId)?.id ?? "";
+  const phoneCandidate = useMemo(() => {
+    if (!phoneNumber || contacts.some((contact) => contact.linkedAccounts?.some((account) => account.userId === phoneNumber))) return null;
+    return new models.MetaContact({
+      id: 0,
+      displayName: phoneNumber,
+      avatarUrl: "",
+      linkedAccounts: [{
+        id: 0, metaContactId: 0, protocol: selectedProviderProtocol, providerInstanceId: providerId,
+        userId: phoneNumber, username: phoneNumber, avatarUrl: "", status: "offline",
+        isGroup: false, conversationId: "", createdAt: "", updatedAt: "",
+      }],
+      createdAt: "", updatedAt: "",
+    });
+  }, [phoneNumber, contacts, providerId, selectedProviderProtocol]);
 
   const searchPending = search.trim().length >= 2 && resolvedSearch !== search.trim();
   const showContactsLoader = loadingProviderContacts || loadingSearchContacts || searchPending;
@@ -266,7 +305,13 @@ export function NewConversationModal({ open, onOpenChange }: NewConversationModa
               <ScrollArea className="flex-1 border rounded-md">
                 <div className="p-2 space-y-1">
                   {showContactsLoader && <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><LoaderCircle className="h-5 w-5 animate-spin" />{t("loading_contacts")}</div>}
-                  {!showContactsLoader && filtered.length === 0 && <div className="text-center py-8 text-muted-foreground">{t("no_contacts_found")}</div>}
+                  {!showContactsLoader && filtered.length === 0 && !phoneCandidate && <div className="text-center py-8 text-muted-foreground">{t("no_contacts_found")}</div>}
+                  {!showContactsLoader && phoneCandidate && <button type="button" onClick={() => toggle(phoneCandidate)}
+                    className="w-full flex items-center gap-3 p-2 rounded-lg text-left hover:bg-muted">
+                    <ContactAvatar contact={phoneCandidate} checked={selected.some((item) => contactKey(item) === phoneNumber)} />
+                    <div className="min-w-0"><div className="font-medium truncate">{t("message_phone_number", { number: phoneNumber })}</div>
+                      <div className="text-xs text-muted-foreground">{t("not_in_contacts")}</div></div>
+                  </button>}
                   {!showContactsLoader && filtered.map((contact) => {
                     const account = contact.linkedAccounts[0];
                     const checked = selected.some((item) => contactKey(item) === contactKey(contact));

@@ -277,6 +277,7 @@ export function ConversationDetailsView({
                 onAvatarClick={handleAvatarClick}
                 onParticipantsCountChange={setParticipantsCount}
                 providerInstanceId={selectedAccount?.providerInstanceId ?? ""}
+                isGroup={selectedAccount?.isGroup ?? false}
                 canAddMembers={canAddMembers}
                 canRemoveMembers={canRemoveMembers}
                 canManageAdmins={canManageAdmins}

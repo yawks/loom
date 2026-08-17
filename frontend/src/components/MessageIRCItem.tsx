@@ -2,7 +2,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
-import { getColorFromString, getMessageDomId, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
@@ -18,7 +18,7 @@ import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
-import { mergePhotoGroupAttachments } from "@/lib/photoMessageGroups";
+import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -96,6 +96,9 @@ export function MessageIRCItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
+  const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
+    ? mergePhotoGroupBody(photoGroupMessages)
+    : message.body;
 
   const resolvedSenderName = (!message.isFromMe && message.senderId)
     ? (participantNames.get(message.senderId) || message.senderName)
@@ -117,7 +120,7 @@ export function MessageIRCItem({
   const hasUnreadInThread = hasThread && threadMessages.some(
     (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
   );
-  const previewUrl = (!isDeleted && message.body) ? extractFirstUrl(message.body) : null;
+  const previewUrl = (!isDeleted && displayedBody) ? extractFirstUrl(displayedBody) : null;
 
   const deletedListWrapperClass = cn(
     "w-full flex flex-col gap-1 message",
@@ -265,22 +268,22 @@ export function MessageIRCItem({
                             }}
                           >
                             <div className="text-xs font-semibold text-purple-700 dark:text-purple-400 mb-0.5 text-left flex items-center gap-1.5">
-                              {message.quotedSenderName || (message.isFromMe ? t("you") : t("contact"))}
+                              {getQuotedSenderDisplayName(message, mainMessages, participantNames, currentUserId, t("you"), t("contact"))}
                             </div>
                             <div className="text-xs md:text-sm text-foreground/80 line-clamp-2 text-left">
                               <MessageText text={message.quotedBody} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
                             </div>
                           </div>
                         )}
-                        {!showSender && message.body && (
+                        {!showSender && displayedBody && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
-                            <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
+                            <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-                        {showSender && message.body?.trim() && (
+                        {showSender && displayedBody?.trim() && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
-                            <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
+                            <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
@@ -303,7 +306,7 @@ export function MessageIRCItem({
                             isGroupConversation={isGroupConversation}
                           />
                         )}
-                        {!message.body?.trim() && !message.attachments?.trim() && (
+                        {!displayedBody?.trim() && !message.attachments?.trim() && (
                           <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
                         )}
                       </>

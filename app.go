@@ -1284,18 +1284,21 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 }
 
 // GetProviderContacts returns people from one provider instance, never groups or
-// channels. Calling the provider first also refreshes directory-backed providers.
+// channels. Phone-addressable providers use the already synchronized local store:
+// opening the conversation picker must not trigger a phone relay roundtrip.
 func (a *App) GetProviderContacts(instanceID string) ([]models.MetaContact, error) {
 	provider, err := a.providerManager.GetProvider(instanceID)
 	if err != nil {
 		return nil, err
 	}
-	accounts, err := provider.GetContacts()
-	if err != nil {
-		return nil, err
+	accounts := db.ContactStore.FindByProvider(instanceID)
+	if !provider.GetCapabilities().SupportsPhoneNumberRecipient {
+		remoteAccounts, contactsErr := provider.GetContacts()
+		if contactsErr != nil {
+			return nil, contactsErr
+		}
+		accounts = append(remoteAccounts, accounts...)
 	}
-	// Include directory-only contacts persisted by remote people pickers.
-	accounts = append(accounts, db.ContactStore.FindByProvider(instanceID)...)
 	contacts := providerAccountsToMetaContacts(instanceID, accounts)
 	refreshContactStatuses(provider, contacts)
 	return contacts, nil
@@ -1483,6 +1486,34 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 	}
 	for _, id := range request.ParticipantIDs {
 		if !directoryUsers[id] {
+			if len(request.ParticipantIDs) == 1 && caps.SupportsPhoneNumberRecipient {
+				creator, ok := provider.(core.PhoneConversationCreator)
+				if !ok {
+					return resolution, fmt.Errorf("provider advertises phone recipients but does not implement them")
+				}
+				conversation, createErr := creator.CreatePhoneConversation(id)
+				if createErr != nil {
+					return resolution, createErr
+				}
+				// Google Messages persists the authoritative remote conversation while
+				// creating it, including its provider-generated conversation ID.
+				contacts, contactsErr := a.GetMetaContacts()
+				if contactsErr != nil {
+					return resolution, contactsErr
+				}
+				for _, contact := range contacts {
+					for _, account := range contact.LinkedAccounts {
+						if account.ProviderInstanceID == request.ProviderInstanceID &&
+							core.StripConvID(account.ConversationID) == core.StripConvID(conversation.ProtocolConvID) {
+							created := contact
+							resolution.Created = &created
+							a.emitContactsRefresh()
+							return resolution, nil
+						}
+					}
+				}
+				return resolution, fmt.Errorf("created phone conversation was not persisted")
+			}
 			return resolution, fmt.Errorf("participant %s does not belong to provider %s", id, request.ProviderInstanceID)
 		}
 		selected[id] = true
@@ -2997,33 +3028,71 @@ func (a *App) SyncProvider(providerID string) error {
 
 // SetContactAlias sets a custom name (alias) for a contact identified by userID.
 func (a *App) SetContactAlias(userID string, alias string) error {
+	return a.setContactAlias(userID, "", alias)
+}
+
+// SetContactAliasForConversation applies one local rename to both the remote
+// participant and its direct-conversation account. The latter is required for
+// Google Messages, whose conversation ID differs from its participant ID.
+func (a *App) SetContactAliasForConversation(userID, conversationID, alias string) error {
+	return a.setContactAlias(userID, conversationID, alias)
+}
+
+func (a *App) setContactAlias(userID, conversationID, alias string) error {
 	if db.DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
+	targetIDs := []string{userID}
+	// Direct-conversation accounts are keyed by the remote conversation ID on
+	// providers such as Google Messages, while participant rows are keyed by the
+	// sender ID. Mirror the alias to that account key so one rename is displayed
+	// consistently in both the participant view and conversation list.
+	var conversationAccountIDs []string
+	if conversationID != "" {
+		_ = db.DB.Raw(`
+			SELECT la.user_id
+			FROM linked_accounts la
+			JOIN conversations c ON c.linked_account_id = la.id
+			WHERE c.protocol_conv_id = ? AND c.is_group = ?
+		`, conversationID, false).Scan(&conversationAccountIDs).Error
+	}
+	_ = db.DB.Raw(`
+		SELECT DISTINCT la.user_id
+		FROM linked_accounts la
+		JOIN conversations c ON c.linked_account_id = la.id
+		JOIN messages m ON m.protocol_conv_id = c.protocol_conv_id
+		WHERE c.is_group = ? AND m.sender_id = ? AND m.is_from_me = ?
+	`, false, userID, false).Scan(&conversationAccountIDs).Error
+	for _, id := range conversationAccountIDs {
+		if id != "" && id != userID {
+			targetIDs = append(targetIDs, id)
+		}
+	}
+
 	if alias == "" {
 		// If alias is empty, delete the alias
-		return db.DB.Where("user_id = ?", userID).Delete(&models.ContactAlias{}).Error
+		return db.DB.Where("user_id IN ?", targetIDs).Delete(&models.ContactAlias{}).Error
 	}
-
-	contactAlias := models.ContactAlias{
-		UserID: userID,
-		Alias:  alias,
-	}
-
-	// Use FirstOrCreate to update if exists, create if not
-	var existing models.ContactAlias
-	result := db.DB.Where("user_id = ?", userID).First(&existing)
-	if result.Error == nil {
-		// Update existing
-		existing.Alias = alias
-		existing.UpdatedAt = time.Now()
-		return db.DB.Save(&existing).Error
-	} else if result.Error == gorm.ErrRecordNotFound {
-		// Create new
-		return db.DB.Create(&contactAlias).Error
-	}
-	return result.Error
+	return db.DB.Transaction(func(tx *gorm.DB) error {
+		for _, targetID := range targetIDs {
+			var existing models.ContactAlias
+			result := tx.Where("user_id = ?", targetID).First(&existing)
+			if result.Error == gorm.ErrRecordNotFound {
+				if err := tx.Create(&models.ContactAlias{UserID: targetID, Alias: alias}).Error; err != nil {
+					return err
+				}
+			} else if result.Error != nil {
+				return result.Error
+			} else {
+				existing.Alias, existing.UpdatedAt = alias, time.Now()
+				if err := tx.Save(&existing).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // GetContactAliases returns all contact aliases as a map of userId -> alias.
@@ -3310,7 +3379,7 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 		for _, acc := range accounts {
 			if _, exists := result[acc.UserID]; !exists {
 				// LinkedAccount.Username is the authoritative display name
-				if acc.Username != "" && acc.Username != acc.UserID {
+				if acc.Username != "" && acc.Username != acc.UserID && !looksLikePhoneNumberLabel(acc.Username) {
 					result[acc.UserID] = acc.Username
 				} else {
 					// Username is empty or same as userID, need to fetch from API
@@ -3364,6 +3433,33 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 	}
 
 	return result, nil
+}
+
+// looksLikePhoneNumberLabel distinguishes an actual display name from a phone
+// number that was temporarily stored in the username field. Such placeholders
+// must not prevent providers from returning a later PushName/profile name.
+func looksLikePhoneNumberLabel(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	digits := 0
+	for index, character := range trimmed {
+		if character >= '0' && character <= '9' {
+			digits++
+			continue
+		}
+		if character == '+' && index == 0 {
+			continue
+		}
+		switch character {
+		case ' ', '-', '.', '(', ')':
+			continue
+		default:
+			return false
+		}
+	}
+	return digits >= 6
 }
 
 // GetContactProfile returns the provider-neutral metadata currently persisted for

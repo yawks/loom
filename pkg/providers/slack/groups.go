@@ -312,12 +312,25 @@ func (p *SlackProvider) GetGroupParticipants(conversationID string) ([]models.Gr
 		return participants, nil
 	}
 
-	// For channels/groups, use GetUsersInConversation
-	userIDs, _, err := p.client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
-		ChannelID: conversationID,
-	})
-	if err != nil {
-		return nil, err
+	// For channels/groups, collect every page returned by conversations.members.
+	// Slack's endpoint is cursor-paginated, so a single request can silently omit
+	// most members of larger channels.
+	var userIDs []string
+	cursor := ""
+	for {
+		page, nextCursor, err := p.client.GetUsersInConversation(&slack.GetUsersInConversationParameters{
+			ChannelID: conversationID,
+			Cursor:    cursor,
+			Limit:     200,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get users in Slack conversation %s: %w", conversationID, err)
+		}
+		userIDs = append(userIDs, page...)
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
 	}
 
 	var participants []models.GroupParticipant

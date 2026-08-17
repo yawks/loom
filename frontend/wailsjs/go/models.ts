@@ -27,6 +27,7 @@ export namespace core {
 	    nativeEmojiReactions: boolean;
 	    supportsContactDirectory: boolean;
 	    supportsDirectConversation: boolean;
+	    supportsPhoneNumberRecipient: boolean;
 	    supportsGroupConversation: boolean;
 	    supportsGroupTitle: boolean;
 	    requiresGroupTitle: boolean;
@@ -64,6 +65,7 @@ export namespace core {
 	        this.nativeEmojiReactions = source["nativeEmojiReactions"];
 	        this.supportsContactDirectory = source["supportsContactDirectory"];
 	        this.supportsDirectConversation = source["supportsDirectConversation"];
+	        this.supportsPhoneNumberRecipient = source["supportsPhoneNumberRecipient"];
 	        this.supportsGroupConversation = source["supportsGroupConversation"];
 	        this.supportsGroupTitle = source["supportsGroupTitle"];
 	        this.requiresGroupTitle = source["requiresGroupTitle"];

@@ -348,6 +348,8 @@
   "optional_group_title": "Titre du groupe (optionnel)",
   "search_contacts": "Rechercher des contacts...",
   "no_contacts_found": "Aucun contact trouvé",
+  "message_phone_number": "Envoyer un message à {{number}}",
+  "not_in_contacts": "Numéro absent des contacts",
   "loading_contacts": "Chargement des contacts...",
   "create_group": "Créer le groupe",
   "open_chat": "Ouvrir la discussion",

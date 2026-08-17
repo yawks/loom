@@ -150,7 +150,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Use namespaced ID so the DB lookup in app.go (protocol_conv_id column) matches.
 				nsTargetConvID := core.BuildConvID(w.getInstanceId(), rawTargetConvID)
 				emoji := reactionMsg.GetText()
-				senderID := v.Info.Sender.String()
+				senderID := w.canonicalReactionUserID(v.Info.Sender.String())
 
 				// Empty emoji means reaction was removed
 				added := emoji != ""

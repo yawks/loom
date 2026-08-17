@@ -37,6 +37,13 @@ func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
 		if err != nil {
 			return fmt.Errorf("failed to save LID mapping to database: %w", err)
 		}
+
+		// Reactions may have arrived before WhatsApp exposed this mapping. Rewrite
+		// only reactions belonging to this provider instance so their author can be
+		// resolved immediately to a contact name or, at minimum, a phone number.
+		if err := w.canonicalizePersistedReactionAuthor(lid, jid); err != nil {
+			return fmt.Errorf("failed to canonicalize reaction authors for %s: %w", lid, err)
+		}
 	}
 
 	return nil
@@ -53,14 +60,31 @@ func (w *WhatsAppProvider) loadLIDMappingsFromDB() error {
 	}
 
 	w.lidToJIDMu.Lock()
-	defer w.lidToJIDMu.Unlock()
 
 	for _, mapping := range mappings {
 		w.lidToJIDMap[mapping.LID] = mapping.JID
 	}
+	w.lidToJIDMu.Unlock()
+
+	// Also repair reactions stored before their LID mapping became available.
+	for _, mapping := range mappings {
+		if err := w.canonicalizePersistedReactionAuthor(mapping.LID, mapping.JID); err != nil {
+			return err
+		}
+	}
 
 	fmt.Printf("WhatsApp: Loaded %d LID->JID mappings from database into cache\n", len(mappings))
 	return nil
+}
+
+func (w *WhatsAppProvider) canonicalizePersistedReactionAuthor(lid, jid string) error {
+	if db.DB == nil || lid == "" || jid == "" || lid == jid {
+		return nil
+	}
+	instancePrefix := w.getInstanceId() + "::%"
+	return db.DB.Model(&models.Reaction{}).
+		Where("user_id = ? AND message_id IN (SELECT id FROM messages WHERE protocol_conv_id LIKE ?)", lid, instancePrefix).
+		Update("user_id", jid).Error
 }
 
 func (w *WhatsAppProvider) buildLIDMappingsFromConversations() {

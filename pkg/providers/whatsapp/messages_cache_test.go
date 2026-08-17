@@ -120,6 +120,35 @@ func TestConvertMessageUsesImageCaptionAsBody(t *testing.T) {
 	}
 }
 
+func TestConvertGroupMessageWithoutMetadataLookup(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	chat := types.NewJID("120363427708347162", types.GroupServer)
+	sender := types.NewJID("33600000000", types.DefaultUserServer)
+	event := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: sender},
+			ID:            "group-message",
+			Timestamp:     time.Unix(1_700_000_000, 0),
+		},
+		Message: &waE2E.Message{Conversation: proto.String("bonjour")},
+	}
+
+	got := provider.convertMessage(event)
+	if got == nil {
+		t.Fatal("convertMessage returned nil")
+	}
+	if got.ProtocolConvID != "whatsapp-1::120363427708347162@g.us" {
+		t.Fatalf("protocol conversation ID = %q", got.ProtocolConvID)
+	}
+	if got.Body != "bonjour" {
+		t.Fatalf("body = %q, want %q", got.Body, "bonjour")
+	}
+	if provider.knownGroups[chat.String()] != chat.String() {
+		t.Fatalf("unknown group was not tracked immediately")
+	}
+}
+
 func TestConvertMessageFormatsContactCard(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"

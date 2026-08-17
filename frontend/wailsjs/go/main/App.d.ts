@@ -159,6 +159,8 @@ export function SetActiveProvider(arg1:string):Promise<void>;
 
 export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 
+export function SetContactAliasForConversation(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 
 export function SyncProvider(arg1:string):Promise<void>;

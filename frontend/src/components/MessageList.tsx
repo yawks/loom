@@ -52,6 +52,10 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useTranslation } from "react-i18next";
 
+const FOCUSED_CONVERSATION_READ_DELAY_MS = 1000;
+const FOCUS_RETURN_READ_DELAY_MS = 5000;
+const UNREAD_SEPARATOR_DURATION_MS = 10000;
+
 export function MessageList({
   selectedConversation,
 }: {
@@ -112,10 +116,15 @@ export function MessageList({
   const [hasWindowFocus, setHasWindowFocus] = useState<boolean>(() =>
     typeof document === "undefined" ? true : document.hasFocus()
   );
-  // True for 5 seconds after regaining focus: prevents marking messages as read
-  // before the user has had a chance to see them.
-  const [isInFocusGracePeriod, setIsInFocusGracePeriod] = useState(false);
-  const focusGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Absolute deadline used only when this conversation was already visible
+  // while Loom was in the background. Once it expires, later messages received
+  // with Loom focused use the normal short delay.
+  const [focusReturnReadDeadline, setFocusReturnReadDeadline] = useState<number>(() =>
+    typeof document !== "undefined" && !document.hasFocus()
+      ? Date.now() + FOCUS_RETURN_READ_DELAY_MS
+      : 0
+  );
+  const readMarkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [separatorDismissed, setSeparatorDismissed] = useState(false);
   const [unreadBoundary, setUnreadBoundary] = useState<{
     conversationId: string;
@@ -349,54 +358,57 @@ export function MessageList({
   useLayoutEffect(() => {
     setSeparatorDismissed(false);
     setUnreadBoundary(null);
+    // Navigating to a conversation while Loom is focused is an intentional
+    // read action. Opening/changing it in the background still waits for the
+    // long focus-return grace period.
+    setFocusReturnReadDeadline(
+      typeof document !== "undefined" && !document.hasFocus()
+        ? Date.now() + FOCUS_RETURN_READ_DELAY_MS
+        : 0
+    );
   }, [conversationId]);
 
   useEffect(() => {
     const handleFocus = () => {
       setHasWindowFocus(true);
-      setIsInFocusGracePeriod(true);
-      if (focusGraceTimerRef.current) clearTimeout(focusGraceTimerRef.current);
-      focusGraceTimerRef.current = setTimeout(() => {
-        setIsInFocusGracePeriod(false);
-        focusGraceTimerRef.current = null;
-      }, 5000);
+      setFocusReturnReadDeadline(Date.now() + FOCUS_RETURN_READ_DELAY_MS);
     };
     const handleBlur = () => {
       setHasWindowFocus(false);
-      setIsInFocusGracePeriod(false);
       setUnreadBoundary(null);
       setSeparatorDismissed(false);
       positionedUnreadBoundaryRef.current = "";
-      if (focusGraceTimerRef.current) {
-        clearTimeout(focusGraceTimerRef.current);
-        focusGraceTimerRef.current = null;
+      if (readMarkTimerRef.current) {
+        clearTimeout(readMarkTimerRef.current);
+        readMarkTimerRef.current = null;
       }
     };
     window.addEventListener("focus", handleFocus);
     window.addEventListener("blur", handleBlur);
-    return () => { window.removeEventListener("focus", handleFocus); window.removeEventListener("blur", handleBlur); };
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      if (readMarkTimerRef.current) clearTimeout(readMarkTimerRef.current);
+    };
   }, []);
 
-  // When the conversation changes, cancel any pending grace period so the newly
-  // selected conversation is marked read immediately (the user actively chose it).
-  // The previous conversation stays unread since the mark-as-read effect never
-  // fired for it while isInFocusGracePeriod was true.
+  // A pending read belongs to the previous conversation and must never consume
+  // messages after the user navigates elsewhere.
   useEffect(() => {
-    if (focusGraceTimerRef.current) {
-      clearTimeout(focusGraceTimerRef.current);
-      focusGraceTimerRef.current = null;
+    if (readMarkTimerRef.current) {
+      clearTimeout(readMarkTimerRef.current);
+      readMarkTimerRef.current = null;
     }
-    setIsInFocusGracePeriod(false);
   }, [conversationId]);
 
   // Mark conversation as read — only for main messages, not thread replies.
   // Thread reply messages are only marked read when the thread panel is displayed.
-  // Skipped when the window lacks focus or is in the 5-second grace period after
-  // regaining focus, so messages received while Loom was in the background are
-  // not silently marked as read before the user has seen them.
+  // A deliberate conversation change while Loom is focused consumes visible
+  // unread messages quickly. The long grace period is reserved for returning
+  // focus to a conversation that was already open in the background.
   useEffect(() => {
     if (!conversationId) return;
-    if (!hasWindowFocus || isInFocusGracePeriod) return;
+    if (!hasWindowFocus) return;
     // Only messages already classified as main messages may be consumed here.
     // A new thread reply reaches the read store just before threadsByParent is
     // recomputed; scanning every store entry would mark it read in that gap.
@@ -414,10 +426,25 @@ export function MessageList({
       });
     };
 
-    markConversationAsReadOnServer(conversationId)
-      .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
-      .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, selectedConversation, hasWindowFocus, isInFocusGracePeriod]);
+    const remainingFocusReturnDelay = focusReturnReadDeadline - Date.now();
+    const readDelay = remainingFocusReturnDelay > 0
+      ? remainingFocusReturnDelay
+      : FOCUSED_CONVERSATION_READ_DELAY_MS;
+
+    readMarkTimerRef.current = setTimeout(() => {
+      readMarkTimerRef.current = null;
+      markConversationAsReadOnServer(conversationId)
+        .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
+        .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
+    }, readDelay);
+
+    return () => {
+      if (readMarkTimerRef.current) {
+        clearTimeout(readMarkTimerRef.current);
+        readMarkTimerRef.current = null;
+      }
+    };
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, hasWindowFocus, focusReturnReadDeadline]);
 
   // Older provider versions could persist an unsupported WhatsApp wrapper as an
   // empty message. Such a message is deliberately absent from mainMessages, so
@@ -481,7 +508,7 @@ export function MessageList({
 
   useEffect(() => {
     if (!hasWindowFocus || !firstUnreadMessageId || separatorDismissed) return;
-    const timer = setTimeout(() => setSeparatorDismissed(true), 10000);
+    const timer = setTimeout(() => setSeparatorDismissed(true), UNREAD_SEPARATOR_DURATION_MS);
     return () => clearTimeout(timer);
   }, [hasWindowFocus, firstUnreadMessageId, separatorDismissed]);
 

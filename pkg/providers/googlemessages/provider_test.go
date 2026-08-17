@@ -86,3 +86,26 @@ func TestGoogleMessagesCapabilitiesIncludeReadReceipts(t *testing.T) {
 		t.Fatal("Google Messages must advertise read receipt support")
 	}
 }
+
+func TestGoogleMessagesPhoneRecipientCapabilities(t *testing.T) {
+	capabilities := NewProvider().GetCapabilities()
+	if !capabilities.SupportsPhoneNumberRecipient {
+		t.Fatal("Google Messages must advertise phone-number recipients")
+	}
+	if !capabilities.SupportsContactDirectory {
+		t.Fatal("Google Messages conversations must remain available in the picker")
+	}
+}
+
+func TestValidPhoneNumberAcceptsLocalAndInternationalFormats(t *testing.T) {
+	for _, number := range []string{"36180", "0612345678", "+33612345678", "+14155552671", "+442079460018"} {
+		if !validPhoneNumber(number) {
+			t.Errorf("validPhoneNumber(%q) = false", number)
+		}
+	}
+	for _, number := range []string{"", "+", "12", "+123", "+33hello", "++33612345678"} {
+		if validPhoneNumber(number) {
+			t.Errorf("validPhoneNumber(%q) = true", number)
+		}
+	}
+}

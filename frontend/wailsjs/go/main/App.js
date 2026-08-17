@@ -310,6 +310,10 @@ export function SetContactAlias(arg1, arg2) {
   return window['go']['main']['App']['SetContactAlias'](arg1, arg2);
 }
 
+export function SetContactAliasForConversation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetContactAliasForConversation'](arg1, arg2, arg3);
+}
+
 export function StartGoogleMessagesLogin(arg1, arg2) {
   return window['go']['main']['App']['StartGoogleMessagesLogin'](arg1, arg2);
 }
