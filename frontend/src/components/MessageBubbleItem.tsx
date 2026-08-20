@@ -63,6 +63,7 @@ interface MessageBubbleItemProps {
   editingInputRef: RefObject<HTMLInputElement | null>;
   openActionsMessageId: string | null;
   currentUserId: string | undefined;
+  groupParticipants?: models.GroupParticipant[];
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
   threadReplyCounts: Record<string, number>;
@@ -92,6 +93,7 @@ export function MessageBubbleItem({
   editingInputRef,
   openActionsMessageId,
   currentUserId,
+  groupParticipants,
   participantNames,
   threadsByParent,
   threadReplyCounts,
@@ -320,7 +322,7 @@ export function MessageBubbleItem({
               </div>
             </div>
             <div className={message.isFromMe ? "self-end" : "self-start"}>
-              <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} participantNames={participantNames} layout="bubble" />
+              <MessageStatus message={message} isGroup={isGroupConversation} groupParticipants={groupParticipants} allMessages={mainMessages} participantNames={participantNames} layout="bubble" />
             </div>
           </div>
           {message.isFromMe && (

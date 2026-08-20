@@ -40,6 +40,7 @@ interface MessageIRCItemProps {
   setEditingText: (text: string) => void;
   openActionsMessageId: string | null;
   currentUserId: string | undefined;
+  groupParticipants?: models.GroupParticipant[];
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
   threadReplyCounts: Record<string, number>;
@@ -69,6 +70,7 @@ export function MessageIRCItem({
   setEditingText,
   openActionsMessageId,
   currentUserId,
+  groupParticipants,
   participantNames,
   threadsByParent,
   threadReplyCounts,
@@ -317,7 +319,7 @@ export function MessageIRCItem({
             </div>
             {message.isFromMe && (
               <div className="self-end mr-4">
-                <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} participantNames={participantNames} layout="irc" />
+                <MessageStatus message={message} isGroup={isGroupConversation} groupParticipants={groupParticipants} allMessages={mainMessages} participantNames={participantNames} layout="irc" />
               </div>
             )}
           </div>

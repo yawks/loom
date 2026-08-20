@@ -27,8 +27,29 @@ interface ParticipantStatus {
 function getMessageStatus(
   message: models.Message,
   isGroup: boolean,
-  allMessages?: models.Message[]
+  allMessages?: models.Message[],
+  participantStatuses?: ParticipantStatus[]
 ): MessageStatusType {
+  if (isGroup) {
+    if (!participantStatuses || participantStatuses.length === 0) {
+      return "sent";
+    }
+    // In a group, check if ALL other participants have read the message
+    const allRead = participantStatuses.length > 0 && participantStatuses.every((p) => p.status === "read");
+    if (allRead) {
+      return "read";
+    }
+    // Delivered if at least one person received/read it
+    const anyDeliveredOrRead = participantStatuses.some(
+      (p) => p.status === "delivered" || p.status === "read"
+    );
+    if (anyDeliveredOrRead) {
+      return "delivered";
+    }
+    return "sent";
+  }
+
+  // 1-on-1 (DM) conversation:
   const receipts = message.receipts;
   const senderId = message.senderId;
   const reactions = message.reactions;
@@ -47,7 +68,7 @@ function getMessageStatus(
   }
 
   // 3. In a 1-on-1 chat (DM), check if there are subsequent messages from the other person
-  if (!isGroup && allMessages && allMessages.length > 0) {
+  if (allMessages && allMessages.length > 0) {
     const currentMsgIndex = allMessages.findIndex(
       (m) => m.id === message.id || (m.protocolMsgId && m.protocolMsgId === message.protocolMsgId)
     );
@@ -98,65 +119,95 @@ function getParticipantStatuses(
     return fallback || resolved;
   };
 
-  // Process all receipts, excluding the sender
+  const isSameSender = (id1?: string, id2?: string) => {
+    if (!id1 || !id2) return false;
+    if (id1 === id2) return true;
+    const raw1 = id1.includes("::") ? id1.split("::")[1] : id1;
+    const raw2 = id2.includes("::") ? id2.split("::")[1] : id2;
+    const clean1 = raw1.replace(/:\d+@/, "@");
+    const clean2 = raw2.replace(/:\d+@/, "@");
+    if (clean1 === clean2) return true;
+    return false;
+  };
+
+  const findExistingKey = (id: string): string | undefined => {
+    if (participantMap.has(id)) return id;
+    for (const key of participantMap.keys()) {
+      if (isSameSender(key, id)) return key;
+    }
+    const name = resolveName(id);
+    if (name && name !== id) {
+      for (const [key, val] of participantMap.entries()) {
+        if (val.userName === name || resolveName(key) === name) {
+          return key;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const setStatus = (id: string, status: MessageStatusType, timestamp?: Date, fallbackName?: string) => {
+    if (isSameSender(id, senderId)) {
+      return;
+    }
+    const existingKey = findExistingKey(id);
+    const resolved = resolveName(id, fallbackName);
+
+    if (existingKey) {
+      const existing = participantMap.get(existingKey)!;
+      if (status === "read") {
+        existing.status = "read";
+        if (timestamp && (!existing.timestamp || timestamp > existing.timestamp)) {
+          existing.timestamp = timestamp;
+        }
+      } else if (status === "delivered" && existing.status === "sent") {
+        existing.status = "delivered";
+        if (timestamp && (!existing.timestamp || timestamp > existing.timestamp)) {
+          existing.timestamp = timestamp;
+        }
+      }
+      if (resolved && resolved !== id && (!existing.userName || existing.userName === existing.userId)) {
+        existing.userName = resolved;
+      }
+      return;
+    }
+
+    participantMap.set(id, {
+      userId: id,
+      userName: resolved,
+      status,
+      timestamp,
+    });
+  };
+
+  // 1. Process groupParticipants first as base "sent" status
+  if (groupParticipants) {
+    groupParticipants.forEach((p) => {
+      setStatus(p.userId, "sent");
+    });
+  }
+
+  // 2. Process delivery and read receipts
   if (receipts) {
     receipts.forEach((receipt) => {
-      // Skip receipts from the sender (we don't count ourselves)
-      if (receipt.userId === senderId) {
-        return;
-      }
-
-      const existing = participantMap.get(receipt.userId);
       const receiptTimestamp = timeToDate(receipt.timestamp);
-
-      // Read receipt takes precedence over delivery receipt
-      // If someone has read, they have also been delivered and sent
       if (receipt.receiptType === "read") {
-        if (!existing || existing.status !== "read" || (existing.timestamp && receiptTimestamp > existing.timestamp)) {
-          participantMap.set(receipt.userId, {
-            userId: receipt.userId,
-            userName: resolveName(receipt.userId),
-            status: "read",
-            timestamp: receiptTimestamp,
-          });
-        }
+        setStatus(receipt.userId, "read", receiptTimestamp);
       } else if (receipt.receiptType === "delivery") {
-        // Only set delivered if not already read (read implies delivered)
-        if (!existing || existing.status === "sent") {
-          participantMap.set(receipt.userId, {
-            userId: receipt.userId,
-            userName: resolveName(receipt.userId),
-            status: "delivered",
-            timestamp: receiptTimestamp,
-          });
-        }
+        setStatus(receipt.userId, "delivered", receiptTimestamp);
       }
     });
   }
 
-  // Process reactions: a reaction implies the participant has read the message
+  // 3. Process reactions (imply read)
   if (reactions) {
     reactions.forEach((reaction) => {
-      if (reaction.userId === senderId) {
-        return;
-      }
-
-      const existing = participantMap.get(reaction.userId);
       const reactionTimestamp = timeToDate(reaction.createdAt || reaction.updatedAt);
-
-      if (!existing || existing.status !== "read" || (existing.timestamp && reactionTimestamp > existing.timestamp)) {
-        participantMap.set(reaction.userId, {
-          userId: reaction.userId,
-          userName: resolveName(reaction.userId),
-          status: "read",
-          timestamp: reactionTimestamp,
-        });
-      }
+      setStatus(reaction.userId, "read", reactionTimestamp);
     });
   }
 
-  // Process subsequent messages in conversation:
-  // If a participant sent a message after this one, they were active and read previous messages
+  // 4. Process subsequent messages from participants (imply read)
   if (allMessages && allMessages.length > 0) {
     const currentMsgIndex = allMessages.findIndex(
       (m) => m.id === message.id || (m.protocolMsgId && m.protocolMsgId === message.protocolMsgId)
@@ -164,39 +215,12 @@ function getParticipantStatuses(
     if (currentMsgIndex !== -1) {
       const subsequentMessages = allMessages.slice(currentMsgIndex + 1);
       subsequentMessages.forEach((subMsg) => {
-        if (!subMsg.isFromMe && subMsg.senderId && subMsg.senderId !== senderId) {
-          const existing = participantMap.get(subMsg.senderId);
+        if (!subMsg.isFromMe && subMsg.senderId) {
           const msgTimestamp = timeToDate(subMsg.timestamp);
-          if (!existing || existing.status !== "read" || (existing.timestamp && msgTimestamp > existing.timestamp)) {
-            participantMap.set(subMsg.senderId, {
-              userId: subMsg.senderId,
-              userName: resolveName(subMsg.senderId, subMsg.senderName),
-              status: "read",
-              timestamp: msgTimestamp,
-            });
-          }
+          setStatus(subMsg.senderId, "read", msgTimestamp, subMsg.senderName);
         }
       });
     }
-  }
-
-  // Add group participants who haven't sent receipts, reacted, or sent subsequent messages (status: sent)
-  // Exclude the sender from this list
-  if (groupParticipants) {
-    groupParticipants.forEach((participant) => {
-      // Skip the sender
-      if (participant.userId === senderId) {
-        return;
-      }
-
-      if (!participantMap.has(participant.userId)) {
-        participantMap.set(participant.userId, {
-          userId: participant.userId,
-          userName: resolveName(participant.userId),
-          status: "sent",
-        });
-      }
-    });
   }
 
   return Array.from(participantMap.values());
@@ -326,14 +350,14 @@ export function MessageStatus({
   const [isAnimating, setIsAnimating] = useState(false);
   const previousStatusRef = useRef<MessageStatusType | null>(null);
 
-  const status = useMemo(
-    () => getMessageStatus(message, isGroup, allMessages),
-    [message, isGroup, allMessages]
-  );
-
   const participantStatuses = useMemo(
     () => getParticipantStatuses(message, groupParticipants, allMessages, participantNames),
     [message, groupParticipants, allMessages, participantNames]
+  );
+
+  const status = useMemo(
+    () => getMessageStatus(message, isGroup, allMessages, participantStatuses),
+    [message, isGroup, allMessages, participantStatuses]
   );
 
   // Detect status change and trigger animation
