@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CheckCheck } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn, timeToDate } from "@/lib/utils";
+import { getUserDisplayName } from "@/lib/userDisplayNames";
 import type { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 
@@ -10,6 +11,7 @@ interface MessageStatusProps {
   isGroup: boolean;
   groupParticipants?: models.GroupParticipant[];
   allMessages?: models.Message[];
+  participantNames?: Map<string, string>;
   layout: "irc" | "bubble";
 }
 
@@ -70,7 +72,8 @@ function getMessageStatus(
 function getParticipantStatuses(
   message: models.Message,
   groupParticipants: models.GroupParticipant[] | undefined,
-  allMessages: models.Message[] | undefined
+  allMessages: models.Message[] | undefined,
+  participantNames?: Map<string, string>
 ): ParticipantStatus[] {
   const receipts = message.receipts;
   const senderId = message.senderId;
@@ -87,15 +90,13 @@ function getParticipantStatuses(
 
   const participantMap = new Map<string, ParticipantStatus>();
 
-  // Create a map of userId to userName from messages
-  const userIdToName = new Map<string, string>();
-  if (allMessages) {
-    allMessages.forEach((msg) => {
-      if (msg.senderName && msg.senderName.trim() !== "") {
-        userIdToName.set(msg.senderId, msg.senderName);
-      }
-    });
-  }
+  const resolveName = (id: string, fallback?: string) => {
+    const resolved = getUserDisplayName(id, { participantNames, allMessages });
+    if (resolved && resolved !== id) {
+      return resolved;
+    }
+    return fallback || resolved;
+  };
 
   // Process all receipts, excluding the sender
   if (receipts) {
@@ -114,7 +115,7 @@ function getParticipantStatuses(
         if (!existing || existing.status !== "read" || (existing.timestamp && receiptTimestamp > existing.timestamp)) {
           participantMap.set(receipt.userId, {
             userId: receipt.userId,
-            userName: userIdToName.get(receipt.userId),
+            userName: resolveName(receipt.userId),
             status: "read",
             timestamp: receiptTimestamp,
           });
@@ -124,7 +125,7 @@ function getParticipantStatuses(
         if (!existing || existing.status === "sent") {
           participantMap.set(receipt.userId, {
             userId: receipt.userId,
-            userName: userIdToName.get(receipt.userId),
+            userName: resolveName(receipt.userId),
             status: "delivered",
             timestamp: receiptTimestamp,
           });
@@ -146,7 +147,7 @@ function getParticipantStatuses(
       if (!existing || existing.status !== "read" || (existing.timestamp && reactionTimestamp > existing.timestamp)) {
         participantMap.set(reaction.userId, {
           userId: reaction.userId,
-          userName: userIdToName.get(reaction.userId),
+          userName: resolveName(reaction.userId),
           status: "read",
           timestamp: reactionTimestamp,
         });
@@ -169,7 +170,7 @@ function getParticipantStatuses(
           if (!existing || existing.status !== "read" || (existing.timestamp && msgTimestamp > existing.timestamp)) {
             participantMap.set(subMsg.senderId, {
               userId: subMsg.senderId,
-              userName: userIdToName.get(subMsg.senderId) || subMsg.senderName,
+              userName: resolveName(subMsg.senderId, subMsg.senderName),
               status: "read",
               timestamp: msgTimestamp,
             });
@@ -191,7 +192,7 @@ function getParticipantStatuses(
       if (!participantMap.has(participant.userId)) {
         participantMap.set(participant.userId, {
           userId: participant.userId,
-          userName: userIdToName.get(participant.userId),
+          userName: resolveName(participant.userId),
           status: "sent",
         });
       }
@@ -319,6 +320,7 @@ export function MessageStatus({
   isGroup,
   groupParticipants,
   allMessages,
+  participantNames,
   layout,
 }: MessageStatusProps) {
   const [isAnimating, setIsAnimating] = useState(false);
@@ -330,8 +332,8 @@ export function MessageStatus({
   );
 
   const participantStatuses = useMemo(
-    () => getParticipantStatuses(message, groupParticipants, allMessages),
-    [message, groupParticipants, allMessages]
+    () => getParticipantStatuses(message, groupParticipants, allMessages, participantNames),
+    [message, groupParticipants, allMessages, participantNames]
   );
 
   // Detect status change and trigger animation

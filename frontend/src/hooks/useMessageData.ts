@@ -182,6 +182,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
         messages.forEach((msg) => {
           if (msg.senderId) userIds.add(msg.senderId);
           if (msg.reactions) msg.reactions.forEach((r) => userIds.add(r.userId));
+          if (msg.receipts) msg.receipts.forEach((rcpt) => userIds.add(rcpt.userId));
         });
         if (userIds.size === 0) return;
 
@@ -189,9 +190,27 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
         const names = await GetParticipantNames(normalizedIds);
         const namesMap = new Map<string, string>();
 
+        // Store all entries from names object and their normalized variants
+        if (names) {
+          for (const [key, value] of Object.entries(names)) {
+            if (value && value.trim()) {
+              namesMap.set(key, value);
+              namesMap.set(key.replace(/:\d+@/, "@"), value);
+              if (key.includes("@lid")) {
+                namesMap.set(key.replace(/@lid$/, ""), value);
+              }
+              if (key.includes("::")) {
+                const raw = key.split("::")[1];
+                namesMap.set(raw, value);
+                namesMap.set(raw.replace(/:\d+@/, "@"), value);
+              }
+            }
+          }
+        }
+
         Array.from(userIds).forEach((originalId, index) => {
           const normalizedId = normalizedIds[index];
-          const name = names[normalizedId];
+          const name = names?.[normalizedId] || names?.[originalId];
           if (name) {
             namesMap.set(originalId, name);
             namesMap.set(normalizedId, name);

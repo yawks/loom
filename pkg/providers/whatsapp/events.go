@@ -670,10 +670,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		fmt.Printf("WhatsApp: Processing receipt event for chat %s, type: %s, message IDs: %v\n", v.Chat.String(), receiptType, v.MessageIDs)
 		// Emit a ReceiptEvent for each message ID
 		for _, msgID := range v.MessageIDs {
-			userID := v.Sender.String()
+			userID := v.Sender.ToNonAD().String()
 			if userID == "" {
 				// In a direct chat the chat JID is the remote participant.
-				userID = v.Chat.String()
+				userID = v.Chat.ToNonAD().String()
+			} else {
+				userID = w.canonicalReactionUserID(userID)
 			}
 			select {
 			case w.eventChan <- core.ReceiptEvent{InstanceID: w.getInstanceId(),

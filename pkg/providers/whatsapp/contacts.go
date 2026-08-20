@@ -44,32 +44,53 @@ func (w *WhatsAppProvider) lookupDisplayName(jid types.JID, fallback string) str
 		}
 	}
 
-	// For LIDs, try to resolve to phone number using whatsmeow's LID map
-	if jid.Server == "lid" && w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil {
-		// Try to get the phone number JID from whatsmeow's LID map
-		phoneJID, err := w.client.Store.LIDs.GetPNForLID(w.ctx, jid)
-		if err == nil && !phoneJID.IsEmpty() {
+	// For LIDs, try to resolve to phone number using whatsmeow's LID map or Loom's LID resolver
+	if jid.Server == "lid" {
+		var phoneJID types.JID
+		if w.client != nil && w.client.Store != nil && w.client.Store.LIDs != nil {
+			if pj, err := w.client.Store.LIDs.GetPNForLID(w.ctx, jid.ToNonAD()); err == nil && !pj.IsEmpty() {
+				phoneJID = pj.ToNonAD()
+			}
+		}
+		if phoneJID.IsEmpty() {
+			if resolvedStr, err := w.resolveContactID(jid.String()); err == nil && resolvedStr != "" && resolvedStr != jid.String() {
+				if parsedPJ, err := types.ParseJID(resolvedStr); err == nil {
+					phoneJID = parsedPJ.ToNonAD()
+				}
+			}
+		}
+		if !phoneJID.IsEmpty() {
 			fmt.Printf("WhatsApp: [LID-MAP] Resolved LID %s to phone %s\n", jid.User, phoneJID.User)
 			// Now try to get contact info for the phone number
-			if contact, err := w.client.Store.Contacts.GetContact(w.ctx, phoneJID); err == nil && contact.Found {
-				if contact.FullName != "" && !isPhoneNumber(contact.FullName) {
-					fmt.Printf("WhatsApp: [LID-MAP] Using FullName '%s' for LID %s\n", contact.FullName, jid.User)
-					return contact.FullName
+			if w.client != nil && w.client.Store != nil && w.client.Store.Contacts != nil {
+				if contact, err := w.client.Store.Contacts.GetContact(w.ctx, phoneJID); err == nil && contact.Found {
+					if contact.FullName != "" && !isPhoneNumber(contact.FullName) {
+						fmt.Printf("WhatsApp: [LID-MAP] Using FullName '%s' for LID %s\n", contact.FullName, jid.User)
+						return contact.FullName
+					}
+					if contact.PushName != "" && !isPhoneNumber(contact.PushName) {
+						fmt.Printf("WhatsApp: [LID-MAP] Using PushName '%s' for LID %s\n", contact.PushName, jid.User)
+						return contact.PushName
+					}
+					if contact.FirstName != "" && !isPhoneNumber(contact.FirstName) {
+						fmt.Printf("WhatsApp: [LID-MAP] Using FirstName '%s' for LID %s\n", contact.FirstName, jid.User)
+						return contact.FirstName
+					}
 				}
-				if contact.PushName != "" && !isPhoneNumber(contact.PushName) {
-					fmt.Printf("WhatsApp: [LID-MAP] Using PushName '%s' for LID %s\n", contact.PushName, jid.User)
-					return contact.PushName
-				}
-				if contact.FirstName != "" && !isPhoneNumber(contact.FirstName) {
-					fmt.Printf("WhatsApp: [LID-MAP] Using FirstName '%s' for LID %s\n", contact.FirstName, jid.User)
-					return contact.FirstName
+			}
+			// Check database LinkedAccount for phone JID
+			if db.DB != nil {
+				var account models.LinkedAccount
+				if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", w.getInstanceId(), phoneJID.String()).First(&account).Error; err == nil {
+					if account.Username != "" && !isPhoneNumber(account.Username) && account.Username != account.UserID {
+						fmt.Printf("WhatsApp: [LID-MAP] Using LinkedAccount '%s' for LID %s\n", account.Username, jid.User)
+						return account.Username
+					}
 				}
 			}
 			// If no name, at least format the phone number nicely
 			fmt.Printf("WhatsApp: [LID-MAP] No name found, formatting phone %s for LID %s\n", phoneJID.User, jid.User)
 			return formatPhoneNumber(phoneJID.User)
-		} else if err != nil {
-			fmt.Printf("WhatsApp: [LID-MAP] GetContactByLID failed for %s: %v\n", jid.User, err)
 		}
 	}
 
