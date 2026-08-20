@@ -51,6 +51,47 @@ func TestGetThreadSummariesReturnsCountsWithoutReplies(t *testing.T) {
 	}
 }
 
+func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	const conversationID = "test::unread-locations"
+	threadID := "parent"
+	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	messages := []models.Message{
+		{ProtocolConvID: conversationID, ProtocolMsgID: "newer-main", Timestamp: base.Add(2 * time.Minute)},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "oldest-reply", ThreadID: &threadID, Timestamp: base},
+		{ProtocolConvID: "other::conversation", ProtocolMsgID: "foreign", ThreadID: &threadID, Timestamp: base.Add(-time.Minute)},
+	}
+	for i := range messages {
+		if err := database.Create(&messages[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	locations, err := (&App{}).GetUnreadMessageLocations(conversationID, []string{"newer-main", "oldest-reply", "foreign", "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locations) != 2 {
+		t.Fatalf("got %d locations, want 2: %+v", len(locations), locations)
+	}
+	if locations[0].MessageID != "oldest-reply" || locations[0].ThreadID != threadID {
+		t.Fatalf("oldest location = %+v, want thread reply", locations[0])
+	}
+	if locations[1].MessageID != "newer-main" || locations[1].ThreadID != "" {
+		t.Fatalf("main location = %+v, want top-level message", locations[1])
+	}
+}
+
 func TestGetMessagesForConversationPaginatesMainMessages(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

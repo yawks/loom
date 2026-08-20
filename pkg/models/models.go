@@ -225,6 +225,14 @@ type ThreadSummary struct {
 	ReplyCount      int    `json:"replyCount"`
 }
 
+// UnreadMessageLocation lets the renderer locate unread messages that are not
+// part of the paginated main timeline (notably native thread replies).
+type UnreadMessageLocation struct {
+	MessageID string    `json:"messageId"`
+	ThreadID  string    `json:"threadId,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // ScheduledMessage is a provider-neutral representation of a message queued
 // for future delivery by the remote service.
 type ScheduledMessage struct {

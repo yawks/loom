@@ -2,12 +2,36 @@ package db
 
 import (
 	"Loom/pkg/models"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestEnsureIndicesCreatesMessageQueryIndices(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureIndices(database); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"idx_messages_conv_latest_jd", "idx_messages_active_calls"} {
+		var sql string
+		if err := database.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&sql).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(sql, "WHERE deleted_at IS NULL") {
+			t.Fatalf("index %s was not created as a partial non-deleted index: %q", name, sql)
+		}
+	}
+}
 
 func TestParseTimeMillisPreservesMillisecondPrecision(t *testing.T) {
 	timestamp := "2026-07-29 10:11:12.345678901+00:00"

@@ -34,6 +34,24 @@ func TestSetCachedConversationMessagesLockedBoundsMessages(t *testing.T) {
 	}
 }
 
+func TestReconcileDuplicateMessageBackfillsCaptionAndAttachmentWithoutEditing(t *testing.T) {
+	existing := &models.Message{ProtocolMsgID: "image-message"}
+	incoming := &models.Message{
+		ProtocolMsgID: "image-message",
+		Body:          "Légende de la photo",
+		Attachments:   `[{"type":"image","url":"/tmp/photo.jpg"}]`,
+	}
+
+	reconcileDuplicateMessage(existing, incoming)
+
+	if existing.Body != incoming.Body || existing.Attachments != incoming.Attachments {
+		t.Fatalf("reconciled message = %#v", existing)
+	}
+	if existing.IsEdited || existing.EditedTimestamp != nil {
+		t.Fatalf("duplicate backfill was incorrectly marked edited: %#v", existing)
+	}
+}
+
 func TestSetCachedConversationMessagesLockedEvictsOldestConversation(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	for i := 0; i < maxCachedConversations; i++ {

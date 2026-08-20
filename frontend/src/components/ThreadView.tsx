@@ -1,9 +1,9 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
-import { AddReaction, DeleteMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, RemoveReaction } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageReactions } from "./MessageReactions";
@@ -57,13 +57,13 @@ interface ThreadListItemProps {
   parentMessage: models.Message;
   replies: models.Message[];
   replyCount: number;
-  providerInstanceId: string | undefined;
   onClick: () => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onContactAvatarClick: (message: models.Message, name: string) => void;
+  unreadCount: number;
 }
 
-function ThreadListItem({ parentMessage, replies, replyCount, providerInstanceId: _providerInstanceId, onClick, onAvatarClick, onContactAvatarClick }: ThreadListItemProps) {
+function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarClick, onContactAvatarClick, unreadCount }: ThreadListItemProps) {
   const { t } = useTranslation();
   const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
   const timestamp = timeToDate(parentMessage.timestamp);
@@ -76,7 +76,7 @@ function ThreadListItem({ parentMessage, replies, replyCount, providerInstanceId
   return (
     <button
       onClick={onClick}
-      className="thread-list-item w-full p-4 text-left hover:bg-muted/50 transition-colors flex flex-col gap-2 border-b last:border-b-0"
+      className={cn("thread-list-item w-full p-4 text-left hover:bg-muted/50 transition-colors flex flex-col gap-2 border-b last:border-b-0", unreadCount > 0 && "bg-primary/10 border-l-2 border-l-primary")}
     >
       <div className="flex items-center gap-2 min-w-0">
         <button
@@ -94,6 +94,11 @@ function ThreadListItem({ parentMessage, replies, replyCount, providerInstanceId
         </button>
         <span className="text-sm font-medium truncate">{displayName}</span>
         <span className="text-xs text-muted-foreground ml-auto shrink-0">{timeStr}</span>
+        {unreadCount > 0 && (
+          <span className="inline-flex min-w-5 justify-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground" aria-label={t("unread_badge_aria", { count: unreadCount })}>
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        )}
       </div>
       {parentMessage.body && parentMessage.body.trim() !== "" && (
         <p className="text-sm text-muted-foreground line-clamp-2 pl-8">
@@ -194,6 +199,9 @@ export function ThreadView() {
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const messageLayout = useAppStore((state) => state.messageLayout);
   const selectedThreadParentMessage = useAppStore((state) => state.selectedThreadParentMessage);
+  const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
+  const unreadNavigationTarget = useAppStore((state) => state.unreadNavigationTarget);
+  const setUnreadNavigationTarget = useAppStore((state) => state.setUnreadNavigationTarget);
   const setSelectedAvatarUrl = useAppStore(
     (state) => state.setSelectedAvatarUrl
   );
@@ -210,6 +218,27 @@ export function ThreadView() {
     activeAccount?.conversationId ??
     activeAccount?.userId ??
     "";
+  const conversationReadState = useMessageReadStore(
+    (state) => state.readByConversation[conversationId] ?? {}
+  );
+  const unreadMessageIds = useMemo(
+    () => Object.entries(conversationReadState)
+      .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+      .map(([messageId]) => messageId),
+    [conversationReadState]
+  );
+  const { data: unreadLocations = [] } = useQuery<models.UnreadMessageLocation[]>({
+    queryKey: ["unread-message-locations", conversationId, unreadMessageIds.join(",")],
+    queryFn: () => GetUnreadMessageLocations(conversationId, unreadMessageIds),
+    enabled: Boolean(conversationId && unreadMessageIds.length > 0),
+  });
+  const unreadCountByThread = useMemo(() => {
+    const counts: Record<string, number> = {};
+    unreadLocations.forEach((location) => {
+      if (location.threadId) counts[location.threadId] = (counts[location.threadId] ?? 0) + 1;
+    });
+    return counts;
+  }, [unreadLocations]);
 
   // Thread list navigation state
   const [threadOpenedFromList, setThreadOpenedFromList] = useState(false);
@@ -437,6 +466,22 @@ export function ThreadView() {
     );
   }, [threadMessages, selectedThreadId]);
 
+  useEffect(() => {
+    if (!selectedThreadId || selectedThreadParentMessage) return;
+    const parent = threadListMessages.find((message) => message.protocolMsgId === selectedThreadId)
+      ?? threadMessages?.find((message) => message.protocolMsgId === selectedThreadId);
+    if (parent) setSelectedThreadParentMessage(parent);
+  }, [selectedThreadId, selectedThreadParentMessage, setSelectedThreadParentMessage, threadListMessages, threadMessages]);
+
+  useLayoutEffect(() => {
+    if (!unreadNavigationTarget || unreadNavigationTarget.conversationId !== conversationId) return;
+    if (unreadNavigationTarget.threadId !== selectedThreadId || sortedThreadMessages.length === 0) return;
+    const target = document.querySelector<HTMLElement>(`[data-thread-message-id="${CSS.escape(unreadNavigationTarget.messageId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "auto" });
+    setUnreadNavigationTarget(null);
+  }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, setUnreadNavigationTarget]);
+
   const currentUserId = useMemo(() => {
     for (const msg of sortedThreadMessages) {
       if (msg.isFromMe && msg.senderId) return msg.senderId;
@@ -637,10 +682,10 @@ export function ThreadView() {
                   parentMessage={parentMessage}
                   replies={replies}
                   replyCount={replyCount}
-                  providerInstanceId={providerInstanceId}
                   onClick={() => handleOpenThread(parentMessage.protocolMsgId!)}
                   onAvatarClick={handleAvatarClick}
                   onContactAvatarClick={handleContactAvatarClick}
+                  unreadCount={unreadCountByThread[parentMessage.protocolMsgId!] ?? 0}
                 />
               ))}
             </div>
@@ -730,6 +775,7 @@ export function ThreadView() {
               return (
                 <div
                   key={message.protocolMsgId || `thread-${message.id}`}
+                  data-thread-message-id={messageId}
                   className={cn("flex items-start gap-3 group relative", message.isFromMe && "justify-end")}
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}
@@ -908,6 +954,7 @@ export function ThreadView() {
               return (
                 <div
                   key={message.protocolMsgId || `thread-${message.id}`}
+                  data-thread-message-id={messageId}
                   className="space-y-1 group relative"
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}

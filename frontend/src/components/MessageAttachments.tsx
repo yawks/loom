@@ -17,8 +17,10 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
@@ -28,6 +30,8 @@ import type { MessageHandlers } from "./MessageBubbleItem";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { MessageReactions } from "./MessageReactions";
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 // Module-level cache for small previews. It is deliberately byte-bounded: data
 // URLs are substantially larger than their source files and otherwise survive
@@ -65,6 +69,17 @@ function cacheAttachment(url: string, data: string): void {
     _attachmentDataCache.delete(oldest[0]);
     attachmentCacheBytes -= oldest[1].length * 2;
   }
+}
+
+function dataUrlToBytes(dataUrl: string): Uint8Array {
+  const comma = dataUrl.indexOf(",");
+  if (comma < 0) throw new Error("Invalid attachment data URL");
+
+  const metadata = dataUrl.slice(5, comma);
+  const encoded = dataUrl.slice(comma + 1);
+  return metadata.includes(";base64")
+    ? Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
+    : new TextEncoder().encode(decodeURIComponent(encoded));
 }
 
 // Drop base64 strings before an extended background/sleep period. WebKit can
@@ -191,6 +206,99 @@ function getFileIcon(fileName: string, mimeType: string, type: string) {
 function getFileExtension(fileName: string): string {
   const parts = fileName.split(".");
   return parts.length > 1 ? parts[parts.length - 1].toUpperCase() : "";
+}
+
+function PdfPreview({
+  dataUrl,
+  onReady,
+  onError,
+}: {
+  dataUrl: string;
+  onReady: () => void;
+  onError: (error: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageCount, setPageCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const loadingTask = getDocument({ data: dataUrlToBytes(dataUrl) });
+    loadingTask.promise
+      .then((pdf) => {
+        if (!active) {
+          void pdf.destroy();
+          return;
+        }
+        setDocument(pdf);
+        setPageCount(pdf.numPages);
+      })
+      .catch((error) => { if (active) onError(error); });
+
+    return () => {
+      active = false;
+      void loadingTask.destroy();
+    };
+  }, [dataUrl, onError]);
+
+  useEffect(() => {
+    if (!document || !canvasRef.current) return;
+    let active = true;
+    let renderTask: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | undefined;
+
+    document.getPage(pageNumber)
+      .then((page) => {
+        if (!active || !canvasRef.current) return;
+        const viewport = page.getViewport({ scale: 1.5 });
+        const pixelRatio = window.devicePixelRatio || 1;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Unable to create PDF canvas context");
+        canvas.width = Math.floor(viewport.width * pixelRatio);
+        canvas.height = Math.floor(viewport.height * pixelRatio);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        renderTask = page.render({
+          canvas,
+          canvasContext: context,
+          viewport,
+          transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
+        });
+        return renderTask.promise;
+      })
+      .then(() => { if (active) onReady(); })
+      .catch((error) => {
+        if (!active) return;
+        if (error instanceof Error && error.name === "RenderingCancelledException") return;
+        onError(error);
+      });
+
+    return () => {
+      active = false;
+      renderTask?.cancel();
+    };
+  }, [document, onError, onReady, pageNumber]);
+
+  return (
+    <div className="flex h-[85vh] flex-col bg-muted/40">
+      {pageCount > 1 && (
+        <div className="flex h-12 shrink-0 items-center justify-center gap-3 border-b bg-background px-14">
+          <button type="button" onClick={() => setPageNumber((page) => Math.max(1, page - 1))} disabled={pageNumber <= 1} className="rounded p-1 disabled:opacity-40" aria-label={t("previous_page")}>
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <span className="text-sm">{t("pdf_page", { current: pageNumber, total: pageCount })}</span>
+          <button type="button" onClick={() => setPageNumber((page) => Math.min(pageCount, page + 1))} disabled={pageNumber >= pageCount} className="rounded p-1 disabled:opacity-40" aria-label={t("next_page")}>
+            <ChevronRight className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+      <div className="flex-1 overflow-auto p-4">
+        <canvas ref={canvasRef} className="mx-auto max-w-full bg-white shadow" />
+      </div>
+    </div>
+  );
 }
 
 function VisibleImageAttachment({
@@ -474,8 +582,10 @@ export function MessageAttachments({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
+  const [selectedPdfAttachment, setSelectedPdfAttachment] = useState<Attachment | null>(null);
   const [loadingPdfIndex, setLoadingPdfIndex] = useState<number | null>(null);
   const [isPdfFrameLoading, setIsPdfFrameLoading] = useState(false);
+  const [pdfPreviewFailed, setPdfPreviewFailed] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -521,6 +631,24 @@ export function MessageAttachments({
   const bumpCache = (_url: string, _success: boolean) => {
     setCacheVersion((v) => v + 1);
   };
+
+  const closePdfPreview = () => {
+    setSelectedPdf(null);
+    setSelectedPdfAttachment(null);
+    setIsPdfFrameLoading(false);
+    setPdfPreviewFailed(false);
+  };
+
+  const handlePdfReady = useCallback(() => {
+    setIsPdfFrameLoading(false);
+    setPdfPreviewFailed(false);
+  }, []);
+
+  const handlePdfPreviewError = useCallback((error: unknown) => {
+    console.error("Failed to render PDF preview:", error);
+    setIsPdfFrameLoading(false);
+    setPdfPreviewFailed(true);
+  }, []);
 
   // Parse and deduplicate attachments using useMemo to avoid re-parsing on every render
   const parsedAttachments = useMemo(() => {
@@ -670,8 +798,10 @@ export function MessageAttachments({
       try {
         const dataUrl = await GetAttachmentData(url);
         if (dataUrl) {
-          setIsPdfFrameLoading(true);
           setSelectedPdf(dataUrl);
+          setSelectedPdfAttachment(attachment);
+          setPdfPreviewFailed(false);
+          setIsPdfFrameLoading(true);
         }
       } catch (error) {
         console.error("Failed to load PDF:", error);
@@ -1308,13 +1438,13 @@ export function MessageAttachments({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={selectedPdf !== null} onOpenChange={() => { setSelectedPdf(null); setIsPdfFrameLoading(false); }}>
+      <Dialog open={selectedPdf !== null} onOpenChange={(open) => { if (!open) closePdfPreview(); }}>
         <DialogContent className="max-w-6xl max-h-[90vh] p-0">
           <DialogTitle className="sr-only">PDF Preview</DialogTitle>
           {selectedPdf && (
             <div className="relative w-full h-full">
               <button
-                onClick={() => { setSelectedPdf(null); setIsPdfFrameLoading(false); }}
+                onClick={closePdfPreview}
                 className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
               >
                 <X className="h-5 w-5" />
@@ -1324,12 +1454,23 @@ export function MessageAttachments({
                   <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
                 </div>
               )}
-              <iframe
-                src={selectedPdf}
-                className="w-full h-[85vh] border-0"
-                title="PDF Preview"
-                onLoad={() => setIsPdfFrameLoading(false)}
-              />
+              {pdfPreviewFailed && (
+                <div className="absolute inset-0 z-[6] flex flex-col items-center justify-center gap-4 bg-background p-6 text-center">
+                  <p className="text-sm text-muted-foreground">{t("pdf_preview_error")}</p>
+                  {selectedPdfAttachment && (
+                    <button
+                      type="button"
+                      className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground"
+                      onClick={() => { void handleDownload(selectedPdfAttachment); }}
+                    >
+                      {t("download")}
+                    </button>
+                  )}
+                </div>
+              )}
+              {!pdfPreviewFailed && (
+                <PdfPreview dataUrl={selectedPdf} onReady={handlePdfReady} onError={handlePdfPreviewError} />
+              )}
             </div>
           )}
         </DialogContent>

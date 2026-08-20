@@ -42,6 +42,8 @@ interface AppState {
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   messageSearchTargetId: string | null;
   setMessageSearchTargetId: (messageId: string | null) => void;
+  unreadNavigationTarget: { conversationId: string; messageId: string; threadId?: string } | null;
+  setUnreadNavigationTarget: (target: { conversationId: string; messageId: string; threadId?: string } | null) => void;
   contactSortBy: ContactSortOption;
   setContactSortBy: (sortBy: ContactSortOption) => void;
   selectedUserId: string | null;
@@ -147,6 +149,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   messageSearchTargetId: null,
   setMessageSearchTargetId: (messageId) => set({ messageSearchTargetId: messageId }),
+  unreadNavigationTarget: null,
+  setUnreadNavigationTarget: (target) => set({ unreadNavigationTarget: target }),
   contactSortBy: loadFromStorage<ContactSortOption>("contactSortBy", "last_message"),
   setContactSortBy: (sortBy) => {
     set({ contactSortBy: sortBy });

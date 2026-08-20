@@ -109,6 +109,8 @@ export function GetThreadSummaries(arg1:string,arg2:Array<string>):Promise<Array
 
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
 
+export function GetUnreadMessageLocations(arg1:string,arg2:Array<string>):Promise<Array<models.UnreadMessageLocation>>;
+
 export function LeaveGroup(arg1:string):Promise<void>;
 
 export function MarkConversationAsRead(arg1:string):Promise<void>;

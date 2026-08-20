@@ -1,6 +1,6 @@
 import { ArrowDownAZ, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts, GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -31,6 +31,10 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
+  const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
+  const setUnreadNavigationTarget = useAppStore((state) => state.setUnreadNavigationTarget);
+  const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
+  const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
   const setCapabilities = useAppStore((state) => state.setCapabilities);
   const sortBy = useAppStore((state) => state.contactSortBy);
@@ -541,7 +545,38 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                   isEmptyDuringSync && "opacity-50",
                   !isSelected && unreadCount > 0 && "bg-sidebar-hover/60"
                 )}
-                onClick={() => setSelectedContact(selectedContactForAccount)}
+                onClick={async () => {
+                  // In the Unread view, opening a conversation means opening its
+                  // oldest unread message, including replies hidden in a thread.
+                  if (sortBy === "unread" && conversationId) {
+                    const unreadIds = Object.entries(readStateByConversation[conversationId] ?? {})
+                      .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+                      .map(([messageId]) => messageId);
+                    try {
+                      const [oldest] = await GetUnreadMessageLocations(conversationId, unreadIds);
+                      if (oldest) {
+                        setUnreadNavigationTarget({
+                          conversationId,
+                          messageId: oldest.messageId,
+                          threadId: oldest.threadId || undefined,
+                        });
+                        if (oldest.threadId) {
+                          setSelectedThreadParentMessage(null);
+                          setSelectedThreadId(oldest.threadId);
+                        } else {
+                          setSelectedThreadId(null);
+                          setMessageSearchTargetId(oldest.messageId);
+                        }
+                      }
+                    } catch (error) {
+                      console.error("Failed to locate oldest unread message:", error);
+                    }
+                  } else {
+                    setUnreadNavigationTarget(null);
+                    setSelectedThreadId(null);
+                  }
+                  setSelectedContact(selectedContactForAccount);
+                }}
               >
                 <div className="relative">
                   <Avatar>
