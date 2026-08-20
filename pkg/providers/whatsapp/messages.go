@@ -1566,6 +1566,28 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				if msg.IsFromMe {
 					status := webMsgInfo.GetStatus()
 					receipts := w.convertMessageStatus(status, msg.ProtocolMsgID, convID, msg.Timestamp)
+					for _, r := range msg.Reactions {
+						if r.UserID != msg.SenderID {
+							hasRead := false
+							for _, rcpt := range receipts {
+								if rcpt.UserID == r.UserID && rcpt.ReceiptType == "read" {
+									hasRead = true
+									break
+								}
+							}
+							if !hasRead {
+								receiptTimestamp := r.CreatedAt
+								if receiptTimestamp.IsZero() {
+									receiptTimestamp = msg.Timestamp
+								}
+								receipts = append(receipts, models.MessageReceipt{
+									UserID:      r.UserID,
+									ReceiptType: "read",
+									Timestamp:   receiptTimestamp,
+								})
+							}
+						}
+					}
 					if len(receipts) > 0 {
 						fmt.Printf("WhatsApp: Extracted %d receipts from history for message %s (status: %v)\n", len(receipts), msg.ProtocolMsgID, status)
 						msg.Receipts = receipts
@@ -1687,6 +1709,21 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 							UpdatedAt: time.Unix(reaction.Timestamp, 0),
 						}
 						db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", target.ID, reaction.UserID, reaction.Emoji).FirstOrCreate(&row)
+						if reaction.UserID != target.SenderID {
+							timestamp := time.Unix(reaction.Timestamp, 0)
+							if reaction.Timestamp <= 0 {
+								timestamp = time.Now()
+							}
+							var receipt models.MessageReceipt
+							if err := db.DB.Where("message_id = ? AND user_id = ? AND receipt_type = ?", target.ID, reaction.UserID, string(core.ReceiptTypeRead)).First(&receipt).Error; err != nil {
+								db.DB.Create(&models.MessageReceipt{
+									MessageID:   target.ID,
+									UserID:      reaction.UserID,
+									ReceiptType: string(core.ReceiptTypeRead),
+									Timestamp:   timestamp,
+								})
+							}
+						}
 					} else {
 						db.DB.Where("message_id = ? AND user_id = ?", target.ID, reaction.UserID).Delete(&models.Reaction{})
 					}
