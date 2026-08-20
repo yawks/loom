@@ -166,6 +166,17 @@ func ensureIndices(db *gorm.DB) error {
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats_time ON messages(timestamp, protocol_conv_id, is_from_me) WHERE deleted_at IS NULL AND is_deleted = 0`).Error; err != nil {
 		fmt.Printf("Error creating index idx_messages_stats_time: %v\n", err)
 	}
+	// GetAllLastMessages orders by julianday(timestamp), so a plain timestamp
+	// index cannot provide the window's ordering. Include id to make ties
+	// deterministic without an additional temporary sort.
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_latest_jd ON messages(protocol_conv_id, julianday(timestamp) DESC, id DESC) WHERE deleted_at IS NULL`).Error; err != nil {
+		fmt.Printf("Error creating index idx_messages_conv_latest_jd: %v\n", err)
+	}
+	// Active-call polling first narrows messages by call type and a recent time
+	// range. The conversation prefix is checked after that small index scan.
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_active_calls ON messages(call_type, timestamp, protocol_conv_id) WHERE deleted_at IS NULL`).Error; err != nil {
+		fmt.Printf("Error creating index idx_messages_active_calls: %v\n", err)
+	}
 
 	return nil
 }

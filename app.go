@@ -369,10 +369,17 @@ func (a *App) getActiveProvider() core.Provider {
 func (a *App) getProviderForConversation(conversationID string) core.Provider {
 	// A namespaced ID carries its provider instance even when the conversation
 	// has not been persisted yet (for example, a brand-new Slack DM).
-	if idx := strings.Index(conversationID, "::"); idx > 0 && a.providerManager != nil {
-		if p, err := a.providerManager.GetProvider(conversationID[:idx]); err == nil {
-			return p
+	if idx := strings.Index(conversationID, "::"); idx > 0 {
+		if a.providerManager != nil {
+			if p, err := a.providerManager.GetProvider(conversationID[:idx]); err == nil {
+				return p
+			}
 		}
+		// Never route a namespaced conversation through the active provider:
+		// if its owning instance is unavailable, another protocol cannot send it.
+		// Returning nil gives the caller an explicit error instead of, for example,
+		// handing a WhatsApp JID to Slack.
+		return nil
 	}
 
 	if db.DB != nil && conversationID != "" {
@@ -1914,6 +1921,25 @@ func (a *App) GetThreadSummaries(conversationID string, parentMessageIDs []strin
 		return []models.ThreadSummary{}, err
 	}
 	return summaries, nil
+}
+
+// GetUnreadMessageLocations resolves renderer-owned unread IDs against SQLite.
+// Results are chronological so the first entry is the navigation target.
+func (a *App) GetUnreadMessageLocations(conversationID string, messageIDs []string) ([]models.UnreadMessageLocation, error) {
+	if db.DB == nil || conversationID == "" || len(messageIDs) == 0 {
+		return []models.UnreadMessageLocation{}, nil
+	}
+
+	var locations []models.UnreadMessageLocation
+	err := db.DB.Model(&models.Message{}).
+		Select("protocol_msg_id AS message_id, CASE WHEN thread_id IS NOT NULL AND thread_id <> '' AND thread_id <> protocol_msg_id THEN thread_id ELSE '' END AS thread_id, timestamp").
+		Where("protocol_conv_id = ? AND protocol_msg_id IN ?", conversationID, messageIDs).
+		Order("timestamp ASC").
+		Scan(&locations).Error
+	if err != nil {
+		return []models.UnreadMessageLocation{}, err
+	}
+	return locations, nil
 }
 
 // populateThreadReplyCounts attaches only the number of replies to the main

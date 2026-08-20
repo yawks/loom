@@ -11,6 +11,9 @@ dist/
 # Build outputs
 build/bin/
 build/darwin/
+!build/darwin/
+build/darwin/*
+!build/darwin/Info.dev.plist
 *.o
 *.a
 

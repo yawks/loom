@@ -264,59 +264,37 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				}
 				break
 			}
-			if msg.Body != existingMsg.Body && msg.Body != "" {
-				// This is an edited message - update it
-				fmt.Printf("WhatsApp: Detected edited message %s (content changed from '%s' to '%s')\n", msgID, existingMsg.Body, msg.Body)
-				editedAt := time.Now()
-				existingMsg.Body = msg.Body
-				existingMsg.IsEdited = true
-				existingMsg.EditedTimestamp = &editedAt
-
-				// Update in cache
-				w.mu.Lock()
-				if msgs, ok := w.conversationMessages[convID]; ok {
-					for idx := range msgs {
-						if msgs[idx].ProtocolMsgID == msgID {
-							msgs[idx] = *existingMsg
-							w.conversationMessages[convID][idx] = msgs[idx]
-							fmt.Printf("WhatsApp: Updated message %s in cache\n", msgID)
-							break
-						}
+			// Normal Message events with an existing protocol ID are re-deliveries or
+			// richer history representations, not edits. Real WhatsApp edits arrive as
+			// ProtocolMessage_MESSAGE_EDIT and are handled above. Merge fields that may
+			// have been missing during the first conversion (notably image captions and
+			// downloaded attachments) without showing a false "edited" indicator.
+			reconcileDuplicateMessage(existingMsg, msg)
+			w.mu.Lock()
+			if msgs, ok := w.conversationMessages[convID]; ok {
+				for idx := range msgs {
+					if msgs[idx].ProtocolMsgID == msgID {
+						msgs[idx] = *existingMsg
+						break
 					}
 				}
-				w.mu.Unlock()
-
-				// Update in database
-				if db.DB != nil {
-					updates := map[string]interface{}{
-						"body":             existingMsg.Body,
-						"is_edited":        true,
-						"edited_timestamp": editedAt,
-					}
-					if err := db.DB.Model(&models.Message{}).
-						Where("protocol_msg_id = ?", msgID).
-						Updates(updates).Error; err != nil {
-						fmt.Printf("WhatsApp: Failed to update edited message in database: %v\n", err)
-					} else {
-						fmt.Printf("WhatsApp: Successfully updated edited message %s in database\n", msgID)
-					}
-				}
-
-				// Emit event
-				select {
-				case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *existingMsg}:
-					fmt.Printf("WhatsApp: MessageEvent emitted for edited message %s\n", msgID)
-				default:
-					fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent for edited message %s\n", msgID)
-				}
-				break
 			}
-			if msg.Body == existingMsg.Body {
-				// Same content, might be a duplicate - skip it
-				fmt.Printf("WhatsApp: Received duplicate message %s with same content, skipping\n", msgID)
-				break
+			w.mu.Unlock()
+			if db.DB != nil {
+				if err := db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ?", msgID).
+					Updates(map[string]interface{}{
+						"body":        existingMsg.Body,
+						"attachments": existingMsg.Attachments,
+					}).Error; err != nil {
+					fmt.Printf("WhatsApp: Failed to reconcile duplicate message %s: %v\n", msgID, err)
+				}
 			}
-			fmt.Printf("WhatsApp: Message %s exists but content unchanged or empty, treating as new\n", msgID)
+			select {
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *existingMsg}:
+			default:
+			}
+			break
 		}
 
 		// Normal message processing

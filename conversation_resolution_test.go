@@ -3,12 +3,21 @@ package main
 import (
 	"testing"
 
+	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestGetProviderForNamespacedConversationDoesNotFallBack(t *testing.T) {
+	app := &App{providerManager: core.NewProviderManager()}
+
+	if got := app.getProviderForConversation("whatsapp-1::33617590388@s.whatsapp.net"); got != nil {
+		t.Fatal("an unavailable WhatsApp instance must not fall back to the active provider")
+	}
+}
 
 func TestSameParticipantSetIgnoresAuthenticatedUser(t *testing.T) {
 	selected := map[string]bool{"alice": true, "bob": true}

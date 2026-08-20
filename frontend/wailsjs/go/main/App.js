@@ -210,6 +210,10 @@ export function GetThreads(arg1) {
   return window['go']['main']['App']['GetThreads'](arg1);
 }
 
+export function GetUnreadMessageLocations(arg1, arg2) {
+  return window['go']['main']['App']['GetUnreadMessageLocations'](arg1, arg2);
+}
+
 export function LeaveGroup(arg1) {
   return window['go']['main']['App']['LeaveGroup'](arg1);
 }

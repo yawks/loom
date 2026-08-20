@@ -1372,6 +1372,18 @@ func (w *WhatsAppProvider) appendMessageToConversation(msg *models.Message) {
 	w.storeMessagesForConversation(msg.ProtocolConvID, []models.Message{*msg})
 }
 
+func reconcileDuplicateMessage(existing, incoming *models.Message) {
+	if existing == nil || incoming == nil {
+		return
+	}
+	if incoming.Body != "" {
+		existing.Body = incoming.Body
+	}
+	if incoming.Attachments != "" {
+		existing.Attachments = incoming.Attachments
+	}
+}
+
 func (w *WhatsAppProvider) hasConversationHistory(convID string) bool {
 	// First check in-memory cache
 	w.mu.RLock()

@@ -30,6 +30,7 @@
     "i18next-browser-languagedetector": "^8.2.0",
     "lucide-react": "^0.554.0",
     "ogg-opus-decoder": "^1.7.3",
+    "pdfjs-dist": "^5.4.149",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
