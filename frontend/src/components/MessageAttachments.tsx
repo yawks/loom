@@ -481,13 +481,160 @@ function MosaicImageAttachment({
   );
 }
 
+function VisibleVideoAttachment({
+  attachment,
+  onPlay,
+  onDownload,
+}: {
+  attachment: Attachment;
+  onPlay: (preloadedData?: string) => void;
+  onDownload: () => void;
+}) {
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+  const [videoData, setVideoData] = useState<string | null>(null);
+  const [thumbnailData, setThumbnailData] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [hovered, setHovered] = useState(false);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      setIsVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+      threshold: 0.01,
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) {
+      setVideoData(null);
+      setThumbnailData(null);
+      setFailed(false);
+      return;
+    }
+
+    let active = true;
+    setFailed(false);
+
+    if (attachment.thumbnail) {
+      GetAttachmentData(attachment.thumbnail)
+        .then((data) => {
+          if (active) setThumbnailData(data);
+        })
+        .catch(() => undefined);
+    }
+
+    const load = async () => {
+      try {
+        const data = await GetAttachmentData(attachment.url);
+        if (active) setVideoData(data);
+      } catch (error) {
+        console.warn(`[MessageAttachments] Failed to load video ${attachment.url}:`, error);
+        if (active && !attachment.thumbnail) {
+          setFailed(true);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [attachment.thumbnail, attachment.url, isVisible, loadAttempt]);
+
+  return (
+    <div
+      ref={elementRef}
+      className="message-attachment__video relative rounded-lg overflow-hidden bg-black"
+      style={{ width: "320px", height: "200px", contain: "strict" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        type="button"
+        className="w-full h-full flex items-center justify-center relative overflow-hidden"
+        onClick={() => onPlay(videoData || undefined)}
+        aria-label={`Lire ${attachment.fileName}`}
+      >
+        {videoData ? (
+          <video
+            src={videoData}
+            muted
+            playsInline
+            preload="metadata"
+            className="h-full w-full object-cover"
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              if (Number.isFinite(video.duration) && video.duration > 0) {
+                video.currentTime = Math.min(0.25, video.duration / 10);
+              }
+            }}
+          />
+        ) : thumbnailData ? (
+          <img
+            src={thumbnailData}
+            alt=""
+            className="h-full w-full object-cover filter blur-[1px]"
+          />
+        ) : (
+          <div className="w-full h-full bg-muted flex flex-col items-center justify-center gap-2">
+            <Video className="h-12 w-12 text-muted-foreground" />
+            {failed && (
+              <>
+                <span className="max-w-[90%] truncate text-xs text-muted-foreground">{attachment.fileName}</span>
+                <button
+                  type="button"
+                  className="rounded bg-background/70 px-2 py-1 text-xs text-foreground hover:bg-background"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setFailed(false);
+                    setLoadAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  Réessayer
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="bg-black/40 rounded-full p-3 hover:bg-black/60 transition-colors">
+            <Play className="h-8 w-8 text-white fill-white" />
+          </div>
+        </div>
+      </button>
+
+      {hovered && (videoData || thumbnailData) && (
+        <button
+          type="button"
+          className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors z-10"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload();
+          }}
+          title="Télécharger"
+        >
+          <Download className="h-4 w-4 text-white" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function MosaicVideoAttachment({
   attachment,
   onPlay,
   className,
 }: {
   attachment: Attachment;
-  onPlay: () => void;
+  onPlay: (preloadedData?: string) => void;
   className?: string;
 }) {
   const elementRef = useRef<HTMLButtonElement>(null);
@@ -513,18 +660,14 @@ function MosaicVideoAttachment({
       return;
     }
     let active = true;
-    const loadVideoPreview = () => {
-      GetAttachmentData(attachment.url)
-        .then((data) => { if (active) setVideoPreviewData(data); })
-        .catch(() => undefined);
-    };
     if (attachment.thumbnail) {
       GetAttachmentData(attachment.thumbnail)
         .then((data) => { if (active) setThumbnailData(data); })
-        .catch(loadVideoPreview);
-    } else {
-      loadVideoPreview();
+        .catch(() => undefined);
     }
+    GetAttachmentData(attachment.url)
+      .then((data) => { if (active) setVideoPreviewData(data); })
+      .catch(() => undefined);
     return () => { active = false; };
   }, [attachment.thumbnail, attachment.url, isVisible]);
 
@@ -533,12 +676,10 @@ function MosaicVideoAttachment({
       ref={elementRef}
       type="button"
       className={`message-attachment__mosaic-video relative min-h-0 overflow-hidden bg-black ${className || ""}`}
-      onClick={onPlay}
+      onClick={() => onPlay(videoPreviewData || undefined)}
       aria-label={`Lire ${attachment.fileName}`}
     >
-      {thumbnailData ? (
-        <img src={thumbnailData} alt="" className="h-full w-full object-cover" />
-      ) : videoPreviewData ? (
+      {videoPreviewData ? (
         <video
           src={videoPreviewData}
           muted
@@ -552,6 +693,8 @@ function MosaicVideoAttachment({
             }
           }}
         />
+      ) : thumbnailData ? (
+        <img src={thumbnailData} alt="" className="h-full w-full object-cover filter blur-[1px]" />
       ) : (
         <Video className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 text-white/60" />
       )}
@@ -623,7 +766,6 @@ export function MessageAttachments({
     setIsDragging(false);
   };
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [loadingVideoIndex, setLoadingVideoIndex] = useState<number | null>(null);
   const attachmentsElementRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   // Increment to force a re-render when the module-level cache is updated.
@@ -692,62 +834,8 @@ export function MessageAttachments({
     return () => observer.disconnect();
   }, []);
 
-  // Videos keep only their compact poster in the shared cache. Images use an
-  // IntersectionObserver below: high-resolution data exists only while the
-  // corresponding attachment is actually visible.
   useEffect(() => {
     if (!isVisible || parsedAttachments.length === 0) return;
-
-    const urlsToLoad: Array<{ url: string; fallbackUrl?: string }> = [];
-
-    for (const attachment of parsedAttachments) {
-      if (attachment.type === "video" || attachment.mimeType?.startsWith("video/")) {
-        if (attachment.thumbnail && !_attachmentDataCache.has(attachment.thumbnail) && !_attachmentFailedUrls.has(attachment.thumbnail) && !_attachmentLoadingUrls.has(attachment.thumbnail)) {
-          urlsToLoad.push({ url: attachment.thumbnail });
-        }
-      }
-    }
-
-    if (urlsToLoad.length === 0) return;
-
-    urlsToLoad.forEach(({ url, fallbackUrl }) => {
-      _attachmentLoadingUrls.add(url);
-      GetAttachmentData(url)
-        .then((dataUrl) => {
-          cacheAttachment(url, dataUrl);
-          bumpCache(url, true);
-        })
-        .catch((error) => {
-          console.error(`Failed to load attachment ${url}:`, error);
-          _attachmentFailedUrls.add(url);
-          if (!fallbackUrl || _attachmentDataCache.has(fallbackUrl) || _attachmentLoadingUrls.has(fallbackUrl)) {
-            bumpCache(url, false);
-            return;
-          }
-
-          // Some older messages no longer have their original media locally.
-          // Preserve their existing low-resolution thumbnail as a fallback.
-          _attachmentLoadingUrls.add(fallbackUrl);
-          GetAttachmentData(fallbackUrl)
-            .then((dataUrl) => {
-              cacheAttachment(fallbackUrl, dataUrl);
-              bumpCache(fallbackUrl, true);
-            })
-            .catch((fallbackError) => {
-              console.error(`Failed to load attachment fallback ${fallbackUrl}:`, fallbackError);
-              _attachmentFailedUrls.add(fallbackUrl);
-              bumpCache(fallbackUrl, false);
-            })
-            .finally(() => {
-              _attachmentLoadingUrls.delete(fallbackUrl);
-            });
-        })
-        .finally(() => {
-          _attachmentLoadingUrls.delete(url);
-        });
-    });
-    // Only depend on parsedAttachments
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVisible, parsedAttachments]);
 
   if (parsedAttachments.length === 0) {
@@ -777,8 +865,11 @@ export function MessageAttachments({
     }
   };
 
-  const handlePlayVideo = async (attachment: Attachment, index: number) => {
-    setLoadingVideoIndex(index);
+  const handlePlayVideo = async (attachment: Attachment, preloadedData?: string) => {
+    if (preloadedData) {
+      setSelectedVideo(preloadedData);
+      return;
+    }
     try {
       const dataUrl = await GetAttachmentData(attachment.url);
       setSelectedVideo(dataUrl);
@@ -786,8 +877,6 @@ export function MessageAttachments({
       console.error("Failed to load video:", error);
       _attachmentFailedUrls.add(attachment.url);
       bumpCache(attachment.url, false);
-    } finally {
-      setLoadingVideoIndex(null);
     }
   };
 
@@ -833,8 +922,13 @@ export function MessageAttachments({
     setSelectedImageIndex(index);
   };
 
-  const openMosaicVideo = async (attachment: Attachment, index: number) => {
-    setLoadingVideoIndex(index);
+  const openMosaicVideo = async (attachment: Attachment, index: number, preloadedData?: string) => {
+    if (preloadedData) {
+      setSelectedImage(null);
+      setSelectedVideo(preloadedData);
+      setSelectedImageIndex(index);
+      return;
+    }
     try {
       const data = await GetAttachmentData(attachment.url);
       setSelectedImage(null);
@@ -842,8 +936,6 @@ export function MessageAttachments({
       setSelectedImageIndex(index);
     } catch (error) {
       console.error("Failed to load gallery video:", error);
-    } finally {
-      setLoadingVideoIndex(null);
     }
   };
 
@@ -935,7 +1027,10 @@ export function MessageAttachments({
               <MosaicVideoAttachment
                 key={`${attachment.url}-${index}`}
                 attachment={attachment}
-                onPlay={() => { void openMosaicVideo(attachment, index); }}
+                onPlay={(preloadedData) => {
+                  setSelectedImageIndex(index);
+                  void openMosaicVideo(attachment, index, preloadedData);
+                }}
                 className={tileClass}
               />
             ) : (
@@ -1087,7 +1182,6 @@ export function MessageAttachments({
           const isAudio = attachment.type === "audio";
           const isPdf = getFileKind(attachment.fileName, attachment.mimeType) === "pdf";
           const audioUrl = getCachedAttachment(attachment.url);
-          const videoThumbnailDataUrl = isVisible && attachment.thumbnail ? getCachedAttachment(attachment.thumbnail) : undefined;
 
           return (
             <div
@@ -1106,44 +1200,11 @@ export function MessageAttachments({
                   onDownload={() => { void handleDownload(attachment); }}
                 />
               ) : isVideo ? (
-                <div
-                  className="message-attachment__video relative rounded-lg overflow-hidden bg-black"
-                  style={{ width: "320px", height: "200px", contain: "strict" }}
-                >
-                  <button
-                    className="w-full h-full flex items-center justify-center relative"
-                    style={
-                      videoThumbnailDataUrl
-                        ? { backgroundImage: `url(${videoThumbnailDataUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
-                        : undefined
-                    }
-                    onClick={() => handlePlayVideo(attachment, index)}
-                    disabled={loadingVideoIndex === index}
-                    aria-label={`Lire ${attachment.fileName}`}
-                  >
-                    {!videoThumbnailDataUrl && <Video className="h-10 w-10 text-white/60" />}
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      {loadingVideoIndex === index ? (
-                        <div className="bg-black/40 rounded-full p-3">
-                          <Loader2 className="h-8 w-8 text-white animate-spin" />
-                        </div>
-                      ) : (
-                        <div className="bg-black/40 rounded-full p-3 hover:bg-black/60 transition-colors">
-                          <Play className="h-8 w-8 text-white fill-white" />
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                  {hoveredIndex === index && (
-                    <button
-                      className="absolute bottom-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-black/60 transition-colors"
-                      onClick={(e) => { e.stopPropagation(); handleDownload(attachment); }}
-                      title="Télécharger"
-                    >
-                      <Download className="h-4 w-4 text-white" />
-                    </button>
-                  )}
-                </div>
+                <VisibleVideoAttachment
+                  attachment={attachment}
+                  onPlay={(preloadedData) => { void handlePlayVideo(attachment, preloadedData); }}
+                  onDownload={() => { void handleDownload(attachment); }}
+                />
               ) : isAudio ? (
                 <div
                   className={`flex flex-col gap-2 p-3 rounded-lg border ${isFromMe && layout === "bubble"

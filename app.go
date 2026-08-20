@@ -1023,6 +1023,17 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 										UpdatedAt: time.Unix(e.Timestamp, 0),
 									})
 								}
+								// A reaction implies the message was read by the participant who reacted
+								if e.UserID != message.SenderID {
+									persistMessageReceipt(core.ReceiptEvent{
+										InstanceID:     e.InstanceID,
+										ConversationID: e.ConversationID,
+										MessageID:      e.MessageID,
+										UserID:         e.UserID,
+										ReceiptType:    core.ReceiptTypeRead,
+										Timestamp:      e.Timestamp,
+									})
+								}
 							} else {
 								query := db.DB.Where("message_id = ? AND user_id = ?", message.ID, e.UserID)
 								// WhatsApp represents a remote reaction removal with an empty
