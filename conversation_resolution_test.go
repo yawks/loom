@@ -6,6 +6,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"Loom/pkg/providers"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -99,3 +100,38 @@ func TestProviderAccountsNamespaceConversationID(t *testing.T) {
 		t.Fatalf("already namespaced conversation ID changed to %q", got)
 	}
 }
+
+func TestGetProviderForUnpersistedWhatsAppConversation(t *testing.T) {
+	pm := core.NewProviderManager()
+	waProvider := providers.NewWhatsAppProvider()
+	pm.RegisterProvider("whatsapp", core.ProviderInfo{ID: "whatsapp", Name: "WhatsApp"}, func() core.Provider { return waProvider })
+	_, _, err := pm.CreateProvider("whatsapp", core.ProviderConfig{}, "WhatsApp 1", "whatsapp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{providerManager: pm}
+
+	// 1. Resolves via ContactStore
+	db.ContactStore.UpsertLinkedAccount(models.LinkedAccount{
+		ID:                 9999,
+		ProviderInstanceID: "whatsapp-1",
+		UserID:             "33777933362@s.whatsapp.net",
+		Protocol:           "whatsapp",
+	})
+	t.Cleanup(func() {
+		db.ContactStore.DeleteLinkedAccount(9999)
+	})
+
+	got := app.getProviderForConversation("33777933362@s.whatsapp.net")
+	if got == nil {
+		t.Fatal("expected provider to be found via ContactStore for unpersisted conversation")
+	}
+
+	// 2. Resolves via protocol heuristic if contact is not yet in ContactStore
+	gotHeuristic := app.getProviderForConversation("33999999999@s.whatsapp.net")
+	if gotHeuristic == nil {
+		t.Fatal("expected provider to be found via protocol heuristic when 1 WhatsApp provider configured")
+	}
+}
+

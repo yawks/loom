@@ -167,7 +167,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     );
   }, [selectedContact, selectedProviderFilter]);
 
-  const conversationId = activeAccount?.conversationId || activeAccount?.userId;
+  const conversationId =
+    activeAccount?.conversationId ||
+    (activeAccount?.providerInstanceId && activeAccount?.userId
+      ? `${activeAccount.providerInstanceId}::${activeAccount.userId}`
+      : activeAccount?.userId);
   const customEmojis = customEmojiCatalog.instanceId === activeAccount?.providerInstanceId
     ? customEmojiCatalog.emojis
     : [];
@@ -686,7 +690,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
       try {
         await sendMessageMutation.mutateAsync({
-          conversationId: activeAccount?.conversationId || activeAccount?.userId,
+          conversationId: conversationId ?? "",
           text,
           quotedMessageId,
         });

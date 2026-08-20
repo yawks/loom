@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"Loom/pkg/models"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -285,3 +286,157 @@ func TestConvertMessageFormatsLiveLocation(t *testing.T) {
 		t.Fatalf("live location attachment = %#v", attachments)
 	}
 }
+
+func TestReconcileDuplicateMessagePreservesEditedBody(t *testing.T) {
+	editTime := time.Now()
+	existing := &models.Message{
+		ProtocolMsgID:   "edited-msg-1",
+		Body:            "Texte modifié",
+		IsEdited:        true,
+		EditedTimestamp: &editTime,
+	}
+	incomingUnedited := &models.Message{
+		ProtocolMsgID: "edited-msg-1",
+		Body:          "Texte original non modifié",
+		IsEdited:      false,
+	}
+
+	reconcileDuplicateMessage(existing, incomingUnedited)
+
+	if existing.Body != "Texte modifié" || !existing.IsEdited || existing.EditedTimestamp == nil {
+		t.Fatalf("reconcileDuplicateMessage overwrote edited body: %#v", existing)
+	}
+
+	incomingNewerEdit := &models.Message{
+		ProtocolMsgID:   "edited-msg-1",
+		Body:            "Texte encore plus récent",
+		IsEdited:        true,
+		EditedTimestamp: &editTime,
+	}
+	reconcileDuplicateMessage(existing, incomingNewerEdit)
+	if existing.Body != "Texte encore plus récent" || !existing.IsEdited {
+		t.Fatalf("reconcileDuplicateMessage did not accept newer edit: %#v", existing)
+	}
+}
+
+func TestStoreMessagesForConversationPreservesEditedState(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	convID := "whatsapp-1::33600000000@s.whatsapp.net"
+
+	editTime := time.Now()
+	editedMsg := models.Message{
+		ProtocolMsgID:   "msg-edit-test",
+		ProtocolConvID:  convID,
+		Body:            "Message modifié",
+		IsEdited:        true,
+		EditedTimestamp: &editTime,
+		Timestamp:       time.Unix(100, 0),
+	}
+
+	provider.storeMessagesForConversation(convID, []models.Message{editedMsg})
+
+	// Redelivering the unedited version of the same message should NOT revert the cache
+	uneditedMsg := models.Message{
+		ProtocolMsgID:  "msg-edit-test",
+		ProtocolConvID: convID,
+		Body:           "Message original",
+		IsEdited:       false,
+		Timestamp:      time.Unix(100, 0),
+	}
+
+	provider.storeMessagesForConversation(convID, []models.Message{uneditedMsg})
+
+	cached := provider.conversationMessages[convID]
+	if len(cached) != 1 {
+		t.Fatalf("expected 1 message in cache, got %d", len(cached))
+	}
+	if cached[0].Body != "Message modifié" || !cached[0].IsEdited {
+		t.Fatalf("storeMessagesForConversation reverted edited message: %#v", cached[0])
+	}
+}
+
+func TestHandleEditedProtocolMessageUpdatesCacheAndPendingEdits(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	convID := "33600000000@s.whatsapp.net"
+	nsConvID := "whatsapp-1::33600000000@s.whatsapp.net"
+
+	chat := types.NewJID("33600000000", types.DefaultUserServer)
+
+	// 1. Target message in cache is updated
+	provider.setCachedConversationMessagesLocked(nsConvID, []models.Message{{
+		ProtocolMsgID:  "msg-target-1",
+		ProtocolConvID: nsConvID,
+		Body:           "Original",
+		Timestamp:      time.Unix(100, 0),
+	}})
+
+	editEvent := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "edit-protocol-msg-1",
+			Timestamp:     time.Unix(200, 0),
+		},
+		Message: &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{
+				Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+				Key: &waProto.MessageKey{
+					RemoteJID: proto.String(convID),
+					ID:        proto.String("msg-target-1"),
+				},
+				EditedMessage: &waE2E.Message{
+					Conversation: proto.String("Modified text"),
+				},
+			},
+		},
+	}
+
+	provider.handleEditedProtocolMessage(editEvent, editEvent.Message.ProtocolMessage, false)
+
+	cached := provider.conversationMessages[nsConvID]
+	if len(cached) != 1 || cached[0].Body != "Modified text" || !cached[0].IsEdited {
+		t.Fatalf("handleEditedProtocolMessage failed to update cache: %#v", cached)
+	}
+
+	// 2. Target message not yet in cache is saved to pendingEdits and applied on convertMessage
+	editEvent2 := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "edit-protocol-msg-2",
+			Timestamp:     time.Unix(300, 0),
+		},
+		Message: &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{
+				Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+				Key: &waProto.MessageKey{
+					RemoteJID: proto.String(convID),
+					ID:        proto.String("msg-target-pending"),
+				},
+				EditedMessage: &waE2E.Message{
+					Conversation: proto.String("Pending modified text"),
+				},
+			},
+		},
+	}
+
+	provider.handleEditedProtocolMessage(editEvent2, editEvent2.Message.ProtocolMessage, false)
+
+	// Now convert the original message that arrives later
+	originalEvent := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: chat},
+			ID:            "msg-target-pending",
+			Timestamp:     time.Unix(250, 0),
+		},
+		Message: &waE2E.Message{
+			Conversation: proto.String("Original text"),
+		},
+	}
+
+	converted := provider.convertMessage(originalEvent)
+	if converted == nil || converted.Body != "Pending modified text" || !converted.IsEdited {
+		t.Fatalf("pending edit was not applied to converted message: %#v", converted)
+	}
+}
+

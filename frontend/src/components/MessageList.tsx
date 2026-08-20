@@ -82,8 +82,10 @@ export function MessageList({
   }, [selectedConversation.linkedAccounts, selectedProviderFilter]);
 
   const conversationId =
-    activeAccount?.conversationId ??
-    activeAccount?.userId ??
+    activeAccount?.conversationId ||
+    (activeAccount?.providerInstanceId && activeAccount?.userId
+      ? `${activeAccount.providerInstanceId}::${activeAccount.userId}`
+      : activeAccount?.userId) ||
     "";
 
   const providerInstanceId = activeAccount?.providerInstanceId;

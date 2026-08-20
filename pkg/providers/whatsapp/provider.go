@@ -58,9 +58,16 @@ type WhatsAppProvider struct {
 	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
 	lastAvatarRefresh    map[string]time.Time            // Map of contactID to last refresh time
 	avatarRefreshMu      sync.Mutex                      // Mutex for lastAvatarRefresh map
+	pendingEdits         map[string]pendingEditInfo      // Pending message edits keyed by target message ID
+	pendingEditsMu       sync.Mutex                      // Mutex for pendingEdits map
 	activeCalls          map[string]*activeCallInfo      // Active call tracker keyed by callID
 	activeCallsMu        sync.RWMutex                    // Mutex for activeCalls map
 	logger               *logging.ProviderLogger         // Logger for this provider instance
+}
+
+type pendingEditInfo struct {
+	Body            string
+	EditedTimestamp time.Time
 }
 
 type activeCallInfo struct {
@@ -142,6 +149,7 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		avatarFailures:       make(map[string]bool),
 		lidToJIDMap:          make(map[string]string),
 		lastAvatarRefresh:    make(map[string]time.Time),
+		pendingEdits:         make(map[string]pendingEditInfo),
 		activeCalls:          make(map[string]*activeCallInfo),
 	}
 }

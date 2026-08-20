@@ -3,6 +3,7 @@ package db
 import (
 	"Loom/pkg/models"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -157,6 +158,19 @@ func (s *contactStore) FindMetaContact(id uint) (models.MetaContact, bool) {
 	defer s.mu.RUnlock()
 	mc, ok := s.metaContacts[id]
 	return mc, ok
+}
+
+// FindByUser returns all LinkedAccounts matching the given raw userID across providers.
+func (s *contactStore) FindByUser(userID string) []models.LinkedAccount {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []models.LinkedAccount
+	for _, la := range s.linkedAccounts {
+		if la.UserID == userID || strings.EqualFold(la.UserID, userID) {
+			result = append(result, la)
+		}
+	}
+	return result
 }
 
 // UpsertLinkedAccount reflects a DB write into the in-memory store.

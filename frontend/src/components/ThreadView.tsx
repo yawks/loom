@@ -215,8 +215,10 @@ export function ThreadView() {
   const providerInstanceId = activeAccount?.providerInstanceId;
 
   const conversationId =
-    activeAccount?.conversationId ??
-    activeAccount?.userId ??
+    activeAccount?.conversationId ||
+    (activeAccount?.providerInstanceId && activeAccount?.userId
+      ? `${activeAccount.providerInstanceId}::${activeAccount.userId}`
+      : activeAccount?.userId) ||
     "";
   const conversationReadState = useMessageReadStore(
     (state) => state.readByConversation[conversationId] ?? {}
