@@ -58,7 +58,22 @@ type WhatsAppProvider struct {
 	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
 	lastAvatarRefresh    map[string]time.Time            // Map of contactID to last refresh time
 	avatarRefreshMu      sync.Mutex                      // Mutex for lastAvatarRefresh map
+	activeCalls          map[string]*activeCallInfo      // Active call tracker keyed by callID
+	activeCallsMu        sync.RWMutex                    // Mutex for activeCalls map
 	logger               *logging.ProviderLogger         // Logger for this provider instance
+}
+
+type activeCallInfo struct {
+	CallID      string
+	StartTime   time.Time
+	AcceptTime  time.Time
+	IsAccepted  bool
+	IsRejected  bool
+	IsOutgoing  bool
+	IsGroup     bool
+	GroupJID    string
+	CreatorJID  string
+	CallMessage *models.Message
 }
 
 func (w *WhatsAppProvider) log(format string, args ...interface{}) {
@@ -127,6 +142,7 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		avatarFailures:       make(map[string]bool),
 		lidToJIDMap:          make(map[string]string),
 		lastAvatarRefresh:    make(map[string]time.Time),
+		activeCalls:          make(map[string]*activeCallInfo),
 	}
 }
 
