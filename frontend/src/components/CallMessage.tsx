@@ -66,6 +66,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   // Determine call type and icon
   const getCallInfo = () => {
     const callType = message.callType || "";
+    const effectiveIsGroup = isGroup || callType.includes("group") || (message.protocolConvId ? message.protocolConvId.includes("@g.us") : false);
     const isStaleIncoming = (callType === "incoming_call" || callType === "incoming_group_call")
       && Date.now() - timeToDate(message.timestamp).getTime() > 3 * 60 * 1000;
     const isOutgoing = callType.startsWith("outgoing_");
@@ -153,8 +154,8 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         iconComponent = isVideo ? Video : Phone;
       } else if (outcome === "MISSED") {
         outcomeText = isVideo
-          ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
-          : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
+          ? (effectiveIsGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+          : (effectiveIsGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
         iconComponent = isVideo ? VideoOff : PhoneWithX;
       } else if (outcome === "FAILED") {
         outcomeText = t("call.failed");
@@ -166,8 +167,8 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         // Fallback to call type
         if (callType.includes("missed")) {
           outcomeText = isVideo
-            ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
-            : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
+            ? (effectiveIsGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+            : (effectiveIsGroup ? t("call.missedGroupVoice") : t("call.missedVoice"));
           iconComponent = isVideo ? VideoOff : PhoneWithX;
         } else {
           outcomeText = t("call.missedVoice");
@@ -188,8 +189,8 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       return {
         icon: isVideo ? VideoOff : PhoneWithX,
         text: isVideo
-          ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
-          : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
+          ? (effectiveIsGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+          : (effectiveIsGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
         duration: null,
         participantCount: 0,
       };
@@ -197,7 +198,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
     if (callType === "incoming_call" || callType === "incoming_group_call") {
       return {
         icon: Phone,
-        text: callType === "incoming_group_call" ? t("call.incomingGroupCall") : t("call.incomingCall"),
+        text: callType === "incoming_group_call" || (effectiveIsGroup && callType.includes("group")) ? t("call.incomingGroupCall") : t("call.incomingCall"),
         duration: null,
         participantCount: 0,
       };
@@ -206,8 +207,8 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
       return {
         icon: callType.includes("video") ? VideoOff : PhoneWithX,
         text: isVideo
-          ? (isGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
-          : (isGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
+          ? (effectiveIsGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
+          : (effectiveIsGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
         duration: null,
         participantCount: 0,
       };

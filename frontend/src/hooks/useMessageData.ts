@@ -123,7 +123,9 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
   const isGroupConversation = useMemo(() => {
     if (isGroupFromProvider) return true;
     if (messages.length > 0) {
-      const uniqueSenders = new Set(messages.map((m) => m.senderId));
+      const uniqueSenders = new Set(
+        messages.map((m) => (m.senderId ? m.senderId.replace(/:[0-9]+(@|$)/, "$1") : ""))
+      );
       return uniqueSenders.size > 2;
     }
     return false;

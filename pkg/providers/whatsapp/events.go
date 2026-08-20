@@ -911,6 +911,21 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 		}
 
+		// Track active call in memory
+		w.activeCallsMu.Lock()
+		w.activeCalls[callID] = &activeCallInfo{
+			CallID:      callID,
+			StartTime:   now,
+			IsAccepted:  false,
+			IsRejected:  false,
+			IsOutgoing:  false,
+			IsGroup:     isGroup,
+			GroupJID:    v.GroupJID.String(),
+			CreatorJID:  callCreatorJID.String(),
+			CallMessage: callMessage,
+		}
+		w.activeCallsMu.Unlock()
+
 		// Store the message
 		fmt.Printf("WhatsApp: [CALL MSG] CallOffer - Storing call message: ProtocolMsgID=%s, ProtocolConvID=%s, CallType=%s\n",
 			callMessage.ProtocolMsgID, callMessage.ProtocolConvID, callMessage.CallType)
@@ -930,6 +945,66 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call\n")
 		default:
 		}
+	case *events.CallAccept:
+		fmt.Printf("WhatsApp: Received CallAccept event - CallCreator: %s (server: %s), CallID: %s\n",
+			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
+
+		callID := v.CallID
+		acceptTime := time.Now()
+		if !v.Timestamp.IsZero() {
+			acceptTime = v.Timestamp
+		}
+
+		w.activeCallsMu.Lock()
+		if info, exists := w.activeCalls[callID]; exists {
+			info.IsAccepted = true
+			info.AcceptTime = acceptTime
+		}
+		w.activeCallsMu.Unlock()
+
+		// Update call message in database if exists
+		callCreatorJIDStr := v.CallCreator.String()
+		resolvedID, err := w.resolveContactID(callCreatorJIDStr)
+		if err != nil {
+			resolvedID = callCreatorJIDStr
+		}
+		conversationJID := resolvedID
+		if !v.GroupJID.IsEmpty() {
+			conversationJID = v.GroupJID.String()
+		}
+		convID := core.BuildConvID(w.getInstanceId(), conversationJID)
+
+		if db.DB != nil {
+			var dbMsg models.Message
+			if err := db.DB.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
+				dbMsg.CallOutcome = "CONNECTED"
+				if err := db.DB.Save(&dbMsg).Error; err == nil {
+					w.mu.Lock()
+					if msgs, ok := w.conversationMessages[convID]; ok {
+						for i := range msgs {
+							if msgs[i].ProtocolMsgID == dbMsg.ProtocolMsgID {
+								msgs[i] = dbMsg
+								break
+							}
+						}
+					}
+					w.mu.Unlock()
+
+					select {
+					case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: dbMsg}:
+						fmt.Printf("WhatsApp: [CALL MSG] CallAccept updated message event emitted for call %s\n", callID)
+					default:
+					}
+				}
+			}
+		}
+	case *events.CallReject:
+		fmt.Printf("WhatsApp: Received CallReject event - CallID: %s\n", v.CallID)
+		w.activeCallsMu.Lock()
+		if info, exists := w.activeCalls[v.CallID]; exists {
+			info.IsRejected = true
+		}
+		w.activeCallsMu.Unlock()
 	case *events.CallTerminate:
 		// Handle call termination - received for both incoming calls that end and,
 		// sometimes, outgoing calls when the callee rejects or the call times out.
@@ -1014,24 +1089,75 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			callTimestamp = v.Timestamp
 		}
 
+		w.activeCallsMu.Lock()
+		activeInfo, wasActive := w.activeCalls[callID]
+		delete(w.activeCalls, callID)
+		w.activeCallsMu.Unlock()
+
+		var isAccepted bool
+		var isRejected bool
+		var durationSecs *int32
+		if wasActive {
+			isAccepted = activeInfo.IsAccepted
+			isRejected = activeInfo.IsRejected
+			if isAccepted {
+				start := activeInfo.AcceptTime
+				if start.IsZero() {
+					start = activeInfo.StartTime
+				}
+				secs := int32(callTimestamp.Sub(start).Seconds())
+				if secs < 0 {
+					secs = 0
+				}
+				durationSecs = &secs
+			}
+		} else if existingCallMessage != nil && existingCallMessage.CallOutcome == "CONNECTED" {
+			isAccepted = true
+			if existingCallMessage.CallDurationSecs != nil {
+				durationSecs = existingCallMessage.CallDurationSecs
+			}
+		}
+
 		// Determine call type and outcome
 		var callType string
 		var callOutcome string
-		if isOutgoing {
-			if isGroup {
-				callType = "outgoing_group_voice"
+		if isAccepted {
+			callOutcome = "CONNECTED"
+			if isOutgoing {
+				if isGroup {
+					callType = "outgoing_group_voice"
+				} else {
+					callType = "outgoing_voice"
+				}
 			} else {
-				callType = "outgoing_voice"
+				if isGroup {
+					callType = "incoming_group_call"
+				} else {
+					callType = "incoming_call"
+				}
 			}
-			// The other party didn't answer (we received this terminate without a prior accept)
-			callOutcome = "MISSED"
-		} else {
+		} else if isRejected {
+			callOutcome = "REJECTED"
 			if isGroup {
 				callType = "missed_group_voice"
 			} else {
 				callType = "missed_voice"
 			}
+		} else {
 			callOutcome = "MISSED"
+			if isOutgoing {
+				if isGroup {
+					callType = "outgoing_group_voice"
+				} else {
+					callType = "outgoing_voice"
+				}
+			} else {
+				if isGroup {
+					callType = "missed_group_voice"
+				} else {
+					callType = "missed_voice"
+				}
+			}
 		}
 
 		if existingCallMessage != nil {
@@ -1039,6 +1165,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			existingCallMessage.CallType = callType
 			existingCallMessage.CallOutcome = callOutcome
 			existingCallMessage.Timestamp = callTimestamp
+			if durationSecs != nil {
+				existingCallMessage.CallDurationSecs = durationSecs
+			}
 
 			if db.DB != nil {
 				if err := db.DB.Save(existingCallMessage).Error; err != nil {
@@ -1278,9 +1407,33 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				// Determine call type based on call log record
 				callTypeEnum := record.GetCallType()
 				callTypeStr := callTypeEnum.String()
+				callResultStr := callResult.String()
+
+				var callOutcome string
+				if callResultStr != "" && callResultStr != "UNKNOWN" {
+					callOutcome = callResultStr
+				} else if durationSecs != nil && *durationSecs > 0 {
+					callOutcome = "CONNECTED"
+				} else {
+					callOutcome = "MISSED"
+				}
 
 				var callType string
-				if callTypeStr != "" && callTypeStr != "UNKNOWN" {
+				if callOutcome == "CONNECTED" {
+					if isGroupCall {
+						if isVideo {
+							callType = "incoming_group_video"
+						} else {
+							callType = "incoming_group_call"
+						}
+					} else {
+						if isVideo {
+							callType = "incoming_video"
+						} else {
+							callType = "incoming_call"
+						}
+					}
+				} else if callTypeStr != "" && callTypeStr != "UNKNOWN" {
 					switch callTypeStr {
 					case "REGULAR":
 						if isVideo {
@@ -1325,7 +1478,7 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					IsFromMe:         false,
 					CallType:         callType,
 					CallIsVideo:      isVideo,
-					CallOutcome:      callResult.String(),
+					CallOutcome:      callOutcome,
 					CallDurationSecs: durationSecs,
 				}
 
@@ -1389,7 +1542,7 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 						existingMsg.ProtocolConvID = convID
 						existingMsg.CallType = callType
 						existingMsg.CallIsVideo = isVideo
-						existingMsg.CallOutcome = callResult.String()
+						existingMsg.CallOutcome = callOutcome
 						existingMsg.CallDurationSecs = durationSecs
 						if callMessage.CallParticipants != "" {
 							existingMsg.CallParticipants = callMessage.CallParticipants
@@ -1418,7 +1571,14 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				dbMsg.CallIsVideo = isVideo
 
 				// Store call outcome as string
-				dbMsg.CallOutcome = callResult.String()
+				callResultStr := callResult.String()
+				if callResultStr != "" && callResultStr != "UNKNOWN" {
+					dbMsg.CallOutcome = callResultStr
+				} else if durationSecs != nil && *durationSecs > 0 {
+					dbMsg.CallOutcome = "CONNECTED"
+				} else {
+					dbMsg.CallOutcome = "MISSED"
+				}
 
 				// Store participants as JSON array, resolving LIDs to phone numbers
 				if len(participants) > 0 {
@@ -1456,7 +1616,13 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					// Map call type from protobuf enum to our string format
 					switch callTypeStr {
 					case "REGULAR":
-						if isVideo {
+						if dbMsg.CallOutcome == "CONNECTED" {
+							if isVideo {
+								dbMsg.CallType = "incoming_video"
+							} else {
+								dbMsg.CallType = "incoming_call"
+							}
+						} else if isVideo {
 							dbMsg.CallType = "missed_video"
 						} else {
 							dbMsg.CallType = "missed_voice"
@@ -1464,7 +1630,11 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					case "SCHEDULED_CALL":
 						dbMsg.CallType = "scheduled_start"
 					case "VOICE_CHAT":
-						dbMsg.CallType = "missed_group_voice"
+						if dbMsg.CallOutcome == "CONNECTED" {
+							dbMsg.CallType = "incoming_group_call"
+						} else {
+							dbMsg.CallType = "missed_group_voice"
+						}
 					}
 				}
 
