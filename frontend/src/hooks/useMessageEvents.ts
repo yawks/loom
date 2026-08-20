@@ -140,9 +140,11 @@ export function useMessageEvents() {
                 page.some(m => m.protocolMsgId === messageId)
               );
               if (existsInCache) {
-                // The message is already in the cache but the backend may have just enriched
-                // it (e.g. a file_share RTM event adding the real attachment URL after SendFile
-                // stored a URL-less placeholder). Invalidate so the DB copy is fetched.
+                // The message is already in the cache. Update in-place (e.g. edited message, enriched attachments)
+                // and invalidate so any related queries or DB copy are synchronized.
+                safeData.pages = safeData.pages.map(page =>
+                  page.map(m => m.protocolMsgId === messageId ? ({ ...m, ...message } as unknown as models.Message) : m)
+                );
                 queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
                 return safeData;
               }
@@ -267,7 +269,12 @@ export function useMessageEvents() {
         }
 
         if (selectedContact) {
-          const conversationId = selectedContact.linkedAccounts[0]?.conversationId ?? selectedContact.linkedAccounts[0]?.userId;
+          const account = selectedContact.linkedAccounts[0];
+          const conversationId =
+            account?.conversationId ||
+            (account?.providerInstanceId && account?.userId
+              ? `${account.providerInstanceId}::${account.userId}`
+              : account?.userId);
           if (conversationId) {
             // WhatsApp can emit the receipt chat as a LID while Loom's selected
             // conversation uses the equivalent phone-number JID. The protocol

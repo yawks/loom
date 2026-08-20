@@ -238,7 +238,11 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   );
 
   const accountConversationId = (account: models.LinkedAccount) =>
-    account.conversationId ?? account.userId ?? "";
+    account.conversationId ||
+    (account.providerInstanceId && account.userId
+      ? `${account.providerInstanceId}::${account.userId}`
+      : account.userId) ||
+    "";
   const accountUnreadConversationId = (account: models.LinkedAccount) =>
     account.conversationId ?? "";
 

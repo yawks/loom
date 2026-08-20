@@ -66,7 +66,12 @@ export function ConversationDetailsView({
     selectedConversation.linkedAccounts.find(
       (account) => !selectedProviderFilter || account.providerInstanceId === selectedProviderFilter
     ) ?? selectedConversation.linkedAccounts[0];
-  const conversationId = selectedAccount?.conversationId ?? selectedAccount?.userId ?? "";
+  const conversationId =
+    selectedAccount?.conversationId ||
+    (selectedAccount?.providerInstanceId && selectedAccount?.userId
+      ? `${selectedAccount.providerInstanceId}::${selectedAccount.userId}`
+      : selectedAccount?.userId) ||
+    "";
   const canLeaveGroup = Boolean(
     leftConversationId !== conversationId &&
     selectedAccount?.isGroup &&

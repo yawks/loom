@@ -360,7 +360,43 @@ func createMissingConversations() {
 func (a *App) getActiveProvider() core.Provider {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.provider
+	if a.provider != nil {
+		return a.provider
+	}
+	if a.providerManager != nil {
+		if p, err := a.providerManager.GetActiveProvider(); err == nil && p != nil {
+			return p
+		}
+		configured := a.providerManager.GetConfiguredProviders()
+		if len(configured) == 1 {
+			if p, err := a.providerManager.GetProvider(configured[0].InstanceID); err == nil {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) getSingleProviderByProtocol(protocol string) core.Provider {
+	if a.providerManager == nil {
+		return nil
+	}
+	configured := a.providerManager.GetConfiguredProviders()
+	var matched core.Provider
+	for _, info := range configured {
+		if info.ID == protocol {
+			p, err := a.providerManager.GetProvider(info.InstanceID)
+			if err != nil {
+				continue
+			}
+			if matched != nil {
+				// Multiple instances of this protocol configured; avoid ambiguous guessing
+				return nil
+			}
+			matched = p
+		}
+	}
+	return matched
 }
 
 // getProviderForConversation returns the provider that owns the given conversation ID.
@@ -382,14 +418,43 @@ func (a *App) getProviderForConversation(conversationID string) core.Provider {
 		return nil
 	}
 
-	if db.DB != nil && conversationID != "" {
-		var conv models.Conversation
-		if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conv).Error; err == nil {
-			var la models.LinkedAccount
-			if err := db.DB.Where("id = ?", conv.LinkedAccountID).First(&la).Error; err == nil && la.ProviderInstanceID != "" {
-				if p, err := a.providerManager.GetProvider(la.ProviderInstanceID); err == nil {
-					return p
+	if conversationID != "" {
+		if db.DB != nil {
+			var conv models.Conversation
+			if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conv).Error; err == nil {
+				var la models.LinkedAccount
+				if err := db.DB.Where("id = ?", conv.LinkedAccountID).First(&la).Error; err == nil && la.ProviderInstanceID != "" {
+					if p, err := a.providerManager.GetProvider(la.ProviderInstanceID); err == nil {
+						return p
+					}
 				}
+			}
+		}
+
+		rawUserID := core.StripConvID(conversationID)
+
+		// Check in-memory contact store first (fast, covers freshly synced contacts)
+		if a.providerManager != nil {
+			accounts := db.ContactStore.FindByUser(rawUserID)
+			var matchedProvider core.Provider
+			matchedInstanceID := ""
+			for _, account := range accounts {
+				if account.ProviderInstanceID == "" || account.ProviderInstanceID == matchedInstanceID {
+					continue
+				}
+				p, err := a.providerManager.GetProvider(account.ProviderInstanceID)
+				if err != nil {
+					continue
+				}
+				if matchedProvider != nil {
+					matchedProvider = nil
+					break
+				}
+				matchedProvider = p
+				matchedInstanceID = account.ProviderInstanceID
+			}
+			if matchedProvider != nil {
+				return matchedProvider
 			}
 		}
 
@@ -397,9 +462,9 @@ func (a *App) getProviderForConversation(conversationID string) core.Provider {
 		// yet. Resolve their provider directly from the LinkedAccount instead
 		// of incorrectly falling back to whichever provider is currently active.
 		var accounts []models.LinkedAccount
-		if a.providerManager != nil {
+		if a.providerManager != nil && db.DB != nil {
 			if err := db.DB.
-				Where("user_id = ?", core.StripConvID(conversationID)).
+				Where("user_id = ?", rawUserID).
 				Find(&accounts).Error; err == nil {
 				var matchedProvider core.Provider
 				matchedInstanceID := ""
@@ -421,6 +486,23 @@ func (a *App) getProviderForConversation(conversationID string) core.Provider {
 				}
 				if matchedProvider != nil {
 					return matchedProvider
+				}
+			}
+		}
+
+		// Protocol-specific identifier heuristics when not found in DB
+		if a.providerManager != nil {
+			if strings.HasSuffix(rawUserID, "@s.whatsapp.net") || strings.HasSuffix(rawUserID, "@g.us") || strings.HasSuffix(rawUserID, "@lid") {
+				if p := a.getSingleProviderByProtocol("whatsapp"); p != nil {
+					return p
+				}
+			} else if strings.HasPrefix(rawUserID, "spaces/") || strings.HasPrefix(rawUserID, "users/") {
+				if p := a.getSingleProviderByProtocol("googlechat"); p != nil {
+					return p
+				}
+			} else if strings.Contains(rawUserID, "@unq.gbl.spaces") || strings.Contains(rawUserID, "@thread.tacv2") || strings.Contains(rawUserID, "@thread.v2") || strings.HasPrefix(rawUserID, "19:") || strings.HasPrefix(rawUserID, "8:orgid:") {
+				if p := a.getSingleProviderByProtocol("teams"); p != nil {
+					return p
 				}
 			}
 		}
