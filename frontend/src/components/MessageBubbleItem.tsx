@@ -320,7 +320,7 @@ export function MessageBubbleItem({
               </div>
             </div>
             <div className={message.isFromMe ? "self-end" : "self-start"}>
-              <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} layout="bubble" />
+              <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} participantNames={participantNames} layout="bubble" />
             </div>
           </div>
           {message.isFromMe && (

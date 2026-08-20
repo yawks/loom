@@ -39,34 +39,47 @@ export function getUserDisplayName(
 ): string {
   if (!userId) return userId;
 
-  // First, try to get from participantNames map
+  // Extract raw ID if namespaced (e.g. "whatsapp-1::1234@s.whatsapp.net" -> "1234@s.whatsapp.net")
+  const rawId = userId.includes("::") ? userId.split("::")[1] : userId;
+  // Strip device suffixes if present (e.g. "1234:5@s.whatsapp.net" -> "1234@s.whatsapp.net")
+  const normalizedId = userId.replace(/:\d+@/, "@");
+  const rawNormalizedId = rawId.replace(/:\d+@/, "@");
+
+  // 1. First, try to get from participantNames map
   if (options?.participantNames) {
-    const name = options.participantNames.get(userId);
-    if (name && name.trim().length > 0) {
-      return name;
+    const candidateKeys = [userId, rawId, normalizedId, rawNormalizedId];
+    for (const key of candidateKeys) {
+      const name = options.participantNames.get(key);
+      if (name && name.trim().length > 0) {
+        return name;
+      }
     }
   }
 
-  // If not found, try to find in messages (for @userIds)
+  // 2. If not found, try to find in messages (senderName)
   if (options?.allMessages) {
+    const candidateKeys = new Set([userId, rawId, normalizedId, rawNormalizedId]);
     for (const message of options.allMessages) {
-      // Check if this message is from the user we're looking for
-      if (message.senderId === userId && message.senderName && message.senderName.trim().length > 0) {
+      if (
+        message.senderName &&
+        message.senderName.trim().length > 0 &&
+        (candidateKeys.has(message.senderId) ||
+          candidateKeys.has(message.senderId?.replace(/:\d+@/, "@")) ||
+          (message.senderId?.includes("::") && candidateKeys.has(message.senderId.split("::")[1])))
+      ) {
         return message.senderName;
       }
     }
   }
 
-  // Fallback: format the ID in a readable way
+  // 3. Fallback: format the ID in a readable way
   // For User IDs (U1234567890), just return the ID as-is
-  // For other formats, try to format them
-  if (userId.startsWith("U") && /^U[A-Z0-9]+$/.test(userId)) {
-    // @userId - return as-is (will be handled by UI)
-    return userId;
+  if (rawId.startsWith("U") && /^U[A-Z0-9]+$/.test(rawId)) {
+    return rawId;
   }
 
-  // For WhatsApp IDs, format as phone number
-  const whatsappMatch = userId.match(/^(\d+)@s\.whatsapp\.net$/);
+  // 4. For WhatsApp phone number IDs, format as phone number
+  const whatsappMatch = rawNormalizedId.match(/^(\d+)@(?:s\.whatsapp\.net|c\.us)$/);
   if (whatsappMatch) {
     const phoneNumber = whatsappMatch[1];
     if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
@@ -77,8 +90,13 @@ export function getUserDisplayName(
     return `+${phoneNumber}`;
   }
 
-  // Generic fallback
-  return userId
+  // 5. If it's a raw WhatsApp LID that wasn't resolved yet
+  if (rawId.endsWith("@lid")) {
+    return rawId.replace(/@lid$/, "");
+  }
+
+  // 6. Generic fallback
+  return rawId
     .replace(/^user-/, "")
     .replace(/^whatsapp-/, "")
     .replace(/^[a-z]+-/, "")

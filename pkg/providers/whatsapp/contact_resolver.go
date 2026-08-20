@@ -39,63 +39,81 @@ func (w *WhatsAppProvider) resolveContactID(contactID string) (string, error) {
 
 	// If it's a LID, try to resolve it
 	if jid.Server == "lid" {
+		cleanLID := jid.ToNonAD().String()
+
 		// Strategy 1: Check memory cache (fastest)
 		w.lidToJIDMu.RLock()
 		if resolved, found := w.lidToJIDMap[contactID]; found && resolved != "" {
 			w.lidToJIDMu.RUnlock()
 			return resolved, nil
 		}
+		if resolved, found := w.lidToJIDMap[cleanLID]; found && resolved != "" {
+			w.lidToJIDMu.RUnlock()
+			return resolved, nil
+		}
 		w.lidToJIDMu.RUnlock()
 
-		// Strategy 2: Check database LID mappings
+		// Strategy 2: Check whatsmeow LID store
+		if w.client != nil && w.client.Store != nil && w.client.Store.LIDs != nil {
+			phoneJID, err := w.client.Store.LIDs.GetPNForLID(w.ctx, jid.ToNonAD())
+			if err == nil && !phoneJID.IsEmpty() {
+				resolved := phoneJID.ToNonAD().String()
+				w.lidToJIDMu.Lock()
+				w.lidToJIDMap[contactID] = resolved
+				w.lidToJIDMap[cleanLID] = resolved
+				w.lidToJIDMu.Unlock()
+				return resolved, nil
+			}
+		}
+
+		// Strategy 3: Check database LID mappings
 		if db.DB != nil {
 			var mapping models.LIDMapping
 			// Use a silent session to prevent GORM from logging "record not found"
 			silentDB := db.DB.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
-			err := silentDB.Where("lid = ? AND protocol = ?", contactID, "whatsapp").First(&mapping).Error
+			err := silentDB.Where("(lid = ? OR lid = ?) AND protocol = ?", contactID, cleanLID, "whatsapp").First(&mapping).Error
 			if err == nil {
 				// Update cache
 				w.lidToJIDMu.Lock()
 				w.lidToJIDMap[contactID] = mapping.JID
+				w.lidToJIDMap[cleanLID] = mapping.JID
 				w.lidToJIDMu.Unlock()
 				return mapping.JID, nil
 			}
-			// Don't log "record not found" - it's normal for LIDs that haven't been mapped yet
-			// Use errors.Is to check for gorm.ErrRecordNotFound without triggering GORM's automatic logging
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				// Only log if it's a real error, not just "not found"
 				fmt.Printf("WhatsApp: Error checking LID mapping for %s: %v\n", contactID, err)
 			}
 		}
 
-		// Strategy 3: Check LinkedAccount.Extra for stored mappings
+		// Strategy 4: Check LinkedAccount.Extra for stored mappings
 		if db.DB != nil {
 			var accounts []models.LinkedAccount
 			err := db.DB.Where(
-				"protocol = ? AND provider_instance_id = ? AND extra LIKE ?",
-				"whatsapp", w.getInstanceId(), "%"+contactID+"%",
+				"protocol = ? AND provider_instance_id = ? AND (extra LIKE ? OR extra LIKE ?)",
+				"whatsapp", w.getInstanceId(), "%"+contactID+"%", "%"+cleanLID+"%",
 			).Find(&accounts).Error
 			if err == nil {
 				for _, acc := range accounts {
 					if acc.Extra != "" {
 						var extraData WhatsAppExtraData
 						if err := json.Unmarshal([]byte(acc.Extra), &extraData); err == nil {
-							if extraData.LID == contactID && extraData.PhoneNumber != "" {
+							if (extraData.LID == contactID || extraData.LID == cleanLID) && extraData.PhoneNumber != "" {
 								return extraData.PhoneNumber, nil
 							}
 							if alias, ok := extraData.Aliases[contactID]; ok {
+								return alias, nil
+							}
+							if alias, ok := extraData.Aliases[cleanLID]; ok {
 								return alias, nil
 							}
 						}
 					}
 				}
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-				// Only log if it's a real error, not just "not found"
 				fmt.Printf("WhatsApp: Error checking LinkedAccount.Extra for %s: %v\n", contactID, err)
 			}
 		}
 
-		// Could not resolve LID
 		// Could not resolve LID - log warning and return original ID (fallback)
 		fmt.Printf("WhatsApp: WARNING - Could not resolve LID to phone number: %s, using LID as fallback\n", contactID)
 		return contactID, nil

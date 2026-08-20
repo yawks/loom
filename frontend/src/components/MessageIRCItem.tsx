@@ -317,7 +317,7 @@ export function MessageIRCItem({
             </div>
             {message.isFromMe && (
               <div className="self-end mr-4">
-                <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} layout="irc" />
+                <MessageStatus message={message} isGroup={isGroupConversation} allMessages={mainMessages} participantNames={participantNames} layout="irc" />
               </div>
             )}
           </div>
