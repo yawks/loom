@@ -1,4 +1,4 @@
-import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, FetchLinkPreview } from "../../wailsjs/go/main/App";
+import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -34,6 +34,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
   const cleanupObsoleteMessages = useMessageReadStore((state) => state.cleanupObsoleteMessages);
   const readByConversation = useMessageReadStore((state) => state.readByConversation);
   const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
+  const [groupParticipants, setGroupParticipants] = useState<models.GroupParticipant[]>([]);
 
   const conversationReadState = useMemo(
     () => readByConversation[conversationId] ?? {},
@@ -175,6 +176,26 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
   }, [messages]);
 
   useEffect(() => {
+    if (!conversationId) {
+      setGroupParticipants([]);
+      return;
+    }
+    if (isGroupFromProvider || isGroupConversation) {
+      GetGroupParticipants(conversationId)
+        .then((res) => {
+          if (Array.isArray(res)) {
+            setGroupParticipants(res);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to load group participants:", err);
+        });
+    } else {
+      setGroupParticipants([]);
+    }
+  }, [conversationId, isGroupFromProvider, isGroupConversation]);
+
+  useEffect(() => {
     if (!conversationId) return;
     const loadParticipantNames = async () => {
       try {
@@ -183,6 +204,9 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
           if (msg.senderId) userIds.add(msg.senderId);
           if (msg.reactions) msg.reactions.forEach((r) => userIds.add(r.userId));
           if (msg.receipts) msg.receipts.forEach((rcpt) => userIds.add(rcpt.userId));
+        });
+        groupParticipants.forEach((p) => {
+          if (p.userId) userIds.add(p.userId);
         });
         if (userIds.size === 0) return;
 
@@ -241,7 +265,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       }
     };
     loadParticipantNames();
-  }, [conversationId, isGroupFromProvider, messages]);
+  }, [conversationId, isGroupFromProvider, messages, groupParticipants]);
 
   useEffect(() => {
     if (!conversationId || messages.length === 0) return;
@@ -284,6 +308,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     threadReplyCounts,
     isGroupConversation,
     currentUserId,
+    groupParticipants,
     participantNames,
     conversationReadState,
     fetchNextPage,
