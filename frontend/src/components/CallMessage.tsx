@@ -67,8 +67,6 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   const getCallInfo = () => {
     const callType = message.callType || "";
     const effectiveIsGroup = isGroup || callType.includes("group") || (message.protocolConvId ? message.protocolConvId.includes("@g.us") : false);
-    const isStaleIncoming = (callType === "incoming_call" || callType === "incoming_group_call")
-      && Date.now() - timeToDate(message.timestamp).getTime() > 3 * 60 * 1000;
     const isOutgoing = callType.startsWith("outgoing_");
     const isVideo = message.callIsVideo || callType.includes("video");
     const duration = message.callDurationSecs;
@@ -185,16 +183,6 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
     }
 
     // No summary — use basic call type
-    if (isStaleIncoming) {
-      return {
-        icon: isVideo ? VideoOff : PhoneWithX,
-        text: isVideo
-          ? (effectiveIsGroup ? t("call.missedGroupVideo") : t("call.missedVideo"))
-          : (effectiveIsGroup ? t("call.missedGroupVoice") : t("call.missedVoice")),
-        duration: null,
-        participantCount: 0,
-      };
-    }
     if (callType === "incoming_call" || callType === "incoming_group_call") {
       return {
         icon: Phone,

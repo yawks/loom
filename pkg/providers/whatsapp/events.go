@@ -702,11 +702,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.cacheConversationsFromHistory(v.Data)
 			// Process history messages to populate previews and cache
 			w.cacheMessagesFromHistory(v.Data)
-			// NOTE: We also no longer call processCallLogRecords here - it queries the database for messages
-			// Call logs will be processed when messages are loaded on-demand (when clicking on a conversation)
-			// fmt.Printf("WhatsApp: ===== PROCESSING CALL LOG RECORDS =====\n")
-			// w.processCallLogRecords(v.Data)
-			// fmt.Printf("WhatsApp: ===== CALL LOG RECORDS PROCESSING COMPLETE =====\n")
+			// Call summaries are separate from regular history messages. In particular,
+			// this is the only payload that contains the real start time, outcome and
+			// duration for calls that happened while Loom was offline.
+			w.processCallLogRecords(v.Data)
 
 			// Update last sync timestamp after successful history sync
 			now := time.Now()
@@ -742,6 +741,19 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				// Channel full, skip
 			}
 		}()
+	case *events.AppState:
+		// Incremental call history is delivered through App State Sync on normal
+		// reconnects. HistorySync.callLogRecords is primarily used for full history
+		// syncs, so handling only that path loses calls made while Loom was offline.
+		if v != nil && v.SyncActionValue != nil {
+			if action := v.GetCallLogAction(); action != nil {
+				if record := action.GetCallLogRecord(); record != nil {
+					history := &waHistorySync.HistorySync{}
+					history.CallLogRecords = append(history.CallLogRecords, record)
+					w.processCallLogRecords(history)
+				}
+			}
+		}
 	case *events.AppStateSyncComplete:
 		// App state sync completed - contacts and conversations are now available
 		fmt.Printf("WhatsApp: App state sync completed for collection: %s\n", v.Name)
@@ -878,9 +890,13 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			callType = "incoming_group_call"
 		}
 
-		// Create a call message
-		now := time.Now()
-		callMsgID := fmt.Sprintf("call_%s_%d", callID, now.Unix())
+		// Queued offers may be delivered when Loom reconnects. Keep WhatsApp's event
+		// time so an offline call is not displayed at the reconnection time.
+		callTimestamp := v.Timestamp
+		if callTimestamp.IsZero() {
+			callTimestamp = time.Now()
+		}
+		callMsgID := fmt.Sprintf("call_%s_%d", callID, callTimestamp.Unix())
 
 		// Use resolved CallCreator JID for sender ID
 		senderID := callCreatorJID.String()
@@ -895,7 +911,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			SenderID:       senderID,
 			SenderName:     "", // Will be filled from contact info if available
 			Body:           "", // Call messages don't have body text
-			Timestamp:      now,
+			Timestamp:      callTimestamp,
 			IsFromMe:       false, // Incoming call
 			CallType:       callType,
 			CallIsVideo:    false, // Will be updated from call logs if available
@@ -917,7 +933,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		w.activeCallsMu.Lock()
 		w.activeCalls[callID] = &activeCallInfo{
 			CallID:      callID,
-			StartTime:   now,
+			StartTime:   callTimestamp,
 			IsAccepted:  false,
 			IsRejected:  false,
 			IsOutgoing:  false,
@@ -1166,7 +1182,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// Update existing message with termination info
 			existingCallMessage.CallType = callType
 			existingCallMessage.CallOutcome = callOutcome
-			existingCallMessage.Timestamp = callTimestamp
+			// A call message is timestamped at its start, not at its termination.
+			// This matters for delayed events and also keeps its position stable in
+			// the conversation when the summary arrives.
+			if wasActive && !activeInfo.StartTime.IsZero() {
+				existingCallMessage.Timestamp = activeInfo.StartTime
+			}
 			if durationSecs != nil {
 				existingCallMessage.CallDurationSecs = durationSecs
 			}
@@ -1262,6 +1283,22 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	}
 }
 
+func callLogOutcome(callResult string, durationSecs *int32) string {
+	// WhatsApp reports calls answered on another linked device as
+	// ACCEPTEDELSEWHERE. For the conversation history this is still a connected
+	// call, not a missed one.
+	if callResult == "CONNECTED" || callResult == "ACCEPTEDELSEWHERE" {
+		return "CONNECTED"
+	}
+	if callResult != "" && callResult != "UNKNOWN" {
+		return callResult
+	}
+	if durationSecs != nil && *durationSecs > 0 {
+		return "CONNECTED"
+	}
+	return "MISSED"
+}
+
 func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistorySync) {
 	fmt.Printf("WhatsApp: [CALL LOGS] processCallLogRecords called\n")
 	if history == nil {
@@ -1332,6 +1369,7 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 		// Extract call information from CallLogRecord
 		duration := record.GetDuration()
 		isVideo := record.GetIsVideo()
+		isIncoming := record.GetIsIncoming()
 		callResult := record.GetCallResult()
 		participants := record.GetParticipants()
 		callType := record.GetCallType()
@@ -1353,8 +1391,9 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 		fmt.Printf("WhatsApp: Processing call log for call %s in conversation %s: duration=%s, isVideo=%v, result=%v, type=%v, participants=%d, isGroup=%v\n",
 			callID, convID, durationStr, isVideo, callResult, callType, len(participants), isGroupCall)
 
-		// Find call messages in this conversation that match the call timestamp
-		// We'll search for call messages around the start time
+		// Find the call by its stable WhatsApp call ID first. Older Loom versions
+		// timestamped delayed offers at reconnection time, so a timestamp-only
+		// lookup cannot repair those rows.
 		startTime := record.GetStartTime()
 		if startTime == 0 {
 			fmt.Printf("WhatsApp: Call log record without start time, skipping\n")
@@ -1375,16 +1414,21 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			var dbMsgs []models.Message
 			fmt.Printf("WhatsApp: Searching for call messages in conversation %s between %s and %s\n", convID, startSearch.Format("2006-01-02 15:04:05"), endSearch.Format("2006-01-02 15:04:05"))
 
-			// Build query - search with resolved convID, and also with original LID if available
+			// Search with resolved convID, and also with the namespaced original LID if available.
 			query := db.DB.Model(&models.Message{})
 			if originalLID != "" {
-				query = query.Where("(protocol_conv_id = ? OR protocol_conv_id = ?)", convID, originalLID)
+				query = query.Where("(protocol_conv_id = ? OR protocol_conv_id = ?)", convID, core.BuildConvID(w.getInstanceId(), originalLID))
 			} else {
 				query = query.Where("protocol_conv_id = ?", convID)
 			}
-			query = query.Where("call_type != '' AND timestamp >= ? AND timestamp <= ?", startSearch, endSearch)
+			query = query.Where("call_type != ''")
 
-			err := query.Find(&dbMsgs).Error
+			err := query.Where("protocol_msg_id LIKE ?", fmt.Sprintf("call_%s%%", callID)).Find(&dbMsgs).Error
+			if err == nil && len(dbMsgs) == 0 {
+				// Compatibility fallback for call rows created before the call ID was
+				// included in ProtocolMsgID.
+				err = query.Where("timestamp >= ? AND timestamp <= ?", startSearch, endSearch).Find(&dbMsgs).Error
+			}
 			if err != nil {
 				fmt.Printf("WhatsApp: Failed to find call messages for call %s: %v\n", callID, err)
 				continue
@@ -1411,17 +1455,16 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				callTypeStr := callTypeEnum.String()
 				callResultStr := callResult.String()
 
-				var callOutcome string
-				if callResultStr != "" && callResultStr != "UNKNOWN" {
-					callOutcome = callResultStr
-				} else if durationSecs != nil && *durationSecs > 0 {
-					callOutcome = "CONNECTED"
-				} else {
-					callOutcome = "MISSED"
-				}
+				callOutcome := callLogOutcome(callResultStr, durationSecs)
 
 				var callType string
-				if callOutcome == "CONNECTED" {
+				if !isIncoming {
+					if isGroupCall {
+						callType = "outgoing_group_voice"
+					} else {
+						callType = "outgoing_voice"
+					}
+				} else if callOutcome == "CONNECTED" {
 					if isGroupCall {
 						if isVideo {
 							callType = "incoming_group_video"
@@ -1477,7 +1520,7 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					SenderName:       "",
 					Body:             "",
 					Timestamp:        startTimestamp,
-					IsFromMe:         false,
+					IsFromMe:         !isIncoming,
 					CallType:         callType,
 					CallIsVideo:      isVideo,
 					CallOutcome:      callOutcome,
@@ -1567,20 +1610,14 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				dbMsg := &dbMsgs[i]
 
 				// Update message with call summary information
+				dbMsg.Timestamp = startTimestamp
 				if durationSecs != nil {
 					dbMsg.CallDurationSecs = durationSecs
 				}
 				dbMsg.CallIsVideo = isVideo
 
 				// Store call outcome as string
-				callResultStr := callResult.String()
-				if callResultStr != "" && callResultStr != "UNKNOWN" {
-					dbMsg.CallOutcome = callResultStr
-				} else if durationSecs != nil && *durationSecs > 0 {
-					dbMsg.CallOutcome = "CONNECTED"
-				} else {
-					dbMsg.CallOutcome = "MISSED"
-				}
+				dbMsg.CallOutcome = callLogOutcome(callResult.String(), durationSecs)
 
 				// Store participants as JSON array, resolving LIDs to phone numbers
 				if len(participants) > 0 {
@@ -1618,7 +1655,14 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					// Map call type from protobuf enum to our string format
 					switch callTypeStr {
 					case "REGULAR":
-						if dbMsg.CallOutcome == "CONNECTED" {
+						if !isIncoming {
+							if isGroupCall {
+								dbMsg.CallType = "outgoing_group_voice"
+							} else {
+								dbMsg.CallType = "outgoing_voice"
+							}
+							dbMsg.IsFromMe = true
+						} else if dbMsg.CallOutcome == "CONNECTED" {
 							if isVideo {
 								dbMsg.CallType = "incoming_video"
 							} else {
@@ -1644,6 +1688,22 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				if err := db.DB.Save(dbMsg).Error; err != nil {
 					fmt.Printf("WhatsApp: Failed to update call message %s with summary: %v\n", dbMsg.ProtocolMsgID, err)
 				} else {
+					w.mu.Lock()
+					for cacheConvID, messages := range w.conversationMessages {
+						for messageIndex := range messages {
+							if messages[messageIndex].ProtocolMsgID == dbMsg.ProtocolMsgID {
+								messages[messageIndex] = *dbMsg
+								w.conversationMessages[cacheConvID] = messages
+							}
+						}
+					}
+					w.mu.Unlock()
+
+					select {
+					case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *dbMsg}:
+					default:
+					}
+
 					durationStr := "N/A"
 					if durationSecs != nil {
 						durationStr = fmt.Sprintf("%ds", *durationSecs)
