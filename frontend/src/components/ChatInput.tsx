@@ -961,7 +961,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   if (!canSendMessages) {
     return (
       <div className="border-t p-4 text-center text-sm text-muted-foreground">
-        {t("conversation_read_only")}
+        {groupDetails?.isMember === false ? t("group_left_read_only") : t("conversation_read_only")}
       </div>
     );
   }

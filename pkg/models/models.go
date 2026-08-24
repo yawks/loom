@@ -176,6 +176,7 @@ type GroupDetails struct {
 	Name            string `json:"name"`
 	Description     string `json:"description"`
 	AvatarURL       string `json:"avatarUrl"`
+	IsMember        bool   `json:"isMember"`
 	CanSendMessages bool   `json:"canSendMessages"`
 }
 

@@ -144,7 +144,7 @@ func (p *SlackProvider) GetGroupDetails(conversationID string) (*models.GroupDet
 	if description == "" {
 		description = channel.Topic.Value
 	}
-	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceId(), rawID), Name: channel.Name, Description: description, CanSendMessages: !channel.IsArchived}, nil
+	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceId(), rawID), Name: channel.Name, Description: description, IsMember: channel.IsMember, CanSendMessages: channel.IsMember && !channel.IsArchived}, nil
 }
 
 func (p *SlackProvider) UpdateGroupDescription(conversationID, description string) error {

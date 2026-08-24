@@ -6,6 +6,7 @@ import {
   GetPinnedMessageContext,
   GetPinnedMessages,
   GetScheduledMessages,
+  GetUnreadMessageLocations,
   PinMessage,
   RemoveReaction,
   UnpinMessage,
@@ -241,6 +242,22 @@ export function MessageList({
     isFetching,
     data,
   } = useMessageData(conversationId, isGroupFromProvider);
+
+  const unreadMessageIds = useMemo(
+    () => Object.entries(conversationReadState)
+      .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
+      .map(([messageId]) => messageId),
+    [conversationReadState]
+  );
+  const { data: unreadMessageLocations = [] } = useQuery<models.UnreadMessageLocation[]>({
+    queryKey: ["unread-message-locations", conversationId, unreadMessageIds.join(",")],
+    queryFn: () => GetUnreadMessageLocations(conversationId, unreadMessageIds),
+    enabled: Boolean(conversationId && unreadMessageIds.length > 0),
+  });
+  const unreadThreadIds = useMemo(
+    () => new Set(unreadMessageLocations.flatMap((location) => location.threadId ? [location.threadId] : [])),
+    [unreadMessageLocations]
+  );
 
   const displayedMessageGroups = useMemo(
     () => groupConsecutivePhotoMessages(mainMessages),
@@ -965,6 +982,7 @@ export function MessageList({
     participantNames,
     threadsByParent,
     threadReplyCounts,
+    unreadThreadIds,
     virtuosoRef,
     handlers,
   };

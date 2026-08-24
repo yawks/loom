@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/models"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -243,19 +244,31 @@ func (w *WhatsAppProvider) GetGroupDetails(conversationID string) (*models.Group
 	}
 	info, err := client.GetGroupInfo(ctx, groupJID)
 	if err != nil {
+		if errors.Is(err, whatsmeow.ErrNotInGroup) {
+			w.mu.RLock()
+			name := w.knownGroups[groupJID.String()]
+			w.mu.RUnlock()
+			return &models.GroupDetails{
+				ConversationID: core.BuildConvID(w.getInstanceId(), groupJID.String()),
+				Name:           name,
+				IsMember:       false,
+			}, nil
+		}
 		return nil, fmt.Errorf("get group details: %w", err)
 	}
-	canSendMessages := !info.IsAnnounce
-	if info.IsAnnounce && client.Store.ID != nil {
+	isMember := false
+	canSendMessages := false
+	if client.Store.ID != nil {
 		self := client.Store.ID.ToNonAD()
 		for _, participant := range info.Participants {
 			if participant.JID.ToNonAD() == self || participant.PhoneNumber.ToNonAD() == self || participant.LID.ToNonAD() == self {
-				canSendMessages = participant.IsAdmin || participant.IsSuperAdmin
+				isMember = true
+				canSendMessages = !info.IsAnnounce || participant.IsAdmin || participant.IsSuperAdmin
 				break
 			}
 		}
 	}
-	return &models.GroupDetails{ConversationID: core.BuildConvID(w.getInstanceId(), groupJID.String()), Name: info.Name, Description: info.Topic, AvatarURL: w.getProfilePictureURL(groupJID), CanSendMessages: canSendMessages}, nil
+	return &models.GroupDetails{ConversationID: core.BuildConvID(w.getInstanceId(), groupJID.String()), Name: info.Name, Description: info.Topic, AvatarURL: w.getProfilePictureURL(groupJID), IsMember: isMember, CanSendMessages: canSendMessages}, nil
 }
 
 func (w *WhatsAppProvider) UpdateGroupDescription(conversationID, description string) error {

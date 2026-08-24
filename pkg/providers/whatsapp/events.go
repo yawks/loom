@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow/appstate"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -809,6 +810,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Offline sync completed - all data is now synced
 		// This is the FINAL sync event - emit completed status here
 		fmt.Println("WhatsApp: Offline sync completed - conversations should now be available")
+		go w.syncOfflineCallLogs()
 
 		// Wait a bit for the store to be fully populated, then fetch contacts and emit final completed
 		go func() {
@@ -1283,11 +1285,44 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	}
 }
 
+func (w *WhatsAppProvider) syncOfflineCallLogs() {
+	w.callLogFullSyncOnce.Do(func() {
+		if w.client == nil || w.ctx == nil {
+			return
+		}
+		w.log("WhatsApp: Replaying regular app state to recover offline call logs\n")
+
+		// Full-sync events are normally suppressed by whatsmeow. Enable collection
+		// only for this fetch, then process only raw call_log actions ourselves.
+		previousEmitFullSync := w.client.EmitAppStateEventsOnFullSync
+		w.client.EmitAppStateEventsOnFullSync = true
+		syncedEvents, err := w.client.DangerousInternals().FetchAppState(
+			w.ctx, appstate.WAPatchRegular, true, false,
+		)
+		w.client.EmitAppStateEventsOnFullSync = previousEmitFullSync
+		if err != nil {
+			w.log("WhatsApp: Failed to replay app state call logs: %v\n", err)
+			return
+		}
+
+		processed := 0
+		for _, syncedEvent := range syncedEvents {
+			appStateEvent, ok := syncedEvent.(*events.AppState)
+			if !ok || appStateEvent == nil || appStateEvent.GetCallLogAction() == nil {
+				continue
+			}
+			w.eventHandler(appStateEvent)
+			processed++
+		}
+		w.log("WhatsApp: Recovered %d call log actions from app state\n", processed)
+	})
+}
+
 func callLogOutcome(callResult string, durationSecs *int32) string {
 	// WhatsApp reports calls answered on another linked device as
 	// ACCEPTEDELSEWHERE. For the conversation history this is still a connected
 	// call, not a missed one.
-	if callResult == "CONNECTED" || callResult == "ACCEPTEDELSEWHERE" {
+	if callResult == "CONNECTED" || callResult == "ACCEPTEDELSEWHERE" || callResult == "ACCEPTED_ELSEWHERE" {
 		return "CONNECTED"
 	}
 	if callResult != "" && callResult != "UNKNOWN" {
@@ -1322,7 +1357,8 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			continue
 		}
 
-		// Get conversation ID from the record (use GroupJID if available, otherwise CallCreatorJID)
+		// Get conversation ID from the record. For outgoing one-to-one calls the
+		// creator is our own account, so the remote participant identifies the chat.
 		groupJID := record.GetGroupJID()
 		callCreatorJIDStr := record.GetCallCreatorJID()
 		callID := record.GetCallID()
@@ -1334,6 +1370,18 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			// Group call - use GroupJID directly
 			rawCallConvID = groupJID
 			fmt.Printf("WhatsApp: Using GroupJID %s as conversation ID\n", rawCallConvID)
+		} else if !record.GetIsIncoming() && len(record.GetParticipants()) > 0 && record.GetParticipants()[0] != nil {
+			participantJID := record.GetParticipants()[0].GetUserJID()
+			resolvedID, err := w.resolveContactID(participantJID)
+			if err != nil {
+				rawCallConvID = participantJID
+			} else {
+				rawCallConvID = resolvedID
+				if participantJID != resolvedID {
+					originalLID = participantJID
+					w.storeContactMapping(participantJID, resolvedID)
+				}
+			}
 		} else if callCreatorJIDStr != "" {
 			// Individual call - use CallCreatorJID and resolve LID to JID if needed
 			// Use the unified resolveContactID function
@@ -1376,8 +1424,8 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 
 		var durationSecs *int32
 		if duration > 0 {
-			// Duration is in milliseconds, convert to seconds
-			secs := int32(duration / 1000)
+			// CallLogRecord duration is already expressed in seconds.
+			secs := int32(duration)
 			durationSecs = &secs
 		}
 
@@ -1400,7 +1448,9 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			continue
 		}
 
-		startTimestamp := time.Unix(startTime/1000, 0)
+		// CallLogRecord.startTime is Unix seconds (unlike duration, which is
+		// milliseconds). Dividing it by 1000 places calls in January 1970.
+		startTimestamp := time.Unix(startTime, 0)
 		// Search window: 5 minutes before and after
 		timeWindow := 5 * time.Minute
 		startSearch := startTimestamp.Add(-timeWindow)
@@ -1533,6 +1583,9 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					for _, p := range participants {
 						if p != nil {
 							if jid := p.GetUserJID(); jid != "" {
+								if resolved, resolveErr := w.resolveContactID(jid); resolveErr == nil {
+									jid = resolved
+								}
 								participantJIDs = append(participantJIDs, jid)
 							}
 						}

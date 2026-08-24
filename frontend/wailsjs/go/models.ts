@@ -849,6 +849,7 @@ export namespace models {
 	    name: string;
 	    description: string;
 	    avatarUrl: string;
+	    isMember: boolean;
 	    canSendMessages: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -861,6 +862,7 @@ export namespace models {
 	        this.name = source["name"];
 	        this.description = source["description"];
 	        this.avatarUrl = source["avatarUrl"];
+	        this.isMember = source["isMember"];
 	        this.canSendMessages = source["canSendMessages"];
 	    }
 	}

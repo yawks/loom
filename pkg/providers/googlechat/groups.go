@@ -57,12 +57,14 @@ func (p *GoogleChatProvider) GetGroupDetails(convID string) (*models.GroupDetail
 		return nil, fmt.Errorf("googlechat: get group details: %w", err)
 	}
 	canSendMessages := false
+	isMember := false
 	if selfID := p.getSelfID(); selfID != "" {
 		if membership, membershipErr := p.membershipForUser(spaceName, selfID); membershipErr == nil {
-			canSendMessages = membership.State == "JOINED" || membership.State == ""
+			isMember = membership.State == "JOINED" || membership.State == ""
+			canSendMessages = isMember
 		}
 	}
-	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceID(), spaceName), Name: space.DisplayName, CanSendMessages: canSendMessages}, nil
+	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceID(), spaceName), Name: space.DisplayName, IsMember: isMember, CanSendMessages: canSendMessages}, nil
 }
 
 func (p *GoogleChatProvider) UpdateGroupDescription(string, string) error {

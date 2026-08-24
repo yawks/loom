@@ -1100,6 +1100,12 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "retry-receipt", string(retryReceiptJSON))
 					}
 				case core.SyncStatusEvent:
+					// A completed initial sync may have created an entire contact graph.
+					// Refresh independently of provider-specific contact events so a newly
+					// paired account is immediately visible without restarting Loom.
+					if e.Status == core.SyncStatusCompleted {
+						a.emitContactsRefresh()
+					}
 					a.emitSyncStatusCoordinated(e)
 				case core.ConversationReadStatusEvent:
 					readStatusJSON, _ := json.Marshal(e)
@@ -2624,7 +2630,6 @@ func (a *App) DisconnectProvider(instanceID string) error {
 }
 
 func (a *App) ConnectProvider(instanceID string) error {
-	// ... minimal impl ...
 	if a.providerManager == nil {
 		return fmt.Errorf("no pm")
 	}
@@ -2640,7 +2645,16 @@ func (a *App) ConnectProvider(instanceID string) error {
 		return err
 	}
 
+	// WhatsApp can emit Connected and HistorySync immediately from Connect.
+	// Consume the stream first so initial pairing events cannot be missed.
+	a.startEventListenerForProvider(a.ctx, instanceID, provider)
 	if err := provider.Connect(); err != nil {
+		a.mu.Lock()
+		if cancel, exists := a.eventCancels[instanceID]; exists {
+			cancel()
+			delete(a.eventCancels, instanceID)
+		}
+		a.mu.Unlock()
 		return err
 	}
 
@@ -2648,7 +2662,6 @@ func (a *App) ConnectProvider(instanceID string) error {
 	a.provider = provider
 	a.mu.Unlock()
 	a.providerManager.SetActiveProvider(instanceID)
-	a.startEventListenerForProvider(a.ctx, instanceID, provider)
 
 	if db.DB != nil {
 		db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", true)

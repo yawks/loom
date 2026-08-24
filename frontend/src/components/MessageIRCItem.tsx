@@ -44,6 +44,7 @@ interface MessageIRCItemProps {
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
   threadReplyCounts: Record<string, number>;
+  unreadThreadIds: ReadonlySet<string>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
   photoGroupMessages?: models.Message[];
@@ -74,6 +75,7 @@ export function MessageIRCItem({
   participantNames,
   threadsByParent,
   threadReplyCounts,
+  unreadThreadIds,
   virtuosoRef,
   handlers,
   photoGroupMessages,
@@ -119,8 +121,9 @@ export function MessageIRCItem({
   const threadMessages = threadsByParent[message.protocolMsgId] ?? [];
   const threadReplyCount = threadReplyCounts[message.protocolMsgId] ?? threadMessages.length;
   const hasThread = threadReplyCount > 0;
-  const hasUnreadInThread = hasThread && threadMessages.some(
-    (msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false
+  const hasUnreadInThread = hasThread && (
+    unreadThreadIds.has(message.protocolMsgId) ||
+    threadMessages.some((msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false)
   );
   const previewUrl = (!isDeleted && displayedBody) ? extractFirstUrl(displayedBody) : null;
 
