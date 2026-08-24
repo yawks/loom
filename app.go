@@ -1644,12 +1644,15 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 					if err != nil {
 						return resolution, err
 					}
-					account.ConversationID = core.BuildConvID(request.ProviderInstanceID, conversation.ProtocolConvID)
+					if err := persistOpenedDirectConversation(request.ProviderInstanceID, &account, conversation); err != nil {
+						return resolution, err
+					}
 				} else {
 					account.ConversationID = core.BuildConvID(request.ProviderInstanceID, account.UserID)
 				}
 				contact.LinkedAccounts[0] = account
 				resolution.Created = &contact
+				a.emitContactsRefresh()
 				return resolution, nil
 			}
 		}
@@ -1737,6 +1740,46 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 	resolution.Created = created
 	a.emitContactsRefresh()
 	return resolution, nil
+}
+
+// persistOpenedDirectConversation attaches the provider-resolved thread ID to
+// the existing directory contact. In particular, Teams user MRIs (8:orgid:...)
+// are participants, not valid conversation IDs, so the sticky 19:... thread
+// returned by CreateDirectConversation must become authoritative immediately.
+func persistOpenedDirectConversation(instanceID string, account *models.LinkedAccount, conversation *models.Conversation) error {
+	if db.DB == nil || account == nil || account.ID == 0 || conversation == nil || conversation.ProtocolConvID == "" {
+		return fmt.Errorf("provider returned an invalid direct conversation")
+	}
+	conversation.ProtocolConvID = core.BuildConvID(instanceID, conversation.ProtocolConvID)
+	conversation.LinkedAccountID = account.ID
+	conversation.IsGroup = false
+
+	var stored models.Conversation
+	result := db.DB.Where("protocol_conv_id = ?", conversation.ProtocolConvID).First(&stored)
+	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+		return result.Error
+	}
+	if result.Error == gorm.ErrRecordNotFound {
+		if err := db.DB.Create(conversation).Error; err != nil {
+			return err
+		}
+		stored = *conversation
+	} else if stored.LinkedAccountID != account.ID || stored.IsGroup {
+		oldLinkedAccountID := stored.LinkedAccountID
+		stored.LinkedAccountID = account.ID
+		stored.IsGroup = false
+		if err := db.DB.Save(&stored).Error; err != nil {
+			return err
+		}
+		if oldLinkedAccountID != account.ID {
+			db.ContactStore.SetConversation(oldLinkedAccountID, "")
+		}
+	}
+
+	*conversation = stored
+	account.ConversationID = stored.ProtocolConvID
+	db.ContactStore.UpsertConversation(account.ID, stored.ProtocolConvID)
+	return nil
 }
 
 func (a *App) persistCreatedConversation(instanceID, protocol, conversationType, title string, conversation *models.Conversation) (*models.MetaContact, error) {

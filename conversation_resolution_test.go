@@ -101,6 +101,58 @@ func TestProviderAccountsNamespaceConversationID(t *testing.T) {
 	}
 }
 
+func TestPersistOpenedDirectConversationUsesResolvedThreadID(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	if err := db.ContactStore.Load(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.DB = previousDB
+		if previousDB != nil {
+			_ = db.ContactStore.Load()
+		}
+	})
+
+	meta := models.MetaContact{DisplayName: "Alice"}
+	if err := database.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{
+		MetaContactID: meta.ID, Protocol: "teams", ProviderInstanceID: "teams-1",
+		UserID: "8:orgid:alice", Username: "Alice",
+	}
+	if err := database.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.ContactStore.UpsertLinkedAccount(account)
+
+	conversation := &models.Conversation{ProtocolConvID: "19:alice_me@unq.gbl.spaces"}
+	if err := persistOpenedDirectConversation("teams-1", &account, conversation); err != nil {
+		t.Fatal(err)
+	}
+	if got := account.ConversationID; got != "teams-1::19:alice_me@unq.gbl.spaces" {
+		t.Fatalf("conversation ID = %q", got)
+	}
+	if got := db.ContactStore.GetConversation(account.ID); got != account.ConversationID {
+		t.Fatalf("stored conversation ID = %q", got)
+	}
+	var stored models.Conversation
+	if err := database.First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.LinkedAccountID != account.ID || stored.ProtocolConvID != account.ConversationID || stored.IsGroup {
+		t.Fatalf("unexpected stored direct conversation: %+v", stored)
+	}
+}
+
 func TestGetProviderForUnpersistedWhatsAppConversation(t *testing.T) {
 	pm := core.NewProviderManager()
 	waProvider := providers.NewWhatsAppProvider()
@@ -134,4 +186,3 @@ func TestGetProviderForUnpersistedWhatsAppConversation(t *testing.T) {
 		t.Fatal("expected provider to be found via protocol heuristic when 1 WhatsApp provider configured")
 	}
 }
-

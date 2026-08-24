@@ -129,6 +129,19 @@ func TestSendMessageRejectsEmptyPayload(t *testing.T) {
 	}
 }
 
+func TestTeamsUserMRIRequiresDirectConversationResolution(t *testing.T) {
+	for _, id := range []string{"8:orgid:alice", "1:alice", "4:alice", "28:bot"} {
+		if !isTeamsUserMRI(id) {
+			t.Fatalf("%q should be recognized as a user MRI", id)
+		}
+	}
+	for _, id := range []string{"19:alice_me@unq.gbl.spaces", "19:group@thread.v2", "teams-1::19:chat@thread.v2"} {
+		if isTeamsUserMRI(id) {
+			t.Fatalf("%q should be recognized as a conversation MRI", id)
+		}
+	}
+}
+
 func TestTeamsDMParticipantMRI(t *testing.T) {
 	threadID := "19:6815e2df-8147-4ab5-8d28-b935a253334a_cd0ce28e-581e-422a-a157-7427f06e3496@unq.gbl.spaces"
 	got := teamsDMParticipantMRI(threadID, "8:orgid:6815e2df-8147-4ab5-8d28-b935a253334a")

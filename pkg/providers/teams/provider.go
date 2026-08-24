@@ -723,11 +723,28 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 		return nil, fmt.Errorf("%s: message has no text or attachment", providerID)
 	}
 	rawConvID := core.StripConvID(conversationID)
-	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	client, _, err := p.connectedClient()
 	if err != nil {
 		return nil, err
 	}
+	if isTeamsUserMRI(rawConvID) {
+		participantMRI := rawConvID
+		chat, createErr := client.StartOneOnOne(context.Background(), participantMRI)
+		if createErr != nil {
+			return nil, fmt.Errorf("%s: resolve direct conversation: %w", providerID, createErr)
+		}
+		rawConvID = chat.ID
+		if db.DB != nil {
+			var account models.LinkedAccount
+			if lookupErr := db.DB.Where("provider_instance_id = ? AND user_id = ?", p.instance, participantMRI).First(&account).Error; lookupErr == nil {
+				account.ConversationID = rawConvID
+				if storeErr := p.storeDirectoryContact(account); storeErr != nil {
+					return nil, fmt.Errorf("%s: store resolved direct conversation: %w", providerID, storeErr)
+				}
+			}
+		}
+	}
+	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	opts := msteams.SendOptions{ContentType: "html"}
 	content := msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(text))
 	var modelAttachment *models.Attachment
@@ -792,6 +809,12 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 		return nil, err
 	}
 	return message, nil
+}
+
+func isTeamsUserMRI(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.HasPrefix(id, "8:orgid:") || strings.HasPrefix(id, "1:") ||
+		strings.HasPrefix(id, "4:") || strings.HasPrefix(id, "28:")
 }
 
 func (p *Provider) SendFile(conversationID string, file *core.Attachment, threadID *string) (*models.Message, error) {

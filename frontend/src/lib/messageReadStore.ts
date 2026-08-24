@@ -297,14 +297,20 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
 
-      // Only keep messages that exist in the current conversation.
-      // Preserve the provider cursor and states for messages still loaded.
-      // Thread markers are rebuilt below from message metadata.
+      // Replies are deliberately absent from the paginated main timeline. Keep
+      // an unread reply (and its marker) until ThreadView explicitly reads it;
+      // otherwise refreshing the channel would immediately erase its badge.
       if (existingState) {
         Object.keys(existingState).forEach((messageId) => {
+          const markedUnreadThreadReply = !messageId.startsWith("_") &&
+            existingState[messageId] === false &&
+            existingState[threadMarker(messageId)] === true;
+          const unreadThreadMarker = messageId.startsWith("_thread:") &&
+            existingState[messageId.slice("_thread:".length)] === false;
           if (
             messageId === "_lastReadTS" ||
-            (!messageId.startsWith("_") && existingMessageIds.has(messageId))
+            unreadThreadMarker ||
+            (!messageId.startsWith("_") && (existingMessageIds.has(messageId) || markedUnreadThreadReply))
           ) {
             nextState[messageId] = existingState[messageId];
           } else {
@@ -843,16 +849,22 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
       
-      // Keep the provider cursor and thread markers only while their messages
-      // still exist in the loaded conversation.
+      // Thread replies are not part of the main-message page represented by
+      // validMessageIds. Preserve unread replies until the thread is opened.
       Object.keys(existingState).forEach((messageId) => {
         const isValidThreadMarker =
           messageId.startsWith("_thread:") &&
           validMessageIds.has(messageId.slice("_thread:".length));
+        const unreadThreadMarker = messageId.startsWith("_thread:") &&
+          existingState[messageId.slice("_thread:".length)] === false;
+        const markedUnreadThreadReply = !messageId.startsWith("_") &&
+          existingState[messageId] === false &&
+          existingState[threadMarker(messageId)] === true;
         if (
           messageId === "_lastReadTS" ||
           isValidThreadMarker ||
-          (!messageId.startsWith("_") && validMessageIds.has(messageId))
+          unreadThreadMarker ||
+          (!messageId.startsWith("_") && (validMessageIds.has(messageId) || markedUnreadThreadReply))
         ) {
           nextState[messageId] = existingState[messageId];
         } else {
