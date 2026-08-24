@@ -534,6 +534,7 @@ func (p *Provider) GetGroupDetails(conversationID string) (*models.GroupDetails,
 		ConversationID:  core.BuildConvID(instance, threadID),
 		Name:            chat.Topic,
 		Description:     chat.Description,
+		IsMember:        canSend,
 		CanSendMessages: canSend,
 	}, nil
 }

@@ -24,6 +24,7 @@ import { ProviderConfigForm } from "@/components/ProviderConfigForm";
 import { ProtocolIcon } from "@/components/ProtocolIcon";
 import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
+import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
 
 interface ProviderSettingsProps {
@@ -34,8 +35,8 @@ interface ProviderSettingsProps {
 type ViewState = "list" | "config";
 
 interface SyncStatusPayload {
-  status: "fetching_contacts" | "fetching_history" | "fetching_avatars" | "completed" | "error" | "needs_reauth" | null;
-  message: string;
+  Status?: string;
+  status?: string;
 }
 
 export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) {
@@ -53,6 +54,7 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const removeCapabilities = useAppStore((state) => state.removeCapabilities);
+  const clearProviderReadState = useMessageReadStore((state) => state.clearProvider);
 
   const refreshProviders = useCallback(async () => {
     setLoading(true);
@@ -149,35 +151,50 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
       return;
     }
 
-    const unsubscribe = EventsOn("sync-status", (payload: string) => {
+    const unsubscribeSync = EventsOn("sync-status", (payload: string) => {
       try {
         const status: SyncStatusPayload = JSON.parse(payload);
-        // Close modal when WhatsApp QR code is scanned and synchronization starts
-        // "fetching_contacts" indicates the QR code was scanned and sync is beginning
-        if (status.status === "fetching_contacts" && selectedProvider.id === "whatsapp") {
-          console.log("ProvidersModal: WhatsApp QR code scanned, synchronization starting, closing modal");
-          onOpenChange(false);
-          setView("list");
-          setSelectedProvider(null);
-        }
-        // Also close on completed status as fallback (in case fetching_contacts was missed)
-        else if (status.status === "completed" && selectedProvider.id === "whatsapp") {
-          console.log("ProvidersModal: WhatsApp sync completed, closing modal");
-          onOpenChange(false);
-          setView("list");
-          setSelectedProvider(null);
+        const statusValue = (status.status || status.Status || "").toLowerCase();
+        // Scanning the QR only starts login and history synchronization. Keep
+        // this flow visible until the account is genuinely ready.
+        if (statusValue === "fetching_contacts" && selectedProvider.id === "whatsapp") {
+          console.log("ProvidersModal: WhatsApp QR code scanned, waiting for synchronization");
         }
       } catch (error) {
         console.error("Failed to parse sync status payload:", error);
       }
     });
 
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
+    // WhatsApp emits sync_complete only after GetContacts has persisted the
+    // imported accounts. Unlike the coordinated global status, this event is
+    // never suppressed because another provider is also synchronizing.
+    const unsubscribeContacts = EventsOn("contact-status", (payload: string) => {
+      try {
+        const event = JSON.parse(payload) as {
+          Status?: string;
+          status?: string;
+          UserID?: string;
+          userId?: string;
+        };
+        const statusValue = (event.status || event.Status || "").toLowerCase();
+        const userId = event.userId || event.UserID || "";
+        if (selectedProvider.id === "whatsapp" && userId === "refresh" && statusValue === "sync_complete") {
+          console.log("ProvidersModal: WhatsApp contacts persisted, closing modal");
+          void refreshProviders();
+          onOpenChange(false);
+          setView("list");
+          setSelectedProvider(null);
+        }
+      } catch (error) {
+        console.error("Failed to parse contact status payload:", error);
       }
+    });
+
+    return () => {
+      if (unsubscribeSync) unsubscribeSync();
+      if (unsubscribeContacts) unsubscribeContacts();
     };
-  }, [open, view, selectedProvider, onOpenChange]);
+  }, [open, view, selectedProvider, onOpenChange, refreshProviders]);
 
   const [isReauth, setIsReauth] = useState(false);
 
@@ -212,6 +229,7 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
     setIsRemoving(providerToDelete);
     try {
       await RemoveProvider(providerToDelete);
+      clearProviderReadState(providerToDelete);
       // Clear selected contact if it belongs to the removed provider
       if (selectedContact?.linkedAccounts?.some((a) => a.providerInstanceId === providerToDelete)) {
         setSelectedContact(null);

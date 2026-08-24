@@ -6,7 +6,10 @@ import (
 	"Loom/pkg/models"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -191,9 +194,31 @@ func (pm *ProviderManager) CreateProvider(providerID string, config ProviderConf
 
 // generateInstanceID generates a unique instance ID for a provider
 func (pm *ProviderManager) generateInstanceID(providerID string) string {
-	instances := pm.getInstancesForProvider(providerID)
-	instanceNum := len(instances) + 1
-	return fmt.Sprintf("%s-%d", providerID, instanceNum)
+	used := make(map[int]struct{})
+	prefix := providerID + "-"
+	for _, instanceID := range pm.getInstancesForProvider(providerID) {
+		if number, err := strconv.Atoi(strings.TrimPrefix(instanceID, prefix)); err == nil && number > 0 {
+			used[number] = struct{}{}
+		}
+	}
+
+	// A configuration may have been removed by an older Loom version without
+	// deleting the provider's local state. Reusing that instance ID would make a
+	// new account inherit the old authentication session (and WhatsApp would then
+	// correctly produce no QR code). Treat existing instance directories as used.
+	configDir, configErr := os.UserConfigDir()
+	for number := 1; ; number++ {
+		if _, exists := used[number]; exists {
+			continue
+		}
+		if configErr == nil {
+			instanceDir := filepath.Join(configDir, "Loom", fmt.Sprintf("%s%d", prefix, number))
+			if _, err := os.Stat(instanceDir); err == nil || !os.IsNotExist(err) {
+				continue
+			}
+		}
+		return fmt.Sprintf("%s%d", prefix, number)
+	}
 }
 
 // getInstancesForProvider returns all instance IDs for a given provider type
@@ -300,78 +325,22 @@ func (pm *ProviderManager) RemoveProvider(instanceID string) error {
 		fmt.Printf("ProviderManager.RemoveProvider: WARNING - failed to cleanup provider %s: %v\n", instanceID, err)
 	}
 
+	// Delete the database graph atomically before forgetting the provider.
+	if db.DB != nil {
+		mediaPaths, err := deleteProviderData(db.DB, instanceID)
+		if err != nil {
+			return fmt.Errorf("delete provider data for %s: %w", instanceID, err)
+		}
+		removeUnreferencedProviderMedia(db.DB, mediaPaths)
+		if err := db.ContactStore.Load(); err != nil {
+			fmt.Printf("ProviderManager.RemoveProvider: WARNING - failed to refresh contact cache: %v\n", err)
+		}
+	}
+
 	if instanceID == pm.activeInstanceID {
 		pm.activeInstanceID = ""
 	}
-
 	delete(pm.providers, instanceID)
-
-	// Delete provider configuration and all associated data from database
-	if db.DB != nil {
-		// Delete provider configuration (use Unscoped to force delete, not soft delete)
-		db.DB.Unscoped().Where("instance_id = ?", instanceID).Delete(&models.ProviderConfiguration{})
-
-		// Delete all data associated with this provider instance
-		// Find all LinkedAccounts for this provider instance (use Unscoped to include soft-deleted)
-		var linkedAccounts []models.LinkedAccount
-		if err := db.DB.Unscoped().Where("provider_instance_id = ?", instanceID).Find(&linkedAccounts).Error; err == nil {
-			// Collect UserIDs and protocol for LIDMapping and ContactAlias cleanup
-			userIDsToClean := make([]string, 0, len(linkedAccounts))
-			protocolToClean := ""
-			for _, a := range linkedAccounts {
-				userIDsToClean = append(userIDsToClean, a.UserID)
-				if protocolToClean == "" {
-					protocolToClean = a.Protocol
-				}
-			}
-
-			for _, account := range linkedAccounts {
-				// Find all conversations for this linked account
-				var conversations []models.Conversation
-				if err := db.DB.Where("linked_account_id = ?", account.ID).Find(&conversations).Error; err == nil {
-					for _, conv := range conversations {
-						// Delete all reactions for messages in this conversation
-						var messages []models.Message
-						if err := db.DB.Unscoped().Where("conversation_id = ?", conv.ID).Find(&messages).Error; err == nil {
-							for _, msg := range messages {
-								db.DB.Unscoped().Where("message_id = ?", msg.ID).Delete(&models.Reaction{})
-								db.DB.Unscoped().Where("message_id = ?", msg.ID).Delete(&models.MessageReceipt{})
-							}
-						}
-						// Delete all messages for this conversation (use Unscoped for hard delete)
-						db.DB.Unscoped().Where("conversation_id = ?", conv.ID).Delete(&models.Message{})
-						// Delete group participants
-						db.DB.Unscoped().Where("conversation_id = ?", conv.ID).Delete(&models.GroupParticipant{})
-						// Delete the conversation
-						db.DB.Unscoped().Delete(&conv)
-					}
-				}
-
-				// Get the MetaContactID before deleting the linked account
-				metaContactID := account.MetaContactID
-
-				// Delete the linked account (use Unscoped for hard delete)
-				db.DB.Unscoped().Delete(&account)
-
-				// Check if the MetaContact has any remaining LinkedAccounts
-				var remainingAccounts []models.LinkedAccount
-				if err := db.DB.Where("meta_contact_id = ?", metaContactID).Find(&remainingAccounts).Error; err == nil {
-					if len(remainingAccounts) == 0 {
-						// No more linked accounts, delete the MetaContact
-						db.DB.Unscoped().Where("id = ?", metaContactID).Delete(&models.MetaContact{})
-					}
-				}
-			}
-
-			// Delete LIDMapping and ContactAlias for all users belonging to this provider
-			if len(userIDsToClean) > 0 {
-				if protocolToClean != "" {
-					db.DB.Unscoped().Where("protocol = ? AND jid IN ?", protocolToClean, userIDsToClean).Delete(&models.LIDMapping{})
-				}
-				db.DB.Unscoped().Where("user_id IN ?", userIDsToClean).Delete(&models.ContactAlias{})
-			}
-		}
-	}
 
 	fmt.Printf("ProviderManager.RemoveProvider: Successfully removed provider instance %s\n", instanceID)
 	return nil

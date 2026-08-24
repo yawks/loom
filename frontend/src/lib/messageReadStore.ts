@@ -90,6 +90,7 @@ interface MessageReadStore {
   registerBatchMessages: (messages: models.Message[], isHistorical?: boolean, forceRead?: boolean) => void;
   removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
+  clearProvider: (providerInstanceId: string) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
   seedMockUnread: (conversationId: ConversationId, messageIds: MessageId[]) => void;
 }
@@ -808,6 +809,22 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       }
       const updatedMap = { ...state.readByConversation };
       delete updatedMap[conversationId];
+      persistState(updatedMap);
+      return { readByConversation: updatedMap };
+    });
+  },
+  clearProvider: (providerInstanceId) => {
+    if (!providerInstanceId) return;
+    const prefix = `${providerInstanceId}::`;
+    set((state) => {
+      const updatedMap = Object.fromEntries(
+        Object.entries(state.readByConversation).filter(
+          ([conversationId]) => !conversationId.startsWith(prefix)
+        )
+      );
+      if (Object.keys(updatedMap).length === Object.keys(state.readByConversation).length) {
+        return state;
+      }
       persistState(updatedMap);
       return { readByConversation: updatedMap };
     });

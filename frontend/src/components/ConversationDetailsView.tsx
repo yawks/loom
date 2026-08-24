@@ -72,12 +72,6 @@ export function ConversationDetailsView({
       ? `${selectedAccount.providerInstanceId}::${selectedAccount.userId}`
       : selectedAccount?.userId) ||
     "";
-  const canLeaveGroup = Boolean(
-    leftConversationId !== conversationId &&
-    selectedAccount?.isGroup &&
-    selectedAccount.providerInstanceId &&
-    capabilities[selectedAccount.providerInstanceId]?.supportsLeaveGroup
-  );
   const groupCapabilities = selectedAccount?.providerInstanceId
     ? capabilities[selectedAccount.providerInstanceId]
     : undefined;
@@ -91,6 +85,13 @@ export function ConversationDetailsView({
     enabled: Boolean(selectedAccount?.isGroup && conversationId),
     refetchInterval: 15000,
   });
+  const canLeaveGroup = Boolean(
+    leftConversationId !== conversationId &&
+    groupDetails?.isMember !== false &&
+    selectedAccount?.isGroup &&
+    selectedAccount.providerInstanceId &&
+    capabilities[selectedAccount.providerInstanceId]?.supportsLeaveGroup
+  );
 
   useEffect(() => {
     setGroupName(groupDetails?.name ?? selectedConversation.displayName ?? "");
@@ -195,6 +196,9 @@ export function ConversationDetailsView({
     setIsLeaving(true);
     try {
       await LeaveGroup(conversationId);
+      queryClient.setQueryData<models.GroupDetails>(["group-details", conversationId], (current) =>
+        current ? { ...current, isMember: false, canSendMessages: false } as models.GroupDetails : current
+      );
       await queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
       setLeaveConfirmOpen(false);
       setLeftConversationId(conversationId);

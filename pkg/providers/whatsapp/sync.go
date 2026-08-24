@@ -22,13 +22,20 @@ func (w *WhatsAppProvider) loadLastSyncTimestampLocked() {
 	if db.DB == nil {
 		return
 	}
+	instanceID, _ := w.config["_instance_id"].(string)
+	if instanceID == "" {
+		w.log("WhatsApp: Cannot load last sync timestamp without an instance ID\n")
+		return
+	}
 
 	var config models.ProviderConfiguration
-	err := db.DB.Where("provider_id = ?", "whatsapp").First(&config).Error
+	err := db.DB.Where("instance_id = ?", instanceID).First(&config).Error
 	if err == nil && config.LastSyncAt != nil {
 		w.lastSyncTimestamp = config.LastSyncAt
+		w.hadSyncAtStartup = true
 		w.log("WhatsApp: Loaded last sync timestamp: %s\n", config.LastSyncAt.Format("2006-01-02 15:04:05"))
 	} else {
+		w.hadSyncAtStartup = false
 		w.log("WhatsApp: No previous sync timestamp found (first sync)\n")
 	}
 }
@@ -37,13 +44,18 @@ func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
 	if db.DB == nil {
 		return
 	}
+	instanceID := w.getInstanceId()
+	if instanceID == "" {
+		w.log("WhatsApp: Cannot save last sync timestamp without an instance ID\n")
+		return
+	}
 
 	w.mu.Lock()
 	w.lastSyncTimestamp = &timestamp
 	w.mu.Unlock()
 
 	var config models.ProviderConfiguration
-	err := db.DB.Where("provider_id = ?", "whatsapp").First(&config).Error
+	err := db.DB.Where("instance_id = ?", instanceID).First(&config).Error
 	if err == nil {
 		// Update existing
 		config.LastSyncAt = &timestamp
@@ -56,11 +68,13 @@ func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
 	} else {
 		// Create new
 		config = models.ProviderConfiguration{
-			ProviderID: "whatsapp",
-			IsActive:   true,
-			LastSyncAt: &timestamp,
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
+			ProviderID:   "whatsapp",
+			InstanceID:   instanceID,
+			InstanceName: instanceID,
+			IsActive:     true,
+			LastSyncAt:   &timestamp,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
 		}
 		if err := db.DB.Create(&config).Error; err != nil {
 			w.log("WhatsApp: Failed to create provider configuration: %v\n", err)

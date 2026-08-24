@@ -68,6 +68,7 @@
   "group_photo_updated": "Photo du groupe mise à jour.",
   "group_details_update_error": "Impossible de modifier les informations du groupe",
   "conversation_read_only": "Cette conversation est en lecture seule.",
+  "group_left_read_only": "Vous avez quitté ce groupe. Vous ne pouvez plus envoyer de messages.",
   "promote_group_admin": "Nommer administrateur",
   "demote_group_admin": "Retirer le rôle administrateur",
   "contact": "Contact",

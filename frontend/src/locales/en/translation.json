@@ -66,6 +66,7 @@
   "group_photo_updated": "Group photo updated.",
   "group_details_update_error": "Unable to update group details",
   "conversation_read_only": "This conversation is read-only.",
+  "group_left_read_only": "You left this group. You can no longer send messages.",
   "promote_group_admin": "Make admin",
   "demote_group_admin": "Remove admin role",
   "contact": "Contact",

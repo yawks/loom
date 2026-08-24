@@ -10,19 +10,24 @@ import (
 
 func TestSplitHistoryMessagesByUnreadCount(t *testing.T) {
 	messages := []models.Message{{ProtocolMsgID: "read-1"}, {ProtocolMsgID: "read-2"}, {ProtocolMsgID: "unread"}}
-	read, unread := splitHistoryMessagesByUnreadCount(messages, 1, false)
+	read, unread := splitHistoryMessagesByUnreadCount(messages, 1, false, false)
 	if len(read) != 2 || len(unread) != 1 || unread[0].ProtocolMsgID != "unread" {
 		t.Fatalf("split = read:%v unread:%v", read, unread)
 	}
 
-	read, unread = splitHistoryMessagesByUnreadCount(messages, 0, false)
+	read, unread = splitHistoryMessagesByUnreadCount(messages, 0, false, false)
 	if len(read) != len(messages) || len(unread) != 0 {
 		t.Fatalf("zero unread split = read:%d unread:%d", len(read), len(unread))
 	}
 
-	read, unread = splitHistoryMessagesByUnreadCount(messages, 0, true)
+	read, unread = splitHistoryMessagesByUnreadCount(messages, 0, true, true)
 	if len(read) != 0 || len(unread) != len(messages) {
-		t.Fatalf("on-demand split = read:%d unread:%d", len(read), len(unread))
+		t.Fatalf("incremental on-demand split = read:%d unread:%d", len(read), len(unread))
+	}
+
+	read, unread = splitHistoryMessagesByUnreadCount(messages, 1, true, false)
+	if len(read) != 2 || len(unread) != 1 || unread[0].ProtocolMsgID != "unread" {
+		t.Fatalf("fresh-import on-demand split = read:%v unread:%v", read, unread)
 	}
 }
 

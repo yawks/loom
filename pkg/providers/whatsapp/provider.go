@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"time"
 
@@ -52,6 +51,7 @@ type WhatsAppProvider struct {
 	avatarFailures       map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
 	avatarFailuresMu     sync.RWMutex                    // Mutex for avatarFailures map
 	lastSyncTimestamp    *time.Time                      // Timestamp of last successful sync (loaded from DB)
+	hadSyncAtStartup     bool                            // Immutable for this process: separates a fresh import from later startups
 	groupsCacheTimestamp *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
 	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
 	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
@@ -62,6 +62,7 @@ type WhatsAppProvider struct {
 	pendingEditsMu       sync.Mutex                      // Mutex for pendingEdits map
 	activeCalls          map[string]*activeCallInfo      // Active call tracker keyed by callID
 	activeCallsMu        sync.RWMutex                    // Mutex for activeCalls map
+	callLogFullSyncOnce  sync.Once                       // Recover call logs missed while Loom was offline once per startup
 	logger               *logging.ProviderLogger         // Logger for this provider instance
 }
 
@@ -248,52 +249,12 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	store.SetOSInfo("macOS", [3]uint32{15, 0, 0})
 	w.log("WhatsAppProvider.Init: OS info set to macOS 15.0\n")
 
-	// Enable call log history in DeviceProps
-	// This must be done before creating the client
+	// DeviceProps is the capability payload sent by whatsmeow. It is global to
+	// the client package, not a field on store.Device.
 	w.log("WhatsAppProvider.Init: Enabling call log history support...\n")
-	// Enable call log history support
-	// Enable call log history support via reflection
-	// We use reflection because DeviceProps might be unexported or we want to be safe
-	deviceStoreValue := reflect.ValueOf(deviceStore)
-	if deviceStoreValue.Kind() == reflect.Ptr {
-		deviceStoreValue = deviceStoreValue.Elem()
-	}
-
-	devicePropsField := deviceStoreValue.FieldByName("DeviceProps")
-	if devicePropsField.IsValid() {
-		// Get DeviceProps value
-		devicePropsPtr := devicePropsField.Interface()
-		if devicePropsPtr != nil {
-			devicePropsValue := reflect.ValueOf(devicePropsPtr).Elem()
-			historySyncConfigField := devicePropsValue.FieldByName("HistorySyncConfig")
-
-			if historySyncConfigField.IsValid() {
-				// Initialize if nil
-				if historySyncConfigField.IsNil() && historySyncConfigField.CanSet() {
-					newConfig := reflect.New(historySyncConfigField.Type().Elem())
-					historySyncConfigField.Set(newConfig)
-				}
-
-				if !historySyncConfigField.IsNil() {
-					configValue := historySyncConfigField.Elem()
-					supportCallLogHistoryField := configValue.FieldByName("SupportCallLogHistory")
-
-					if supportCallLogHistoryField.IsValid() && supportCallLogHistoryField.CanSet() {
-						supportCallLogHistoryField.Set(reflect.ValueOf(proto.Bool(true)))
-						w.log("WhatsAppProvider.Init: Call log history support enabled successfully\n")
-					} else {
-						w.log("WhatsAppProvider.Init: SupportCallLogHistory field not found or unsettable\n")
-					}
-				}
-			} else {
-				w.log("WhatsAppProvider.Init: HistorySyncConfig field not found\n")
-			}
-		} else {
-			w.log("WhatsAppProvider.Init: DeviceProps is nil\n")
-		}
-	} else {
-		// Log but don't error out - maybe field is missing or unexported
-		w.log("WhatsAppProvider.Init: DeviceProps field not found in deviceStore\n")
+	if store.DeviceProps.HistorySyncConfig != nil {
+		store.DeviceProps.HistorySyncConfig.SupportCallLogHistory = proto.Bool(true)
+		w.log("WhatsAppProvider.Init: Call log history support enabled successfully\n")
 	}
 
 	// Create client

@@ -817,6 +817,10 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	// Check if this is a call message
 	var callType string
+	var callOutcome string
+	var callDurationSecs *int32
+	var callParticipants string
+	var callIsVideo bool
 	if callMsg := msg.GetCall(); callMsg != nil {
 		_ = callMsg
 		isGroup := chatJID.Server == types.GroupServer
@@ -835,6 +839,56 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 			}
 		}
 		fmt.Printf("WhatsApp: Detected call message type: %s for message %s (group: %v, isFromMe: %v)\n", callType, evt.Info.ID, isGroup, evt.Info.IsFromMe)
+	}
+	if callLog := msg.GetCallLogMesssage(); callLog != nil {
+		isGroup := chatJID.Server == types.GroupServer || callLog.GetCallType() == waE2E.CallLogMessage_VOICE_CHAT
+		callIsVideo = callLog.GetIsVideo()
+		callOutcome = callLogOutcome(callLog.GetCallOutcome().String(), nil)
+		if callLog.DurationSecs != nil {
+			duration := int32(callLog.GetDurationSecs())
+			callDurationSecs = &duration
+		}
+		if evt.Info.IsFromMe {
+			if isGroup {
+				callType = "outgoing_group_voice"
+			} else {
+				callType = "outgoing_voice"
+			}
+		} else if callLog.GetCallType() == waE2E.CallLogMessage_SCHEDULED_CALL {
+			callType = "scheduled_start"
+		} else if callOutcome == "CONNECTED" {
+			if isGroup {
+				callType = "incoming_group_call"
+			} else if callIsVideo {
+				callType = "incoming_video"
+			} else {
+				callType = "incoming_call"
+			}
+		} else if isGroup {
+			if callIsVideo {
+				callType = "missed_group_video"
+			} else {
+				callType = "missed_group_voice"
+			}
+		} else if callIsVideo {
+			callType = "missed_video"
+		} else {
+			callType = "missed_voice"
+		}
+
+		participants := make([]string, 0, len(callLog.GetParticipants()))
+		for _, participant := range callLog.GetParticipants() {
+			if participant != nil && participant.GetJID() != "" {
+				participants = append(participants, participant.GetJID())
+			}
+		}
+		if len(participants) > 0 {
+			if encoded, err := json.Marshal(participants); err == nil {
+				callParticipants = string(encoded)
+			}
+		}
+		fmt.Printf("WhatsApp: Detected call log message %s: type=%s outcome=%s duration=%v\n",
+			evt.Info.ID, callType, callOutcome, callDurationSecs)
 	}
 
 	// Track groups from messages
@@ -1181,22 +1235,26 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		// Frontend message caches and persisted conversations are keyed by the
 		// namespaced ID. Emitting the raw JID here updates the sidebar preview,
 		// but misses the cache of an already-open conversation.
-		ProtocolConvID:  core.BuildConvID(w.getInstanceId(), convID),
-		ProtocolMsgID:   msgID,
-		SenderID:        senderID,
-		SenderName:      senderName,
-		SenderAvatarURL: senderAvatarURL,
-		Body:            body,
-		Timestamp:       timestamp,
-		IsFromMe:        isFromMe,
-		IsEdited:        isEdited,
-		EditedTimestamp: editedTimestamp,
-		IsForwarded:     isForwarded,
-		Attachments:     attachmentsJSON,
-		QuotedMessageID: quotedMessageID,
-		QuotedSenderID:  quotedSenderID,
-		QuotedBody:      quotedBody,
-		CallType:        callType,
+		ProtocolConvID:   core.BuildConvID(w.getInstanceId(), convID),
+		ProtocolMsgID:    msgID,
+		SenderID:         senderID,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
+		Body:             body,
+		Timestamp:        timestamp,
+		IsFromMe:         isFromMe,
+		IsEdited:         isEdited,
+		EditedTimestamp:  editedTimestamp,
+		IsForwarded:      isForwarded,
+		Attachments:      attachmentsJSON,
+		QuotedMessageID:  quotedMessageID,
+		QuotedSenderID:   quotedSenderID,
+		QuotedBody:       quotedBody,
+		CallType:         callType,
+		CallDurationSecs: callDurationSecs,
+		CallParticipants: callParticipants,
+		CallOutcome:      callOutcome,
+		CallIsVideo:      callIsVideo,
 	}
 }
 
@@ -1650,10 +1708,10 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// that cursor. The read prefix is historical; only the unread suffix is
 			// registered as recovered activity.
 			isOnDemand := history.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
-			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount(), isOnDemand)
 			w.mu.RLock()
-			hasPreviousSync := w.lastSyncTimestamp != nil
+			hasPreviousSync := w.hadSyncAtStartup
 			w.mu.RUnlock()
+			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount(), isOnDemand, hasPreviousSync)
 			if hasPreviousSync {
 				readThroughOwnMessage := historyMessagesReadThroughOwnMessage(converted)
 				forcedReadIDs := make(map[string]struct{}, len(readThroughOwnMessage))
@@ -1801,11 +1859,13 @@ func historyMessagesReadThroughOwnMessage(messages []models.Message) []models.Me
 	return messages[:lastOwnMessage+1]
 }
 
-func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32, isOnDemand bool) ([]models.Message, []models.Message) {
+func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32, isOnDemand, hasPreviousSync bool) ([]models.Message, []models.Message) {
 	// ON_DEMAND payloads don't carry a reliable unread count. They are emitted
-	// after Loom has already imported the conversation, so unknown IDs represent
-	// recovered activity. Existing IDs keep their local state in the frontend.
-	if isOnDemand {
+	// after Loom has already imported the conversation during normal operation,
+	// so unknown IDs then represent recovered activity. During a fresh account
+	// import they are history: use the best server snapshot available instead of
+	// manufacturing unread activity for every imported conversation.
+	if isOnDemand && hasPreviousSync {
 		return nil, messages
 	}
 	if len(messages) == 0 || unreadCount == 0 {
