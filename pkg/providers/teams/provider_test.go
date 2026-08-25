@@ -3,6 +3,7 @@ package teams
 import (
 	"Loom/pkg/core"
 	"Loom/pkg/models"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -72,6 +73,61 @@ func TestReplyParentIsExtractedFromTeamsHTML(t *testing.T) {
 	}
 	if message.ThreadID != nil || strings.Contains(message.Body, "quoted content") || !strings.Contains(message.Body, "*reply*") {
 		t.Fatalf("reply body not normalized: thread=%v body=%q", message.ThreadID, message.Body)
+	}
+}
+
+func TestTeamsAdaptiveCardReplacesUnsupportedPlaceholder(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	card := `[{"type":"AdaptiveCard","content":{"type":"AdaptiveCard","body":[` +
+		`{"type":"TextBlock","text":"Deployment complete"},` +
+		`{"type":"FactSet","facts":[{"title":"Environment:","value":"Production"}]}` +
+		`],"actions":[{"type":"Action.OpenUrl","title":"Open dashboard","url":"https://example.invalid/dashboard"}]}}]`
+	message := NewProvider().toModelMessage(client, msteams.Message{
+		ID: "card-1", ContentType: "html", MessageType: "RichText/Html",
+		Content:    `<p>Card - access it on <a href="https://go.skype.com/cards.unsupported">https://go.skype.com/cards.unsupported</a>. Card</p>`,
+		Properties: map[string]any{"cards": card},
+	}, "thread-1")
+
+	for _, expected := range []string{"Deployment complete", "**Environment:** Production", "[Open dashboard](https://example.invalid/dashboard)"} {
+		if !strings.Contains(message.Body, expected) {
+			t.Errorf("card body %q does not contain %q", message.Body, expected)
+		}
+	}
+	if strings.Contains(message.Body, "cards.unsupported") {
+		t.Fatalf("unsupported placeholder was retained: %q", message.Body)
+	}
+}
+
+func TestTeamsSwiftAdaptiveCardReplacesUnsupportedPlaceholder(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	activity := `{"type":"message","attachments":[{"contentType":"application/vnd.microsoft.card.adaptive","content":{"type":"AdaptiveCard","body":[{"type":"TextBlock","text":"Workflow completed"}]}}]}`
+	encoded := base64.StdEncoding.EncodeToString([]byte(activity))
+	message := NewProvider().toModelMessage(client, msteams.Message{
+		ID: "swift-card-1", ContentType: "text", MessageType: "RichText/Media_Card",
+		Content: `<URIObject type="SWIFT.1"><a href="https://go.skype.com/cards.unsupported">Card</a>` +
+			`<Swift b64="` + encoded + `"></Swift><Description>Card</Description></URIObject>`,
+	}, "thread-1")
+
+	if message.Body != "Workflow completed" {
+		t.Fatalf("swift card body=%q", message.Body)
+	}
+	if !strings.Contains(message.Attachments, `"type":"teams_card"`) ||
+		!strings.Contains(message.Attachments, `"cardJson"`) {
+		t.Fatalf("structured card attachment was not retained: %s", message.Attachments)
 	}
 }
 

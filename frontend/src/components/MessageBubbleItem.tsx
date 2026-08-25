@@ -19,6 +19,7 @@ import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
+import { hasTeamsAdaptiveCard } from "./TeamsAdaptiveCard";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -132,6 +133,7 @@ export function MessageBubbleItem({
   const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
     ? mergePhotoGroupBody(photoGroupMessages)
     : message.body;
+	const hasStructuredCard = hasTeamsAdaptiveCard(message.attachments);
 
   const resolvedSenderName = (!message.isFromMe && message.senderId)
     ? (participantNames.get(message.senderId) || message.senderName)
@@ -297,10 +299,10 @@ export function MessageBubbleItem({
                         </div>
                       </div>
                     )}
-                    {displayedBody?.trim() && (
+					{displayedBody?.trim() && !hasStructuredCard && (
                       <>
                         <MessageText text={displayedBody} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
-                        {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
+						{previewUrl && !hasStructuredCard && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                       </>
                     )}
                   </>

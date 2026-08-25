@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastContainer, useToast } from "@/components/ui/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { flushSync } from "react-dom";
 
 import { Button } from "@/components/ui/button";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -276,7 +277,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       return await SendMessage(conversationId, text);
     },
     // Optimistic update: insert temp message immediately
-    onMutate: async ({ conversationId, text, quotedMessageId }) => {
+    onMutate: ({ conversationId, text, quotedMessageId }) => {
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
 
@@ -705,7 +706,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (message.trim() && selectedContact) {
       const text = message.trim();
       const quotedMessageId = replyingToMessage?.protocolMsgId;
-      setMessage("");
+      // Commit the cleared composer before the optimistic cache update. React
+      // otherwise batches both operations until this handler returns, so the
+      // cache/list work can make the typed text linger visibly after Enter.
+      flushSync(() => setMessage(""));
       saveDraftImmediately(draftStorageKey, "");
       updateTypingState(false); // Reset typing state after sending
       if (textareaRef.current) {

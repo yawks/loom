@@ -244,6 +244,16 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	if err := p.repairStoredHTMLFormatting(); err != nil {
 		return err
 	}
+	repairedCards, err := p.repairStoredCards(client)
+	if err != nil {
+		return err
+	}
+	for conversationID, messages := range repairedCards {
+		p.emit(core.MessageBatchEvent{
+			InstanceID: p.instance, ConversationID: conversationID,
+			Messages: messages, IsHistorical: true,
+		})
+	}
 	completionMessage := "Microsoft Teams sync completed"
 	if skipped > 0 {
 		completionMessage = fmt.Sprintf("Microsoft Teams sync completed (%d inaccessible conversation(s) skipped)", skipped)
@@ -1315,6 +1325,21 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(remote.Content))
 		body = teamsHTMLToMarkdown(cleanContent)
 	}
+	cardBody := teamsCardsToMarkdown(remote.Properties)
+	if swiftBody := teamsSwiftCardsToMarkdown(remote.Content); swiftBody != "" {
+		if cardBody == "" {
+			cardBody = swiftBody
+		} else {
+			cardBody += "\n\n" + swiftBody
+		}
+	}
+	if cardBody != "" {
+		if isTeamsUnsupportedCardPlaceholder(body) || strings.TrimSpace(body) == "" {
+			body = cardBody
+		} else {
+			body = strings.TrimSpace(body) + "\n\n" + cardBody
+		}
+	}
 	timestamp := remote.Created
 	if timestamp.IsZero() {
 		timestamp = time.Now()
@@ -1336,6 +1361,11 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		message.QuotedMessageID = &parent
 	}
 	attachments := make([]models.Attachment, 0, len(remote.Attachments)+len(remote.SharedFiles))
+	for _, cardJSON := range teamsSwiftCardPayloads(remote.Content) {
+		attachments = append(attachments, models.Attachment{
+			Type: "teams_card", MimeType: "application/vnd.microsoft.card.adaptive", CardJSON: cardJSON,
+		})
+	}
 	seenAttachmentURLs := make(map[string]struct{})
 	for _, attachment := range remote.Attachments {
 		p.rememberAttachmentURL(attachment.URL)
