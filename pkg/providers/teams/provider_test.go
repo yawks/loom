@@ -350,6 +350,24 @@ func TestCallPayloadIsConvertedToCallMessage(t *testing.T) {
 	}
 }
 
+func TestCallSummaryMarksSelfParticipantAsConnected(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{UserMRI: "8:orgid:self", SkypeToken: "token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := NewProvider()
+	provider.session = &session{DisplayName: "Me User"}
+	message := provider.toModelMessage(client, msteams.Message{
+		ID: "call-self", MessageType: "ThreadActivity/CallEnded", Created: time.Unix(123, 0),
+		Content: `<ended/><partlist><part><displayName>Me User</displayName><duration>900</duration></part>` +
+			`<part><displayName>Other User</displayName><duration>900</duration></part></partlist>`,
+	}, "thread-1")
+	if message.CallOutcome != "CONNECTED" || message.CallDurationSecs == nil || *message.CallDurationSecs != 900 {
+		t.Fatalf("self participant summary was not recognized: %+v", message)
+	}
+}
+
 func TestScheduledCallStartIncludesEnterpriseJoinURL(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",

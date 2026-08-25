@@ -1530,6 +1530,17 @@ func (p *Provider) toCallModelMessage(client *msteams.Client, remote msteams.Mes
 	if len(participants) > 0 {
 		raw, _ := json.Marshal(participants)
 		message.CallParticipants = string(raw)
+		if message.CallOutcome == "ENDED" {
+			selfName := strings.TrimSpace(p.displayName())
+			for _, participant := range participants {
+				if selfName != "" && strings.EqualFold(strings.TrimSpace(participant), selfName) {
+					// A meeting summary is conversation-wide, but the authenticated
+					// user's presence in its participant list proves participation.
+					message.CallOutcome = "CONNECTED"
+					break
+				}
+			}
+		}
 	}
 	decodedContent := html.UnescapeString(remote.Content)
 	if match := teamsMeetingURLPattern.FindString(decodedContent); match != "" {

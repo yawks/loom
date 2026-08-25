@@ -3857,13 +3857,13 @@ func (a *App) GetContactExchangeStats(conversationID, participantID string) (mod
 			COALESCE(SUM(CASE WHEN is_from_me = 0 AND (? = '' OR sender_id = ?) THEN 1 ELSE 0 END), 0) AS received_messages,
 			COUNT(DISTINCT date(timestamp)) AS active_days,
 			COALESCE(SUM(CASE WHEN attachments IS NOT NULL AND TRIM(attachments) NOT IN ('', '[]', 'null') THEN 1 ELSE 0 END), 0) AS attachment_messages,
-			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended' OR UPPER(call_outcome) <> 'ENDED') AND
 				((LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%') OR UPPER(call_outcome) = 'CONNECTED')
 				THEN 1 ELSE 0 END), 0) AS calls,
-			COALESCE(SUM(CASE WHEN (call_type LIKE 'missed_%' OR UPPER(call_outcome) = 'MISSED') AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+			COALESCE(SUM(CASE WHEN (call_type LIKE 'missed_%' OR UPPER(call_outcome) = 'MISSED') AND (? = 1 OR LOWER(call_type) <> 'call_ended' OR UPPER(call_outcome) <> 'ENDED') AND
 				(LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%')
 				THEN 1 ELSE 0 END), 0) AS missed_calls,
-			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended') AND
+			COALESCE(SUM(CASE WHEN call_type <> '' AND (? = 1 OR LOWER(call_type) <> 'call_ended' OR UPPER(call_outcome) <> 'ENDED') AND
 				((LOWER(call_type) NOT LIKE '%group%' AND protocol_conv_id NOT LIKE '%@g.us%') OR UPPER(call_outcome) = 'CONNECTED')
 				THEN call_duration_secs ELSE 0 END), 0) AS total_call_duration_secs,
 			CAST(ROUND(julianday(MIN(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS first_exchange_millis,
@@ -4029,22 +4029,52 @@ func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationSta
 	}
 
 	type callRow struct {
-		MetaContactID                                                                                               uint
-		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName, ProtocolConvID, CallType, CallOutcome string
-		Timestamp                                                                                                   time.Time
-		Duration                                                                                                    *int32
-		IsGroup                                                                                                     bool
+		MetaContactID                                                                                                                 uint
+		DisplayName, AvatarURL, ProviderInstanceID, ProviderID, InstanceName, ProtocolConvID, CallType, CallOutcome, CallParticipants string
+		Timestamp                                                                                                                     time.Time
+		Duration                                                                                                                      *int32
+		IsGroup                                                                                                                       bool
 	}
 	var calls []callRow
 	err = db.DB.Raw(`SELECT mc.id meta_contact_id, mc.display_name, mc.avatar_url, la.provider_instance_id,
 		la.protocol provider_id, COALESCE(NULLIF(pc.instance_name,''),la.provider_instance_id) instance_name,
-		m.protocol_conv_id, m.call_type, m.call_outcome, m.timestamp, m.call_duration_secs duration, c.is_group
+		m.protocol_conv_id, m.call_type, m.call_outcome, m.call_participants, m.timestamp, m.call_duration_secs duration, c.is_group
 		FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN linked_accounts la ON la.id=c.linked_account_id
 		JOIN meta_contacts mc ON mc.id=la.meta_contact_id LEFT JOIN provider_configurations pc ON pc.instance_id=la.provider_instance_id
 		WHERE m.timestamp>=? AND m.timestamp<? AND m.deleted_at IS NULL AND m.is_deleted=0 AND COALESCE(m.call_type,'')<>''
 		ORDER BY m.timestamp, m.id`, from.Add(-24*time.Hour), to).Scan(&calls).Error
 	if err != nil {
 		return stats, err
+	}
+	type selfNameRow struct {
+		ProviderInstanceID string
+		SenderName         string
+	}
+	var selfNameRows []selfNameRow
+	if err := db.DB.Raw(`SELECT DISTINCT la.provider_instance_id, m.sender_name
+		FROM messages m JOIN conversations c ON c.id=m.conversation_id
+		JOIN linked_accounts la ON la.id=c.linked_account_id
+		WHERE m.is_from_me=1 AND TRIM(COALESCE(m.sender_name,''))<>''`).Scan(&selfNameRows).Error; err != nil {
+		return stats, err
+	}
+	selfNames := make(map[string]map[string]struct{})
+	for _, row := range selfNameRows {
+		if selfNames[row.ProviderInstanceID] == nil {
+			selfNames[row.ProviderInstanceID] = make(map[string]struct{})
+		}
+		selfNames[row.ProviderInstanceID][strings.ToLower(strings.TrimSpace(row.SenderName))] = struct{}{}
+	}
+	includesSelf := func(row callRow) bool {
+		var participants []string
+		if json.Unmarshal([]byte(row.CallParticipants), &participants) != nil {
+			return false
+		}
+		for _, participant := range participants {
+			if _, ok := selfNames[row.ProviderInstanceID][strings.ToLower(strings.TrimSpace(participant))]; ok {
+				return true
+			}
+		}
+		return false
 	}
 	pending := map[string]callRow{}
 	addCall := func(row callRow, duration int64, missing bool) {
@@ -4071,9 +4101,9 @@ func (a *App) GetCommunicationStats(from, to time.Time) (models.CommunicationSta
 	for _, row := range calls {
 		t := strings.ToLower(row.CallType)
 		// Teams emits a conversation-wide CallEnded activity for meetings. Its
-		// CONNECTED outcome describes the meeting, not the current user's presence.
-		// Personal Teams call logs are separate records and remain countable.
-		if row.IsGroup && strings.EqualFold(row.ProviderID, "teams") && t == "call_ended" {
+		// ENDED outcome describes the meeting, not the current user's presence.
+		// Personal Teams call logs use outcomes such as ACCEPTED and remain countable.
+		if row.IsGroup && strings.EqualFold(row.ProviderID, "teams") && t == "call_ended" && strings.EqualFold(row.CallOutcome, "ENDED") && !includesSelf(row) {
 			continue
 		}
 		if isGroupCallType(row.ProtocolConvID, t) && !strings.EqualFold(row.CallOutcome, "CONNECTED") {
