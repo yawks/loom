@@ -93,3 +93,56 @@ func TestGetContactExchangeStatsExcludesUnjoinedGroupCalls(t *testing.T) {
 		t.Fatalf("unexpected group call stats: %+v", stats)
 	}
 }
+
+func TestGetContactExchangeStatsIncludesAcceptedTeamsCallLog(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}, &models.Message{}, &models.ProviderConfiguration{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	contact := models.MetaContact{DisplayName: "Weekly meeting"}
+	if err := database.Create(&contact).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: contact.ID, Protocol: "teams", ProviderInstanceID: "teams-work"}
+	if err := database.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := models.Conversation{ProtocolConvID: "teams-work::19:meeting@thread.v2", LinkedAccountID: account.ID, IsGroup: true}
+	if err := database.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	duration := int32(1800)
+	shortDuration := int32(900)
+	messages := []models.Message{
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "self-name", ConversationID: conversation.ID, SenderName: "Me User", IsFromMe: true, Timestamp: time.Now().Add(-time.Minute)},
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "activity", ConversationID: conversation.ID, Timestamp: time.Now(), CallType: "call_ended", CallOutcome: "ENDED", CallDurationSecs: &duration, CallParticipants: `["Other User"]`},
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "personal-log", ConversationID: conversation.ID, Timestamp: time.Now().Add(time.Minute), CallType: "call_ended", CallOutcome: "ACCEPTED", CallDurationSecs: &duration},
+		{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "participant-summary", ConversationID: conversation.ID, Timestamp: time.Now().Add(2 * time.Minute), CallType: "call_ended", CallOutcome: "ENDED", CallDurationSecs: &shortDuration, CallParticipants: `["Me User", "Other User"]`},
+	}
+	if err := database.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := (&App{}).GetContactExchangeStats(conversation.ProtocolConvID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Calls != 1 || stats.TotalCallDurationSecs != 1800 {
+		t.Fatalf("accepted Teams call log was not counted exactly once: %+v", stats)
+	}
+
+	dashboard, err := (&App{}).GetCommunicationStats(time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Instances) != 1 || dashboard.Instances[0].CallCount != 2 || dashboard.Instances[0].CallDurationSecs != 2700 {
+		t.Fatalf("accepted Teams call log was not counted in dashboard stats: %+v", dashboard.Instances)
+	}
+}
