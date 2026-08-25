@@ -373,6 +373,7 @@ type Attachment struct {
 	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	ContactName   string     `json:"contactName,omitempty"`
 	ContactPhones []string   `json:"contactPhones,omitempty"`
+	CardJSON      string     `json:"cardJson,omitempty"` // Structured provider card payload (e.g. Teams Adaptive Card)
 }
 
 // ProviderConfiguration stores the configuration of a provider instance.

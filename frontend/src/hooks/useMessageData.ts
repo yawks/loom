@@ -97,13 +97,6 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     }
   }, [conversationId, queryClient]);
 
-  const dataKey = useMemo(() => {
-    if (!data?.pages) return "";
-    // Keep derived messages stable across identical refetches, while still
-    // rebuilding them for every server-side update (including edits to body).
-    return JSON.stringify(data.pages);
-  }, [data]);
-
   const messages = useMemo(() => {
     if (!data?.pages || !Array.isArray(data.pages)) return [];
     const flat = data.pages.filter((page) => Array.isArray(page)).flat().map(normalizeSlackQuotedReply);
@@ -114,12 +107,11 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
       if (id) seen.add(id);
       return true;
     });
-  // dataKey is a string derived from data's content — stable when content is identical,
-  // so this memo won't rerun when a background refetch returns the same messages.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey]);
-
-  const messagesKey = useMemo(() => messages.map((m) => m.protocolMsgId).join(","), [messages]);
+  // React Query's structural sharing keeps `data` stable for identical
+  // refetches. Depending on it directly avoids serializing the complete
+  // history before every render, including the latency-sensitive optimistic
+  // insertion performed when the user sends a message.
+  }, [data]);
 
   const isGroupConversation = useMemo(() => {
     if (isGroupFromProvider) return true;
@@ -157,7 +149,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     );
 
     return { mainMessages: sortedMain, threadsByParent: threads };
-  }, [messages, messagesKey]);
+  }, [messages]);
 
   const threadParentIds = useMemo(
     () => mainMessages
@@ -308,7 +300,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
         staleTime: 60 * 60 * 1000,
       });
     }
-  // mainMessages reference is stable when content hasn't changed (same dataKey memo).
+  // mainMessages stays stable while React Query's data reference is unchanged.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainMessages]);
 

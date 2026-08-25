@@ -20,6 +20,7 @@ import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
+import { hasTeamsAdaptiveCard } from "./TeamsAdaptiveCard";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -283,19 +284,19 @@ export function MessageIRCItem({
                             </div>
                           </div>
                         )}
-                        {!showSender && displayedBody && (
+						{!showSender && displayedBody && !hasTeamsAdaptiveCard(message.attachments) && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-                        {showSender && displayedBody?.trim() && (
+						{showSender && displayedBody?.trim() && !hasTeamsAdaptiveCard(message.attachments) && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-                        {previewUrl && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
+						{previewUrl && !hasTeamsAdaptiveCard(message.attachments) && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                         {message.attachments?.trim() && (
                           <MessageAttachments
                             attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments}

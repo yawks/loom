@@ -31,6 +31,7 @@ import { getMessageDomId } from "@/lib/messageUtils";
 import { sameUserId } from "@/lib/userIdentity";
 import { models } from "../../wailsjs/go/models";
 import { MessageReactions } from "./MessageReactions";
+import { TeamsAdaptiveCard } from "./TeamsAdaptiveCard";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -109,6 +110,7 @@ interface Attachment {
   expiresAt?: string;
   contactName?: string;
   contactPhones?: string[];
+  cardJson?: string;
 }
 
 function openStreetMapEmbedURL(latitude: number, longitude: number): string {
@@ -135,6 +137,12 @@ interface MessageAttachmentsProps {
   allMessages?: models.Message[];
   isGroupConversation?: boolean;
 }
+
+// Layout corrections (notably when appending an optimistic message) can make
+// IntersectionObserver report a visible attachment as off-screen for a frame.
+// Keep decoded media through that transient state, while still releasing it
+// when the user genuinely scrolls it away.
+const OFFSCREEN_MEDIA_RELEASE_DELAY_MS = 1500;
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + " B";
@@ -333,12 +341,11 @@ function VisibleImageAttachment({
 
   useEffect(() => {
     if (!isVisible) {
-      // Remove both the data URL and its decoded image from this DOM subtree.
-      // The fixed container keeps Virtuoso's measurements stable while showing
-      // the skeleton again outside the viewport.
-      setImageData(null);
-      setFailed(false);
-      return;
+      const releaseTimer = window.setTimeout(() => {
+        setImageData(null);
+        setFailed(false);
+      }, OFFSCREEN_MEDIA_RELEASE_DELAY_MS);
+      return () => window.clearTimeout(releaseTimer);
     }
 
     let active = true;
@@ -446,10 +453,11 @@ function MosaicImageAttachment({
 
   useEffect(() => {
     if (!isVisible) {
-      // Release the data URL and its decoded WebKit image surface while the
-      // mosaic remains mounted in Virtuoso's overscan area.
-      setImageData(null);
-      return;
+      const releaseTimer = window.setTimeout(
+        () => setImageData(null),
+        OFFSCREEN_MEDIA_RELEASE_DELAY_MS
+      );
+      return () => window.clearTimeout(releaseTimer);
     }
 
     let active = true;
@@ -514,10 +522,12 @@ function VisibleVideoAttachment({
 
   useEffect(() => {
     if (!isVisible) {
-      setVideoData(null);
-      setThumbnailData(null);
-      setFailed(false);
-      return;
+      const releaseTimer = window.setTimeout(() => {
+        setVideoData(null);
+        setThumbnailData(null);
+        setFailed(false);
+      }, OFFSCREEN_MEDIA_RELEASE_DELAY_MS);
+      return () => window.clearTimeout(releaseTimer);
     }
 
     let active = true;
@@ -656,9 +666,11 @@ function MosaicVideoAttachment({
 
   useEffect(() => {
     if (!isVisible) {
-      setThumbnailData(null);
-      setVideoPreviewData(null);
-      return;
+      const releaseTimer = window.setTimeout(() => {
+        setThumbnailData(null);
+        setVideoPreviewData(null);
+      }, OFFSCREEN_MEDIA_RELEASE_DELAY_MS);
+      return () => window.clearTimeout(releaseTimer);
     }
     let active = true;
     if (attachment.thumbnail) {
@@ -812,10 +824,11 @@ export function MessageAttachments({
     }
 
     const uniqueAttachments: Attachment[] = [];
-    const seenAttachmentURLs = new Set<string>();
+	const seenAttachmentURLs = new Set<string>();
     for (const attachment of parsed) {
-      if (!seenAttachmentURLs.has(attachment.url)) {
-        seenAttachmentURLs.add(attachment.url);
+	  const identity = attachment.type === "teams_card" ? `card:${attachment.cardJson}` : attachment.url;
+	  if (!seenAttachmentURLs.has(identity)) {
+		seenAttachmentURLs.add(identity);
         uniqueAttachments.push(attachment);
       }
     }
@@ -1055,6 +1068,9 @@ export function MessageAttachments({
       ) : (
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
+		  if (attachment.type === "teams_card" && attachment.cardJson) {
+			return <TeamsAdaptiveCard key={`teams-card-${index}`} cardJson={attachment.cardJson} />;
+		  }
           if (attachment.type === "contact") {
             const name = attachment.contactName?.trim() || t("contact");
             const initials = name

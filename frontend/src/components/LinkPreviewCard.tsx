@@ -25,6 +25,8 @@ import {
 } from "@/lib/linkPreviewFallback";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const OFFSCREEN_PREVIEW_DELAY_MS = 1500;
+
 const FALLBACK_ICONS: Record<LinkPreviewFallbackType, LucideIcon> = {
   calendar: CalendarDays,
   bugtracker: Bug,
@@ -71,6 +73,7 @@ interface LinkPreviewCardProps {
 export function LinkPreviewCard(props: LinkPreviewCardProps) {
   const elementRef = useRef<HTMLDivElement>(null);
   const [isVisible, setIsVisible] = useState(false);
+  const hideTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -78,11 +81,36 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
       setIsVisible(true);
       return;
     }
-    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        if (hideTimerRef.current !== null) {
+          window.clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        setIsVisible(true);
+        return;
+      }
+
+      // Appending a message can briefly move the card outside the observer's
+      // intersection during the bottom correction. Do not swap its image for
+      // the fallback during that transient layout frame.
+      if (hideTimerRef.current === null) {
+        hideTimerRef.current = window.setTimeout(() => {
+          hideTimerRef.current = null;
+          setIsVisible(false);
+        }, OFFSCREEN_PREVIEW_DELAY_MS);
+      }
+    }, {
       rootMargin: "200px 0px",
     });
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
   }, []);
 
   return (

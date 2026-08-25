@@ -475,6 +475,41 @@ func (p *Provider) repairStoredHTMLFormatting() error {
 	return nil
 }
 
+// repairStoredCards revisits messages saved before card rendering was
+// supported. The local row only contains Teams' unsupported-card placeholder,
+// so the original properties must be fetched again from the message endpoint.
+// Failed or deleted remote messages are left untouched and retried on a later
+// sync instead of aborting the entire account refresh.
+func (p *Provider) repairStoredCards(client *msteams.Client) (map[string][]models.Message, error) {
+	repaired := make(map[string][]models.Message)
+	if db.DB == nil {
+		return repaired, nil
+	}
+	var stored []models.Message
+	if err := db.DB.Where(
+		"protocol_conv_id LIKE ? AND LOWER(body) LIKE ?",
+		p.instance+"::%", "%go.skype.com/cards.unsupported%",
+	).Find(&stored).Error; err != nil {
+		return nil, fmt.Errorf("%s: find stored card placeholders: %w", providerID, err)
+	}
+	for _, old := range stored {
+		rawConversationID := core.StripConvID(old.ProtocolConvID)
+		remote, err := client.FetchMessage(context.Background(), rawConversationID, old.ProtocolMsgID)
+		if err != nil {
+			continue
+		}
+		message := p.toModelMessage(client, *remote, rawConversationID)
+		if isTeamsUnsupportedCardPlaceholder(message.Body) || strings.TrimSpace(message.Body) == "" {
+			continue
+		}
+		if err := p.storeMessages([]models.Message{message}); err != nil {
+			return nil, fmt.Errorf("%s: store repaired card message: %w", providerID, err)
+		}
+		repaired[rawConversationID] = append(repaired[rawConversationID], message)
+	}
+	return repaired, nil
+}
+
 func (p *Provider) repairStoredSenderNames(client *msteams.Client, conversationID string, members []msteams.Member) error {
 	if db.DB == nil {
 		return nil
