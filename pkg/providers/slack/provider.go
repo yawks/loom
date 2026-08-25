@@ -76,6 +76,12 @@ type userStatus struct {
 	statusText  string
 }
 
+type slackConversationSyncRow struct {
+	ProtocolConvID string
+	LastTimestamp  string
+	MessageCount   int64
+}
+
 // cookieTransport injects the d cookie into requests
 type cookieTransport struct {
 	Transport http.RoundTripper
@@ -350,6 +356,27 @@ func (p *SlackProvider) saveSessionLocked() error {
 	return os.WriteFile(path, raw, 0600)
 }
 
+func (p *SlackProvider) slackConversationSyncRows() ([]slackConversationSyncRow, error) {
+	instanceID := p.getInstanceId()
+	if instanceID == "" {
+		return nil, fmt.Errorf("Slack instance ID is unavailable")
+	}
+
+	var rows []slackConversationSyncRow
+	err := db.DB.Raw(`
+		SELECT
+			protocol_conv_id,
+			MAX(timestamp) AS last_timestamp,
+			COUNT(*) AS message_count
+		FROM messages
+		WHERE protocol_conv_id LIKE ?
+			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
+		GROUP BY protocol_conv_id
+		ORDER BY MAX(timestamp) DESC
+	`, instanceID+"::%").Scan(&rows).Error
+	return rows, err
+}
+
 // incrementalSyncExistingConversations syncs new messages for conversations that already have message history
 // incrementalSyncExistingConversations fetches new messages for conversations already in the DB.
 // contactLatestTS maps convID -> Slack's latest message timestamp (from GetConversations API).
@@ -363,35 +390,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 
 	p.log("SlackProvider.incrementalSyncExistingConversations: Starting incremental sync\n")
 
-	// Get all unique protocol_conv_id values that have messages
-	var results []struct {
-		ProtocolConvID string
-		LastTimestamp  string // SQLite returns timestamp as string
-		MessageCount   int64
-	}
-
-	// Get MAX timestamp for each conversation, but only for main messages (not thread replies)
-	// Thread replies have thread_id != protocol_msg_id, so we exclude them
-	// IMPORTANT: Filter by protocol to only sync Slack conversations (not WhatsApp or other providers)
-	// Slack conversation IDs start with C (channels), D (DMs), G (groups), U (users), etc. and don't contain "@"
-	// WhatsApp IDs contain "@s.whatsapp.net" or "@g.us" or "@lid"
-	err := db.DB.Raw(`
-		SELECT 
-			protocol_conv_id as protocol_conv_id,
-			MAX(timestamp) as last_timestamp,
-			COUNT(*) as message_count
-		FROM messages
-		WHERE protocol_conv_id IS NOT NULL 
-			AND protocol_conv_id != ''
-			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
-			AND protocol_conv_id NOT LIKE '%@%'
-			AND (protocol_conv_id LIKE 'C%' OR protocol_conv_id LIKE 'D%' OR protocol_conv_id LIKE 'G%' OR protocol_conv_id LIKE 'U%'
-				OR protocol_conv_id LIKE '%::C%' OR protocol_conv_id LIKE '%::D%' OR protocol_conv_id LIKE '%::G%' OR protocol_conv_id LIKE '%::U%')
-		GROUP BY protocol_conv_id
-		ORDER BY MAX(timestamp) DESC
-		LIMIT 50
-	`).Scan(&results).Error
-
+	results, err := p.slackConversationSyncRows()
 	if err != nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: Failed to query conversations: %v\n", err)
 		return
@@ -467,12 +466,6 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 
 	// Sync each conversation
 	for i, conv := range conversations {
-		// Limit synchronization to recent rooms (e.g., active in last 30 days) to save CPU
-		// if we have hundreds of rooms.
-		if len(conversations) > 50 && time.Since(conv.LastTimestamp) > 30*24*time.Hour {
-			continue
-		}
-
 		// Skip conversations where Slack confirms no new messages since our last stored one.
 		// contactLatestTS holds the timestamp of the most recent message in the channel
 		// as returned by GetConversations — no API call needed to know there's nothing new.
@@ -485,7 +478,6 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 				continue
 			}
 		}
-
 		progress := int((float64(i+1) / float64(len(conversations))) * 100)
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)
 
