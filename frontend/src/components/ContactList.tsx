@@ -31,6 +31,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
+  const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
   const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
   const setUnreadNavigationTarget = useAppStore((state) => state.setUnreadNavigationTarget);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
@@ -557,7 +558,11 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                       .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
                       .map(([messageId]) => messageId);
                     try {
-                      const [oldest] = await GetUnreadMessageLocations(conversationId, unreadIds);
+                      const locations = (await GetUnreadMessageLocations(conversationId, unreadIds)) ?? [];
+                      locations.forEach((location) => {
+                        if (location.isFromMe) markAsReadSilently(conversationId, location.messageId);
+                      });
+                      const oldest = locations.find((location) => !location.isFromMe);
                       if (oldest) {
                         setUnreadNavigationTarget({
                           conversationId,

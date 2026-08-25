@@ -24,8 +24,13 @@ export function normalizeReaction(
     ? emoji.slice(1, -1)
     : emoji;
   const resolvedUnicode = emojiNameToUnicode(clean);
-  const unicode = stripEmojiVariationSelectors(resolvedUnicode || clean);
-  const canonicalName = unicodeToEmojiName(unicode) || unicode;
+  const originalUnicode = resolvedUnicode || clean;
+  const unicode = stripEmojiVariationSelectors(originalUnicode);
+  // Look up the intact sequence first. Variation selectors are significant in
+  // ZWJ emojis (for example 🙋‍♂️); stripping them before the reverse lookup
+  // prevents Slack's shortcode from being found and sends an invalid Unicode
+  // value as the reaction name.
+  const canonicalName = unicodeToEmojiName(originalUnicode) || unicodeToEmojiName(unicode) || unicode;
   const namedApiEmoji = hasNamedForm || resolvedUnicode ? clean : canonicalName;
 
   return {

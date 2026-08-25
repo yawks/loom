@@ -10,6 +10,7 @@ const MAX_AVATARS = 5;
 
 interface MessageThreadPreviewProps {
   readonly threadMessages: models.Message[];
+  readonly summaryParticipants?: models.ThreadParticipant[];
   readonly replyCount?: number;
   readonly className?: string;
   readonly hasUnread?: boolean;
@@ -19,6 +20,7 @@ interface MessageThreadPreviewProps {
 
 export function MessageThreadPreview({
   threadMessages,
+  summaryParticipants = [],
   replyCount: suppliedReplyCount,
   className,
   hasUnread = false,
@@ -29,13 +31,13 @@ export function MessageThreadPreview({
 
   const uniqueParticipants = useMemo(() => {
     const seen = new Set<string>();
-    return threadMessages.filter((msg) => {
-      const key = msg.senderId || msg.senderName || "";
+    return [...summaryParticipants, ...threadMessages].filter((participant) => {
+      const key = participant.senderId || participant.senderName || "";
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
-  }, [threadMessages]);
+  }, [summaryParticipants, threadMessages]);
 
   const visibleParticipants = uniqueParticipants.slice(0, MAX_AVATARS);
   const overflow = uniqueParticipants.length - MAX_AVATARS;

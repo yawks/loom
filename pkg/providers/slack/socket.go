@@ -72,6 +72,11 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 
 // handleMessageEvent processes a new message from Slack
 func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
+	if ev.SubType == slack.MsgSubTypeMessageDeleted {
+		p.handleRemoteMessageDeleted(ev.Channel, ev.DeletedTimeStamp, ev.EventTimeStamp)
+		return
+	}
+
 	if ev.SubType == "message_changed" && ev.Message != nil && ev.Message.Timestamp != "" && isSlackHuddleSubtype(ev.Message.SubType) {
 		ctx, cancel := huddleRoomContext()
 		room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.Message.Timestamp)

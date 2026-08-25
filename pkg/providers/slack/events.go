@@ -136,7 +136,13 @@ func (p *SlackProvider) pollSelfDMUpdates(since time.Time) (time.Time, error) {
 		p.mu.Unlock()
 	}
 
-	oldest := float64(since.Unix()) + float64(since.Nanosecond())/1e9
+	// Fetch a recent window, rather than only messages newer than the cursor.
+	// Slack does not return tombstones from conversations.history, so comparing
+	// this window with Loom's copy is how we notice messages deleted elsewhere
+	// when RTM is unavailable (for example because the token lacks rtm:stream).
+	pollStartedAt := time.Now()
+	reconcileSince := since.Add(-24 * time.Hour)
+	oldest := float64(reconcileSince.Unix()) + float64(reconcileSince.Nanosecond())/1e9
 	history, err := client.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: selfDMChannelID,
 		Oldest:    fmt.Sprintf("%.6f", oldest),
@@ -146,6 +152,20 @@ func (p *SlackProvider) pollSelfDMUpdates(since time.Time) (time.Time, error) {
 	if err != nil {
 		return since, fmt.Errorf("get self DM history: %w", err)
 	}
+
+	// If the result was truncated, only reconcile the time range actually
+	// covered by this page. This avoids treating older, unreturned messages as
+	// deleted when more than 100 messages were sent during the lookback window.
+	coveredSince := reconcileSince
+	if history.HasMore && len(history.Messages) > 0 {
+		coveredSince = parseSlackTimestamp(history.Messages[len(history.Messages)-1].Timestamp)
+	}
+	p.reconcileSlackMessageWindow(
+		core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(selfDMChannelID)),
+		history.Messages,
+		coveredSince,
+		pollStartedAt,
+	)
 
 	latest := since
 	// Slack returns history newest-first. Emit oldest-first for stable UI order.
@@ -184,6 +204,50 @@ func (p *SlackProvider) pollSelfDMUpdates(since time.Time) (time.Time, error) {
 	}
 
 	return latest, nil
+}
+
+// reconcileSlackMessageWindow marks locally present messages as deleted when
+// Slack no longer returns them in a fully covered conversations.history range.
+func (p *SlackProvider) reconcileSlackMessageWindow(conversationID string, remote []slack.Message, coveredSince, coveredUntil time.Time) {
+	if db.DB == nil || conversationID == "" || coveredSince.IsZero() || coveredUntil.IsZero() {
+		return
+	}
+
+	remoteIDs := make(map[string]struct{}, len(remote))
+	for _, message := range remote {
+		if message.Timestamp != "" {
+			remoteIDs[message.Timestamp] = struct{}{}
+		}
+	}
+
+	var localMessages []models.Message
+	if err := db.DB.Where(
+		"protocol_conv_id = ? AND is_deleted = ? AND timestamp >= ? AND timestamp <= ?",
+		conversationID, false, coveredSince, coveredUntil,
+	).Find(&localMessages).Error; err != nil {
+		p.log("SlackProvider.reconcileSlackMessageWindow: failed loading local messages: %v\n", err)
+		return
+	}
+
+	deletedAt := time.Now()
+	for i := range localMessages {
+		message := &localMessages[i]
+		if _, exists := remoteIDs[message.ProtocolMsgID]; exists {
+			continue
+		}
+		message.IsDeleted = true
+		message.DeletedReason = "deleted"
+		message.DeletedTimestamp = &deletedAt
+		if err := db.DB.Save(message).Error; err != nil {
+			p.log("SlackProvider.reconcileSlackMessageWindow: failed marking message %s deleted: %v\n", message.ProtocolMsgID, err)
+			continue
+		}
+		select {
+		case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: *message}:
+		default:
+			p.log("SlackProvider.reconcileSlackMessageWindow: event channel full for message %s\n", message.ProtocolMsgID)
+		}
+	}
 }
 
 // pollGlobalUpdates searches for all messages received since the last poll time.

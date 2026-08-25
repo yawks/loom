@@ -230,6 +230,7 @@ export function MessageList({
     mainMessages,
     threadsByParent,
     threadReplyCounts,
+    threadParticipantsByParent,
     isGroupConversation,
     currentUserId,
     groupParticipants,
@@ -249,15 +250,24 @@ export function MessageList({
       .map(([messageId]) => messageId),
     [conversationReadState]
   );
+  const markUnreadLocationAsRead = useMessageReadStore((state) => state.markAsReadSilently);
   const { data: unreadMessageLocations = [] } = useQuery<models.UnreadMessageLocation[]>({
     queryKey: ["unread-message-locations", conversationId, unreadMessageIds.join(",")],
-    queryFn: () => GetUnreadMessageLocations(conversationId, unreadMessageIds),
+    queryFn: async () => (await GetUnreadMessageLocations(conversationId, unreadMessageIds)) ?? [],
     enabled: Boolean(conversationId && unreadMessageIds.length > 0),
   });
   const unreadThreadIds = useMemo(
-    () => new Set(unreadMessageLocations.flatMap((location) => location.threadId ? [location.threadId] : [])),
+    () => new Set(unreadMessageLocations.flatMap((location) => !location.isFromMe && location.threadId ? [location.threadId] : [])),
     [unreadMessageLocations]
   );
+
+  useEffect(() => {
+    unreadMessageLocations.forEach((location) => {
+      if (location.isFromMe && conversationReadState[location.messageId] === false) {
+        markUnreadLocationAsRead(conversationId, location.messageId);
+      }
+    });
+  }, [conversationId, conversationReadState, markUnreadLocationAsRead, unreadMessageLocations]);
 
   const displayedMessageGroups = useMemo(
     () => groupConsecutivePhotoMessages(mainMessages),
@@ -982,6 +992,7 @@ export function MessageList({
     participantNames,
     threadsByParent,
     threadReplyCounts,
+    threadParticipantsByParent,
     unreadThreadIds,
     virtuosoRef,
     handlers,

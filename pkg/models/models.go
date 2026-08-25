@@ -222,8 +222,17 @@ type Message struct {
 // ThreadSummary is lightweight metadata for a message thread. It deliberately
 // excludes the reply content, which is retrieved only when a thread is opened.
 type ThreadSummary struct {
-	ParentMessageID string `json:"parentMessageId"`
-	ReplyCount      int    `json:"replyCount"`
+	ParentMessageID string              `json:"parentMessageId"`
+	ReplyCount      int                 `json:"replyCount"`
+	Participants    []ThreadParticipant `gorm:"-" json:"participants"`
+}
+
+// ThreadParticipant contains only the identity fields needed by thread previews.
+type ThreadParticipant struct {
+	SenderID        string `json:"senderId"`
+	SenderName      string `json:"senderName,omitempty"`
+	SenderAvatarURL string `json:"senderAvatarUrl,omitempty"`
+	IsFromMe        bool   `json:"isFromMe"`
 }
 
 // UnreadMessageLocation lets the renderer locate unread messages that are not
@@ -232,6 +241,7 @@ type UnreadMessageLocation struct {
 	MessageID string    `json:"messageId"`
 	ThreadID  string    `json:"threadId,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+	IsFromMe  bool      `json:"isFromMe"`
 }
 
 // ScheduledMessage is a provider-neutral representation of a message queued

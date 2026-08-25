@@ -30,10 +30,34 @@ export function timeToDate(time: any): Date {
 export function transformUrls(text: string): string {
   if (!text) return text;
 
+  // Teams sometimes escapes Markdown emphasis markers as literal text. Only
+  // repair complete pairs so isolated escaped asterisks keep their meaning.
+  const repairedEmphasis = text.replace(
+    /\\\*\\\*([^\n]*?\S)[ \t]*\\\*\\\*/g,
+    (_match, content) => `**${content}**`,
+  );
+
+  // Teams can serialize a pasted link as an HTML anchor whose label already
+  // contains Markdown, followed by a second escaped copy. Collapse that shape
+  // before remark sees it. Comparing normalized URLs keeps this deliberately
+  // narrow and avoids rewriting ordinary nested brackets.
+  const duplicatedTeamsLink = /\[\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)\]\\\(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)\)/g;
+  const normalizeComparedUrl = (value: string) => value
+    .replace(/\\([_&])/g, "$1")
+    .replace(/&amp;/gi, "&");
+  const deduplicatedText = repairedEmphasis.replace(
+    duplicatedTeamsLink,
+    (match, firstLabel, firstUrl, secondLabel, secondUrl) => {
+      const urls = [firstLabel, firstUrl, secondLabel, secondUrl].map(normalizeComparedUrl);
+      if (!urls.every((url) => url === urls[0])) return match;
+      return `[${secondLabel}](${secondUrl})`;
+    },
+  );
+
   // Repair messages that were previously transformed twice, resulting in
   // `[label]([URL](URL))`. This runs at display time, so it also fixes
   // already-cached history.
-  const repairedText = text.replace(
+  const repairedText = deduplicatedText.replace(
     /\[([^\]\n]+)\]\(\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)\)/g,
     (_match, label, _nestedLabel, url) => `[${label}](${url})`,
   );

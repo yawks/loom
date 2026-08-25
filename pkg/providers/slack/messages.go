@@ -2290,6 +2290,19 @@ func (p *SlackProvider) SendTypingIndicator(_ string, _ bool) error {
 }
 
 // AddReaction adds a reaction (emoji) to a message.
+func normalizeSlackReactionName(emoji string) string {
+	// emoji-picker-react uses CLDR-style underscore names for these gendered
+	// ZWJ sequences, while Slack exposes them with hyphens.
+	switch emoji {
+	case "man_raising_hand":
+		return "man-raising-hand"
+	case "woman_raising_hand":
+		return "woman-raising-hand"
+	default:
+		return emoji
+	}
+}
+
 func (p *SlackProvider) AddReaction(conversationID string, messageID string, emoji string) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -2315,7 +2328,7 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
-	emoji = strings.Trim(emoji, ":")
+	emoji = normalizeSlackReactionName(strings.Trim(emoji, ":"))
 	if err := p.client.AddReaction(emoji, item); err != nil {
 		// emoji-picker-react exposes a few GitHub-style aliases such as
 		// "upside-down_face", while Slack names the same emoji
@@ -2392,7 +2405,7 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		Channel:   actualChannelID,
 		Timestamp: messageID,
 	}
-	emoji = strings.Trim(emoji, ":")
+	emoji = normalizeSlackReactionName(strings.Trim(emoji, ":"))
 	if err := p.client.RemoveReaction(emoji, item); err != nil {
 		underscoreEmoji := strings.ReplaceAll(emoji, "-", "_")
 		if !strings.Contains(err.Error(), "invalid_name") || underscoreEmoji == emoji {

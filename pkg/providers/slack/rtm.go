@@ -138,6 +138,14 @@ func (p *SlackProvider) startRTM(ctx context.Context) {
 
 // handleRTMMessageEvent handles incoming RTM message events.
 func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
+	// Slack sends deletions as a hidden message event. The deleted message ID is
+	// in deleted_ts rather than the regular top-level ts, and the event usually
+	// has no user/text, so it must be handled before the empty-message filter.
+	if ev.SubType == slack.MsgSubTypeMessageDeleted {
+		p.handleRemoteMessageDeleted(ev.Channel, ev.DeletedTimestamp, ev.EventTimestamp)
+		return
+	}
+
 	// Handle message_changed: another user edited a message in this channel.
 	if ev.SubType == "message_changed" {
 		if ev.Channel != "" && ev.SubMessage != nil && ev.SubMessage.Timestamp != "" {
@@ -355,6 +363,46 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 			p.log("SlackProvider: ContactStatusEvent emitted for huddle\n")
 		default:
 		}
+	}
+}
+
+// handleRemoteMessageDeleted marks a Slack message deleted and emits the
+// updated message so every open Loom view is refreshed immediately.
+func (p *SlackProvider) handleRemoteMessageDeleted(channel, msgTimestamp, eventTimestamp string) {
+	if db.DB == nil || msgTimestamp == "" {
+		return
+	}
+
+	normalizedConvID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(channel))
+	var existingMsg models.Message
+	query := db.DB.Where("protocol_msg_id = ?", msgTimestamp)
+	if channel != "" {
+		query = query.Where("protocol_conv_id = ?", normalizedConvID)
+	}
+	if err := query.First(&existingMsg).Error; err != nil {
+		p.log("SlackProvider.handleRemoteMessageDeleted: message %s not found in DB, skipping\n", msgTimestamp)
+		return
+	}
+
+	deletedAt := time.Now()
+	if eventTimestamp != "" {
+		if parsed := parseSlackTimestamp(eventTimestamp); !parsed.IsZero() {
+			deletedAt = parsed
+		}
+	}
+	existingMsg.IsDeleted = true
+	existingMsg.DeletedReason = "deleted"
+	existingMsg.DeletedTimestamp = &deletedAt
+
+	if err := db.DB.Save(&existingMsg).Error; err != nil {
+		p.log("SlackProvider.handleRemoteMessageDeleted: failed to update message %s: %v\n", msgTimestamp, err)
+		return
+	}
+
+	select {
+	case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: existingMsg}:
+	default:
+		p.log("SlackProvider.handleRemoteMessageDeleted: WARNING - event channel full for message %s\n", msgTimestamp)
 	}
 }
 
