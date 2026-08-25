@@ -28,9 +28,9 @@ func TestGetThreadSummariesReturnsCountsWithoutReplies(t *testing.T) {
 	messages := []models.Message{
 		{ProtocolConvID: conversationID, ProtocolMsgID: parentA, Timestamp: time.Now()},
 		{ProtocolConvID: conversationID, ProtocolMsgID: parentB, ThreadID: &parentB, Timestamp: time.Now()},
-		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-a-1", ThreadID: &parentA, Timestamp: time.Now()},
-		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-a-2", ThreadID: &parentA, Timestamp: time.Now()},
-		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-b-1", ThreadID: &parentB, Timestamp: time.Now()},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-a-1", ThreadID: &parentA, SenderID: "alice", SenderName: "Alice", SenderAvatarURL: "alice.png", Timestamp: time.Now()},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-a-2", ThreadID: &parentA, SenderID: "alice", SenderName: "Alice", SenderAvatarURL: "alice.png", Timestamp: time.Now()},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "reply-b-1", ThreadID: &parentB, SenderID: "bob", SenderName: "Bob", SenderAvatarURL: "bob.png", Timestamp: time.Now()},
 	}
 	for i := range messages {
 		if err := database.Create(&messages[i]).Error; err != nil {
@@ -43,11 +43,19 @@ func TestGetThreadSummariesReturnsCountsWithoutReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	counts := make(map[string]int, len(summaries))
+	participants := make(map[string][]models.ThreadParticipant, len(summaries))
 	for _, summary := range summaries {
 		counts[summary.ParentMessageID] = summary.ReplyCount
+		participants[summary.ParentMessageID] = summary.Participants
 	}
 	if len(counts) != 2 || counts[parentA] != 2 || counts[parentB] != 1 {
 		t.Fatalf("unexpected thread summaries: %+v", summaries)
+	}
+	if got := participants[parentA]; len(got) != 1 || got[0].SenderID != "alice" || got[0].SenderAvatarURL != "alice.png" {
+		t.Fatalf("unexpected participants for parent A: %+v", got)
+	}
+	if got := participants[parentB]; len(got) != 1 || got[0].SenderID != "bob" || got[0].SenderAvatarURL != "bob.png" {
+		t.Fatalf("unexpected participants for parent B: %+v", got)
 	}
 }
 
@@ -67,7 +75,7 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 	threadID := "parent"
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	messages := []models.Message{
-		{ProtocolConvID: conversationID, ProtocolMsgID: "newer-main", Timestamp: base.Add(2 * time.Minute)},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "newer-main", IsFromMe: true, Timestamp: base.Add(2 * time.Minute)},
 		{ProtocolConvID: conversationID, ProtocolMsgID: "oldest-reply", ThreadID: &threadID, Timestamp: base},
 		{ProtocolConvID: "other::conversation", ProtocolMsgID: "foreign", ThreadID: &threadID, Timestamp: base.Add(-time.Minute)},
 	}
@@ -87,8 +95,29 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 	if locations[0].MessageID != "oldest-reply" || locations[0].ThreadID != threadID {
 		t.Fatalf("oldest location = %+v, want thread reply", locations[0])
 	}
-	if locations[1].MessageID != "newer-main" || locations[1].ThreadID != "" {
+	if locations[1].MessageID != "newer-main" || locations[1].ThreadID != "" || !locations[1].IsFromMe {
 		t.Fatalf("main location = %+v, want top-level message", locations[1])
+	}
+}
+
+func TestGetUnreadMessageLocationsReturnsEmptyNonNilSlice(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	locations, err := (&App{}).GetUnreadMessageLocations("missing-conversation", []string{"missing-message"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locations == nil || len(locations) != 0 {
+		t.Fatalf("locations = %#v, want non-nil empty slice", locations)
 	}
 }
 

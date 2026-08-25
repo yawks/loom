@@ -438,10 +438,22 @@ func TestTeamsHTMLNormalizesLiteralMalformedBold(t *testing.T) {
 			`<p>**Risque : **Faible** **</p>`,
 			`**Risque :** Faible`,
 		},
+		{
+			`<p>\*\*On n'est pas bons là \*\*</p>`,
+			`**On n'est pas bons là**`,
+		},
 	} {
 		if got := teamsHTMLToMarkdown(test.input); got != test.want {
 			t.Errorf("teamsHTMLToMarkdown(%q) = %q, want %q", test.input, got, test.want)
 		}
+	}
+}
+
+func TestTeamsHTMLNormalizesDuplicatedMarkdownLink(t *testing.T) {
+	input := `[[https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios)]\([https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios))`
+	want := `[https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios)`
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("duplicated Teams link = %q, want %q", got, want)
 	}
 }
 

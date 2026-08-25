@@ -1,6 +1,6 @@
-import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, FetchLinkPreview } from "../../wailsjs/go/main/App";
+import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getMessageDomId, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
@@ -159,13 +159,24 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     return { mainMessages: sortedMain, threadsByParent: threads };
   }, [messages, messagesKey]);
 
-  const threadReplyCounts = useMemo(
-    () => Object.fromEntries(
-      mainMessages
-        .filter((message) => message.protocolMsgId && message.threadReplyCount > 0)
-        .map((message) => [message.protocolMsgId, message.threadReplyCount])
-    ),
+  const threadParentIds = useMemo(
+    () => mainMessages
+      .filter((message) => message.protocolMsgId && message.threadReplyCount > 0)
+      .map((message) => message.protocolMsgId),
     [mainMessages]
+  );
+  const { data: threadSummaries = [] } = useQuery<models.ThreadSummary[]>({
+    queryKey: ["thread-summaries", conversationId, threadParentIds.join(",")],
+    queryFn: () => GetThreadSummaries(conversationId, threadParentIds),
+    enabled: Boolean(conversationId && threadParentIds.length > 0),
+  });
+  const threadReplyCounts = useMemo(
+    () => Object.fromEntries(threadSummaries.map((summary) => [summary.parentMessageId, summary.replyCount])),
+    [threadSummaries]
+  );
+  const threadParticipantsByParent = useMemo(
+    () => Object.fromEntries(threadSummaries.map((summary) => [summary.parentMessageId, summary.participants ?? []])),
+    [threadSummaries]
   );
 
   const currentUserId = useMemo(() => {
@@ -306,6 +317,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
     mainMessages,
     threadsByParent,
     threadReplyCounts,
+    threadParticipantsByParent,
     isGroupConversation,
     currentUserId,
     groupParticipants,

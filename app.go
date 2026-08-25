@@ -2062,6 +2062,48 @@ func (a *App) GetThreadSummaries(conversationID string, parentMessageIDs []strin
 	if err != nil {
 		return []models.ThreadSummary{}, err
 	}
+
+	var replies []models.Message
+	err = db.DB.Model(&models.Message{}).
+		Select("conversation_id, thread_id, sender_id, sender_name, sender_avatar_url, is_from_me, timestamp").
+		Where("protocol_conv_id = ? AND thread_id IN ? AND thread_id <> protocol_msg_id", conversationID, parentMessageIDs).
+		Order("timestamp ASC").
+		Find(&replies).Error
+	if err != nil {
+		return []models.ThreadSummary{}, err
+	}
+	a.enrichMessagesWithSenderNames(replies)
+
+	summaryByParent := make(map[string]*models.ThreadSummary, len(summaries))
+	seenByParent := make(map[string]map[string]bool, len(summaries))
+	for i := range summaries {
+		summaries[i].Participants = []models.ThreadParticipant{}
+		summaryByParent[summaries[i].ParentMessageID] = &summaries[i]
+		seenByParent[summaries[i].ParentMessageID] = make(map[string]bool)
+	}
+	for _, reply := range replies {
+		if reply.ThreadID == nil {
+			continue
+		}
+		summary := summaryByParent[*reply.ThreadID]
+		if summary == nil {
+			continue
+		}
+		identity := reply.SenderID
+		if identity == "" {
+			identity = reply.SenderName
+		}
+		if seenByParent[*reply.ThreadID][identity] {
+			continue
+		}
+		seenByParent[*reply.ThreadID][identity] = true
+		summary.Participants = append(summary.Participants, models.ThreadParticipant{
+			SenderID:        reply.SenderID,
+			SenderName:      reply.SenderName,
+			SenderAvatarURL: reply.SenderAvatarURL,
+			IsFromMe:        reply.IsFromMe,
+		})
+	}
 	return summaries, nil
 }
 
@@ -2072,9 +2114,11 @@ func (a *App) GetUnreadMessageLocations(conversationID string, messageIDs []stri
 		return []models.UnreadMessageLocation{}, nil
 	}
 
-	var locations []models.UnreadMessageLocation
+	// Keep the Wails contract stable: an empty result must be encoded as [] and
+	// not null, since renderer callers iterate over the returned collection.
+	locations := make([]models.UnreadMessageLocation, 0)
 	err := db.DB.Model(&models.Message{}).
-		Select("protocol_msg_id AS message_id, CASE WHEN thread_id IS NOT NULL AND thread_id <> '' AND thread_id <> protocol_msg_id THEN thread_id ELSE '' END AS thread_id, timestamp").
+		Select("protocol_msg_id AS message_id, CASE WHEN thread_id IS NOT NULL AND thread_id <> '' AND thread_id <> protocol_msg_id THEN thread_id ELSE '' END AS thread_id, timestamp, is_from_me").
 		Where("protocol_conv_id = ? AND protocol_msg_id IN ?", conversationID, messageIDs).
 		Order("timestamp ASC").
 		Scan(&locations).Error
@@ -2967,6 +3011,7 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 }
 
 func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
+	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)

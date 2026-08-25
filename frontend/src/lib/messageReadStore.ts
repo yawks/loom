@@ -28,7 +28,7 @@ const markMessageAsReadOnServer = (conversationID: string, messageID: string): P
       reject(new Error("Wails runtime not available"));
       return;
     }
-    
+
     const markMessageAsReadFn = window.go.main.App.MarkMessageAsRead;
     if (!markMessageAsReadFn || typeof markMessageAsReadFn !== 'function') {
       reject(new Error("MarkMessageAsRead not available"));
@@ -112,7 +112,7 @@ if (typeof window !== "undefined") {
       const parsed = JSON.parse(raw);
       console.log("=== Message Read Store Debug ===");
       console.log(`Total conversations: ${Object.keys(parsed).length}`);
-      
+
       Object.entries(parsed).forEach(([convId, state]: [string, any]) => {
         const allKeys = Object.keys(state);
         const messageKeys = allKeys.filter(k => !k.startsWith("_"));
@@ -120,12 +120,12 @@ if (typeof window !== "undefined") {
           ([key, isRead]) => !key.startsWith("_") && !isRead
         ).length;
         const lastReadTS = state._lastReadTS;
-        
+
         console.log(`\nConversation: ${convId}`);
         console.log(`  Total messages: ${messageKeys.length}`);
         console.log(`  Unread: ${unreadCount}`);
         console.log(`  LastReadTS: ${lastReadTS || 'none'}`);
-        
+
         if (unreadCount > 0) {
           const unreadIds = Object.entries(state)
             .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
@@ -134,14 +134,14 @@ if (typeof window !== "undefined") {
           console.log(`  Unread IDs:`, unreadIds);
         }
       });
-      
+
       console.log("\n=== Raw State ===");
       console.log(parsed);
     } catch (error) {
       console.error("Failed to debug message read store:", error);
     }
   };
-  
+
   // Function to clear the stored state
   (window as any).clearMessageReadStore = () => {
     window.localStorage.removeItem(STORAGE_KEY);
@@ -236,7 +236,7 @@ const isThreadReply = (message: models.Message) =>
 export const useMessageReadStore = create<MessageReadStore>((set) => {
   const initialState = loadPersistedState();
   console.log(`messageReadStore: Loaded persisted state, ${Object.keys(initialState).length} conversations`);
-  
+
   // Debug: Log any conversations with unread messages from persisted state
   Object.entries(initialState).forEach(([convId, state]) => {
     const unreadCount = Object.entries(state).filter(
@@ -251,7 +251,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       console.log(`   Unread IDs:`, unreadIds);
     }
   });
-  
+
   return {
     readByConversation: initialState,
     seedMockUnread: (conversationId, messageIds) => {
@@ -272,17 +272,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       set((state) => {
         const existingState = state.readByConversation[conversationId];
         // hasExisting should only count actual messages, not special keys like _lastReadTS
-        const existingMessageCount = existingState 
+        const existingMessageCount = existingState
           ? Object.keys(existingState).filter(key => !key.startsWith("_")).length
           : 0;
         const hasExisting = existingMessageCount > 0;
-        
+
         const lastReadTS = existingState
           ? ((existingState as any)["_lastReadTS"] as string | undefined)
           : undefined;
-        
+
         console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting} (${existingMessageCount} messages), lastReadTS: ${lastReadTS || 'none'}, messages to sync: ${messages.length}`);
-      
+
       // Create a set of message IDs that actually exist in the conversation
       const existingMessageIds = new Set<string>();
       messages.forEach((message) => {
@@ -327,11 +327,19 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           return;
         }
 
+        if (message.isFromMe && nextState[messageId] === false) {
+          // Provider echoes can arrive before self identity is fully resolved.
+          // Once the persisted message confirms ownership, it must not remain
+          // an unread navigation target.
+          nextState[messageId] = true;
+          hasChanged = true;
+        }
+
         if (nextState[messageId] === undefined) {
           const isCallMessage = message.callType && message.callType.trim() !== "";
           if (isCallMessage || message.isFromMe) {
             nextState[messageId] = true;
-          } else {
+      } else {
             // Always check lastReadTS from provider to determine read state
             // This ensures we use provider's own read markers rather than guessing
             if (lastReadTS) {
@@ -386,7 +394,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         [conversationId]: nextState,
       };
       persistState(updatedMap);
-      
+
       // Count only actual messages (exclude special keys like _lastReadTS)
       const unreadCount = Object.entries(nextState).filter(
         ([key, isRead]) => !key.startsWith("_") && !isRead
@@ -394,7 +402,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       const unreadMessageIds = Object.entries(nextState)
         .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
         .map(([msgId]) => msgId);
-      
+
       const totalMessages = Object.keys(nextState).filter(k => !k.startsWith("_")).length;
       console.log(`messageReadStore: syncConversation COMPLETE - ${conversationId}: ${totalMessages} messages, ${unreadCount} unread (lastReadTS: ${lastReadTS || 'none'})`);
       if (unreadCount > 0) {
@@ -406,7 +414,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           .map(([msgId, isRead]) => ({ msgId, isRead }));
         console.table(unreadDetails);
       }
-      
+
       return { readByConversation: updatedMap };
     });
   },
@@ -490,7 +498,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         // Silently ignore errors for individual message receipts
         // Errors are already logged by the server call itself if needed
         });
-      
+
       return { readByConversation: updatedMap };
     });
   },
@@ -498,14 +506,14 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
     if (!conversationId || !lastReadTS) {
       return;
     }
-    
+
     // Parse provider timestamp (format: "1502126650.000003")
     const lastReadTimestamp = parseFloat(lastReadTS);
     if (isNaN(lastReadTimestamp)) {
       console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}`);
       return;
     }
-    
+
     set((state) => {
       const conversationState = state.readByConversation[conversationId];
       if (!conversationState) {
@@ -520,10 +528,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         console.log(`messageReadStore: Created conversation state with lastReadTS for ${conversationId}: ${lastReadTS}`);
         return { readByConversation: updatedMap };
       }
-      
+
       const updatedConversation = { ...conversationState };
       let hasChanged = false;
-      
+
       // Read markers are monotonic. A provider can deliver an older marker a few
       // seconds after Loom has already marked the conversation as read.
       const previousLastReadTS = parseFloat(
@@ -538,11 +546,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         (updatedConversation as any)["_lastReadTS"] = effectiveLastReadTS;
         hasChanged = true;
       }
-      
+
       // IMPORTANT: Re-evaluate all messages' read state based on the new lastReadTS
       // This ensures that when we receive the lastReadTS from provider, we update the state
       const lastReadDate = new Date(effectiveLastReadTimestamp * 1000);
-      
+
       Object.keys(updatedConversation).forEach((messageId) => {
         // Skip special keys like _lastReadTS
         if (messageId.startsWith("_")) {
@@ -553,12 +561,12 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         if (updatedConversation[threadMarker(messageId)] === true) {
           return;
         }
-        
+
         // Parse message timestamp from the messageId
         // messageId format can be either "protocolMsgId" (e.g., "1766067993.591559")
         // or "message-{id}" or "ts-{timestamp}"
         let messageTimestamp: number | null = null;
-        
+
         if (messageId.startsWith("message-") || messageId.startsWith("ts-")) {
           // Extract timestamp from ID
           const parts = messageId.split("-");
@@ -569,43 +577,43 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           // Assume it's a provider protocol message ID (timestamp format)
           messageTimestamp = parseFloat(messageId);
         }
-        
+
         if (messageTimestamp && !isNaN(messageTimestamp)) {
           // If messageId is in seconds (> 10 digits), convert to milliseconds
           const msgDate = messageTimestamp > 10000000000
             ? new Date(messageTimestamp)
             : new Date(messageTimestamp * 1000);
-          
+
           // Mark as read if message timestamp <= lastReadTimestamp
           const wasRead = updatedConversation[messageId];
           // A read message must never become unread because of a delayed or
           // incomplete provider marker. New messages are classified when they
           // are registered; this pass only advances unread messages to read.
           const shouldBeRead = wasRead || msgDate <= lastReadDate;
-          
+
           if (wasRead !== shouldBeRead) {
             updatedConversation[messageId] = shouldBeRead;
             hasChanged = true;
           }
         }
       });
-      
+
       if (!hasChanged) {
         return state;
       }
-      
+
       const updatedMap = {
         ...state.readByConversation,
         [conversationId]: updatedConversation,
       };
       persistState(updatedMap);
-      
+
       const unreadCount = Object.keys(updatedConversation).filter(
         (key) => !key.startsWith("_") && !updatedConversation[key]
       ).length;
-      
+
       console.log(`messageReadStore: Updated lastReadTS for ${conversationId}: ${lastReadTS} (${lastReadDate.toISOString()}), ${unreadCount} unread messages`);
-      
+
       return { readByConversation: updatedMap };
     });
   },
@@ -656,11 +664,12 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       const marker = threadMarker(messageId);
       const needsThreadMarker =
         isThreadReply(message) && existingState[marker] !== true;
+      const repairsOwnMessage = message.isFromMe && existingState[messageId] === false;
 
-      if (existingState[messageId] !== undefined && !needsThreadMarker) {
+      if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsOwnMessage) {
         return state;
       }
-      
+
       // Use lastReadTS if available to determine read state
       const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
       let isRead = existingState[messageId];
@@ -669,11 +678,21 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       // They have their own badge indicator. Messages sent by the current user are always marked as read.
       const isCallMessage = message.callType && message.callType.trim() !== "";
 
-      if (isRead !== undefined) {
+      if (message.isFromMe && isRead === false) {
+        // Repair an earlier provider echo that was temporarily classified as
+        // incoming before the sender identity was resolved.
+        isRead = true;
+      } else if (isRead !== undefined) {
         // Preserve the existing read state when this pass only adds legacy
         // thread metadata.
       } else if (isCallMessage || message.isFromMe) {
         isRead = true;
+      } else if (conversationId.startsWith("slack")) {
+        // Slack's channel last_read cursor is not an acknowledgement of a
+        // freshly delivered event (and does not reliably cover thread reads).
+        // The July behaviour treated live Slack deliveries as unread and let
+        // the mounted message/thread view consume them explicitly.
+        isRead = false;
       } else if (lastReadTS) {
         // Compare message timestamp with lastReadTS
         const lastReadTimestamp = parseFloat(lastReadTS);
@@ -735,7 +754,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         // provider read-through signal may overwrite an existing unread state.
         const repairsUnreadState =
           forceRead && existingState[messageId] === false;
-        if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState) continue;
+        const repairsOwnMessage = message.isFromMe && existingState[messageId] === false;
+        if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState && !repairsOwnMessage) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
         let isRead = existingState[messageId];
@@ -744,10 +764,18 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           // An action by the current user proves this history prefix was seen
           // on another linked client. This updates local state only.
           isRead = true;
+        } else if (message.isFromMe && isRead === false) {
+          // Batch enrichment can be the first payload that reliably identifies
+          // a provider echo as ours.
+          isRead = true;
         } else if (isRead !== undefined) {
           // Keep the existing value when only adding the thread marker.
         } else if (isCallMessage || message.isFromMe) {
           isRead = true;
+        } else if (conversationId.startsWith("slack") && !isHistorical) {
+          // Incremental Slack batches are newly discovered activity. Do not let
+          // the channel cursor erase them before the UI can display the badge.
+          isRead = false;
         } else if (lastReadTS) {
           const lastReadTimestamp = parseFloat(lastReadTS);
           const messageDate = timeToDate(message.timestamp);
@@ -844,11 +872,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       if (!existingState || Object.keys(existingState).length === 0) {
         return state;
       }
-      
+
       const nextState: ConversationReadState = {};
       let hasChanged = false;
       let removedCount = 0;
-      
+
       // Thread replies are not part of the main-message page represented by
       // validMessageIds. Preserve unread replies until the thread is opened.
       Object.keys(existingState).forEach((messageId) => {
@@ -872,20 +900,20 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           hasChanged = true;
         }
       });
-      
+
       if (!hasChanged) {
         return state;
       }
-      
+
       const updatedMap = {
         ...state.readByConversation,
         [conversationId]: nextState,
       };
       persistState(updatedMap);
-      
+
       const unreadCount = Object.values(nextState).filter(r => !r).length;
       console.log(`messageReadStore: cleanupObsoleteMessages - conversationId: ${conversationId}, removed: ${removedCount}, remaining: ${Object.keys(nextState).length}, unread count: ${unreadCount}`);
-      
+
       return { readByConversation: updatedMap };
     });
   },

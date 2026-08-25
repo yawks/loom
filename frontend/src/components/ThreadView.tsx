@@ -231,13 +231,13 @@ export function ThreadView() {
   );
   const { data: unreadLocations = [] } = useQuery<models.UnreadMessageLocation[]>({
     queryKey: ["unread-message-locations", conversationId, unreadMessageIds.join(",")],
-    queryFn: () => GetUnreadMessageLocations(conversationId, unreadMessageIds),
+    queryFn: async () => (await GetUnreadMessageLocations(conversationId, unreadMessageIds)) ?? [],
     enabled: Boolean(conversationId && unreadMessageIds.length > 0),
   });
   const unreadCountByThread = useMemo(() => {
     const counts: Record<string, number> = {};
     unreadLocations.forEach((location) => {
-      if (location.threadId) counts[location.threadId] = (counts[location.threadId] ?? 0) + 1;
+      if (!location.isFromMe && location.threadId) counts[location.threadId] = (counts[location.threadId] ?? 0) + 1;
     });
     return counts;
   }, [unreadLocations]);

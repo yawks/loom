@@ -114,18 +114,46 @@ func teamsHTMLToMarkdown(input string) string {
 		}
 	}
 	render(root)
-	return strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
+	return normalizeDuplicatedTeamsLinks(strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " ")))
 }
 
 var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t]+)\*\*`)
 var teamsEmptyStrong = regexp.MustCompile(`\*\*[ \t]+\*\*`)
+var teamsEscapedStrong = regexp.MustCompile(`\\\*\\\*([^\n]*\S)[ \t]*\\\*\\\*`)
+var duplicatedTeamsLink = regexp.MustCompile(`\[\[([^\]\n]+)\]\((https?://[^\s)]+)\)\]\\\(\[([^\]\n]+)\]\((https?://[^\s)]+)\)\)`)
 
 // normalizeTeamsMarkdown repairs Markdown-like text embedded literally in a
 // Teams HTML message. This happens when Teams mixes rich-text elements with
 // already-serialized Markdown in the same payload.
 func normalizeTeamsMarkdown(input string) string {
+	input = teamsEscapedStrong.ReplaceAllString(input, `**$1**`)
 	input = teamsStrongTrailingSpace.ReplaceAllString(input, `**$1**$2`)
 	return teamsEmptyStrong.ReplaceAllString(input, "")
+}
+
+// normalizeDuplicatedTeamsLinks repairs the representation produced by Teams
+// when a pasted Markdown link is wrapped in a rich-text link and repeated as
+// escaped text. The equality check makes the rewrite safe for normal bracketed
+// prose that happens to contain links.
+func normalizeDuplicatedTeamsLinks(input string) string {
+	return duplicatedTeamsLink.ReplaceAllStringFunc(input, func(match string) string {
+		parts := duplicatedTeamsLink.FindStringSubmatch(match)
+		if len(parts) != 5 {
+			return match
+		}
+		normalize := func(value string) string {
+			value = strings.ReplaceAll(value, `\_`, "_")
+			value = strings.ReplaceAll(value, `\&`, "&")
+			return stdhtml.UnescapeString(value)
+		}
+		want := normalize(parts[1])
+		for _, part := range parts[2:] {
+			if normalize(part) != want {
+				return match
+			}
+		}
+		return "[" + parts[3] + "](" + parts[4] + ")"
+	})
 }
 
 var safeCSSValue = regexp.MustCompile(`(?i)^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$`)

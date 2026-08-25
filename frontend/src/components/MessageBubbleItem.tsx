@@ -67,6 +67,7 @@ interface MessageBubbleItemProps {
   participantNames: Map<string, string>;
   threadsByParent: Record<string, models.Message[]>;
   threadReplyCounts: Record<string, number>;
+  threadParticipantsByParent: Record<string, models.ThreadParticipant[]>;
   unreadThreadIds: ReadonlySet<string>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
@@ -98,6 +99,7 @@ export function MessageBubbleItem({
   participantNames,
   threadsByParent,
   threadReplyCounts,
+  threadParticipantsByParent,
   unreadThreadIds,
   virtuosoRef,
   handlers,
@@ -345,6 +347,7 @@ export function MessageBubbleItem({
             {hasThread && (
               <MessageThreadPreview
                 threadMessages={threadMessages}
+                summaryParticipants={threadParticipantsByParent[message.protocolMsgId] ?? []}
                 replyCount={threadReplyCount}
                 hasUnread={hasUnreadInThread}
                 onThreadClick={() => handlers.onThreadClick(message.protocolMsgId, message)}

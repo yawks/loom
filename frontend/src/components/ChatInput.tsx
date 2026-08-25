@@ -142,6 +142,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   });
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaMeasurementRef = useRef<HTMLTextAreaElement | null>(null);
   const draftSaveRef = useRef<{ key: string | null; value: string; timeoutId: number } | null>(null);
   const hasTextRef = useRef(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
@@ -553,10 +554,17 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // Measure on an invisible clone. Setting the real textarea to "auto"
       // before reading scrollHeight makes it collapse and expand, which also
       // moves the adjacent message viewport twice (especially on Backspace).
-      const measurement = textarea.cloneNode() as HTMLTextAreaElement;
+      // Keep the measurement node around. Creating, attaching and removing a
+      // clone synchronously for every input event delays the browser from
+      // painting the character that was just typed.
+      const measurement = textareaMeasurementRef.current ?? (textarea.cloneNode() as HTMLTextAreaElement);
+      if (!textareaMeasurementRef.current) {
+        measurement.tabIndex = -1;
+        measurement.setAttribute("aria-hidden", "true");
+        document.body.appendChild(measurement);
+        textareaMeasurementRef.current = measurement;
+      }
       measurement.value = textarea.value;
-      measurement.tabIndex = -1;
-      measurement.setAttribute("aria-hidden", "true");
       Object.assign(measurement.style, {
         position: "fixed",
         left: "-10000px",
@@ -569,9 +577,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         maxHeight: "none",
         overflow: "hidden",
       });
-      document.body.appendChild(measurement);
       const contentHeight = measurement.scrollHeight;
-      measurement.remove();
 
       const newHeight = Math.max(minHeight, Math.min(contentHeight, maxHeight));
       textarea.style.height = `${newHeight}px`;
@@ -583,6 +589,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
     }
   }, [onHeightChange]);
+
+  useEffect(() => () => {
+    textareaMeasurementRef.current?.remove();
+    textareaMeasurementRef.current = null;
+  }, []);
+
+  const mountTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
+    textareaRef.current = textarea;
+    onTextareaMount?.(textarea);
+  }, [onTextareaMount]);
 
   // Restore the draft associated with the currently displayed conversation/thread.
   useEffect(() => {
@@ -1138,10 +1154,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               </div>
             )}
             <textarea
-              ref={(textarea) => {
-                textareaRef.current = textarea;
-                onTextareaMount?.(textarea);
-              }}
+              ref={mountTextarea}
               value={message}
               onChange={handleMessageChange}
               onKeyDown={handleKeyDown}
