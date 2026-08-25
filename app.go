@@ -1067,15 +1067,24 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					}
 				case core.PresenceEvent:
 					if db.DB != nil && e.UserID != "" {
-						updates := map[string]interface{}{
-							"status": map[bool]string{true: "online", false: "offline"}[e.IsOnline],
+						// Presence events may use transient WhatsApp LIDs for which no linked
+						// account exists. Avoid acquiring SQLite's single writer lock for an
+						// UPDATE that can only affect zero rows, and update by primary key for
+						// known accounts.
+						if account, ok := db.ContactStore.FindByProviderUser(e.InstanceID, e.UserID); ok {
+							account.Status = map[bool]string{true: "online", false: "offline"}[e.IsOnline]
+							updates := map[string]interface{}{"status": account.Status}
+							if e.LastSeen > 0 {
+								lastSeen := time.Unix(e.LastSeen, 0)
+								account.LastSeen = &lastSeen
+								updates["last_seen"] = lastSeen
+							}
+							if result := db.DB.Model(&models.LinkedAccount{}).
+								Where("id = ?", account.ID).
+								Updates(updates); result.Error == nil {
+								db.ContactStore.UpsertLinkedAccount(account)
+							}
 						}
-						if e.LastSeen > 0 {
-							updates["last_seen"] = time.Unix(e.LastSeen, 0)
-						}
-						db.DB.Model(&models.LinkedAccount{}).
-							Where("provider_instance_id = ? AND user_id = ?", e.InstanceID, e.UserID).
-							Updates(updates)
 					}
 					presenceJSON, _ := json.Marshal(e)
 					if a.ctx != nil {

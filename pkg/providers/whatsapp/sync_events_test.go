@@ -47,6 +47,19 @@ func TestHistoryMessagesReadThroughOwnMessage(t *testing.T) {
 	}
 }
 
+func TestHistoryMessagesReadThroughOwnReaction(t *testing.T) {
+	messages := []models.Message{
+		{ProtocolMsgID: "incoming-before"},
+		{ProtocolMsgID: "reacted", Reactions: []models.Reaction{{UserID: "33600000000@s.whatsapp.net", Emoji: "👍"}}},
+		{ProtocolMsgID: "incoming-after"},
+	}
+
+	read := historyMessagesReadThroughOwnActivity(messages, "33600000000@s.whatsapp.net")
+	if len(read) != 2 || read[1].ProtocolMsgID != "reacted" {
+		t.Fatalf("read-through reaction prefix = %#v", read)
+	}
+}
+
 func TestReclassifyNewIncomingWhatsAppMessages(t *testing.T) {
 	read := []models.Message{
 		{ProtocolMsgID: "existing", Timestamp: time.Unix(1, 0)},

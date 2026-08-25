@@ -231,6 +231,25 @@ func (w *WhatsAppProvider) lookbackSync() {
 		Select("DISTINCT protocol_conv_id").
 		Where("protocol_conv_id != '' AND timestamp > ?", lookbackSince).
 		Scan(&rows)
+	// A reaction can be newer than the message it targets. Include those
+	// conversations so an own reaction on an older message can repair the local
+	// read boundary after restart as well.
+	var reactionRows []convRow
+	db.DB.Model(&models.Message{}).
+		Select("DISTINCT messages.protocol_conv_id").
+		Joins("JOIN reactions ON reactions.message_id = messages.id").
+		Where("messages.protocol_conv_id != '' AND reactions.created_at > ?", lookbackSince).
+		Scan(&reactionRows)
+	seen := make(map[string]struct{}, len(rows)+len(reactionRows))
+	for _, row := range rows {
+		seen[row.ProtocolConvID] = struct{}{}
+	}
+	for _, row := range reactionRows {
+		if _, exists := seen[row.ProtocolConvID]; !exists {
+			rows = append(rows, row)
+			seen[row.ProtocolConvID] = struct{}{}
+		}
+	}
 
 	w.log("WhatsApp: lookbackSync: triggering contacts refresh for %d recent conversations\n", len(rows))
 	for _, row := range rows {
@@ -256,18 +275,17 @@ func (w *WhatsAppProvider) emitStoredReadThroughOwnMessage(conversationID string
 	if db.DB == nil || conversationID == "" {
 		return
 	}
-	var lastOwn models.Message
-	if err := db.DB.Where("protocol_conv_id = ? AND is_from_me = 1 AND deleted_at IS NULL", conversationID).
-		Order("timestamp DESC").First(&lastOwn).Error; err != nil {
-		return
-	}
 	var messages []models.Message
-	if err := db.DB.Where("protocol_conv_id = ? AND timestamp <= ? AND deleted_at IS NULL", conversationID, lastOwn.Timestamp).
+	if err := db.DB.Preload("Reactions").Where("protocol_conv_id = ? AND deleted_at IS NULL", conversationID).
 		Order("timestamp DESC").Limit(maxMessagesPerConversation).Find(&messages).Error; err != nil || len(messages) == 0 {
 		return
 	}
 	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
 		messages[left], messages[right] = messages[right], messages[left]
+	}
+	messages = w.historyMessagesReadThroughOwnActivity(messages)
+	if len(messages) == 0 {
+		return
 	}
 	select {
 	case w.eventChan <- core.MessageBatchEvent{

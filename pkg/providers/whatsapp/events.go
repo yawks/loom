@@ -19,7 +19,7 @@ import (
 func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	// Log ALL events to help debug
 	eventType := fmt.Sprintf("%T", evt)
-	fmt.Printf("WhatsApp: [EVENT] Received event type: %s\n", eventType)
+	verboseLogf("WhatsApp: [EVENT] Received event type: %s\n", eventType)
 
 	switch v := evt.(type) {
 	case *events.GroupInfo:
@@ -72,14 +72,14 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 	case *events.Message:
 		// Convert WhatsApp message to our Message model
-		fmt.Printf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
+		verboseLogf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 
 		// IMPORTANT: Create LID -> JID mapping for typing indicators
 		// WhatsApp now sends typing indicators with LIDs instead of JIDs
 		// We need to extract and persist the mapping from incoming messages
 
 		// Log all message info fields for debugging
-		fmt.Printf("WhatsApp: [MESSAGE] Chat: %s (server: %s), Sender: %s (server: %s), PushName: %s, IsFromMe: %v\n",
+		verboseLogf("WhatsApp: [MESSAGE] Chat: %s (server: %s), Sender: %s (server: %s), PushName: %s, IsFromMe: %v\n",
 			v.Info.Chat.String(), v.Info.Chat.Server,
 			v.Info.Sender.String(), v.Info.Sender.Server,
 			v.Info.PushName, v.Info.IsFromMe)
@@ -124,7 +124,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Log if neither condition matched
 		if v.Info.Chat.Server != "lid" && v.Info.Sender.Server != "lid" {
-			fmt.Printf("WhatsApp: [MESSAGE] No LID detected, both are standard JIDs\n")
+			verboseLogf("WhatsApp: [MESSAGE] No LID detected, both are standard JIDs\n")
 
 			// WORKAROUND: WhatsApp normalizes LIDs in MessageInfo but keeps them in XML
 			// The raw XML message contains sender_lid that we can't access through whatsmeow
@@ -185,7 +185,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		rawConvID := v.Info.Chat.String()
 		convID := core.BuildConvID(w.getInstanceId(), rawConvID)
 		msgID := v.Info.ID
-		fmt.Printf("WhatsApp: Processing message event: ID=%s, Chat=%s, Sender=%s\n", msgID, convID, v.Info.Sender.String())
+		verboseLogf("WhatsApp: Processing message event: ID=%s, Chat=%s, Sender=%s\n", msgID, convID, v.Info.Sender.String())
 
 		// First, convert the message to get its body
 		msg := w.convertMessage(v)
@@ -213,7 +213,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			var dbMsg models.Message
 			if err := db.DB.Preload("Receipts").Preload("Reactions").Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
 				existingMsg = &dbMsg
-				fmt.Printf("WhatsApp: Found existing message %s in database\n", msgID)
+				verboseLogf("WhatsApp: Found existing message %s in database\n", msgID)
 				// Also add to cache if we found it in DB
 				w.mu.Lock()
 				if msgs, ok := w.conversationMessages[convID]; ok {
@@ -237,7 +237,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// If message exists, it might be an edit - check if content changed
 		if existingMsg != nil {
-			fmt.Printf("WhatsApp: Found existing message %s: old body='%s', new body='%s'\n", msgID, existingMsg.Body, msg.Body)
+			verboseLogf("WhatsApp: Found existing message %s: old body='%s', new body='%s'\n", msgID, existingMsg.Body, msg.Body)
 			if v.Message.GetLiveLocationMessage() != nil {
 				existingMsg.Attachments = msg.Attachments
 				if msg.Body != "" {
@@ -301,7 +301,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Normal message processing
 		msg = w.convertMessage(v)
 		if msg != nil {
-			fmt.Printf("WhatsApp: Converted message successfully, ID: %s, Body: %s, Attachments: %s\n", msg.ProtocolMsgID, msg.Body, msg.Attachments)
+			verboseLogf("WhatsApp: Converted message successfully, ID: %s, Body: %s, Attachments: %s\n", msg.ProtocolMsgID, msg.Body, msg.Attachments)
 			// Check if message has media but no attachments
 			if msg.Attachments == "" && (v.Message.GetImageMessage() != nil || v.Message.GetVideoMessage() != nil || v.Message.GetAudioMessage() != nil || v.Message.GetDocumentMessage() != nil || v.Message.GetStickerMessage() != nil) {
 				fmt.Printf("WhatsApp: WARNING - Message %s has media but no attachments were extracted! Chat: %s, Sender: %s\n", msg.ProtocolMsgID, v.Info.Chat.String(), v.Info.Sender.String())
@@ -313,7 +313,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 			select {
 			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *msg}:
-				fmt.Printf("WhatsApp: MessageEvent emitted successfully for message %s\n", msg.ProtocolMsgID)
+				verboseLogf("WhatsApp: MessageEvent emitted successfully for message %s\n", msg.ProtocolMsgID)
 			default:
 				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for message %s\n", msg.ProtocolMsgID)
 			}
@@ -331,7 +331,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		chatJID := v.MessageSource.Chat
 		senderJID := v.MessageSource.Sender
 
-		fmt.Printf("WhatsApp: Received ChatPresence event - Chat: %s (server: %s), Sender: %s (server: %s), State: %s\n",
+		verboseLogf("WhatsApp: Received ChatPresence event - Chat: %s (server: %s), Sender: %s (server: %s), State: %s\n",
 			chatJID.String(),
 			chatJID.Server,
 			senderJID.String(),
@@ -547,7 +547,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			lastSeen = v.LastSeen.Unix()
 		}
 
-		fmt.Printf("WhatsApp: Presence update: %s is %s (LastSeen: %v)\n",
+		verboseLogf("WhatsApp: Presence update: %s is %s (LastSeen: %v)\n",
 			userID,
 			map[bool]string{true: "online", false: "offline"}[isOnline],
 			v.LastSeen)
@@ -559,7 +559,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			IsOnline: isOnline,
 			LastSeen: lastSeen,
 		}:
-			fmt.Printf("WhatsApp: PresenceEvent emitted for %s\n", userID)
+			verboseLogf("WhatsApp: PresenceEvent emitted for %s\n", userID)
 		default:
 			fmt.Printf("WhatsApp: WARNING - Failed to emit PresenceEvent (channel full)\n")
 		}
@@ -572,7 +572,6 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.lidToJIDMu.RUnlock()
 
 			if found && resolvedJID != userID {
-				fmt.Printf("WhatsApp: Resolved LID %s to JID %s for presence\n", userID, resolvedJID)
 				// Emit presence event for the resolved JID as well
 				select {
 				case w.eventChan <- core.PresenceEvent{InstanceID: w.getInstanceId(),
@@ -580,12 +579,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 					IsOnline: isOnline,
 					LastSeen: lastSeen,
 				}:
-					fmt.Printf("WhatsApp: PresenceEvent emitted for resolved JID %s\n", resolvedJID)
+					verboseLogf("WhatsApp: PresenceEvent emitted for resolved JID %s\n", resolvedJID)
 				default:
 					fmt.Printf("WhatsApp: WARNING - Failed to emit PresenceEvent for resolved JID (channel full)\n")
 				}
 			} else {
-				fmt.Printf("WhatsApp: LID %s not found in mapping, only emitting for LID\n", userID)
+				verboseLogf("WhatsApp: LID %s not found in mapping, only emitting for LID\n", userID)
 			}
 		}
 	case *events.QR:
@@ -1878,12 +1877,12 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 		w.mu.Lock()
 		w.conversations[linked.UserID] = linked
 		w.mu.Unlock()
-		fmt.Printf("WhatsApp: Cached conversation[%d]: %s (%s)\n", i, displayName, jid.String())
+		verboseLogf("WhatsApp: Cached conversation[%d]: %s (%s)\n", i, displayName, jid.String())
 
 		// For group conversations, cache participants to extract LID mappings
 		// This ensures we can resolve participant names even during initial sync
 		if jid.Server == types.GroupServer {
-			fmt.Printf("WhatsApp: Caching participants for group %s\n", jid.String())
+			verboseLogf("WhatsApp: Caching participants for group %s\n", jid.String())
 			go w.cacheGroupParticipants(jid)
 		}
 
@@ -1965,7 +1964,7 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 
 		if jid.Server == types.GroupServer {
 			w.knownGroups[linked.UserID] = displayName
-			fmt.Printf("WhatsApp: Also cached as group: %s\n", displayName)
+			verboseLogf("WhatsApp: Also cached as group: %s\n", displayName)
 		}
 
 		added++

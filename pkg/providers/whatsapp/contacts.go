@@ -232,7 +232,7 @@ func (w *WhatsAppProvider) lookupSenderNameInGroup(senderJID types.JID, groupJID
 }
 
 func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
-	fmt.Printf("WhatsApp: GetContacts called\n")
+	verboseLogf("WhatsApp: GetContacts called\n")
 	if w.client == nil {
 		return nil, fmt.Errorf("client not initialized")
 	}
@@ -242,7 +242,7 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 		fmt.Printf("WhatsApp: GetContacts - client not connected, returning empty\n")
 		return []models.LinkedAccount{}, nil
 	}
-	fmt.Printf("WhatsApp: GetContacts - starting to load conversations\n")
+	verboseLogf("WhatsApp: GetContacts - starting to load conversations\n")
 
 	// Log instance ID for debugging
 	w.mu.RLock()
@@ -253,7 +253,7 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 		}
 	}
 	w.mu.RUnlock()
-	fmt.Printf("WhatsApp: GetContacts - instance ID: %s\n", instanceID)
+	verboseLogf("WhatsApp: GetContacts - instance ID: %s\n", instanceID)
 
 	// Start with cached conversations discovered via history sync
 	// Make a copy to avoid holding the lock while processing fallback
@@ -275,13 +275,13 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	// Fall back to the contact store and joined groups
 	// Note: getContactsFallback may need to write to w.knownGroups, so we don't hold the lock
-	fmt.Printf("WhatsApp: GetContacts - calling getContactsFallback\n")
+	verboseLogf("WhatsApp: GetContacts - calling getContactsFallback\n")
 	fallbackAccounts, err := w.getContactsFallback()
 	if err != nil {
 		fmt.Printf("WhatsApp: GetContacts - getContactsFallback error: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf("WhatsApp: GetContacts - getContactsFallback returned %d accounts\n", len(fallbackAccounts))
+	verboseLogf("WhatsApp: GetContacts - getContactsFallback returned %d accounts\n", len(fallbackAccounts))
 
 	// Get all avatars from cache in one pass to minimize lock contention
 	w.mu.RLock()
@@ -324,7 +324,7 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 	cachedHistoryCount := len(w.conversationMessages)
 	w.mu.RUnlock()
 
-	fmt.Printf("WhatsApp: GetContacts - Before filtering: %d contacts, hasCachedHistory: %v, cachedHistoryCount: %d\n", len(linkedAccounts), hasCachedHistory, cachedHistoryCount)
+	verboseLogf("WhatsApp: GetContacts - Before filtering: %d contacts, hasCachedHistory: %v, cachedHistoryCount: %d\n", len(linkedAccounts), hasCachedHistory, cachedHistoryCount)
 
 	// First try to filter using cached history (faster)
 	if hasCachedHistory {
@@ -338,10 +338,10 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	// Always double-check with database to ensure accuracy
 	// This catches cases where cache might be incomplete or contacts were added without messages
-	fmt.Printf("WhatsApp: GetContacts - Verifying contacts have messages in database\n")
+	verboseLogf("WhatsApp: GetContacts - Verifying contacts have messages in database\n")
 	// TEMPORARILY DISABLED: Too aggressive after DB reset
 	// linkedAccounts = w.filterAccountsWithMessagesInDB(linkedAccounts)
-	fmt.Printf("WhatsApp: GetContacts - After database verification: %d contacts\n", len(linkedAccounts))
+	verboseLogf("WhatsApp: GetContacts - After database verification: %d contacts\n", len(linkedAccounts))
 
 	// Final pass: ensure all avatars from cache are included
 	// This ensures that avatars loaded asynchronously are visible
@@ -559,7 +559,7 @@ func (w *WhatsAppProvider) filterAccountsWithHistory(accounts []models.LinkedAcc
 }
 
 func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error) {
-	fmt.Printf("WhatsApp: getContactsFallback called\n")
+	verboseLogf("WhatsApp: getContactsFallback called\n")
 	// Check if store is available
 	if w.client == nil || w.client.Store == nil || w.client.Store.Contacts == nil {
 		fmt.Printf("WhatsApp: Store not available yet (client=%v, store=%v, contacts=%v)\n",
@@ -576,7 +576,7 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 		fmt.Printf("WhatsApp: GetAllContacts failed: %v\n", err)
 		contacts = make(map[types.JID]types.ContactInfo)
 	} else {
-		fmt.Printf("WhatsApp: GetAllContacts returned %d contacts\n", len(contacts))
+		verboseLogf("WhatsApp: GetAllContacts returned %d contacts\n", len(contacts))
 	}
 
 	// Get instance ID for this provider (once, before the loop)
@@ -826,7 +826,7 @@ func (w *WhatsAppProvider) subscribeToContactPresence() {
 	// Wait a bit for the connection to stabilize
 	time.Sleep(2 * time.Second)
 
-	fmt.Printf("WhatsApp: Starting presence subscription for DM contacts...\n")
+	verboseLogf("WhatsApp: Starting presence subscription for DM contacts...\n")
 
 	// Get all contacts from the store
 	if w.client.Store.Contacts == nil {
@@ -880,7 +880,7 @@ func (w *WhatsAppProvider) subscribeToContactPresence() {
 		dmContacts = dmContacts[:100]
 	}
 
-	fmt.Printf("WhatsApp: Found %d DM contacts to subscribe to presence\n", len(dmContacts))
+	verboseLogf("WhatsApp: Found %d DM contacts to subscribe to presence\n", len(dmContacts))
 
 	// Subscribe to presence for each contact with a small delay to avoid rate limiting
 	successCount := 0
@@ -896,7 +896,7 @@ func (w *WhatsAppProvider) subscribeToContactPresence() {
 		} else {
 			successCount++
 			if (i+1)%10 == 0 {
-				fmt.Printf("WhatsApp: Subscribed to presence for %d/%d contacts...\n", i+1, len(dmContacts))
+				verboseLogf("WhatsApp: Subscribed to presence for %d/%d contacts...\n", i+1, len(dmContacts))
 			}
 		}
 	}

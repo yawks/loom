@@ -272,10 +272,10 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
 
   useEffect(() => {
     if (!conversationId || messages.length === 0) return;
-    syncConversation(conversationId, messages);
+    syncConversation(conversationId, messages, currentUserId);
     const allMessageIds = new Set(messages.map((msg) => getMessageDomId(msg)));
     cleanupObsoleteMessages(conversationId, allMessageIds);
-  }, [conversationId, messages, syncConversation, cleanupObsoleteMessages]);
+  }, [conversationId, messages, currentUserId, syncConversation, cleanupObsoleteMessages]);
 
   useEffect(() => {
     if (messages.length > 0 && !isLoading) {
