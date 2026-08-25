@@ -133,6 +133,8 @@ export function RemoveProvider(arg1:string):Promise<void>;
 
 export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function ResetProviderAuthentication(arg1:string):Promise<void>;
+
 export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
@@ -149,7 +151,9 @@ export function SendMessage(arg1:string,arg2:string):Promise<models.Message>;
 
 export function SendReply(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 
-export function SendThreadFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+export function SendThreadFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<models.Message>;
+
+export function SendThreadFileFromPath(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 
 export function SendThreadMessage(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 

@@ -671,10 +671,18 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 		if err != nil {
 			return nil, fmt.Errorf("%s: fetch history for %s: %w", providerID, conversationID, err)
 		}
+		// Reactions only carry the reactor MRI. Include those MRIs in the same
+		// profile batch as message senders so the UI can show a display name even
+		// when a person has reacted without writing a message in this history page.
 		senders := make([]string, 0, len(result.Messages))
 		for _, remote := range result.Messages {
 			if remote.From != "" && remote.From != client.UserMRI() && client.CachedDisplayName(remote.From) == "" {
 				senders = append(senders, remote.From)
+			}
+			for _, reaction := range remote.Reactions {
+				if reaction.UserID != "" && !strings.EqualFold(reaction.UserID, client.UserMRI()) && client.CachedDisplayName(reaction.UserID) == "" {
+					senders = append(senders, reaction.UserID)
+				}
 			}
 		}
 		p.cacheDisplayNames(client, senders)
@@ -1554,6 +1562,13 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 		if event.Message == nil {
 			return
 		}
+		reactors := make([]string, 0, len(event.Message.Reactions))
+		for _, reaction := range event.Message.Reactions {
+			if reaction.UserID != "" && !strings.EqualFold(reaction.UserID, client.UserMRI()) && client.CachedDisplayName(reaction.UserID) == "" {
+				reactors = append(reactors, reaction.UserID)
+			}
+		}
+		p.cacheDisplayNames(client, reactors)
 		conversationID := core.BuildConvID(p.instance, event.ThreadID)
 		current := make([]models.Reaction, 0, len(event.Message.Reactions))
 		for _, reaction := range event.Message.Reactions {
@@ -1594,6 +1609,12 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 	case msteams.EventTypeTyping:
 		if event.TypingFrom == "" || event.TypingFrom == client.UserMRI() {
 			return
+		}
+		// Typing notifications contain only the MRI. Resolve it before emitting
+		// the start event; otherwise the frontend has no message from which it can
+		// infer the participant's display name and falls back to 8:orgid:<guid>.
+		if !event.TypingStop && client.CachedDisplayName(event.TypingFrom) == "" {
+			p.cacheDisplayNames(client, []string{event.TypingFrom})
 		}
 		p.emit(core.TypingEvent{
 			InstanceID: p.instance, ConversationID: core.BuildConvID(p.instance, event.ThreadID),

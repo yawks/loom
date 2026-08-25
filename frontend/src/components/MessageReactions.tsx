@@ -11,6 +11,7 @@ import { Emoji } from "./Emoji";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { normalizeReaction } from "@/lib/reactionUtils";
 import { cn } from "@/lib/utils";
+import { canonicalUserId, sameUserId } from "@/lib/userIdentity";
 import type { models } from "../../wailsjs/go/models";
 
 // Get display name for a user ID (same logic as in ConversationDetailsView)
@@ -24,6 +25,13 @@ function getDisplayName(
     const name = participantNames.get(userId);
     if (name && name.trim().length > 0) {
       return name;
+    }
+
+    const canonicalId = canonicalUserId(userId);
+    for (const [participantId, participantName] of participantNames) {
+      if (canonicalUserId(participantId) === canonicalId && participantName.trim().length > 0) {
+        return participantName;
+      }
     }
 
     // If not found and ID contains ":", try without the ":digits" part (for WhatsApp LID format)
@@ -40,7 +48,7 @@ function getDisplayName(
   // If not found in participantNames, try to find in messages (for provider user IDs)
   if (allMessages) {
     for (const message of allMessages) {
-      if (message.senderId === userId && message.senderName && message.senderName.trim().length > 0) {
+      if (sameUserId(message.senderId, userId) && message.senderName && message.senderName.trim().length > 0) {
         return message.senderName;
       }
     }
@@ -87,7 +95,7 @@ function getDisplayName(
 function getUserAvatarUrl(userId: string, allMessages?: models.Message[]): string | undefined {
   if (allMessages) {
     for (const message of allMessages) {
-      if (message.senderId === userId && message.senderAvatarUrl) {
+      if (sameUserId(message.senderId, userId) && message.senderAvatarUrl) {
         return message.senderAvatarUrl;
       }
     }
@@ -156,7 +164,7 @@ export function MessageReactions({
       const canonicalEmoji = normalizeReaction(cleanedEmoji, false).storedEmoji;
       const existing = groups.get(canonicalEmoji);
       if (existing) {
-        if (!existing.userIds.includes(reaction.userId)) {
+        if (!existing.userIds.some((userId) => sameUserId(userId, reaction.userId))) {
           existing.userIds.push(reaction.userId);
           existing.count++;
         }
@@ -181,7 +189,7 @@ export function MessageReactions({
   return (
     <div ref={rootRef} className={cn("flex flex-wrap gap-1 items-center mt-1", className)}>
       {reactionGroups.map((group) => {
-        const hasCurrentUser = currentUserId && group.userIds.includes(currentUserId);
+        const hasCurrentUser = group.userIds.some((userId) => sameUserId(userId, currentUserId));
 
         const buttonContent = (
           <>
@@ -214,7 +222,7 @@ export function MessageReactions({
             <ReactionPopover key={group.emoji} button={button}>
               <div className="flex flex-col gap-1.5 p-1 min-w-[100px]">
                 {group.userIds.map((userId) => {
-                  const isMe = currentUserId && userId === currentUserId;
+                  const isMe = sameUserId(userId, currentUserId);
                   const name = isMe
                     ? t("you") || "Vous"
                     : getDisplayName(userId, participantNames, allMessages);

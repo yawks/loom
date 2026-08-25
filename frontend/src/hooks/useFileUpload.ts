@@ -1,4 +1,4 @@
-import { SendFile, SendMessage, SendReply, SendThreadFile } from "../../wailsjs/go/main/App";
+import { SendFile, SendMessage, SendReply, SendThreadFile, SendThreadFileFromPath } from "../../wailsjs/go/main/App";
 import { useCallback, useState } from "react";
 
 import type { InfiniteData } from "@tanstack/react-query";
@@ -108,8 +108,25 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
     if (threadId) {
       queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
       queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
+      queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
     }
   }, [queryClient, conversationId, threadId]);
+
+  const addSentThreadMessage = useCallback((message: models.Message | null | undefined) => {
+    if (!threadId || !message?.protocolMsgId) return;
+    queryClient.setQueryData<models.Message[]>(
+      ["threads", conversationId, threadId],
+      (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
+        ? current
+        : [...current, message]
+    );
+    queryClient.setQueriesData<models.ThreadSummary[]>(
+      { queryKey: ["thread-summaries", conversationId] },
+      (current) => current?.map((summary) => summary.parentMessageId === threadId
+        ? models.ThreadSummary.createFrom({ ...summary, replyCount: summary.replyCount + 1 })
+        : summary)
+    );
+  }, [conversationId, queryClient, threadId]);
 
   const handleFileUpload = useCallback(async (files: File[], filePaths?: string[]) => {
     const hasFilePaths = Boolean(filePaths && filePaths.length > 0);
@@ -147,7 +164,10 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
         });
 
         try {
-          if (typeof SendFileFromPath === "function") {
+          if (threadId) {
+            const sentMessage = await SendThreadFileFromPath(conversationId, filePath, threadId);
+            addSentThreadMessage(sentMessage);
+          } else if (typeof SendFileFromPath === "function") {
             await SendFileFromPath(conversationId, filePath);
           } else {
             console.error("SendFileFromPath API is not available. Please rebuild the application.");
@@ -246,7 +266,21 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
         }
 
         if (filePath && typeof filePath === "string") {
-          if (typeof SendFileFromPath === "function") {
+          if (threadId) {
+            const sentMessage = await SendThreadFileFromPath(conversationId, filePath, threadId);
+            addSentThreadMessage(sentMessage);
+            const compPercent = Math.round((currentItemIndex / totalCount) * 100);
+            setUploadState({
+              isUploading: true,
+              currentFileIndex: currentItemIndex,
+              totalFiles: totalCount,
+              currentFileName: file.name,
+              progressPercent: compPercent,
+              fileProgressPercent: 100,
+              error: null,
+            });
+            continue;
+          } else if (typeof SendFileFromPath === "function") {
             await SendFileFromPath(conversationId, filePath);
             const compPercent = Math.round((currentItemIndex / totalCount) * 100);
             setUploadState({
@@ -349,7 +383,8 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
         }));
 
         if (threadId) {
-          await SendThreadFile(conversationId, fileData, fileName, fileMimeType, threadId);
+          const sentMessage = await SendThreadFile(conversationId, fileData, fileName, fileMimeType, threadId);
+          addSentThreadMessage(sentMessage);
         } else if (typeof SendFile === "function") {
           await SendFile(conversationId, fileData, fileName, fileMimeType);
         } else {
@@ -391,7 +426,7 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
     }, 500);
 
     refreshMessages();
-  }, [conversationId, threadId, refreshMessages]);
+  }, [addSentThreadMessage, conversationId, threadId, refreshMessages]);
 
   // Optimistic message state helpers (used for retry/delete local)
   const markMessageState = useCallback(

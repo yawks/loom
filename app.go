@@ -2658,13 +2658,13 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 	return err
 }
 
-func (a *App) SendThreadFile(conversationID string, base64Data string, filename string, mimeType string, threadID string) error {
+func (a *App) SendThreadFile(conversationID string, base64Data string, filename string, mimeType string, threadID string) (*models.Message, error) {
 	if idx := strings.Index(base64Data, ","); idx != -1 {
 		base64Data = base64Data[idx+1:]
 	}
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
@@ -2685,10 +2685,31 @@ func (a *App) SendThreadFile(conversationID string, base64Data string, filename 
 	}
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
-		return fmt.Errorf("no provider for conversation %s", conversationID)
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	_, err = provider.SendFile(conversationID, attachment, &threadID)
-	return err
+	return provider.SendFile(conversationID, attachment, &threadID)
+}
+
+// SendThreadFileFromPath uploads a local file directly to a thread. Keeping the
+// file on the Go side avoids copying large uploads through a base64 JavaScript
+// string and lets the frontend cache the message returned by the provider.
+func (a *App) SendThreadFileFromPath(conversationID string, filePath string, threadID string) (*models.Message, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	mimeType := http.DetectContentType(data)
+	attachment := &core.Attachment{
+		FileName: filepath.Base(filePath),
+		Data:     data,
+		FileSize: len(data),
+		MimeType: mimeType,
+	}
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	return provider.SendFile(conversationID, attachment, &threadID)
 }
 
 // ForwardAttachment lets a provider preserve a remote attachment when it has
@@ -2754,6 +2775,24 @@ func (a *App) ConnectProvider(instanceID string) error {
 		db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("is_active", true)
 	}
 	return nil
+}
+
+// ResetProviderAuthentication clears protocol credentials without removing the
+// configured account or its locally stored conversations. It must only be called
+// from an explicit user-initiated re-authentication flow.
+func (a *App) ResetProviderAuthentication(instanceID string) error {
+	if a.providerManager == nil {
+		return fmt.Errorf("no provider manager")
+	}
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return err
+	}
+	resetter, ok := provider.(interface{ ResetAuthentication() error })
+	if !ok {
+		return fmt.Errorf("provider %s does not support authentication reset", instanceID)
+	}
+	return resetter.ResetAuthentication()
 }
 
 func (a *App) RemoveProvider(instanceID string) error {

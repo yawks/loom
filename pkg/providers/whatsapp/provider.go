@@ -25,6 +25,22 @@ const (
 	maxCachedConversations     = 100
 )
 
+var waVersionRefreshMu sync.Mutex
+
+// refreshWAVersion updates whatsmeow's process-wide client revision before a
+// new pairing. WhatsApp periodically rejects older embedded revisions with
+// err-client-outdated, before it can emit a QR code.
+func refreshWAVersion(ctx context.Context) error {
+	waVersionRefreshMu.Lock()
+	defer waVersionRefreshMu.Unlock()
+	latest, err := whatsmeow.GetLatestVersion(ctx, nil)
+	if err != nil {
+		return err
+	}
+	store.SetWAVersion(*latest)
+	return nil
+}
+
 type WhatsAppProvider struct {
 	client               *whatsmeow.Client
 	container            *sqlstore.Container
@@ -35,6 +51,7 @@ type WhatsAppProvider struct {
 	mu                   sync.RWMutex
 	qrMu                 sync.RWMutex
 	latestQRCode         string
+	qrError              string
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	knownGroups          map[string]string               // Map of group JID to group name (tracked from messages)
@@ -240,14 +257,20 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	w.deviceStore = deviceStore
 	w.log("WhatsAppProvider.Init: Device store retrieved successfully\n")
 
+	if deviceStore.ID == nil {
+		w.log("WhatsAppProvider.Init: Refreshing WhatsApp Web version for pairing...\n")
+		versionCtx, versionCancel := context.WithTimeout(w.ctx, 10*time.Second)
+		if err := refreshWAVersion(versionCtx); err != nil {
+			w.log("WhatsAppProvider.Init: WARNING - failed to refresh WhatsApp Web version: %v (using embedded version %s)\n", err, store.GetWAVersion())
+		} else {
+			w.log("WhatsAppProvider.Init: Using WhatsApp Web version %s\n", store.GetWAVersion())
+		}
+		versionCancel()
+	}
+
 	// Initialize client logger - reduced verbosity to WARN to save CPU
 	clientLog := waLog.Stdout("Client", "WARN", false)
 	w.log("WhatsAppProvider.Init: Client logger initialized\n")
-
-	// Set custom OS info for WhatsApp registration
-	// Using macOS with a recent version is safer to avoid err-client-outdated issues
-	store.SetOSInfo("macOS", [3]uint32{15, 0, 0})
-	w.log("WhatsAppProvider.Init: OS info set to macOS 15.0\n")
 
 	// DeviceProps is the capability payload sent by whatsmeow. It is global to
 	// the client package, not a field on store.Device.
@@ -304,6 +327,9 @@ func (w *WhatsAppProvider) SetConfig(config core.ProviderConfig) error {
 func (w *WhatsAppProvider) GetQRCode() (string, error) {
 	w.qrMu.RLock()
 	defer w.qrMu.RUnlock()
+	if w.qrError != "" {
+		return "", fmt.Errorf("WhatsApp pairing failed: %s", w.qrError)
+	}
 	w.log("WhatsApp.GetQRCode: Returning QR code (length: %d, empty: %v)\n", len(w.latestQRCode), w.latestQRCode == "")
 	if w.latestQRCode == "" {
 		w.log("WhatsApp.GetQRCode: WARNING - QR code is empty. IsAuthenticated=%v, client.Store.ID=%v\n",
@@ -385,6 +411,7 @@ func (w *WhatsAppProvider) Connect() error {
 		// Clear latest QR code to avoid showing stale one
 		w.qrMu.Lock()
 		w.latestQRCode = ""
+		w.qrError = ""
 		w.qrMu.Unlock()
 
 		// Ensure QR channel is obtained synchronously before Connect
@@ -479,12 +506,19 @@ func (w *WhatsAppProvider) Connect() error {
 							// Only log if this is a new QR code (different from previous)
 							isNewQR := w.latestQRCode != evt.Code
 							w.latestQRCode = evt.Code
+							w.qrError = ""
 							w.qrMu.Unlock()
 
 							if isNewQR {
 								qrCodeCount++
 								w.log("WhatsApp: QR code updated (update #%d, code length: %d)\n", qrCodeCount, len(evt.Code))
 							}
+						} else if evt.Event == "err-client-outdated" {
+							w.qrMu.Lock()
+							w.qrError = "client version rejected by WhatsApp"
+							w.qrMu.Unlock()
+							w.log("WhatsApp: Pairing stopped because WhatsApp rejected the client version\n")
+							return
 						} else if evt.Event == "success" {
 							w.log("WhatsApp: ✅ QR code scanned successfully! Login in progress...\n")
 							w.qrMu.Lock()
@@ -573,6 +607,53 @@ func (w *WhatsAppProvider) Disconnect() error {
 	w.stopChan = make(chan struct{})
 
 	w.log("WhatsApp: Disconnected\n")
+	return nil
+}
+
+// ResetAuthentication removes only the linked-device credentials. Conversation
+// history lives in Loom's main database and is intentionally left untouched.
+// This is used by the explicit re-authentication flow when the phone has already
+// revoked Loom: the local store can still have an ID even though that ID is no
+// longer accepted by WhatsApp, which would otherwise suppress QR generation.
+func (w *WhatsAppProvider) ResetAuthentication() error {
+	w.mu.RLock()
+	client := w.client
+	w.mu.RUnlock()
+	if client == nil || client.Store == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	// External revocation may already have cleared the device ID. In that state
+	// there is nothing left to delete, and treating it as an error prevents the
+	// re-authentication flow from reaching GetQRChannel.
+	if client.Store.ID == nil {
+		client.Disconnect()
+		w.qrMu.Lock()
+		w.latestQRCode = ""
+		w.qrError = ""
+		w.qrMu.Unlock()
+		w.log("WhatsApp: Linked-device credentials already cleared; continuing re-authentication\n")
+		return nil
+	}
+
+	// Logout cannot succeed after the phone has already revoked the companion,
+	// so force the local cleanup instead of depending on a server round-trip.
+	client.Disconnect()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.Store.Delete(ctx); err != nil {
+		return fmt.Errorf("delete WhatsApp linked-device credentials: %w", err)
+	}
+
+	w.mu.Lock()
+	w.qrChanSet = false
+	w.qrChan = nil
+	w.qrMu.Lock()
+	w.latestQRCode = ""
+	w.qrError = ""
+	w.qrMu.Unlock()
+	w.mu.Unlock()
+	w.log("WhatsApp: Local linked-device credentials cleared for re-authentication\n")
 	return nil
 }
 
