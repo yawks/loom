@@ -104,6 +104,15 @@ export function useMessageEvents() {
         // Doing it here too (without debounce) would cause redundant refetches during bulk sync.
         if (conversationId) {
           queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", conversationId] });
+          if (message.threadId && message.threadId !== message.protocolMsgId) {
+            queryClient.setQueryData<models.Message[]>(
+              ["threads", conversationId, message.threadId],
+              (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
+                ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
+                : [...current, message]
+            );
+            queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
+          }
           queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
             ...(old || {}),
             [conversationId]: keepLatestMessage(old?.[conversationId], message),
@@ -224,6 +233,16 @@ export function useMessageEvents() {
           // did not deliver an event. Refresh an already-open conversation so
           // calls and messages recovered this way become visible immediately.
           queryClient.invalidateQueries({ queryKey: ["messages", convId] });
+          queryClient.invalidateQueries({ queryKey: ["thread-summaries", convId] });
+        }
+        for (const message of batch.messages) {
+          if (!message.protocolConvId || !message.threadId || message.threadId === message.protocolMsgId) continue;
+          queryClient.setQueryData<models.Message[]>(
+            ["threads", message.protocolConvId, message.threadId],
+            (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
+              ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
+              : [...current, message]
+          );
         }
         if (batch.messages.some((message) => Boolean(message.callType?.trim()))) {
           queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });

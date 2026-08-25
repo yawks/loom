@@ -30,6 +30,7 @@ import type { models } from "../../wailsjs/go/models";
 import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
+import { sameUserId } from "@/lib/userIdentity";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { usePresenceStore } from "@/lib/presenceStore";
@@ -537,7 +538,7 @@ export function ThreadView() {
       const { apiEmoji, canonicalName } = normalizeReaction(emoji, nativeEmojiReactions);
 
       const hasReaction = messageReactions.some((r) => {
-        return reactionMatches(r.emoji, canonicalName) && (currentUserId ? r.userId === currentUserId : false);
+        return reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId);
       });
 
       try {
@@ -811,7 +812,7 @@ export function ThreadView() {
                           onDelete={() => handleDeleteClick(message)}
                           onReply={() => setReplyingToMessage(message)}
                           onReact={(emoji) => handleReaction(message, emoji)}
-                          currentReactions={(message.reactions || []).filter((r) => currentUserId ? r.userId === currentUserId : false).map((r) => r.emoji)}
+                          currentReactions={(message.reactions || []).filter((r) => sameUserId(r.userId, currentUserId)).map((r) => r.emoji)}
                           messageId={messageId}
                           openActionsMessageId={openActionsMessageId}
                           provider={protocol}
@@ -975,7 +976,7 @@ export function ThreadView() {
                         onDelete={() => handleDeleteClick(message)}
                         onReply={() => setReplyingToMessage(message)}
                         onReact={(emoji) => handleReaction(message, emoji)}
-                        currentReactions={(message.reactions || []).filter((r) => currentUserId ? r.userId === currentUserId : false).map((r) => r.emoji)}
+                        currentReactions={(message.reactions || []).filter((r) => sameUserId(r.userId, currentUserId)).map((r) => r.emoji)}
                         messageId={messageId}
                         openActionsMessageId={openActionsMessageId}
                         provider={protocol}

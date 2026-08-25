@@ -394,10 +394,10 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
                         </div>
                       )}
                       <CardContent className="flex gap-2 flex-wrap">
-                        {provider.syncError && (
+                        {(provider.syncError || provider.id === "whatsapp") && (
                           <Button
-                            variant="default"
-                            className="providers-modal__reauth-button flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white"
+                            variant={provider.syncError ? "default" : "outline"}
+                            className={`providers-modal__reauth-button flex items-center gap-2 ${provider.syncError ? "bg-orange-500 hover:bg-orange-600 text-white" : ""}`}
                             onClick={() => handleReauth(provider)}
                           >
                             <RefreshCw className="h-4 w-4" />

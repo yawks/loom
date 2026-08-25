@@ -18,6 +18,7 @@ import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
+import { sameUserId } from "@/lib/userIdentity";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -219,7 +220,7 @@ export function MessageBubbleItem({
                   isPinned={handlers.isMessagePinned(message)}
                   onReact={(emoji) => handlers.onReaction(message, emoji)}
                   onStartThread={() => handlers.onThreadClick(message.protocolMsgId, message)}
-                  currentReactions={(message.reactions || []).filter((r) => r.userId === currentUserId).map((r) => r.emoji)}
+                  currentReactions={(message.reactions || []).filter((r) => sameUserId(r.userId, currentUserId)).map((r) => r.emoji)}
                   messageId={messageId}
                   openActionsMessageId={openActionsMessageId}
                   provider={protocol}

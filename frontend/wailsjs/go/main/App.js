@@ -258,6 +258,10 @@ export function RemoveReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['RemoveReaction'](arg1, arg2, arg3);
 }
 
+export function ResetProviderAuthentication(arg1) {
+  return window['go']['main']['App']['ResetProviderAuthentication'](arg1);
+}
+
 export function SaveAttachmentToFile(arg1, arg2) {
   return window['go']['main']['App']['SaveAttachmentToFile'](arg1, arg2);
 }
@@ -292,6 +296,10 @@ export function SendReply(arg1, arg2, arg3) {
 
 export function SendThreadFile(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SendThreadFile'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function SendThreadFileFromPath(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendThreadFileFromPath'](arg1, arg2, arg3);
 }
 
 export function SendThreadMessage(arg1, arg2, arg3) {

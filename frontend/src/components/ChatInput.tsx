@@ -12,7 +12,7 @@ import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
-import type { models } from "../../wailsjs/go/models";
+import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 import { orderCustomEmojis, prepareEmojiSuggestions, recordCustomEmojiUsage, recordStandardEmojiUsage } from "@/lib/emojiUsage";
@@ -389,6 +389,20 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // If we sent to an actual thread (threadId prop set), invalidate and refetch the thread cache
       if (isThreadMessage) {
         console.log(`[ChatInput] Sent message to thread ${threadId}, invalidating thread cache`);
+        if (message?.protocolMsgId && threadId) {
+          queryClient.setQueryData<models.Message[]>(
+            ["threads", conversationId, threadId],
+            (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
+              ? current
+              : [...current, message]
+          );
+          queryClient.setQueriesData<models.ThreadSummary[]>(
+            { queryKey: ["thread-summaries", conversationId] },
+            (current) => current?.map((summary) => summary.parentMessageId === threadId
+              ? models.ThreadSummary.createFrom({ ...summary, replyCount: summary.replyCount + 1 })
+              : summary)
+          );
+        }
         if (message?.timestamp) {
           queryClient.setQueryData<Record<string, string | number | null>>(
             ["allLastMessageTimestamps"],
@@ -401,6 +415,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         }
         queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
         queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
+        queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
         // Also invalidate main messages to update thread count badge
         queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
         return; // Don't do optimistic update for thread messages

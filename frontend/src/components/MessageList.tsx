@@ -41,6 +41,7 @@ import { cn } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
+import { sameUserId } from "@/lib/userIdentity";
 import { groupConsecutivePhotoMessages } from "@/lib/photoMessageGroups";
 
 
@@ -911,7 +912,7 @@ export function MessageList({
     const { apiEmoji, canonicalName, storedEmoji } = normalizeReaction(emoji, nativeEmojiReactions);
 
     const hasReaction = messageReactions.some((r) => {
-      return reactionMatches(r.emoji, canonicalName) && r.userId === currentUserId;
+      return reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId);
     });
 
     queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -925,7 +926,7 @@ export function MessageList({
               if (msg.protocolMsgId !== protocolMsgId && getMessageDomId(msg) !== protocolMsgId) return msg;
               const updatedReactions = hasReaction
                 ? (msg.reactions || []).filter((r) => {
-                    return !(reactionMatches(r.emoji, canonicalName) && r.userId === currentUserId);
+                    return !(reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId));
                   })
                 : [...(msg.reactions || []), models.Reaction.createFrom({ id: 0, messageId: msg.id, userId: currentUserId || "", emoji: storedEmoji, createdAt: new Date(), updatedAt: new Date() })];
               return models.Message.createFrom({ ...msg, reactions: updatedReactions });

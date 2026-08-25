@@ -28,6 +28,7 @@ import { VoiceMessage } from "./VoiceMessage";
 import { MessageActions } from "./MessageActions";
 import type { MessageHandlers } from "./MessageBubbleItem";
 import { getMessageDomId } from "@/lib/messageUtils";
+import { sameUserId } from "@/lib/userIdentity";
 import { models } from "../../wailsjs/go/models";
 import { MessageReactions } from "./MessageReactions";
 
@@ -988,7 +989,7 @@ export function MessageAttachments({
           messageHandlers.onForwardClick(selectedGalleryMessage, [selectedGalleryMessage]);
         }}
         onReact={(emoji) => messageHandlers.onReaction(selectedGalleryMessage, emoji)}
-        currentReactions={(selectedGalleryMessage.reactions || []).filter((reaction) => reaction.userId === currentUserId).map((reaction) => reaction.emoji)}
+        currentReactions={(selectedGalleryMessage.reactions || []).filter((reaction) => sameUserId(reaction.userId, currentUserId)).map((reaction) => reaction.emoji)}
         messageId={getMessageDomId(selectedGalleryMessage)}
         openActionsMessageId={getMessageDomId(selectedGalleryMessage)}
         provider={protocol}

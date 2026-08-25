@@ -695,9 +695,48 @@ func (p *SlackProvider) refreshThreadReplies(convID string) int {
 		return 0
 	}
 
-	stored := p.storeMessagesForConversation(convID, allReplies)
-	p.log("SlackProvider.refreshThreadReplies: stored %d new thread replies for %s\n", stored, convID)
-	return stored
+	// A thread without a locally stored reply has no MaxReplyTS cursor, so Slack
+	// may return older replies alongside the new one. Only publish IDs that are
+	// genuinely absent from SQLite; otherwise a reconnect would resurrect old
+	// replies as unread notifications.
+	messageIDs := make([]string, 0, len(allReplies))
+	for _, reply := range allReplies {
+		if reply.ProtocolMsgID != "" {
+			messageIDs = append(messageIDs, reply.ProtocolMsgID)
+		}
+	}
+	var existingIDs []string
+	if len(messageIDs) > 0 {
+		db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ? AND protocol_msg_id IN ?", convID, messageIDs).
+			Pluck("protocol_msg_id", &existingIDs)
+	}
+	existing := make(map[string]struct{}, len(existingIDs))
+	for _, id := range existingIDs {
+		existing[id] = struct{}{}
+	}
+	newReplies := make([]models.Message, 0, len(allReplies))
+	for _, reply := range allReplies {
+		if _, found := existing[reply.ProtocolMsgID]; !found {
+			newReplies = append(newReplies, reply)
+		}
+	}
+	if len(newReplies) == 0 {
+		return 0
+	}
+
+	p.storeMessagesForConversation(convID, newReplies)
+	p.log("SlackProvider.refreshThreadReplies: stored %d new thread replies for %s\n", len(newReplies), convID)
+	select {
+	case p.eventChan <- core.MessageBatchEvent{
+		InstanceID:     p.getInstanceId(),
+		ConversationID: convID,
+		Messages:       newReplies,
+	}:
+	default:
+		p.log("SlackProvider.refreshThreadReplies: event channel full, dropping batch event\n")
+	}
+	return len(newReplies)
 }
 
 // Connect establishes the connection with the remote service.

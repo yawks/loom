@@ -10,6 +10,7 @@ import {
   CreateProviderWithOptions,
   GetGoogleChatWebCookies,
   GetProviderQRCode,
+  ResetProviderAuthentication,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -215,6 +216,12 @@ export function ProviderConfigForm({
       console.log(`ProviderConfigForm.handleConnect: Creating provider with id=${provider.id}, instanceName=${instanceName}`);
       // In edit mode, use existing instanceID if available
       const existingInstanceID = mode === "edit" && provider.instanceId ? provider.instanceId : "";
+      // A revocation performed on the phone does not clear whatsmeow's local
+      // Store.ID. Explicit re-authentication must clear it first, otherwise
+      // ConnectProvider sees an apparently authenticated client and emits no QR.
+      if (existingInstanceID) {
+        await ResetProviderAuthentication(existingInstanceID);
+      }
       const instanceID = await CreateProvider(provider.id, values, instanceName, existingInstanceID);
       console.log(`ProviderConfigForm.handleConnect: Created provider, instanceID=${instanceID}`);
 
@@ -225,14 +232,17 @@ export function ProviderConfigForm({
       // Use a small delay to ensure state is updated before onRefresh triggers re-render
       await new Promise(resolve => setTimeout(resolve, 0));
 
-      await onRefresh();
-      console.log(`ProviderConfigForm.handleConnect: Refreshed providers list`);
-
+      // Start pairing before refreshing parent state. Refreshing selectedProvider
+      // can re-render this form and interrupt the in-flight reauthentication
+      // callback before ConnectProvider has created the QR channel.
       await ConnectProvider(instanceID);
       console.log(`ProviderConfigForm.handleConnect: Connected provider ${instanceID}`);
 
       setConnectState("connected");
       setIsPollingQR(true);
+
+      await onRefresh();
+      console.log(`ProviderConfigForm.handleConnect: Refreshed providers list`);
 
       // Fetch QR code directly with the new instanceID (don't use fetchQRCode from closure)
       try {
