@@ -148,6 +148,11 @@ func ensureIndices(db *gorm.DB) error {
 		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},
 		{"idx_messages_timestamp", "messages", "timestamp"},
 		{"idx_reactions_message_id", "reactions", "message_id"},
+		// LID canonicalization filters reactions by author before restricting them
+		// to one provider's messages. Without this index SQLite has to walk every
+		// message in the provider namespace, even when there is no matching
+		// reaction to update.
+		{"idx_reactions_user_id_message_id", "reactions", "user_id, message_id"},
 	}
 
 	for _, idx := range indices {

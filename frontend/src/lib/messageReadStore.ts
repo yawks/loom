@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "./utils";
+import { sameUserId } from "./userIdentity";
 
 // Extend Window interface to include Wails runtime
 declare global {
@@ -78,7 +79,7 @@ const boundConversationReadState = (
 
 interface MessageReadStore {
   readByConversation: ReadStateByConversation;
-  syncConversation: (conversationId: ConversationId, messages: models.Message[]) => void;
+  syncConversation: (conversationId: ConversationId, messages: models.Message[], currentUserId?: string) => void;
   setLastReadTimestamp: (conversationId: ConversationId, lastReadTS: string) => void;
   markAsRead: (conversationId: ConversationId, messageId: MessageId) => void;
   markMultipleAsRead: (conversationId: ConversationId, messageIds: MessageId[]) => void;
@@ -265,7 +266,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         return { readByConversation: updatedMap };
       });
     },
-    syncConversation: (conversationId, messages) => {
+    syncConversation: (conversationId, messages, currentUserId) => {
       if (!conversationId) {
         return;
       }
@@ -277,9 +278,29 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           : 0;
         const hasExisting = existingMessageCount > 0;
 
-        const lastReadTS = existingState
+      const lastReadTS = existingState
           ? ((existingState as any)["_lastReadTS"] as string | undefined)
           : undefined;
+
+        // Backend sync repair events can be emitted before the renderer has
+        // attached its listener during startup. Recompute the same WhatsApp
+        // read-through boundary from the persisted timeline every time it is
+        // loaded, so stale local unread flags cannot survive that race.
+        let ownActivityReadThrough: number | undefined;
+        if (conversationId.startsWith("whatsapp")) {
+          messages.forEach((message) => {
+            const hasOwnReaction = Boolean(currentUserId) &&
+              (message.reactions ?? []).some((reaction) =>
+                sameUserId(reaction.userId, currentUserId)
+              );
+            if (message.isFromMe || hasOwnReaction) {
+              const timestamp = timeToDate(message.timestamp).getTime();
+              if (Number.isFinite(timestamp)) {
+                ownActivityReadThrough = Math.max(ownActivityReadThrough ?? timestamp, timestamp);
+              }
+            }
+          });
+        }
 
         console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting} (${existingMessageCount} messages), lastReadTS: ${lastReadTS || 'none'}, messages to sync: ${messages.length}`);
 
@@ -325,6 +346,13 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         const messageId = getMessageIdentifier(message);
         if (!messageId) {
           return;
+        }
+
+        const isReadThroughOwnActivity = ownActivityReadThrough !== undefined &&
+          timeToDate(message.timestamp).getTime() <= ownActivityReadThrough;
+        if (isReadThroughOwnActivity && nextState[messageId] !== true) {
+          nextState[messageId] = true;
+          hasChanged = true;
         }
 
         if (message.isFromMe && nextState[messageId] === false) {

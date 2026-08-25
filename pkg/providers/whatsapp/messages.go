@@ -1713,7 +1713,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			w.mu.RUnlock()
 			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount(), isOnDemand, hasPreviousSync)
 			if hasPreviousSync {
-				readThroughOwnMessage := historyMessagesReadThroughOwnMessage(converted)
+				readThroughOwnMessage := w.historyMessagesReadThroughOwnActivity(converted)
 				forcedReadIDs := make(map[string]struct{}, len(readThroughOwnMessage))
 				for _, message := range readThroughOwnMessage {
 					forcedReadIDs[message.ProtocolMsgID] = struct{}{}
@@ -1725,7 +1725,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// WhatsApp may retain a stale unread count when another linked client
 			// read the conversation while Loom was offline. Sending a message is a
 			// stronger signal: the timeline up to that message was necessarily seen.
-			if readThroughOwnMessage := historyMessagesReadThroughOwnMessage(converted); len(readThroughOwnMessage) > 0 {
+			if readThroughOwnMessage := w.historyMessagesReadThroughOwnActivity(converted); len(readThroughOwnMessage) > 0 {
 				select {
 				case w.eventChan <- core.MessageBatchEvent{
 					InstanceID:     w.getInstanceId(),
@@ -1857,6 +1857,42 @@ func historyMessagesReadThroughOwnMessage(messages []models.Message) []models.Me
 		return nil
 	}
 	return messages[:lastOwnMessage+1]
+}
+
+// historyMessagesReadThroughOwnActivity returns the timeline prefix that the
+// current user necessarily saw on one of their linked clients. Sending a
+// message or reacting to one both establish a local read boundary.
+func (w *WhatsAppProvider) historyMessagesReadThroughOwnActivity(messages []models.Message) []models.Message {
+	selfID := ""
+	w.mu.RLock()
+	if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
+		selfID = w.canonicalReactionUserID(w.client.Store.ID.String())
+	}
+	w.mu.RUnlock()
+	return historyMessagesReadThroughOwnActivity(messages, selfID)
+}
+
+func historyMessagesReadThroughOwnActivity(messages []models.Message, selfID string) []models.Message {
+	lastOwnActivity := -1
+	for index := range messages {
+		if messages[index].IsFromMe {
+			lastOwnActivity = index
+			continue
+		}
+		if selfID == "" {
+			continue
+		}
+		for _, reaction := range messages[index].Reactions {
+			if reaction.UserID == selfID {
+				lastOwnActivity = index
+				break
+			}
+		}
+	}
+	if lastOwnActivity < 0 {
+		return nil
+	}
+	return messages[:lastOwnActivity+1]
 }
 
 func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32, isOnDemand, hasPreviousSync bool) ([]models.Message, []models.Message) {

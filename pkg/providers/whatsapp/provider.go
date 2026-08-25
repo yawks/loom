@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,9 +24,26 @@ import (
 const (
 	maxMessagesPerConversation = 100
 	maxCachedConversations     = 100
+	whatsAppVerboseLogEnv      = "LOOM_WHATSAPP_VERBOSE"
 )
 
 var waVersionRefreshMu sync.Mutex
+
+// verboseLogf keeps high-volume protocol traces out of the Wails development
+// console by default. Set LOOM_WHATSAPP_VERBOSE=true for detailed diagnostics.
+func verboseLogf(format string, args ...interface{}) {
+	enabled, err := strconv.ParseBool(os.Getenv(whatsAppVerboseLogEnv))
+	if err == nil && enabled {
+		fmt.Printf(format, args...)
+	}
+}
+
+func verboseLogln(args ...interface{}) {
+	enabled, err := strconv.ParseBool(os.Getenv(whatsAppVerboseLogEnv))
+	if err == nil && enabled {
+		fmt.Println(args...)
+	}
+}
 
 // refreshWAVersion updates whatsmeow's process-wide client revision before a
 // new pairing. WhatsApp periodically rejects older embedded revisions with
