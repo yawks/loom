@@ -123,8 +123,9 @@ func (p *GoogleChatProvider) listMessageReactions(messageName string) ([]models.
 				continue
 			}
 			reactions = append(reactions, models.Reaction{
-				UserID: strings.TrimPrefix(reaction.User.Name, "users/"),
-				Emoji:  reaction.Emoji.Unicode,
+				UserID:    strings.TrimPrefix(reaction.User.Name, "users/"),
+				Emoji:     reaction.Emoji.Unicode,
+				CreatedAt: reaction.CreateTime,
 			})
 		}
 		pageToken = resp.NextPageToken
@@ -920,7 +921,7 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 	if err != nil {
 		p.log("GoogleChatProvider.incrementalSync: forward sync failed for %s: %v\n", convID, err)
 	} else if len(newMsgs) > 0 {
-		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: newMsgs})
+		p.emitRecoveredMessagesByOwnActivity(convID, newMsgs)
 	}
 
 	if !recentActivity {
@@ -958,7 +959,17 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 		}
 	}
 	if len(missedMsgs) > 0 {
-		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: missedMsgs})
+		p.emitRecoveredMessagesByOwnActivity(convID, missedMsgs)
+	}
+}
+
+func (p *GoogleChatProvider) emitRecoveredMessagesByOwnActivity(convID string, messages []models.Message) {
+	read, unread := core.SplitRecoveredMessagesByOwnActivity(messages, p.getSelfID())
+	if len(read) > 0 {
+		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: read, ForceRead: true})
+	}
+	if len(unread) > 0 {
+		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: unread, ForceUnread: true})
 	}
 }
 

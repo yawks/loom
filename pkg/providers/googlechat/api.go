@@ -103,9 +103,10 @@ type UserInfo struct {
 }
 
 type ChatReaction struct {
-	Name  string    `json:"name"`
-	User  *ChatUser `json:"user"`
-	Emoji *struct {
+	Name       string    `json:"name"`
+	User       *ChatUser `json:"user"`
+	CreateTime time.Time `json:"createTime"`
+	Emoji      *struct {
 		Unicode string `json:"unicode"`
 	} `json:"emoji"`
 }

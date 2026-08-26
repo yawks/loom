@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
-import { AlertTriangle, Layers, Settings } from "lucide-react";
+import { GetConfiguredProviders, SyncAllProviders } from "../../wailsjs/go/main/App";
+import { AlertTriangle, Layers, RefreshCw, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -30,6 +30,9 @@ export function ProviderFilterBar({
   const [configuredProviders, setConfiguredProviders] = useState<
     core.ProviderInfo[]
   >([]);
+  const [syncingProviders, setSyncingProviders] = useState<Set<string>>(
+    new Set()
+  );
   const selectedProviderFilter = useAppStore(
     (state) => state.selectedProviderFilter
   );
@@ -120,6 +123,23 @@ export function ProviderFilterBar({
         const status = (parsed.Status || parsed.status || "").toLowerCase();
         const message = parsed.Message || parsed.message || "";
         if (!instanceId) return;
+        const isActive = [
+          "fetching_contacts",
+          "fetching_history",
+          "fetching_avatars",
+        ].includes(status);
+        if (isActive) {
+          setSyncingProviders((current) => new Set(current).add(instanceId));
+        } else if (status === "completed") {
+          // The backend only forwards completion once every active provider is done.
+          setSyncingProviders(new Set());
+        } else if (status === "error" || status === "needs_reauth") {
+          setSyncingProviders((current) => {
+            const next = new Set(current);
+            next.delete(instanceId);
+            return next;
+          });
+        }
         if (status === "error") {
           setSyncError(instanceId, message);
         } else {
@@ -133,6 +153,35 @@ export function ProviderFilterBar({
       if (unsubscribe) unsubscribe();
     };
   }, [setSyncError, clearSyncError]);
+
+  const syncAll = useCallback(async () => {
+    if (configuredProviders.length === 0 || syncingProviders.size > 0) return;
+    setSyncingProviders(
+      new Set(
+        configuredProviders.map((provider) => provider.instanceId || provider.id)
+      )
+    );
+    try {
+      await SyncAllProviders();
+    } catch (error) {
+      console.error("Failed to synchronize providers:", error);
+      setSyncingProviders(new Set());
+    }
+  }, [configuredProviders, syncingProviders.size]);
+
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const handleOnline = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      // Give Wi-Fi, DNS and VPN routes a moment to settle before reconnecting.
+      timeoutId = setTimeout(() => void syncAll(), 2000);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [syncAll]);
 
   const providersByType = useMemo(() => {
     const groups: Record<string, core.ProviderInfo[]> = {};
@@ -241,6 +290,19 @@ export function ProviderFilterBar({
       <div className="flex-1" />
 
       {/* Bottom actions */}
+      <button
+        className={cn(railButtonClass, "provider-filter-bar__sync-button")}
+        onClick={() => void syncAll()}
+        disabled={configuredProviders.length === 0 || syncingProviders.size > 0}
+        title={t(syncingProviders.size > 0 ? "synchronizing" : "sync_all")}
+      >
+        <RefreshCw
+          className={cn(
+            "h-4 w-4",
+            syncingProviders.size > 0 && "animate-spin"
+          )}
+        />
+      </button>
       <button
         className={cn(railButtonClass, "provider-filter-bar__settings-button")}
         onClick={onOpenSettings}

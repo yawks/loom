@@ -98,7 +98,13 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			continue
 		}
 		if len(messages) > 0 {
-			p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: messages, IsHistorical: false})
+			read, unread := core.SplitRecoveredMessagesByOwnActivity(messages, p.CurrentUserID())
+			if len(read) > 0 {
+				p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: read, ForceRead: true})
+			}
+			if len(unread) > 0 {
+				p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: unread, ForceUnread: true})
+			}
 		}
 	}
 	return nil

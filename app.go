@@ -845,11 +845,10 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 	}
 
 	// A socket can still look connected after sleep even though its network
-	// session is dead. A manual global audit also reconnects first: this recovers
+	// session is dead. A manual audit also reconnects first: this recovers
 	// messages newer than every local conversation tip before the provider asks
 	// the phone for older segments around those tips.
-	_, isGlobalHistorySync := provider.(core.GlobalHistorySyncer)
-	if reason == "system wake" || (reason == "manual" && isGlobalHistorySync) {
+	if reason == "system wake" || reason == "manual" {
 		_ = provider.Disconnect()
 		if err := provider.Connect(); err != nil {
 			log.Printf("[App] %s initial reconnect for %s failed: %v", reason, instanceID, err)
@@ -3319,6 +3318,25 @@ func (a *App) SyncProvider(providerID string) error {
 	// Return immediately to the frontend while retaining a five-minute overlap from
 	// the last successful sync, so manual refreshes also recover missed messages.
 	go a.syncProviderHistory(providerID, a.syncSince(providerID, 30*24*time.Hour), "manual")
+	return nil
+}
+
+// SyncAllProviders triggers a reconnect and catch-up synchronization for every
+// configured provider. Each provider is serialized independently by
+// syncProviderHistory, so this is safe to call after a wake-up sync or repeated
+// network-restored events.
+func (a *App) SyncAllProviders() error {
+	if a.providerManager == nil {
+		return fmt.Errorf("provider manager is not initialized")
+	}
+
+	for _, info := range a.providerManager.GetConfiguredProviders() {
+		if _, err := a.providerManager.GetProvider(info.InstanceID); err != nil {
+			continue
+		}
+		instanceID := info.InstanceID
+		go a.syncProviderHistory(instanceID, a.syncSince(instanceID, 30*24*time.Hour), "manual")
+	}
 	return nil
 }
 

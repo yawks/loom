@@ -88,7 +88,7 @@ interface MessageReadStore {
    *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
-  registerBatchMessages: (messages: models.Message[], isHistorical?: boolean, forceRead?: boolean) => void;
+  registerBatchMessages: (messages: models.Message[], isHistorical?: boolean, forceRead?: boolean, forceUnread?: boolean) => void;
   removeMessage: (conversationId: ConversationId, messageId: MessageId) => void;
   clearConversation: (conversationId: ConversationId) => void;
   clearProvider: (providerInstanceId: string) => void;
@@ -753,7 +753,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedMap };
     });
   },
-  registerBatchMessages: (messages: models.Message[], isHistorical = false, forceRead = false) => {
+  registerBatchMessages: (messages: models.Message[], _isHistorical = false, forceRead = false, forceUnread = false) => {
     if (messages.length === 0) return;
     set((state) => {
       const updatedReadByConversation = { ...state.readByConversation };
@@ -792,6 +792,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           // An action by the current user proves this history prefix was seen
           // on another linked client. This updates local state only.
           isRead = true;
+        } else if (forceUnread) {
+          // Only an authoritative provider-side unread marker may turn a
+          // recovered message into a new local unread item.
+          isRead = false;
         } else if (message.isFromMe && isRead === false) {
           // Batch enrichment can be the first payload that reliably identifies
           // a provider echo as ours.
@@ -800,22 +804,15 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           // Keep the existing value when only adding the thread marker.
         } else if (isCallMessage || message.isFromMe) {
           isRead = true;
-        } else if (conversationId.startsWith("slack") && !isHistorical) {
-          // Incremental Slack batches are newly discovered activity. Do not let
-          // the channel cursor erase them before the UI can display the badge.
-          isRead = false;
         } else if (lastReadTS) {
           const lastReadTimestamp = parseFloat(lastReadTS);
           const messageDate = timeToDate(message.timestamp);
           isRead = !isNaN(lastReadTimestamp) ? messageDate <= new Date(lastReadTimestamp * 1000) : true;
-        } else if (isHistorical) {
-          // Initial imports have no reliable read cursor for every provider.
-          // Treat them as history rather than creating a badge for old messages.
-          isRead = true;
         } else {
-          // A non-historical batch contains messages recovered since the last
-          // sync. It is new activity, including when it starts a conversation.
-          isRead = false;
+          // A recovered batch is not evidence that the message is unread on
+          // the native service. Providers with an authoritative unread signal
+          // opt in through forceUnread; live MessageEvents remain unread.
+          isRead = true;
         }
 
         let updatedConversation = changedConversations.get(conversationId);
