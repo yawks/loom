@@ -176,8 +176,15 @@ pkg/
 │   │   ├── receipts.go      — MarkMessageAsRead / MarkConversationAsRead / MarkMessageAsPlayed
 │   │   ├── state.go         — PinConversation / UnpinConversation / MuteConversation / UnmuteConversation / GetConversationState
 │   │   └── …               — Additional files (rtm.go, socket.go, sync.go, typing.go, …)
-│   └── whatsapp/
+│   ├── whatsapp/
 │       └── …               — Same domain-based split
+│   └── matrix/
+│       ├── provider.go      — token authentication + Matrix Client-Server API client
+│       ├── events.go        — `/sync` long polling and provider-neutral events
+│       ├── messages.go      — room history, messages, media, threads, edits, redactions, reactions
+│       ├── contacts.go      — joined rooms, profiles, directory search, room creation
+│       ├── groups.go        — room metadata and membership operations
+│       └── state.go         — typing, receipts and push-rule mute state
 └── models/
     └── models.go            — models.Message, models.LinkedAccount, models.Conversation, models.GroupParticipant
 ```
@@ -282,19 +289,31 @@ Every provider must implement **all** methods. Unsupported features return `fmt.
 
 ```go
 type Capabilities struct {
-    SupportsThreads          bool // GetThreads / SendMessage with threadID
-    SupportsReactions        bool // AddReaction / RemoveReaction
-    SupportsCustomEmojis     bool // GetCustomEmojis returns data
-    SupportsTypingIndicator  bool // SendTypingIndicator
-    SupportsGroupManagement  bool // Create/Update/Add/Remove/Leave…
-    SupportsDeleteMessage    bool // DeleteMessage
-    SupportsEditMessage      bool // EditMessage
-    SupportsReadReceipts     bool // MarkMessageAsRead / MarkConversationAsRead
-    SupportsPinConversation  bool // PinConversation / UnpinConversation
-    SupportsMuteConversation bool // MuteConversation / UnmuteConversation
-    SupportsQRCodeAuth       bool // GetAuthQRCode returns a real QR code
+    // Messaging and room-state flags (threads, reactions, typing, edits,
+    // redactions, receipts, mute, pins, scheduling and group operations).
+    // See pkg/core/provider.go for the complete, authoritative list.
+
+    // Conversation creation is deliberately granular: directory, direct,
+    // phone recipient, group, title requirements and accepted group types.
 }
 ```
+
+The struct in `pkg/core/provider.go` is the source of truth. Documentation must
+not copy a partial field list: frontend actions are provider-neutral and are
+shown only from these flags. A provider must never advertise a capability whose
+method returns an unsupported error.
+
+### Matrix provider boundary
+
+The Matrix adapter uses the stable Client-Server API directly and contains no
+Matrix-specific frontend branch. The user enters a full Matrix ID and password;
+the backend discovers the homeserver and exchanges those credentials for the
+access token used by the protocol. The generic form honors JSON-schema
+`format: password`, so credentials are masked without provider-specific JSX.
+It currently targets unencrypted rooms. Olm /
+Megolm key storage, device trust and cross-signing require a dedicated Matrix
+SDK and must not be approximated in the HTTP adapter. Encrypted events are left
+unhandled rather than advertised as readable messages.
 
 ### `core.ProviderConfig` — Key-value configuration
 

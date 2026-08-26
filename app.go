@@ -590,6 +590,20 @@ func (a *App) startup(ctx context.Context) {
 		return providers.NewSlackProvider()
 	})
 
+	a.providerManager.RegisterProvider("matrix", core.ProviderInfo{
+		ID:          "matrix",
+		Name:        "Matrix",
+		Description: "Matrix Client-Server API (unencrypted rooms)",
+		ConfigSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"user_id":  map[string]interface{}{"type": "string", "title": "Matrix ID", "description": "Full Matrix ID, for example @alice:example.org"},
+				"password": map[string]interface{}{"type": "string", "format": "password", "title": "Password"},
+			},
+			"required": []string{"user_id", "password"},
+		},
+	}, func() core.Provider { return providers.NewMatrixProvider() })
+
 	a.providerManager.RegisterProvider("googlechat", core.ProviderInfo{
 		ID:          "googlechat",
 		Name:        "Google Chat",
@@ -2773,6 +2787,20 @@ func (a *App) ConnectProvider(instanceID string) error {
 		}
 		a.mu.Unlock()
 		return err
+	}
+	// A provider may exchange one-time credentials for a renewable/session token
+	// during Connect. Persist its resulting configuration so raw login secrets do
+	// not have to remain in the database (Matrix uses this path for passwords).
+	if db.DB != nil {
+		var storedConfig models.ProviderConfiguration
+		if db.DB.Where("instance_id = ?", instanceID).First(&storedConfig).Error == nil {
+			if configJSON, marshalErr := json.Marshal(provider.GetConfig()); marshalErr == nil {
+				storedConfig.ConfigJSON = string(configJSON)
+				if saveErr := a.providerManager.UpdateProviderConfig(storedConfig); saveErr != nil {
+					log.Printf("ConnectProvider: persist refreshed config for %s: %v", instanceID, saveErr)
+				}
+			}
+		}
 	}
 
 	a.mu.Lock()
