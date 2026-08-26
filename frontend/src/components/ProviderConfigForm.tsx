@@ -28,6 +28,7 @@ const QRCodeCanvas = lazy(() =>
 
 type ProviderFieldSchema = {
   type?: string;
+  format?: string;
   title?: string;
   description?: string;
   default?: string;
@@ -368,6 +369,7 @@ export function ProviderConfigForm({
                   {field.title ?? key}
                 </label>
                 <Input
+                  type={field.format === "password" ? "password" : "text"}
                   value={values[key] ?? ""}
                   onChange={(event) => handleChange(key, event.target.value)}
                   placeholder={field.placeholder ?? field.description ?? ""}
