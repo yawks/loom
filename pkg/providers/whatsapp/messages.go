@@ -1745,7 +1745,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			}
 			if len(unreadMessages) > 0 {
 				select {
-				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: unreadMessages}:
+				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: unreadMessages, ForceUnread: true}:
 				default:
 				}
 			}

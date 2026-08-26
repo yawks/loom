@@ -191,6 +191,7 @@ func (p *Provider) SyncHistory(since time.Time) error {
 				ConversationID: remote.GetConversationID(),
 				Messages:       newMessages,
 				IsHistorical:   initialSync,
+				ForceUnread:    !initialSync,
 			})
 		}
 	}

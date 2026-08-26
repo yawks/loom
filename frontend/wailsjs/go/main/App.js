@@ -330,6 +330,10 @@ export function StartGoogleMessagesLogin(arg1, arg2) {
   return window['go']['main']['App']['StartGoogleMessagesLogin'](arg1, arg2);
 }
 
+export function SyncAllProviders() {
+  return window['go']['main']['App']['SyncAllProviders']();
+}
+
 export function SyncProvider(arg1) {
   return window['go']['main']['App']['SyncProvider'](arg1);
 }

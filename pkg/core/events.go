@@ -59,6 +59,9 @@ type MessageBatchEvent struct {
 	// ForceRead marks an explicit local read boundary inferred by a provider.
 	// The frontend must not send remote receipts for these messages.
 	ForceRead bool `json:"forceRead,omitempty"`
+	// ForceUnread marks messages covered by an authoritative remote unread
+	// signal. Recovered messages without such a signal are read by default.
+	ForceUnread bool `json:"forceUnread,omitempty"`
 }
 
 // Type returns the event type for MessageBatchEvent.

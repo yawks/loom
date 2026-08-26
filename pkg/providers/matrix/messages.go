@@ -114,9 +114,25 @@ func (p *Provider) GetConversationHistory(roomID string, limit int, before, sinc
 		return nil, err
 	}
 	messages := make([]models.Message, 0, len(response.Chunk))
+	reactions := make(map[string][]models.Reaction)
 	for _, event := range response.Chunk {
+		if event.Type == "m.reaction" {
+			var content messageContent
+			if json.Unmarshal(event.Content, &content) == nil && content.RelatesTo != nil && content.RelatesTo.EventID != "" {
+				reactions[content.RelatesTo.EventID] = append(reactions[content.RelatesTo.EventID], models.Reaction{
+					UserID: event.Sender, Emoji: content.RelatesTo.Key, CreatedAt: time.UnixMilli(event.OriginServerTS),
+				})
+			}
+			continue
+		}
 		if m, ok := p.eventToMessage(core.StripConvID(roomID), event); ok && (before == nil || m.Timestamp.Before(*before)) && (since == nil || m.Timestamp.After(*since)) {
+			m.Reactions = reactions[event.EventID]
 			messages = append(messages, m)
+		}
+	}
+	for index := range messages {
+		if attached := reactions[messages[index].ProtocolMsgID]; len(attached) > 0 {
+			messages[index].Reactions = attached
 		}
 	}
 	sort.Slice(messages, func(i, j int) bool { return messages[i].Timestamp.Before(messages[j].Timestamp) })
