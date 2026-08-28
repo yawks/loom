@@ -64,6 +64,14 @@ type EmojiReactionSummary struct {
 	ReactionCount int `json:"reactionCount"`
 }
 
+type ChatAnnotation struct {
+	Type        string `json:"type"`
+	UserMention *struct {
+		User *ChatUser `json:"user"`
+		Type string    `json:"type"`
+	} `json:"userMention"`
+}
+
 type ChatMessage struct {
 	Name                   string                 `json:"name"` // "spaces/AAA/messages/BBB"
 	Sender                 *ChatUser              `json:"sender"`
@@ -76,6 +84,7 @@ type ChatMessage struct {
 	ThreadReply            bool                   `json:"threadReply"`
 	Attachment             []ChatAttachment       `json:"attachment"`
 	EmojiReactionSummaries []EmojiReactionSummary `json:"emojiReactionSummaries"`
+	Annotations            []ChatAnnotation       `json:"annotations"`
 }
 
 type MessageListResponse struct {

@@ -204,6 +204,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		Body:             messageBody,
 		Timestamp:        timestamp,
 		IsFromMe:         isFromMe,
+		HighlightReasons: p.directMentionHighlightReasons(ev.Text, isFromMe),
 		Attachments:      "[]",
 		CallType:         callType,
 		CallUrl:          callUrl,

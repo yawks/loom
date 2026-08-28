@@ -474,22 +474,33 @@ func (p *GoogleChatProvider) convertMessage(m ChatMessage, convID, selfID string
 	if body == "" {
 		body = m.FormattedText
 	}
+	var highlightReasons []string
+	if senderID != selfID {
+		for _, annotation := range m.Annotations {
+			if annotation.Type == "USER_MENTION" && annotation.UserMention != nil && annotation.UserMention.User != nil &&
+				strings.TrimPrefix(annotation.UserMention.User.Name, "users/") == selfID {
+				highlightReasons = []string{models.HighlightReasonDirectMention}
+				break
+			}
+		}
+	}
 
 	return models.Message{
-		ProtocolConvID:  convID,
-		ProtocolMsgID:   m.Name,
-		SenderID:        senderID,
-		SenderName:      senderName,
-		SenderAvatarURL: senderAvatarURL,
-		Body:            body,
-		Timestamp:       m.CreateTime,
-		IsFromMe:        senderID == selfID,
-		ThreadID:        threadID,
-		Attachments:     attachmentsToJSON(attachments),
-		Reactions:       reactions,
-		IsDeleted:       m.DeleteTime != nil,
-		IsEdited:        isEdited,
-		EditedTimestamp: editedTS,
+		ProtocolConvID:   convID,
+		ProtocolMsgID:    m.Name,
+		SenderID:         senderID,
+		SenderName:       senderName,
+		SenderAvatarURL:  senderAvatarURL,
+		Body:             body,
+		Timestamp:        m.CreateTime,
+		IsFromMe:         senderID == selfID,
+		HighlightReasons: highlightReasons,
+		ThreadID:         threadID,
+		Attachments:      attachmentsToJSON(attachments),
+		Reactions:        reactions,
+		IsDeleted:        m.DeleteTime != nil,
+		IsEdited:         isEdited,
+		EditedTimestamp:  editedTS,
 	}
 }
 

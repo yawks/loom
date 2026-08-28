@@ -2378,6 +2378,106 @@ func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage
 	return page, nil
 }
 
+// GetHighlightedMessages returns persisted messages selected by canonical
+// highlight reasons, newest first. Providers populate those reasons while
+// normalizing new messages; the frontend never inspects provider wire formats.
+func (a *App) GetHighlightedMessages(offset int) (models.MessageSearchPage, error) {
+	const pageSize = 15
+	page := models.MessageSearchPage{Items: []models.MessageSearchResult{}}
+	if db.DB == nil {
+		return page, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var messages []models.Message
+	err := db.DB.
+		Where("deleted_at IS NULL AND is_deleted = ? AND highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)", false, "", "null", "[]").
+		Order("timestamp DESC").
+		Limit(pageSize + 1).
+		Offset(offset).
+		Find(&messages).Error
+	if err != nil {
+		return page, err
+	}
+	if len(messages) > pageSize {
+		page.HasMore = true
+		messages = messages[:pageSize]
+	}
+
+	items, err := a.messageSearchResults(messages)
+	if err != nil {
+		return page, err
+	}
+	page.Items = items
+	return page, nil
+}
+
+// GetHighlightedMessageRefs returns only the canonical IDs needed to intersect
+// the attention inbox with the frontend's existing read-state store.
+func (a *App) GetHighlightedMessageRefs() ([]models.HighlightedMessageRef, error) {
+	refs := []models.HighlightedMessageRef{}
+	if db.DB == nil {
+		return refs, nil
+	}
+	err := db.DB.Model(&models.Message{}).
+		Select("protocol_conv_id AS conversation_id, protocol_msg_id AS message_id").
+		Where("deleted_at IS NULL AND is_deleted = ? AND highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)", false, "", "null", "[]").
+		Scan(&refs).Error
+	return refs, err
+}
+
+func (a *App) messageSearchResults(messages []models.Message) ([]models.MessageSearchResult, error) {
+	if len(messages) == 0 {
+		return []models.MessageSearchResult{}, nil
+	}
+	type conversationMeta struct {
+		ConversationID     uint
+		MetaContactID      uint
+		ConversationName   string
+		ConversationAvatar string
+		Protocol           string
+		ProviderInstanceID string
+	}
+	conversationIDs := make([]uint, 0, len(messages))
+	for _, message := range messages {
+		conversationIDs = append(conversationIDs, message.ConversationID)
+	}
+	var metadata []conversationMeta
+	if err := db.DB.Table("conversations AS c").
+		Select(`c.id AS conversation_id,
+			mc.id AS meta_contact_id,
+			mc.display_name AS conversation_name,
+			mc.avatar_url AS conversation_avatar,
+			la.protocol,
+			la.provider_instance_id`).
+		Joins("JOIN linked_accounts AS la ON la.id = c.linked_account_id").
+		Joins("JOIN meta_contacts AS mc ON mc.id = la.meta_contact_id").
+		Where("c.id IN ?", conversationIDs).
+		Scan(&metadata).Error; err != nil {
+		return nil, err
+	}
+	a.enrichMessagesWithSenderNames(messages)
+	byConversation := make(map[uint]conversationMeta, len(metadata))
+	for _, meta := range metadata {
+		byConversation[meta.ConversationID] = meta
+	}
+	results := make([]models.MessageSearchResult, 0, len(messages))
+	for _, message := range messages {
+		meta, ok := byConversation[message.ConversationID]
+		if !ok {
+			continue
+		}
+		results = append(results, models.MessageSearchResult{
+			Message: message, MetaContactID: meta.MetaContactID,
+			ConversationName: meta.ConversationName, ConversationAvatar: meta.ConversationAvatar,
+			Protocol: meta.Protocol, ProviderInstanceID: meta.ProviderInstanceID,
+		})
+	}
+	return results, nil
+}
+
 // GetMessagesForConversationBefore returns messages before a specific timestamp for pagination
 // GetThreadMessages retrieves all messages in a thread
 func hasAttachmentWithEmptyURL(messages []models.Message) bool {

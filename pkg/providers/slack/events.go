@@ -371,6 +371,7 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			if err == nil && authTest.UserID == msg.SenderID {
 				msg.IsFromMe = true
 			}
+			msg.HighlightReasons = p.directMentionHighlightReasons(match.Text, msg.IsFromMe)
 
 			// Deduplicate: Check if message exists in DB
 			if db.DB != nil {

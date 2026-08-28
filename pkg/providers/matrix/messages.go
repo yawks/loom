@@ -39,7 +39,10 @@ type messageContent struct {
 		Duration uint32 `json:"duration"`
 	} `json:"info,omitempty"`
 	NewContent *messageContent `json:"m.new_content,omitempty"`
-	RelatesTo  *struct {
+	Mentions   *struct {
+		UserIDs []string `json:"user_ids,omitempty"`
+	} `json:"m.mentions,omitempty"`
+	RelatesTo *struct {
 		RelType   string `json:"rel_type,omitempty"`
 		EventID   string `json:"event_id,omitempty"`
 		Key       string `json:"key,omitempty"`
@@ -64,6 +67,14 @@ func (p *Provider) eventToMessage(roomID string, event matrixEvent) (models.Mess
 	self := p.userID
 	p.mu.RUnlock()
 	m := models.Message{ProtocolConvID: p.namespacedRoom(roomID), ProtocolMsgID: event.EventID, SenderID: event.Sender, SenderName: event.Sender, Body: content.Body, Timestamp: time.UnixMilli(event.OriginServerTS), IsFromMe: event.Sender == self}
+	if !m.IsFromMe && content.Mentions != nil {
+		for _, mentionedUserID := range content.Mentions.UserIDs {
+			if mentionedUserID == self {
+				m.HighlightReasons = []string{models.HighlightReasonDirectMention}
+				break
+			}
+		}
+	}
 	if content.RelatesTo != nil {
 		if content.RelatesTo.RelType == "m.thread" {
 			id := content.RelatesTo.EventID

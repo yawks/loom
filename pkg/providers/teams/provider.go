@@ -1363,6 +1363,14 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		SenderAvatarURL: p.cachedAvatar(client, remote.From),
 		Body:            body, Timestamp: timestamp, IsFromMe: remote.From == client.UserMRI(),
 	}
+	if !message.IsFromMe {
+		for _, mention := range remote.Mentions {
+			if strings.EqualFold(strings.TrimSpace(mention.UserID), strings.TrimSpace(client.UserMRI())) {
+				message.HighlightReasons = []string{models.HighlightReasonDirectMention}
+				break
+			}
+		}
+	}
 	if remote.ParentID != "" {
 		parent := remote.ParentID
 		message.QuotedMessageID = &parent

@@ -1018,6 +1018,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	var quotedBody *string
 
 	var contextInfo *waE2E.ContextInfo
+	var highlightReasons []string
 
 	// Get ContextInfo from various message types
 	if msg.GetExtendedTextMessage() != nil && msg.GetExtendedTextMessage().GetContextInfo() != nil {
@@ -1044,6 +1045,9 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	if contextInfo != nil {
 		isForwarded = isForwarded || contextInfo.GetIsForwarded() || contextInfo.GetForwardingScore() > 0
+		if !evt.Info.IsFromMe && w.isDirectlyMentioned(contextInfo.GetMentionedJID()) {
+			highlightReasons = []string{models.HighlightReasonDirectMention}
+		}
 		body = w.formatMentions(body, contextInfo.GetMentionedJID())
 
 		// Get quoted message ID (StanzaID)
@@ -1247,6 +1251,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		IsEdited:         isEdited,
 		EditedTimestamp:  editedTimestamp,
 		IsForwarded:      isForwarded,
+		HighlightReasons: highlightReasons,
 		Attachments:      attachmentsJSON,
 		QuotedMessageID:  quotedMessageID,
 		QuotedSenderID:   quotedSenderID,
@@ -1257,6 +1262,20 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		CallOutcome:      callOutcome,
 		CallIsVideo:      callIsVideo,
 	}
+}
+
+func (w *WhatsAppProvider) isDirectlyMentioned(mentionedJIDs []string) bool {
+	if w.client == nil || w.client.Store == nil || w.client.Store.ID == nil {
+		return false
+	}
+	self := w.client.Store.ID.ToNonAD()
+	for _, raw := range mentionedJIDs {
+		mentioned, err := types.ParseJID(raw)
+		if err == nil && mentioned.ToNonAD().User == self.User {
+			return true
+		}
+	}
+	return false
 }
 
 // unwrapForwardedMessage handles the bot-forwarded wrapper introduced by

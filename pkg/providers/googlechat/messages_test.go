@@ -21,6 +21,26 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
 
+func TestConvertMessageMarksDirectMentionOfSelf(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	message := ChatMessage{
+		Name:       "spaces/space/messages/message",
+		Sender:     &ChatUser{Name: "users/sender"},
+		CreateTime: time.Now(),
+		Annotations: []ChatAnnotation{{
+			Type: "USER_MENTION",
+			UserMention: &struct {
+				User *ChatUser `json:"user"`
+				Type string    `json:"type"`
+			}{User: &ChatUser{Name: "users/self"}},
+		}},
+	}
+	converted := provider.convertMessage(message, "spaces/space", "self")
+	if len(converted.HighlightReasons) != 1 || converted.HighlightReasons[0] != models.HighlightReasonDirectMention {
+		t.Fatalf("unexpected highlight reasons: %v", converted.HighlightReasons)
+	}
+}
+
 func TestListMessageReactionsIncludesUsersAndFollowsPages(t *testing.T) {
 	provider := NewGoogleChatProvider()
 	call := 0

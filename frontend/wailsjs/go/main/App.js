@@ -162,6 +162,14 @@ export function GetGroupParticipants(arg1) {
   return window['go']['main']['App']['GetGroupParticipants'](arg1);
 }
 
+export function GetHighlightedMessageRefs() {
+  return window['go']['main']['App']['GetHighlightedMessageRefs']();
+}
+
+export function GetHighlightedMessages(arg1) {
+  return window['go']['main']['App']['GetHighlightedMessages'](arg1);
+}
+
 export function GetMessagesForConversation(arg1) {
   return window['go']['main']['App']['GetMessagesForConversation'](arg1);
 }
