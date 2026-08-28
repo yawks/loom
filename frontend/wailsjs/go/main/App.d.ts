@@ -167,6 +167,8 @@ export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 
 export function SetContactAliasForConversation(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function SetConversationMuted(arg1:string,arg2:boolean):Promise<void>;
+
 export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 
 export function SyncAllProviders():Promise<void>;
