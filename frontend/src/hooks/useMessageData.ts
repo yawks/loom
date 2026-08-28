@@ -2,7 +2,7 @@ import { GetMessagesForConversation, GetMessagesForConversationBefore, GetPartic
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getMessageDomId, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getMessageDomId, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
@@ -28,7 +28,11 @@ const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Pr
   }
 };
 
-export function useMessageData(conversationId: string, isGroupFromProvider: boolean) {
+export function useMessageData(
+  conversationId: string,
+  isGroupFromProvider: boolean,
+  readPolicy?: { cursorAuthoritativeForNewMessages: boolean; ownActivityAdvancesBoundary: boolean },
+) {
   const queryClient = useQueryClient();
   const syncConversation = useMessageReadStore((state) => state.syncConversation);
   const cleanupObsoleteMessages = useMessageReadStore((state) => state.cleanupObsoleteMessages);
@@ -99,7 +103,7 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
 
   const messages = useMemo(() => {
     if (!data?.pages || !Array.isArray(data.pages)) return [];
-    const flat = data.pages.filter((page) => Array.isArray(page)).flat().map(normalizeSlackQuotedReply);
+    const flat = data.pages.filter((page) => Array.isArray(page)).flat().map(normalizeSerializedQuotedReply);
     const seen = new Set<string>();
     return flat.filter((msg) => {
       const id = msg.protocolMsgId;
@@ -222,14 +226,9 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
           for (const [key, value] of Object.entries(names)) {
             if (value && value.trim()) {
               namesMap.set(key, value);
-              namesMap.set(key.replace(/:\d+@/, "@"), value);
-              if (key.includes("@lid")) {
-                namesMap.set(key.replace(/@lid$/, ""), value);
-              }
               if (key.includes("::")) {
                 const raw = key.split("::")[1];
                 namesMap.set(raw, value);
-                namesMap.set(raw.replace(/:\d+@/, "@"), value);
               }
             }
           }
@@ -244,14 +243,10 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
           }
         });
 
-        // Google Messages participant IDs are not contact/conversation IDs.
-        // They can numerically collide with another conversation's user_id
-        // (for example participant 23 in conversation 21), so the global
-        // LinkedAccount lookup above may return an unrelated contact. In DMs,
-        // the backend has already normalized senderName from the authoritative
-        // conversation title; keep that scoped value instead.
-        const preferMessageSenderName =
-          !isGroupFromProvider && conversationId.startsWith("googlemessages");
+        // In a direct conversation, the message's scoped sender name is more
+        // authoritative than a global account lookup. Remote participant IDs
+        // are not guaranteed to be globally unique across provider instances.
+        const preferMessageSenderName = !isGroupFromProvider;
         messages.forEach((msg) => {
           if (
             msg.senderId &&
@@ -271,11 +266,11 @@ export function useMessageData(conversationId: string, isGroupFromProvider: bool
   }, [conversationId, isGroupFromProvider, messages, groupParticipants]);
 
   useEffect(() => {
-    if (!conversationId || messages.length === 0) return;
-    syncConversation(conversationId, messages, currentUserId);
+    if (!conversationId || messages.length === 0 || !readPolicy) return;
+    syncConversation(conversationId, messages, currentUserId, readPolicy);
     const allMessageIds = new Set(messages.map((msg) => getMessageDomId(msg)));
     cleanupObsoleteMessages(conversationId, allMessageIds);
-  }, [conversationId, messages, currentUserId, syncConversation, cleanupObsoleteMessages]);
+  }, [conversationId, messages, currentUserId, readPolicy, syncConversation, cleanupObsoleteMessages]);
 
   useEffect(() => {
     if (messages.length > 0 && !isLoading) {

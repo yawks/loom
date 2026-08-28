@@ -1,6 +1,4 @@
-/**
- * Utility functions for handling user display names and provider-specific text formatting
- */
+/** Utility functions for provider-neutral user display names. */
 
 import type { models } from "../../wailsjs/go/models";
 
@@ -39,15 +37,12 @@ export function getUserDisplayName(
 ): string {
   if (!userId) return userId;
 
-  // Extract raw ID if namespaced (e.g. "whatsapp-1::1234@s.whatsapp.net" -> "1234@s.whatsapp.net")
+  // Instance-qualified IDs use Loom's own `instance::remote-id` envelope.
   const rawId = userId.includes("::") ? userId.split("::")[1] : userId;
-  // Strip device suffixes if present (e.g. "1234:5@s.whatsapp.net" -> "1234@s.whatsapp.net")
-  const normalizedId = userId.replace(/:\d+@/, "@");
-  const rawNormalizedId = rawId.replace(/:\d+@/, "@");
 
   // 1. First, try to get from participantNames map
   if (options?.participantNames) {
-    const candidateKeys = [userId, rawId, normalizedId, rawNormalizedId];
+    const candidateKeys = [userId, rawId];
     for (const key of candidateKeys) {
       const name = options.participantNames.get(key);
       if (name && name.trim().length > 0) {
@@ -58,13 +53,12 @@ export function getUserDisplayName(
 
   // 2. If not found, try to find in messages (senderName)
   if (options?.allMessages) {
-    const candidateKeys = new Set([userId, rawId, normalizedId, rawNormalizedId]);
+    const candidateKeys = new Set([userId, rawId]);
     for (const message of options.allMessages) {
       if (
         message.senderName &&
         message.senderName.trim().length > 0 &&
         (candidateKeys.has(message.senderId) ||
-          candidateKeys.has(message.senderId?.replace(/:\d+@/, "@")) ||
           (message.senderId?.includes("::") && candidateKeys.has(message.senderId.split("::")[1])))
       ) {
         return message.senderName;
@@ -78,27 +72,10 @@ export function getUserDisplayName(
     return rawId;
   }
 
-  // 4. For WhatsApp phone number IDs, format as phone number
-  const whatsappMatch = rawNormalizedId.match(/^(\d+)@(?:s\.whatsapp\.net|c\.us)$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      return `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
-    }
-    return `+${phoneNumber}`;
-  }
-
-  // 5. If it's a raw WhatsApp LID that wasn't resolved yet
-  if (rawId.endsWith("@lid")) {
-    return rawId.replace(/@lid$/, "");
-  }
-
-  // 6. Generic fallback
+  // Generic fallback. Providers are responsible for supplying a human-readable
+  // name when their remote identifier is not suitable for display.
   return rawId
     .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
     .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

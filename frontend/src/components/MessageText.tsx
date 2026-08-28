@@ -13,7 +13,7 @@ import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 
-interface SlackInlineQuote {
+interface SerializedInlineQuote {
   sender: string;
   quotedText: string;
   body: string;
@@ -42,10 +42,9 @@ function richTextStyle(element: Element): CSSProperties {
   return style;
 }
 
-// Slack serializes Loom's quoted replies as a Markdown block quote. Parse it
-// before generic Markdown rendering so replies remain readable even when the
-// cached message has lost its quotedMessageId/quotedBody metadata.
-function parseSlackInlineQuote(text: string): SlackInlineQuote | null {
+// Legacy Loom rows may contain a quoted reply serialized as a Markdown block.
+// Parse the format before generic rendering when canonical quote fields were lost.
+function parseSerializedInlineQuote(text: string): SerializedInlineQuote | null {
   const lines = text
     .replace(/&gt;|&#(?:0*62);/gi, ">")
     .replace(/\r\n/g, "\n")
@@ -189,7 +188,7 @@ export const MessageText = memo(function MessageText({
   isFromMe = false,
 }: MessageTextProps) {
   useRenderCount("MessageText", { textLength: text?.length, preview });
-  const slackInlineQuote = useMemo(() => parseSlackInlineQuote(text), [text]);
+  const serializedInlineQuote = useMemo(() => parseSerializedInlineQuote(text), [text]);
 
   const parsedContent = useMemo(() => {
     if (!text) return null;
@@ -209,7 +208,7 @@ export const MessageText = memo(function MessageText({
       .replaceAll("LOOM_UNDERLINE_OPEN", "<u>")
       .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>")
       .replace(/LOOM_RICH_TAG_(\d+)_/g, (_, index) => richTags[Number(index)] ?? "");
-    // Last-resort compatibility for cached Slack replies that reach this
+    // Last-resort compatibility for cached serialized replies that reach this
     // component without reply metadata. Do this before emoji splitting and
     // Markdown parsing so neither stage can expose the protocol's `>` syntax.
     if (/^\s*>\s*\*[^*\n]+\*\s*$/m.test(processedText)) {
@@ -244,7 +243,7 @@ export const MessageText = memo(function MessageText({
       return textWithoutSkinTones;
     }
 
-    // Markdown constructs such as Slack's quoted replies span multiple lines.
+    // Markdown constructs such as serialized quoted replies span multiple lines.
     // Passing each line independently makes react-markdown treat `>` as plain
     // text, so keep the complete document intact when no emoji replacement is
     // needed.
@@ -346,7 +345,7 @@ export const MessageText = memo(function MessageText({
 
     // Parsing each rich-text element separately detaches a Markdown list marker
     // from the colored text that follows it (`- <loom-style>text</loom-style>`).
-    // Keep rich Teams lists as one React list and only parse the contents of each
+    // Keep rich-text lists as one React list and only parse the contents of each
     // item independently, so color remains inline with its bullet.
     const nonEmptyLines = content.split("\n").filter((line) => line.trim() !== "");
     const unorderedItems = nonEmptyLines.map((line) => line.match(/^\s*[-+]\s+(.+)$/));
@@ -388,14 +387,14 @@ export const MessageText = memo(function MessageText({
     return <>{renderNodes(documentNode.body.childNodes, isInline)}</>;
   };
 
-  if (slackInlineQuote) {
+  if (serializedInlineQuote) {
     return (
       <div className={cn(className, "max-w-full overflow-hidden space-y-1")}>
         <blockquote className="border-l-2 border-current/40 pl-3 text-sm opacity-90">
-          <div className="font-semibold">{slackInlineQuote.sender}</div>
-          {renderMarkdown(slackInlineQuote.quotedText)}
+          <div className="font-semibold">{serializedInlineQuote.sender}</div>
+          {renderMarkdown(serializedInlineQuote.quotedText)}
         </blockquote>
-        {slackInlineQuote.body && renderMarkdown(slackInlineQuote.body)}
+        {serializedInlineQuote.body && renderMarkdown(serializedInlineQuote.body)}
       </div>
     );
   }

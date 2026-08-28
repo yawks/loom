@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { MessageText } from "./MessageText";
 import { ProtocolIcon } from "./ProtocolIcon";
-import { normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 
@@ -102,7 +102,7 @@ export function MessageSearchResults({
         const previous = displayedResults[index - 1];
         const startsGroup = !previous || previous.metaContactId !== result.metaContactId;
         const contact = contacts.find((item) => item.id === result.metaContactId);
-        const normalizedMessage = normalizeSlackQuotedReply(result.message);
+        const normalizedMessage = normalizeSerializedQuotedReply(result.message);
 
         return (
           <div className="message-search-results__group" key={`${result.message.protocolMsgId}-${index}`}>

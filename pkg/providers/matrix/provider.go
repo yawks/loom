@@ -260,7 +260,8 @@ func (p *Provider) roomPath(roomID string) string {
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsThreads: true, SupportsReactions: true, SupportsTypingIndicator: true,
+		ReadCursorAuthoritativeForNewMessages: true,
+		SupportsThreads:                       true, SupportsReactions: true, SupportsTypingIndicator: true,
 		SupportsGroupManagement: true, SupportsAddGroupMembers: true, SupportsRemoveGroupMembers: true,
 		SupportsRenameGroup: true, SupportsGroupDescription: true,
 		SupportsLeaveGroup: true, SupportsDeleteMessage: true, SupportsEditMessage: true,

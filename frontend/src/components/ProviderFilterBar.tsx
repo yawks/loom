@@ -53,7 +53,7 @@ export function ProviderFilterBar({
     metaContacts.forEach((contact) => {
       contact.linkedAccounts.forEach((account) => {
         // A userId identifies a contact, not a conversation. In particular the
-        // same WhatsApp JID can exist in two instances. Only a namespaced
+        // The same remote ID can exist in two instances. Only a namespaced
         // conversationId is valid for unread state.
         const conversationId = account.conversationId;
         if (!conversationId || countedConversations.has(conversationId)) return;

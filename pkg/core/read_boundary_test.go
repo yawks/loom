@@ -41,3 +41,15 @@ func TestSplitRecoveredMessagesWithoutOwnActivity(t *testing.T) {
 		t.Fatalf("unexpected split: read=%v unread=%v", read, unread)
 	}
 }
+
+func TestSplitRecoveredMessagesUsesPersistedActivity(t *testing.T) {
+	base := time.Unix(100, 0)
+	messages := []models.Message{
+		{ProtocolMsgID: "first", Timestamp: base},
+		{ProtocolMsgID: "second", Timestamp: base.Add(time.Second)},
+	}
+	read, unread := SplitRecoveredMessagesAtOwnActivity(messages, "self", base.Add(2*time.Second))
+	if len(read) != 2 || len(unread) != 0 {
+		t.Fatalf("unexpected split: read=%v unread=%v", read, unread)
+	}
+}

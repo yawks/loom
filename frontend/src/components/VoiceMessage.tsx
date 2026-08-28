@@ -108,7 +108,7 @@ export function VoiceMessage({
                 const data = await GetAttachmentData(attachment.url);
                 if (!active) return;
 
-                // Check if it's OGG/Opus (common on WhatsApp)
+                // Check if it's OGG/Opus, a common voice-note format.
                 // We check:
                 // 1. MIME type info from backend
                 // 2. File extension
@@ -149,7 +149,7 @@ export function VoiceMessage({
                             setWaveform(calculateWaveform(channelData[0]));
                         }
 
-                        // WhatsApp voice notes are usually mono (channelData[0])
+                        // Voice notes are commonly mono (channelData[0]).
                         // If stereo, we'd need to interleave, but let's assume mono/take first channel for now
                         const wavBlob = encodeWAV(channelData[0], sampleRate);
                         const url = URL.createObjectURL(wavBlob);

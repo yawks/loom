@@ -915,6 +915,7 @@ const googleChatLookbackWindow = 24 * time.Hour
 
 // syncOneConversation does a forward sync and, if recentActivity is true, a 24h lookback.
 func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time, recentActivity bool) {
+	defer p.emitStoredReadThroughOwnActivity(convID)
 	// Forward sync: messages after the last known timestamp.
 	since := lastTS
 	newMsgs, err := p.GetConversationHistory(convID, 500, nil, &since)
@@ -963,8 +964,24 @@ func (p *GoogleChatProvider) syncOneConversation(convID string, lastTS time.Time
 	}
 }
 
+func (p *GoogleChatProvider) emitStoredReadThroughOwnActivity(convID string) {
+	selfID := p.getSelfID()
+	namespacedConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	activityAt := db.LatestOwnActivityAt(namespacedConvID, selfID)
+	messages := db.MessagesReadThrough(namespacedConvID, activityAt, 1000)
+	if len(messages) > 0 {
+		p.emit(core.MessageBatchEvent{
+			InstanceID: p.getInstanceID(), ConversationID: namespacedConvID,
+			Messages: messages, ForceRead: true,
+		})
+	}
+}
+
 func (p *GoogleChatProvider) emitRecoveredMessagesByOwnActivity(convID string, messages []models.Message) {
-	read, unread := core.SplitRecoveredMessagesByOwnActivity(messages, p.getSelfID())
+	selfID := p.getSelfID()
+	namespacedConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	activityAt := db.LatestOwnActivityAt(namespacedConvID, selfID)
+	read, unread := core.SplitRecoveredMessagesAtOwnActivity(messages, selfID, activityAt)
 	if len(read) > 0 {
 		p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: convID, Messages: read, ForceRead: true})
 	}

@@ -841,13 +841,14 @@ func (p *Provider) MarkConversationAsRead(conversationID string) error {
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
-		SupportsReactions:            true,
-		SupportsDeleteMessage:        true,
-		SupportsReadReceipts:         true,
-		NativeEmojiReactions:         true,
-		SupportsContactDirectory:     true,
-		SupportsDirectConversation:   true,
-		SupportsPhoneNumberRecipient: true,
+		ReadCursorAuthoritativeForNewMessages: true,
+		SupportsReactions:                     true,
+		SupportsDeleteMessage:                 true,
+		SupportsReadReceipts:                  true,
+		NativeEmojiReactions:                  true,
+		SupportsContactDirectory:              true,
+		SupportsDirectConversation:            true,
+		SupportsPhoneNumberRecipient:          true,
 	}
 }
 

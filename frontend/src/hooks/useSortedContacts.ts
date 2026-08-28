@@ -114,7 +114,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     const getContactTime = (contact: models.MetaContact): number => {
       let maxTime = 0;
       for (const acc of getAccountsForTime(contact)) {
-        // Try both conversationId and userId — they can differ (e.g. Slack DM channel D-prefix
+        // Try both conversationId and userId because remote services may use separate identifiers.
         // vs normalized U-prefix), and we want the best match in lastMessageDates.
         const idsToCheck: string[] = [];
         if (acc.conversationId) idsToCheck.push(acc.conversationId);

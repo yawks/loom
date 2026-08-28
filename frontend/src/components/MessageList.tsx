@@ -150,6 +150,17 @@ export function MessageList({
     setShowPins(false);
   }, [conversationId]);
 
+  const readPolicy = useMemo(() => {
+    if (!providerInstanceId) {
+      return { cursorAuthoritativeForNewMessages: true, ownActivityAdvancesBoundary: false };
+    }
+    const providerCapabilities = capabilities[providerInstanceId];
+    if (!providerCapabilities) return undefined;
+    return {
+      cursorAuthoritativeForNewMessages: providerCapabilities.readCursorAuthoritativeForNewMessages,
+      ownActivityAdvancesBoundary: providerCapabilities.ownActivityAdvancesReadBoundary,
+    };
+  }, [capabilities, providerInstanceId]);
   const supportsPinMessage = providerInstanceId ? capabilities[providerInstanceId]?.supportsPinMessage ?? false : false;
   const supportsListScheduledMessages = providerInstanceId ? capabilities[providerInstanceId]?.supportsListScheduledMessages ?? false : false;
   const supportsScheduledMessages = providerInstanceId ? capabilities[providerInstanceId]?.supportsScheduledMessages ?? false : false;
@@ -243,7 +254,7 @@ export function MessageList({
     isLoading,
     isFetching,
     data,
-  } = useMessageData(conversationId, isGroupFromProvider);
+  } = useMessageData(conversationId, isGroupFromProvider, readPolicy);
 
   const unreadMessageIds = useMemo(
     () => Object.entries(conversationReadState)
@@ -477,8 +488,8 @@ export function MessageList({
     };
   }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, hasWindowFocus, focusReturnReadDeadline]);
 
-  // Older provider versions could persist an unsupported WhatsApp wrapper as an
-  // empty message. Such a message is deliberately absent from mainMessages, so
+  // Older provider versions could persist unsupported wrappers as empty
+  // messages. Such a message is deliberately absent from mainMessages, so
   // the normal "mark visible messages as read" effect can never consume it.
   // Clear those orphaned unread entries when the conversation is loaded.
   useEffect(() => {

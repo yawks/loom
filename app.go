@@ -1978,6 +1978,36 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		}
 	}
 
+	// Normalize every participant identity before exposing messages to the UI.
+	// This also repairs legacy database rows without rewriting protocol IDs that
+	// providers still need for remote operations.
+	for i := range messages {
+		canonicalizeAttachmentTypes(&messages[i])
+		instanceID := convToInstance[messages[i].ConversationID]
+		if instanceID == "" || a.providerManager == nil {
+			continue
+		}
+		provider, err := a.providerManager.GetProvider(instanceID)
+		if err != nil {
+			continue
+		}
+		normalizer, ok := provider.(core.ParticipantIdentityNormalizer)
+		if !ok {
+			continue
+		}
+		messages[i].SenderID = normalizer.NormalizeParticipantID(messages[i].SenderID)
+		if messages[i].QuotedSenderID != nil {
+			normalized := normalizer.NormalizeParticipantID(*messages[i].QuotedSenderID)
+			messages[i].QuotedSenderID = &normalized
+		}
+		for reactionIndex := range messages[i].Reactions {
+			messages[i].Reactions[reactionIndex].UserID = normalizer.NormalizeParticipantID(messages[i].Reactions[reactionIndex].UserID)
+		}
+		for receiptIndex := range messages[i].Receipts {
+			messages[i].Receipts[receiptIndex].UserID = normalizer.NormalizeParticipantID(messages[i].Receipts[receiptIndex].UserID)
+		}
+	}
+
 	// 2. Group SenderIDs by InstanceID
 	instanceToSenderIDs := make(map[string]map[string]bool)
 	for _, msg := range messages {
@@ -2065,6 +2095,29 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 
 	if enrichedCount > 0 || notFoundCount > 0 {
 		fmt.Printf("enrichMessagesWithSenderNames: Enriched %d messages, %d names still not found\n", enrichedCount, notFoundCount)
+	}
+}
+
+func canonicalizeAttachmentTypes(message *models.Message) {
+	if message == nil || strings.TrimSpace(message.Attachments) == "" {
+		return
+	}
+	var attachments []models.Attachment
+	if err := json.Unmarshal([]byte(message.Attachments), &attachments); err != nil {
+		return
+	}
+	changed := false
+	for i := range attachments {
+		if attachments[i].Type == "teams_card" {
+			attachments[i].Type = "adaptive_card"
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	if encoded, err := json.Marshal(attachments); err == nil {
+		message.Attachments = string(encoded)
 	}
 }
 
@@ -2293,6 +2346,7 @@ func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage
 	if err != nil {
 		return page, err
 	}
+	a.enrichMessagesWithSenderNames(messages)
 	byConversation := make(map[uint]conversationMeta, len(metadata))
 	for _, meta := range metadata {
 		byConversation[meta.ConversationID] = meta

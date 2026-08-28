@@ -28,7 +28,7 @@ export function normalizeReaction(
   const unicode = stripEmojiVariationSelectors(originalUnicode);
   // Look up the intact sequence first. Variation selectors are significant in
   // ZWJ emojis (for example 🙋‍♂️); stripping them before the reverse lookup
-  // prevents Slack's shortcode from being found and sends an invalid Unicode
+  // prevents the provider shortcode from being found and sends invalid Unicode
   // value as the reaction name.
   const canonicalName = unicodeToEmojiName(originalUnicode) || unicodeToEmojiName(unicode) || unicode;
   const namedApiEmoji = hasNamedForm || resolvedUnicode ? clean : canonicalName;
@@ -36,7 +36,7 @@ export function normalizeReaction(
   return {
     // A provider picker may already know the exact API shortcode. Preserve it:
     // converting it to Unicode and back through the generated alias map can
-    // turn Slack's "grinning" into the invalid textual alias ":d".
+    // turn a canonical "grinning" shortcode into a loose textual alias such as ":d".
     apiEmoji: nativeEmojiReactions ? unicode : namedApiEmoji,
     canonicalName,
     storedEmoji: `:${canonicalName}:`,

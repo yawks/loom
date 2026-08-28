@@ -82,15 +82,14 @@ export function ReactionPicker({
       onReactionSelect(`:${emojiData.unified}:`);
     } else if (usesNamedReactions && emojiData.names[0]) {
       recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
-      // Named-reaction APIs such as Slack expect a shortcode, not the Unicode glyph.
-      // emoji-picker-react puts the Slack/GitHub shortcode first (for example
-      // "grinning" for 😀). Reversing our large alias map can instead pick
-      // textual aliases such as ":d", which Slack rejects with invalid_name.
-      const slackName = emojiData.names[0]
+      // Some reaction APIs expect a shortcode rather than the Unicode glyph.
+      // emoji-picker-react's first name is its canonical shortcode; reversing
+      // the alias map could select a loose textual alias such as ":d" instead.
+      const shortcode = emojiData.names[0]
         .trim()
         .toLowerCase()
         .replace(/[\s-]+/g, "_");
-      onReactionSelect(`:${slackName}:`);
+      onReactionSelect(`:${shortcode}:`);
     } else {
       recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
       // Standard unicode emoji

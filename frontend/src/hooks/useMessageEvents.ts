@@ -235,7 +235,7 @@ export function useMessageEvents() {
         }
         for (const convId of Object.keys(lastMessageByConv)) {
           queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", convId] });
-          // Batch events are used by Slack's incremental-sync fallback when RTM
+          // Batch events are used by incremental-sync fallbacks when streaming
           // did not deliver an event. Refresh an already-open conversation so
           // calls and messages recovered this way become visible immediately.
           queryClient.invalidateQueries({ queryKey: ["messages", convId] });
@@ -301,10 +301,8 @@ export function useMessageEvents() {
               ? `${account.providerInstanceId}::${account.userId}`
               : account?.userId);
           if (conversationId) {
-            // WhatsApp can emit the receipt chat as a LID while Loom's selected
-            // conversation uses the equivalent phone-number JID. The protocol
-            // message ID is the stable identity, so update the selected cache
-            // whenever that message is actually present in it.
+            // A receipt may use a conversation alias. The protocol message ID
+            // is stable, so update the selected cache when it contains it.
             queryClient.setQueryData<InfiniteData<models.Message[]>>(
               ["messages", conversationId],
               (oldData) => {

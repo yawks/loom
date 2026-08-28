@@ -796,7 +796,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 		pin := models.MessagePin{
 			ProviderInstanceID: w.getInstanceId(), ProtocolConvID: convID,
-			ProtocolMsgID: v.MessageID, SenderID: v.SenderJID.String(), MessageIsFromMe: v.IsFromMe,
+			ProtocolMsgID: v.MessageID, SenderID: w.NormalizeParticipantID(v.SenderJID.String()), MessageIsFromMe: v.IsFromMe,
 			Scope: models.MessagePinScopePersonal, Resolution: models.MessagePinResolutionUnresolved,
 			PinnedAt: &v.Timestamp,
 		}
@@ -1227,7 +1227,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			if isOutgoing {
 				// We placed the call; store our own JID as sender
 				if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
-					senderID = w.client.Store.ID.String()
+					senderID = w.client.Store.ID.ToNonAD().String()
 				}
 			} else {
 				senderID = v.CallCreator.String()

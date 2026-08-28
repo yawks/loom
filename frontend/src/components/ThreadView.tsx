@@ -27,7 +27,7 @@ import { useFileUpload } from "@/hooks/useFileUpload";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
-import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { sameUserId } from "@/lib/userIdentity";
@@ -455,7 +455,7 @@ export function ThreadView() {
 
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
-    const filtered = threadMessages.map(normalizeSlackQuotedReply).filter((msg) => {
+    const filtered = threadMessages.map(normalizeSerializedQuotedReply).filter((msg) => {
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
       if (!hasBody && !hasAttachments) return false;

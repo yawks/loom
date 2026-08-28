@@ -6,6 +6,12 @@ import { MessageText } from "./MessageText";
 
 type CardNode = Record<string, unknown>;
 
+type StructuredCardAttachment = { type?: string; cardJson?: string };
+
+export function isStructuredAdaptiveCardAttachment(attachment: StructuredCardAttachment): boolean {
+  return attachment.type === "adaptive_card" && Boolean(attachment.cardJson);
+}
+
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -98,7 +104,7 @@ function CardElement({ element }: { element: CardNode }) {
   );
 }
 
-export function TeamsAdaptiveCard({ cardJson }: { cardJson: string }) {
+export function StructuredAdaptiveCard({ cardJson }: { cardJson: string }) {
   let card: CardNode;
   try {
     card = JSON.parse(cardJson) as CardNode;
@@ -113,11 +119,11 @@ export function TeamsAdaptiveCard({ cardJson }: { cardJson: string }) {
   );
 }
 
-export function hasTeamsAdaptiveCard(attachments?: string): boolean {
+export function hasStructuredAdaptiveCard(attachments?: string): boolean {
   if (!attachments?.trim()) return false;
   try {
     const parsed = JSON.parse(attachments) as Array<{ type?: string; cardJson?: string }>;
-    return parsed.some((attachment) => attachment.type === "teams_card" && Boolean(attachment.cardJson));
+    return parsed.some(isStructuredAdaptiveCardAttachment);
   } catch {
     return false;
   }

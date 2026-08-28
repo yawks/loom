@@ -34,15 +34,6 @@ function getDisplayName(
       }
     }
 
-    // If not found and ID contains ":", try without the ":digits" part (for WhatsApp LID format)
-    // e.g., "33662865152:47@s.whatsapp.net" -> "33662865152@s.whatsapp.net"
-    if (userId.includes(":") && (userId.includes("@s.whatsapp.net") || userId.includes("@g.us"))) {
-      const normalizedId = userId.replace(/:\d+@/, "@");
-      const normalizedName = participantNames.get(normalizedId);
-      if (normalizedName && normalizedName.trim().length > 0) {
-        return normalizedName;
-      }
-    }
   }
 
   // If not found in participantNames, try to find in messages (for provider user IDs)
@@ -60,32 +51,9 @@ function getDisplayName(
     return userId;
   }
 
-  // Robust handling: extract local part from various WhatsApp ID formats
-  // Supports: "33603018166@s.whatsapp.net", "33662865152:47@s.whatsapp.net" (LID format)
-  let phoneNumber: string | null = null;
-
-  // Match "digits" optionally followed by ":digits@server"
-  const match = userId.match(/^(\d+)(?::\d+)?@/);
-  if (match) {
-    phoneNumber = match[1];
-  }
-
-  if (phoneNumber) {
-    // If this looks like a French number (starts with 33 and 11 digits) format nicely
-    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
-      const countryCode = phoneNumber.substring(0, 2); // "33"
-      const rest = phoneNumber.substring(2); // 9 digits
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
-      return formatted;
-    }
-    // For other numeric local parts, return with a leading + and no odd grouping
-    return `+${phoneNumber}`;
-  }
-
   // Fallback for other ID formats: try to return a readable label
   return userId
     .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
     .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

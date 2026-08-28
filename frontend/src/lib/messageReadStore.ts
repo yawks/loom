@@ -79,13 +79,13 @@ const boundConversationReadState = (
 
 interface MessageReadStore {
   readByConversation: ReadStateByConversation;
-  syncConversation: (conversationId: ConversationId, messages: models.Message[], currentUserId?: string) => void;
+  syncConversation: (conversationId: ConversationId, messages: models.Message[], currentUserId?: string, policy?: ReadPolicy) => void;
   setLastReadTimestamp: (conversationId: ConversationId, lastReadTS: string) => void;
   markAsRead: (conversationId: ConversationId, messageId: MessageId) => void;
   markMultipleAsRead: (conversationId: ConversationId, messageIds: MessageId[]) => void;
   markAsReadByProtocolId: (conversationId: ConversationId, protocolMsgId: string) => void;
   /** Mark a message as read locally without sending a receipt back to the server.
-   *  Use this for self-read events (e.g. WhatsApp ReceiptTypeReadSelf) to avoid receipt loops. */
+   *  Use this for provider-originated self-read events to avoid receipt loops. */
   markAsReadSilently: (conversationId: ConversationId, messageId: MessageId) => void;
   registerIncomingMessage: (message: models.Message) => void;
   registerBatchMessages: (messages: models.Message[], isHistorical?: boolean, forceRead?: boolean, forceUnread?: boolean) => void;
@@ -94,6 +94,11 @@ interface MessageReadStore {
   clearProvider: (providerInstanceId: string) => void;
   cleanupObsoleteMessages: (conversationId: ConversationId, validMessageIds: Set<string>) => void;
   seedMockUnread: (conversationId: ConversationId, messageIds: MessageId[]) => void;
+}
+
+export interface ReadPolicy {
+  cursorAuthoritativeForNewMessages: boolean;
+  ownActivityAdvancesBoundary: boolean;
 }
 
 const STORAGE_KEY = "loom-message-read-state";
@@ -266,7 +271,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         return { readByConversation: updatedMap };
       });
     },
-    syncConversation: (conversationId, messages, currentUserId) => {
+    syncConversation: (conversationId, messages, currentUserId, policy) => {
       if (!conversationId) {
         return;
       }
@@ -282,12 +287,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           ? ((existingState as any)["_lastReadTS"] as string | undefined)
           : undefined;
 
-        // Backend sync repair events can be emitted before the renderer has
-        // attached its listener during startup. Recompute the same WhatsApp
-        // read-through boundary from the persisted timeline every time it is
-        // loaded, so stale local unread flags cannot survive that race.
+        // Some services expose own activity as an authoritative read-through
+        // signal. The provider declares this behavior through its capabilities.
         let ownActivityReadThrough: number | undefined;
-        if (conversationId.startsWith("whatsapp")) {
+        if (policy?.ownActivityAdvancesBoundary) {
           messages.forEach((message) => {
             const hasOwnReaction = Boolean(currentUserId) &&
               (message.reactions ?? []).some((reaction) =>
@@ -370,7 +373,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       } else {
             // Always check lastReadTS from provider to determine read state
             // This ensures we use provider's own read markers rather than guessing
-            if (lastReadTS) {
+            if (lastReadTS && policy?.cursorAuthoritativeForNewMessages !== false) {
               // Parse provider timestamp and compare with message timestamp
               const lastReadTimestamp = parseFloat(lastReadTS);
               if (!isNaN(lastReadTimestamp)) {
@@ -651,10 +654,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let resolvedConversationId = conversationId;
       let conversationState = state.readByConversation[resolvedConversationId];
 
-      // WhatsApp self-read receipts can identify the chat by its LID while the
-      // message state is keyed by the equivalent phone-number JID. Message IDs
-      // are stable across both forms, so resolve within the same provider
-      // instance when the receipt's conversation key does not contain it.
+      // A provider can report an aliased conversation key. Protocol message IDs
+      // remain stable, so resolve within the same instance when necessary.
       if (!conversationState || conversationState[messageId] === undefined) {
         const separator = conversationId.indexOf("::");
         const instancePrefix = separator >= 0 ? conversationId.slice(0, separator + 2) : "";
@@ -698,8 +699,6 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         return state;
       }
 
-      // Use lastReadTS if available to determine read state
-      const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
       let isRead = existingState[messageId];
 
       // Call messages are always marked as read (they don't count as unread messages)
@@ -715,26 +714,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         // thread metadata.
       } else if (isCallMessage || message.isFromMe) {
         isRead = true;
-      } else if (conversationId.startsWith("slack")) {
-        // Slack's channel last_read cursor is not an acknowledgement of a
-        // freshly delivered event (and does not reliably cover thread reads).
-        // The July behaviour treated live Slack deliveries as unread and let
-        // the mounted message/thread view consume them explicitly.
-        isRead = false;
-      } else if (lastReadTS) {
-        // Compare message timestamp with lastReadTS
-        const lastReadTimestamp = parseFloat(lastReadTS);
-        const messageDate = timeToDate(message.timestamp);
-        if (!isNaN(lastReadTimestamp)) {
-          const lastReadDate = new Date(lastReadTimestamp * 1000);
-          isRead = messageDate <= lastReadDate;
-        } else {
-          isRead = true;
-        }
       } else {
-        // A MessageEvent is delivered for a newly received message. It must be
-        // unread even when it is the first message Loom sees for a conversation.
-        // History is registered through syncConversation/registerBatchMessages.
+        // A live incoming event has not been consumed by Loom yet. Remote
+        // conversation cursors are applied only while synchronizing history.
         isRead = false;
       }
 
@@ -777,7 +759,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         const needsThreadMarker =
           isThreadReply(message) && existingState[marker] !== true;
         // A duplicate history batch is not proof that a message was read. In
-        // particular, WhatsApp may deliver a live MessageEvent and repeat the
+        // A provider may deliver a live MessageEvent and repeat the
         // same message in a HistorySync seconds later. Only an explicit
         // provider read-through signal may overwrite an existing unread state.
         const repairsUnreadState =

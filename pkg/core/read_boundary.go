@@ -13,7 +13,13 @@ import (
 // activity in the recovered window, the entire batch is after the last known
 // boundary and remains unread.
 func SplitRecoveredMessagesByOwnActivity(messages []models.Message, currentUserID string) (read, unread []models.Message) {
-	var activityAt time.Time
+	return SplitRecoveredMessagesAtOwnActivity(messages, currentUserID, time.Time{})
+}
+
+// SplitRecoveredMessagesAtOwnActivity also considers activity already persisted
+// outside the recovered batch. This is required when an outgoing message or a
+// reaction was stored before Loom discovers older incoming messages.
+func SplitRecoveredMessagesAtOwnActivity(messages []models.Message, currentUserID string, activityAt time.Time) (read, unread []models.Message) {
 	for _, message := range messages {
 		if message.IsFromMe || sameProviderUser(message.SenderID, currentUserID) {
 			if message.Timestamp.After(activityAt) {
