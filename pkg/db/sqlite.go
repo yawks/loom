@@ -2,11 +2,13 @@ package db
 
 import (
 	"Loom/pkg/models"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -15,6 +17,35 @@ import (
 )
 
 var DB *gorm.DB
+
+const sqliteBusyRetryAttempts = 6
+
+// Transaction retries the whole transaction when SQLite reports SQLITE_BUSY.
+// In WAL mode, a read transaction that is upgraded to a writer can fail with
+// SQLITE_BUSY_SNAPSHOT (517) as soon as another connection commits. SQLite's
+// busy_timeout cannot resolve that stale snapshot; the transaction must restart.
+func Transaction(database *gorm.DB, fn func(*gorm.DB) error) error {
+	var err error
+	for attempt := 0; attempt < sqliteBusyRetryAttempts; attempt++ {
+		err = database.Transaction(fn)
+		if !isSQLiteBusy(err) || attempt == sqliteBusyRetryAttempts-1 {
+			return err
+		}
+		time.Sleep(time.Duration(25*(1<<attempt)) * time.Millisecond)
+	}
+	return err
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) && coded.Code()&0xff == 5 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "database is locked")
+}
 
 // InitDatabase initializes the connection to the SQLite database.
 // The database will be stored in the application's configuration directory.

@@ -114,7 +114,9 @@ func teamsHTMLToMarkdown(input string) string {
 		}
 	}
 	render(root)
-	return normalizeDuplicatedTeamsLinks(strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " ")))
+	normalized := strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
+	normalized = normalizeTeamsEscapedTable(normalized)
+	return normalizeDuplicatedTeamsLinks(normalized)
 }
 
 var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t]+)\*\*`)
@@ -128,7 +130,184 @@ var duplicatedTeamsLink = regexp.MustCompile(`\[\[([^\]\n]+)\]\((https?://[^\s)]
 func normalizeTeamsMarkdown(input string) string {
 	input = teamsEscapedStrong.ReplaceAllString(input, `**$1**`)
 	input = teamsStrongTrailingSpace.ReplaceAllString(input, `**$1**$2`)
-	return teamsEmptyStrong.ReplaceAllString(input, "")
+	input = teamsEmptyStrong.ReplaceAllString(input, "")
+	return normalizeTeamsEscapedTable(input)
+}
+
+var teamsMarkdownTableSeparator = regexp.MustCompile(`(?m)^\s*\\?\|\s*:?-+\s*(?:\|\s*:?-+\s*)*\|?\s*\\?\s*$`)
+var teamsNumberedFirstTableRow = regexp.MustCompile(`^\|\s*1[.)]\s+`)
+var teamsNumberedTableRow = regexp.MustCompile(`^\|?\s*\d+[.)]\s+`)
+
+// normalizeTeamsEscapedTable repairs tables pasted into the Teams composer as
+// Markdown. Teams may escape every pipe and append a backslash to each visual
+// line, leaving Loom's provider-neutral Markdown renderer with literal `|`
+// characters instead of a GFM table. Only table-shaped messages containing a
+// separator row are touched, so ordinary escaped pipes keep their meaning.
+func normalizeTeamsEscapedTable(input string) string {
+	if !teamsMarkdownTableSeparator.MatchString(input) {
+		return input
+	}
+	lines := strings.Split(strings.ReplaceAll(input, "\r\n", "\n"), "\n")
+	separatorIndex := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if teamsMarkdownTableSeparator.MatchString(line) {
+			separatorIndex = index
+		}
+		if !strings.HasPrefix(trimmed, `\|`) && !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		line = strings.ReplaceAll(line, `\|`, "|")
+		line = strings.TrimSuffix(strings.TrimRight(line, " \t"), `\`)
+		trimmed = strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "|") && !strings.HasSuffix(trimmed, "|") {
+			line = strings.TrimRight(line, " \t") + " |"
+		}
+		lines[index] = line
+	}
+	// Some one-column tables arrive with an empty `|` paragraph between the
+	// first numbered row and its description, while Teams leaves the separator
+	// after that description. Move it behind row 1 so GFM recognizes row 1 too.
+	firstRowIndex := -1
+	for index := separatorIndex - 1; index >= 0; index-- {
+		trimmed := strings.TrimSpace(lines[index])
+		if teamsNumberedFirstTableRow.MatchString(trimmed) {
+			firstRowIndex = index
+			break
+		}
+		// Do not reach through unrelated prose or another numbered item. Teams
+		// only inserts a few blank/orphan/description lines in this gap.
+		if separatorIndex-index > 8 || teamsNumberedTableRow.MatchString(trimmed) {
+			break
+		}
+	}
+	if firstRowIndex >= 0 && firstRowIndex < separatorIndex-1 {
+		rebuilt := append([]string{}, lines[:firstRowIndex+1]...)
+		rebuilt = append(rebuilt, lines[separatorIndex])
+		for _, line := range lines[firstRowIndex+1 : separatorIndex] {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && trimmed != "|" {
+				if !strings.HasPrefix(trimmed, "|") && strings.Contains(trimmed, "|") {
+					line = "| " + trimmed
+				}
+				if strings.HasPrefix(strings.TrimSpace(line), "|") && !strings.HasSuffix(strings.TrimSpace(line), "|") {
+					line = strings.TrimRight(line, " \t") + " |"
+				}
+				rebuilt = append(rebuilt, line)
+			}
+		}
+		rebuilt = append(rebuilt, lines[separatorIndex+1:]...)
+		lines = rebuilt
+		separatorIndex = firstRowIndex + 1
+	}
+	// A paragraph split inside a pasted cell must not terminate the GFM table.
+	// Fold text found between two post-separator rows into the preceding cell.
+	for index := separatorIndex + 1; index < len(lines); index++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[index]), "|") {
+			continue
+		}
+		nextRow := index + 1
+		for nextRow < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[nextRow]), "|") {
+			nextRow++
+		}
+		if nextRow >= len(lines) || index == 0 {
+			break
+		}
+		continuation := make([]string, 0, nextRow-index)
+		for _, value := range lines[index:nextRow] {
+			if value = strings.TrimSpace(value); value != "" {
+				continuation = append(continuation, value)
+			}
+		}
+		if len(continuation) > 0 {
+			previous := strings.TrimSuffix(strings.TrimRight(lines[index-1], " \t"), "|")
+			lines[index-1] = strings.TrimRight(previous, " \t") + "<br>" + strings.Join(continuation, "<br>") + " |"
+		}
+		lines = append(lines[:index], lines[nextRow:]...)
+		index--
+	}
+	lines = canonicalizeNumberedTeamsTable(lines)
+	return strings.Join(lines, "\n")
+}
+
+// canonicalizeNumberedTeamsTable turns the irregular rows produced by a
+// Teams/Office table paste into a stable two-column GFM table. Continuation
+// rows supply a KPI description and/or its target value.
+func canonicalizeNumberedTeamsTable(lines []string) []string {
+	first := -1
+	for index, line := range lines {
+		if teamsNumberedFirstTableRow.MatchString(strings.TrimSpace(line)) {
+			first = index
+			break
+		}
+	}
+	if first < 0 {
+		return lines
+	}
+	type tableRow struct{ label, target string }
+	rows := make([]tableRow, 0)
+	end := first
+	for index := first; index < len(lines); index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		if trimmed == "" || trimmed == "|" || teamsMarkdownTableSeparator.MatchString(trimmed) {
+			end = index + 1
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "|") {
+			if len(rows) == 0 || !strings.Contains(trimmed, "|") {
+				break
+			}
+			trimmed = "| " + trimmed
+		}
+		cells := markdownTableCells(trimmed)
+		if len(cells) == 0 {
+			break
+		}
+		if teamsNumberedTableRow.MatchString("| " + cells[0]) {
+			row := tableRow{label: cells[0]}
+			if len(cells) > 1 {
+				row.target = cells[1]
+			}
+			rows = append(rows, row)
+		} else if len(rows) > 0 {
+			current := &rows[len(rows)-1]
+			if cells[0] != "" {
+				current.label = strings.TrimSpace(current.label + "<br>" + cells[0])
+			}
+			for _, cell := range cells[1:] {
+				if cell != "" && current.target == "" {
+					current.target = cell
+					break
+				}
+			}
+		}
+		end = index + 1
+	}
+	if len(rows) < 2 {
+		return lines
+	}
+	out := append([]string{}, lines[:first]...)
+	for index, row := range rows {
+		out = append(out, "| "+row.label+" | "+row.target+" |")
+		if index == 0 {
+			out = append(out, "| --- | --- |")
+		}
+	}
+	return append(out, lines[end:]...)
+}
+
+func markdownTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	parts := strings.Split(line, "|")
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+	}
+	for len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
 }
 
 // normalizeDuplicatedTeamsLinks repairs the representation produced by Teams

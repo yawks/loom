@@ -55,10 +55,10 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 	defer messageTicker.Stop()
 
 	// conversations.list exposes the latest message of each joined conversation.
-	// Use it as a low-cost fallback for huddle starts when search.messages is not
-	// available to the current user token (notably when search:read is missing).
-	huddleStartTicker := time.NewTicker(10 * time.Second)
-	defer huddleStartTicker.Stop()
+	// Use it as a low-cost fallback when search.messages is delayed, incomplete,
+	// or unavailable to the current user token.
+	conversationLatestTicker := time.NewTicker(10 * time.Second)
+	defer conversationLatestTicker.Stop()
 
 	// Poll every 2 minutes for reactions on recent messages (less frequent)
 	reactionTicker := time.NewTicker(2 * time.Minute)
@@ -97,8 +97,8 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			// invisible to forward-only message polling. Check only locally active
 			// huddles so their end and duration are still captured without RTM.
 			p.pollActiveHuddles(ctx)
-		case <-huddleStartTicker.C:
-			p.pollLatestHuddles(ctx)
+		case <-conversationLatestTicker.C:
+			p.pollLatestConversationUpdates(ctx)
 		case <-reactionTicker.C:
 			// Poll for new reactions on recent messages
 			p.pollNewReactions()

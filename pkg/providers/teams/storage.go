@@ -270,7 +270,7 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 	if db.DB == nil {
 		return nil
 	}
-	return db.DB.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		for index := range messages {
 			message := &messages[index]
 			if message.ProtocolMsgID == "" || message.ProtocolConvID == "" {
@@ -376,7 +376,7 @@ func (p *Provider) replaceStoredReactions(conversationID, protocolMessageID stri
 		return nil, nil
 	}
 	var previous []models.Reaction
-	err := db.DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
 		var message models.Message
 		if err := tx.Where(
 			"protocol_conv_id = ? AND protocol_msg_id = ?",
@@ -421,6 +421,7 @@ func (p *Provider) enrichReplyMetadata(messages []models.Message) {
 				msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body)),
 			)
 		}
+		body = normalizeTeamsEscapedTable(body)
 		message.QuotedBody = &body
 		senderID := parent.SenderID
 		message.QuotedSenderID = &senderID
@@ -428,32 +429,34 @@ func (p *Provider) enrichReplyMetadata(messages []models.Message) {
 	}
 }
 
-func (p *Provider) repairStoredHTMLFormatting() error {
+func (p *Provider) repairStoredHTMLFormatting() (map[string][]models.Message, error) {
+	repaired := make(map[string][]models.Message)
 	if db.DB == nil {
-		return nil
+		return repaired, nil
 	}
 	var stored []models.Message
 	if err := db.DB.Where(
-		"protocol_conv_id LIKE ? AND body LIKE '%<%'",
-		p.instance+"::%",
+		"protocol_conv_id LIKE ? AND (body LIKE '%<%' OR body LIKE ? OR body LIKE ?)",
+		p.instance+"::%", `%\|%`, `%| --- %`,
 	).Find(&stored).Error; err != nil {
-		return fmt.Errorf("%s: find stored HTML messages: %w", providerID, err)
+		return nil, fmt.Errorf("%s: find stored formatted messages: %w", providerID, err)
 	}
 	converted := make([]bool, len(stored))
 	for index := range stored {
 		message := &stored[index]
-		if !looksLikeTeamsHTML(message.Body) {
-			continue
-		}
-		converted[index] = true
 		rawBody := message.Body
-		parentID := msteams.ExtractReplyParent(rawBody)
-		cleanBody := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(rawBody))
-		message.Body = teamsHTMLToMarkdown(cleanBody)
-		message.ThreadID = nil
-		if parentID != "" {
-			message.QuotedMessageID = &parentID
+		if looksLikeTeamsHTML(rawBody) {
+			parentID := msteams.ExtractReplyParent(rawBody)
+			cleanBody := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(rawBody))
+			message.Body = teamsHTMLToMarkdown(cleanBody)
+			message.ThreadID = nil
+			if parentID != "" {
+				message.QuotedMessageID = &parentID
+			}
+		} else {
+			message.Body = normalizeTeamsEscapedTable(rawBody)
 		}
+		converted[index] = message.Body != rawBody
 	}
 	p.enrichReplyMetadata(stored)
 	for index := range stored {
@@ -469,10 +472,12 @@ func (p *Provider) repairStoredHTMLFormatting() error {
 			"quoted_sender_name": message.QuotedSenderName,
 			"quoted_body":        message.QuotedBody,
 		}).Error; err != nil {
-			return fmt.Errorf("%s: repair stored HTML message: %w", providerID, err)
+			return nil, fmt.Errorf("%s: repair stored formatted message: %w", providerID, err)
 		}
+		rawConversationID := core.StripConvID(message.ProtocolConvID)
+		repaired[rawConversationID] = append(repaired[rawConversationID], *message)
 	}
-	return nil
+	return repaired, nil
 }
 
 // repairStoredCards revisits messages saved before card rendering was
@@ -543,7 +548,7 @@ func (p *Provider) removeVirtualConversations() error {
 	}
 	virtualIDs := []string{"48:calllogs", "48:mentions", "48:notifications", "48:notes", "48:drafts"}
 	var deletedAccountIDs []uint
-	err := db.DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
 		var accounts []models.LinkedAccount
 		if err := tx.Where(
 			"provider_instance_id = ? AND user_id IN ?",

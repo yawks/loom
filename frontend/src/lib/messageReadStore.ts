@@ -370,35 +370,18 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           const isCallMessage = message.callType && message.callType.trim() !== "";
           if (isCallMessage || message.isFromMe) {
             nextState[messageId] = true;
-      } else {
-            // Always check lastReadTS from provider to determine read state
-            // This ensures we use provider's own read markers rather than guessing
-            if (lastReadTS && policy?.cursorAuthoritativeForNewMessages !== false) {
-              // Parse provider timestamp and compare with message timestamp
-              const lastReadTimestamp = parseFloat(lastReadTS);
-              if (!isNaN(lastReadTimestamp)) {
-                const lastReadDate = new Date(lastReadTimestamp * 1000);
-                const messageDate = timeToDate(message.timestamp);
-                // Mark as read if message timestamp <= lastReadTimestamp
-                const isRead = messageDate <= lastReadDate;
-                nextState[messageId] = isRead;
-                if (!isRead) {
-                  console.log(`messageReadStore: Message ${messageId} marked as UNREAD (msg: ${messageDate.toISOString()}, lastRead: ${lastReadDate.toISOString()})`);
-                }
-              } else {
-                // With an existing local timeline, an unknown ID is recovered
-                // activity and must not silently become read because a provider
-                // cursor is malformed.
-                console.warn(`messageReadStore: Invalid lastReadTS format: ${lastReadTS}`);
-                nextState[messageId] = !hasExisting;
-              }
-            } else {
-              // With no provider cursor, only the first local import is assumed
-              // historical. Once the conversation already exists, IDs that
-              // appear later are recovered incoming messages and stay unread.
-              nextState[messageId] = !hasExisting;
-              console.log(`messageReadStore: No lastReadTS for ${conversationId}, marking new message ${messageId} as ${hasExisting ? "unread" : "historical/read"}`);
-            }
+          } else {
+            // This path synchronizes messages fetched from SQLite when a
+            // conversation is opened. Their absence from the bounded renderer
+            // store does not mean that they have just arrived: classifying them
+            // against a remote cursor here briefly manufactures unread items,
+            // then the mounted view immediately consumes them. Live events and
+            // authoritative provider unread signals are registered separately
+            // by registerIncomingMessage/registerBatchMessages.
+            //
+            // Preserve every state already known above; only unknown history is
+            // initialized as read.
+            nextState[messageId] = true;
           }
           hasChanged = true;
         }
