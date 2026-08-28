@@ -151,7 +151,17 @@ func (w *WhatsAppProvider) setConversationMuted(conversationID string, muted boo
 }
 
 func (w *WhatsAppProvider) GetConversationState(conversationID string) (*models.Conversation, error) {
-	// TODO: Implement getting conversation state
-	markUnused(conversationID)
-	return nil, fmt.Errorf("getting conversation state not yet implemented")
+	if w.client == nil || w.client.Store == nil || w.client.Store.ChatSettings == nil {
+		return nil, fmt.Errorf("whatsapp: not connected")
+	}
+	chat, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp: invalid conversation: %w", err)
+	}
+	settings, err := w.client.Store.ChatSettings.GetChatSettings(context.Background(), chat)
+	if err != nil {
+		return nil, fmt.Errorf("whatsapp: get conversation settings: %w", err)
+	}
+	muted := !settings.MutedUntil.IsZero() && settings.MutedUntil.After(time.Now())
+	return &models.Conversation{ProtocolConvID: conversationID, IsMuted: muted}, nil
 }

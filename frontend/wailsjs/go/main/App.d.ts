@@ -73,6 +73,8 @@ export function GetContactExchangeStats(arg1:string,arg2:string):Promise<models.
 
 export function GetContactProfile(arg1:string,arg2:string):Promise<models.ContactProfile>;
 
+export function GetConversationState(arg1:string):Promise<models.Conversation>;
+
 export function GetConversationsWithMessages():Promise<Array<string>>;
 
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;

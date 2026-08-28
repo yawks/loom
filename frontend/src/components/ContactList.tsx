@@ -1,4 +1,4 @@
-import { ArrowDownAZ, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
+import { ArrowDownAZ, BellOff, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts, GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -691,6 +691,14 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                     )}>
                       {contact.displayName}
                     </span>
+                    {!isBadgeTracked && (
+                      <BellOff
+                        className="contact-list__muted-icon h-3.5 w-3.5 shrink-0 text-sidebar-muted-foreground"
+                        aria-label={t("conversation_muted")}
+                      >
+                        <title>{t("conversation_muted")}</title>
+                      </BellOff>
+                    )}
                     <div className="ml-auto flex items-center gap-1.5 shrink-0">
                       {hasActiveCallByConversation[conversationId] && (
                         <div

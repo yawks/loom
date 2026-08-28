@@ -3,6 +3,7 @@ import { useEffect, useMemo } from "react";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { countUnreadMessages } from "@/lib/unreadBadgeCounts";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 
 // Helper function to call UpdateSystemTrayBadge via Wails runtime
 const updateSystemTrayBadge = (count: number): Promise<void> => {
@@ -58,6 +59,25 @@ export function useSystemTrayBadge() {
   const badgeUntrackedConversationIds = useAppStore(
     (state) => state.badgeUntrackedConversationIds
   );
+  const setConversationBadgeTracked = useAppStore(
+    (state) => state.setConversationBadgeTracked
+  );
+
+  useEffect(() => {
+    const unsubscribe = EventsOn("conversation-mute-status", (payload: string) => {
+      try {
+        const event = JSON.parse(payload) as { conversationId?: string; muted?: boolean };
+        if (event.conversationId && typeof event.muted === "boolean") {
+          setConversationBadgeTracked(event.conversationId, !event.muted);
+        }
+      } catch (error) {
+        console.error("Failed to parse conversation mute status:", error);
+      }
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [setConversationBadgeTracked]);
 
   // Calculate total unread count across all conversations
   const totalUnreadCount = useMemo(() => {

@@ -805,6 +805,19 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			pin.MessageTimestamp, pin.Resolution = &message.Timestamp, models.MessagePinResolutionResolved
 		}
 		db.DB.Where("provider_instance_id = ? AND protocol_msg_id = ?", pin.ProviderInstanceID, pin.ProtocolMsgID).Assign(pin).FirstOrCreate(&pin)
+	case *events.Mute:
+		if v.Action == nil {
+			return
+		}
+		conversationID := core.BuildConvID(w.getInstanceId(), v.JID.String())
+		select {
+		case w.eventChan <- core.ConversationMuteStatusEvent{
+			InstanceID:     w.getInstanceId(),
+			ConversationID: conversationID,
+			Muted:          v.Action.GetMuted(),
+		}:
+		default:
+		}
 	case *events.OfflineSyncCompleted:
 		// Offline sync completed - all data is now synced
 		// This is the FINAL sync event - emit completed status here

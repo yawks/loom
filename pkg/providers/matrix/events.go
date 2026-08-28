@@ -9,6 +9,7 @@ import (
 
 	"Loom/pkg/core"
 	"Loom/pkg/db"
+	"Loom/pkg/models"
 )
 
 func noCancel() context.Context { return context.Background() }
@@ -47,6 +48,7 @@ func (p *Provider) syncLoop(ctx context.Context) {
 		p.nextBatch = response.NextBatch
 		p.mu.Unlock()
 		for roomID, room := range response.Rooms.Join {
+			roomMessages := make([]models.Message, 0, len(room.Timeline.Events))
 			for _, event := range room.Timeline.Events {
 				p.mu.Lock()
 				p.eventRooms[event.EventID] = roomID
@@ -66,10 +68,14 @@ func (p *Provider) syncLoop(ctx context.Context) {
 					}
 					continue
 				}
-				if message, ok := p.eventToMessage(roomID, event); ok && !initial {
-					p.emit(core.MessageEvent{InstanceID: p.getInstanceID(), Message: message})
+				if message, ok := p.eventToMessage(roomID, event); ok {
+					roomMessages = append(roomMessages, message)
+					if !initial {
+						p.emit(core.MessageEvent{InstanceID: p.getInstanceID(), Message: message})
+					}
 				}
 			}
+			p.storeMessages(roomID, roomMessages)
 			for _, event := range room.Ephemeral.Events {
 				if event.Type == "m.typing" {
 					var c struct {
