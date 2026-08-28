@@ -1,6 +1,6 @@
-import { ArrowDownAZ, BellOff, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
+import { ArrowDownAZ, BadgeAlert, BellOff, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetMetaContacts, GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
+import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetHighlightedMessageRefs, GetMetaContacts, GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -10,6 +10,7 @@ import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { MessageText } from "./MessageText";
 import { NewConversationModal } from "./NewConversationModal";
 import { CommunicationStatsDialog } from "./CommunicationStatsDialog";
+import { HighlightedMessagesInbox } from "./HighlightedMessagesInbox";
 import { cn } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
@@ -93,6 +94,8 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
           queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
           queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
           queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
+          queryClient.invalidateQueries({ queryKey: ["highlightedMessages"] });
+          queryClient.invalidateQueries({ queryKey: ["highlightedMessageRefs"] });
           queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
         } else if (status === "fetching_contacts" || status === "fetching_history" || status === "fetching_avatars") {
           setSyncStatus("syncing");
@@ -184,6 +187,8 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
         queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
         queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
         queryClient.invalidateQueries({ queryKey: ["allMessageCounts"] });
+        queryClient.invalidateQueries({ queryKey: ["highlightedMessages"] });
+        queryClient.invalidateQueries({ queryKey: ["highlightedMessageRefs"] });
 
         // Optionally refetch contacts if names/avatars might have changed (though usually just messages)
         // queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
@@ -279,6 +284,15 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
     });
     return counts;
   }, [badgeUntrackedConversationIds, unreadCountsByConversation]);
+
+  const { data: highlightedMessageRefs = [] } = useQuery({
+    queryKey: ["highlightedMessageRefs"],
+    queryFn: () => GetHighlightedMessageRefs().catch(() => []),
+    staleTime: 5000,
+  });
+  const highlightedUnreadCount = useMemo(() => highlightedMessageRefs.filter((ref) =>
+    readStateByConversation[ref.conversationId]?.[ref.messageId] === false
+  ).length, [highlightedMessageRefs, readStateByConversation]);
 
   // Detect active incoming calls (not terminated) for all conversations in one query
   // This is much more efficient than making individual queries for each conversation
@@ -477,9 +491,32 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
               )}
             </span>
           </button>
+          <button
+            className={cn(
+              "contact-list__sort-tab relative flex-1 h-7 flex items-center justify-center rounded-md text-xs transition-colors",
+              sortBy === "highlighted"
+                ? "bg-sidebar-active text-sidebar-active-foreground"
+                : "text-sidebar-muted-foreground hover:bg-sidebar-hover hover:text-sidebar-foreground"
+            )}
+            onClick={() => setSortBy("highlighted")}
+            title={t("watchlist")}
+          >
+            <BadgeAlert className="h-3.5 w-3.5" />
+            {highlightedUnreadCount > 0 && (
+              <span
+                className="absolute -right-1 -top-1 h-3.5 min-w-3.5 rounded-full bg-amber-500 px-0.5 text-center text-[9px] font-bold leading-3.5 text-white"
+                aria-label={t("watchlist_unread_badge_aria", { count: highlightedUnreadCount })}
+              >
+                {formatUnreadCount(highlightedUnreadCount)}
+              </span>
+            )}
+          </button>
         </div>
       </div>
       <div className="contact-list__scroll flex-1 overflow-y-auto scroll-area">
+        {sortBy === "highlighted" ? (
+          <HighlightedMessagesInbox />
+        ) : (
         <div className="space-y-0.5 py-2 px-1">
           {sortBy === "unread" && filteredContacts.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center">
@@ -756,6 +793,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             );
           })}
         </div>
+        )}
       </div>
 
 

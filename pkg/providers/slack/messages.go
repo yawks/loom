@@ -1521,6 +1521,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 	// Check if message is from me (compare with authenticated user)
 	// p.selfUserID is populated at startup and read-safe here since callers hold p.mu.RLock.
 	isFromMe := p.selfUserID != "" && msg.User == p.selfUserID
+	highlightReasons := p.directMentionHighlightReasons(msg.Text, isFromMe)
 
 	// Convert Slack reactions to our Reaction model
 	reactions := make([]models.Reaction, 0)
@@ -1812,6 +1813,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		SenderAvatarURL:  senderAvatarURL,
 		Timestamp:        ts,
 		IsFromMe:         isFromMe,
+		HighlightReasons: highlightReasons,
 		ThreadID:         threadID,
 		Reactions:        reactions,
 		Attachments:      attachmentsJSON,
@@ -1822,6 +1824,13 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		QuotedSenderName: quotedSenderName,
 		QuotedBody:       quotedBody,
 	}
+}
+
+func (p *SlackProvider) directMentionHighlightReasons(text string, isFromMe bool) []string {
+	if !isFromMe && p.selfUserID != "" && strings.Contains(text, "<@"+p.selfUserID+">") {
+		return []string{models.HighlightReasonDirectMention}
+	}
+	return nil
 }
 
 // preprocessMessageBody cleans and transforms Slack message text into standard Markdown.

@@ -192,30 +192,31 @@ type Message struct {
 	Body             string           `json:"body"`
 	Timestamp        time.Time        `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe         bool             `json:"isFromMe"`
-	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                 // Nullable, for replies
-	ThreadReplyCount int              `gorm:"-" json:"threadReplyCount"`                       // Lightweight thread metadata; replies are loaded on demand
-	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`          // ID of the message being replied to
-	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`                        // Sender ID of the quoted message
-	QuotedSenderName string           `json:"quotedSenderName,omitempty"`                      // Sender name of the quoted message
-	QuotedBody       *string          `json:"quotedBody,omitempty"`                            // Body of the quoted message
-	Attachments      string           `json:"attachments"`                                     // Could be a JSON []string of URLs/paths
-	Reactions        []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"` // Reactions to this message
-	Receipts         []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`  // Delivery and read receipts
-	IsStatusMessage  bool             `json:"isStatusMessage"`                                 // Whether this is a status message
-	IsDeleted        bool             `json:"isDeleted"`                                       // Flag when the remote client deleted the message
-	DeletedBy        string           `json:"deletedBy,omitempty"`                             // User ID who triggered the deletion
-	DeletedReason    string           `json:"deletedReason,omitempty"`                         // Reason (e.g., "revoked")
-	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                      // When the deletion happened
-	IsEdited         bool             `json:"isEdited"`                                        // Flag when the message has been edited
-	EditedTimestamp  *time.Time       `json:"editedTimestamp,omitempty"`                       // When the message was edited
-	IsForwarded      bool             `json:"isForwarded"`                                     // Whether the provider marked the message as forwarded
-	CallType         string           `json:"callType,omitempty"`                              // Type of call: "missed_voice", "missed_video", "missed_group_voice", "missed_group_video", "scheduled_start", "scheduled_cancel", "linked_group_start"
-	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                      // Duration of the call in seconds (from CallLogMessage)
-	CallParticipants string           `json:"callParticipants,omitempty"`                      // JSON array of participant JIDs (from CallLogMessage)
-	CallOutcome      string           `json:"callOutcome,omitempty"`                           // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
-	CallIsVideo      bool             `json:"callIsVideo"`                                     // Whether the call was a video call (from CallLogMessage)
-	CallUrl          string           `json:"callUrl,omitempty"`                               // URL to join or view the call in a browser (provider-specific)
-	CallLinkAction   string           `json:"callLinkAction,omitempty"`                        // Generic link action: "join" (default) or "open"
+	ThreadID         *string          `gorm:"index" json:"threadId,omitempty"`                   // Nullable, for replies
+	ThreadReplyCount int              `gorm:"-" json:"threadReplyCount"`                         // Lightweight thread metadata; replies are loaded on demand
+	QuotedMessageID  *string          `gorm:"index" json:"quotedMessageId,omitempty"`            // ID of the message being replied to
+	QuotedSenderID   *string          `json:"quotedSenderId,omitempty"`                          // Sender ID of the quoted message
+	QuotedSenderName string           `json:"quotedSenderName,omitempty"`                        // Sender name of the quoted message
+	QuotedBody       *string          `json:"quotedBody,omitempty"`                              // Body of the quoted message
+	Attachments      string           `json:"attachments"`                                       // Could be a JSON []string of URLs/paths
+	Reactions        []Reaction       `gorm:"foreignKey:MessageID" json:"reactions,omitempty"`   // Reactions to this message
+	Receipts         []MessageReceipt `gorm:"foreignKey:MessageID" json:"receipts,omitempty"`    // Delivery and read receipts
+	IsStatusMessage  bool             `json:"isStatusMessage"`                                   // Whether this is a status message
+	IsDeleted        bool             `json:"isDeleted"`                                         // Flag when the remote client deleted the message
+	DeletedBy        string           `json:"deletedBy,omitempty"`                               // User ID who triggered the deletion
+	DeletedReason    string           `json:"deletedReason,omitempty"`                           // Reason (e.g., "revoked")
+	DeletedTimestamp *time.Time       `json:"deletedTimestamp,omitempty"`                        // When the deletion happened
+	IsEdited         bool             `json:"isEdited"`                                          // Flag when the message has been edited
+	EditedTimestamp  *time.Time       `json:"editedTimestamp,omitempty"`                         // When the message was edited
+	IsForwarded      bool             `json:"isForwarded"`                                       // Whether the provider marked the message as forwarded
+	HighlightReasons []string         `gorm:"serializer:json" json:"highlightReasons,omitempty"` // Canonical reasons why this message belongs in the attention inbox
+	CallType         string           `json:"callType,omitempty"`                                // Type of call: "missed_voice", "missed_video", "missed_group_voice", "missed_group_video", "scheduled_start", "scheduled_cancel", "linked_group_start"
+	CallDurationSecs *int32           `json:"callDurationSecs,omitempty"`                        // Duration of the call in seconds (from CallLogMessage)
+	CallParticipants string           `json:"callParticipants,omitempty"`                        // JSON array of participant JIDs (from CallLogMessage)
+	CallOutcome      string           `json:"callOutcome,omitempty"`                             // Call outcome: "CONNECTED", "MISSED", "FAILED", etc. (from CallLogMessage)
+	CallIsVideo      bool             `json:"callIsVideo"`                                       // Whether the call was a video call (from CallLogMessage)
+	CallUrl          string           `json:"callUrl,omitempty"`                                 // URL to join or view the call in a browser (provider-specific)
+	CallLinkAction   string           `json:"callLinkAction,omitempty"`                          // Generic link action: "join" (default) or "open"
 	DeletedAt        gorm.DeletedAt   `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
 
@@ -315,6 +316,15 @@ type MessageSearchPage struct {
 	Items   []MessageSearchResult `json:"items"`
 	HasMore bool                  `json:"hasMore"`
 }
+
+// HighlightedMessageRef is the lightweight identity used to count unread
+// attention-inbox messages without loading every paginated message body.
+type HighlightedMessageRef struct {
+	ConversationID string `json:"conversationId"`
+	MessageID      string `json:"messageId"`
+}
+
+const HighlightReasonDirectMention = "direct_mention"
 
 // MessageReceipt represents a delivery or read receipt for a message.
 type MessageReceipt struct {

@@ -1,5 +1,5 @@
 export namespace core {
-	
+
 	export class Capabilities {
 	    supportsThreads: boolean;
 	    supportsReactions: boolean;
@@ -34,7 +34,7 @@ export namespace core {
 	    supportsGroupTitle: boolean;
 	    requiresGroupTitle: boolean;
 	    groupConversationTypes: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
 	    }
@@ -556,6 +556,7 @@ export namespace models {
 	    isEdited: boolean;
 	    editedTimestamp?: time.Time;
 	    isForwarded: boolean;
+	    highlightReasons?: string[];
 	    callType?: string;
 	    callDurationSecs?: number;
 	    callParticipants?: string;
@@ -597,6 +598,7 @@ export namespace models {
 	        this.isEdited = source["isEdited"];
 	        this.editedTimestamp = this.convertValues(source["editedTimestamp"], time.Time);
 	        this.isForwarded = source["isForwarded"];
+	        this.highlightReasons = source["highlightReasons"];
 	        this.callType = source["callType"];
 	        this.callDurationSecs = source["callDurationSecs"];
 	        this.callParticipants = source["callParticipants"];
@@ -871,6 +873,20 @@ export namespace models {
 	    }
 	}
 	
+	export class HighlightedMessageRef {
+	    conversationId: string;
+	    messageId: string;
+
+	    static createFrom(source: any = {}) {
+	        return new HighlightedMessageRef(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.messageId = source["messageId"];
+	    }
+	}
 	
 	
 	
@@ -1207,4 +1223,3 @@ export namespace time {
 	}
 
 }
-

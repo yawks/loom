@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { core, models } from "../../wailsjs/go/models";
 
 export type Theme = "light" | "dark" | "system";
-export type ContactSortOption = "alphabetical" | "last_message" | "unread";
+export type ContactSortOption = "alphabetical" | "last_message" | "unread" | "highlighted";
 export interface ContactProfileTarget {
   conversationId: string;
   userId: string;

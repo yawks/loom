@@ -85,6 +85,10 @@ export function GetGroupDetails(arg1:string):Promise<models.GroupDetails>;
 
 export function GetGroupParticipants(arg1:string):Promise<Array<models.GroupParticipant>>;
 
+export function GetHighlightedMessageRefs():Promise<Array<models.HighlightedMessageRef>>;
+
+export function GetHighlightedMessages(arg1:number):Promise<models.MessageSearchPage>;
+
 export function GetMessagesForConversation(arg1:string):Promise<Array<models.Message>>;
 
 export function GetMessagesForConversationBefore(arg1:string,arg2:time.Time):Promise<Array<models.Message>>;

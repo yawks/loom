@@ -7,7 +7,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 
-type SortOption = "alphabetical" | "last_message" | "unread";
+type SortOption = "alphabetical" | "last_message" | "unread" | "highlighted";
 
 export function useSortedContacts(sortBy: SortOption = "last_message") {
   const metaContacts = useAppStore((state) => state.metaContacts);

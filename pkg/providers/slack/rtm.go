@@ -311,6 +311,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		Body:             messageBody,
 		Timestamp:        timestamp,
 		IsFromMe:         isFromMe,
+		HighlightReasons: p.directMentionHighlightReasons(ev.Text, isFromMe),
 		Attachments:      attachmentsJSON,
 		CallType:         callType,
 		CallUrl:          callUrl,

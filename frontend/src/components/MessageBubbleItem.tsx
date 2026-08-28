@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { useAppStore } from "@/lib/store";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -109,6 +110,7 @@ export function MessageBubbleItem({
   displayIndexByMessageId,
 }: MessageBubbleItemProps) {
   const { t } = useTranslation();
+  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   // Older cache rows can contain Loom's serialized quote representation instead
   // of canonical reply fields. Normalize at the final render boundary.
   message = normalizeSerializedQuotedReply(message);
@@ -156,7 +158,8 @@ export function MessageBubbleItem({
     isDeleted ? (isDeletedRevealed ? deletedRevealedClass : deletedPlaceholderClass) : baseBubbleColorClass,
     isPending && "opacity-70",
     sendFailed && "border border-destructive bg-destructive/10 opacity-80",
-    isDeleted && "border-dashed border-destructive/60 cursor-pointer group"
+    isDeleted && "border-dashed border-destructive/60 cursor-pointer group",
+    showHighlights && (message.highlightReasons?.length ?? 0) > 0 && "border-amber-400 ring-2 ring-amber-400/70 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]"
   );
 
   const deletedInteractionHandlers = isDeleted

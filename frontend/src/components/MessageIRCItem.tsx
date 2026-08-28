@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { useAppStore } from "@/lib/store";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -86,6 +87,7 @@ export function MessageIRCItem({
   displayIndexByMessageId,
 }: MessageIRCItemProps) {
   const { t } = useTranslation();
+  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   message = normalizeSerializedQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
@@ -170,7 +172,8 @@ export function MessageIRCItem({
         className={cn(
           "flex items-start scroll-mt-28 group relative",
           isPending && "opacity-70",
-          sendFailed && "border-l-2 border-destructive pl-1"
+          sendFailed && "border-l-2 border-destructive pl-1",
+          showHighlights && (message.highlightReasons?.length ?? 0) > 0 && "rounded-md bg-amber-400/10 ring-2 ring-inset ring-amber-400/70"
         )}
         data-message-id={messageId}
         onMouseEnter={() => handlers.setOpenActionsMessageId(messageId)}
