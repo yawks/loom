@@ -9,6 +9,7 @@ import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
+import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount, type UnreadBadgeCounts } from "@/lib/unreadBadgeCounts";
 
 const COLOR_VARIATIONS = [
   { filter: "hue-rotate(0deg)" },
@@ -46,9 +47,12 @@ export function ProviderFilterBar({
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
+  const badgeUntrackedConversationIds = useAppStore(
+    (state) => state.badgeUntrackedConversationIds
+  );
 
   const unreadByInstance = useMemo(() => {
-    const counts: Record<string, number> = {};
+    const counts: Record<string, UnreadBadgeCounts> = {};
     const countedConversations = new Set<string>();
     metaContacts.forEach((contact) => {
       contact.linkedAccounts.forEach((account) => {
@@ -57,20 +61,21 @@ export function ProviderFilterBar({
         // conversationId is valid for unread state.
         const conversationId = account.conversationId;
         if (!conversationId || countedConversations.has(conversationId)) return;
-        const conversationState = readStateByConversation[conversationId];
-        if (!conversationState) return;
-        const unread = Object.entries(conversationState).filter(
-          ([key, isRead]) => !key.startsWith("_") && !isRead
-        ).length;
+        const unread = countUnreadMessages(readStateByConversation[conversationId]);
         if (unread > 0) {
           countedConversations.add(conversationId);
-          counts[account.providerInstanceId] =
-            (counts[account.providerInstanceId] ?? 0) + unread;
+          const instanceCounts = counts[account.providerInstanceId] ?? emptyUnreadBadgeCounts();
+          addUnreadCount(
+            instanceCounts,
+            unread,
+            !badgeUntrackedConversationIds[conversationId]
+          );
+          counts[account.providerInstanceId] = instanceCounts;
         }
       });
     });
     return counts;
-  }, [metaContacts, readStateByConversation]);
+  }, [badgeUntrackedConversationIds, metaContacts, readStateByConversation]);
 
   const loadProviders = async () => {
     try {
@@ -204,9 +209,31 @@ export function ProviderFilterBar({
       : null;
   };
 
-  const totalUnread = Object.values(unreadByInstance).reduce(
-    (sum, n) => sum + n,
-    0
+  const totalUnread = Object.values(unreadByInstance).reduce((total, counts) => ({
+    tracked: total.tracked + counts.tracked,
+    untracked: total.untracked + counts.untracked,
+    total: total.total + counts.total,
+  }), emptyUnreadBadgeCounts());
+
+  const renderUnreadBadges = (counts: UnreadBadgeCounts) => (
+    <span className="provider-filter-bar__unread-badges absolute -right-1 -top-1 flex flex-col items-end gap-0.5 pointer-events-none">
+      {counts.tracked > 0 && (
+        <span
+          className="provider-filter-bar__unread-badge h-4 min-w-4 rounded-full bg-blue-600 px-0.5 text-center text-[10px] font-bold leading-4 text-white dark:bg-blue-500"
+          aria-label={t("tracked_unread_badge_aria", { count: counts.tracked })}
+        >
+          {formatUnreadCount(counts.tracked)}
+        </span>
+      )}
+      {counts.untracked > 0 && (
+        <span
+          className="provider-filter-bar__unread-badge h-4 min-w-4 rounded-full bg-muted-foreground/45 px-0.5 text-center text-[10px] font-bold leading-4 text-foreground"
+          aria-label={t("untracked_unread_badge_aria", { count: counts.untracked })}
+        >
+          {formatUnreadCount(counts.untracked)}
+        </span>
+      )}
+    </span>
   );
 
   const railButtonClass =
@@ -238,11 +265,7 @@ export function ProviderFilterBar({
           title={t("all") || "All"}
         >
           <Layers className="h-5 w-5" />
-          {totalUnread > 0 && selectedProviderFilter !== null && (
-            <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
-              {totalUnread > 99 ? "99+" : totalUnread}
-            </span>
-          )}
+          {totalUnread.total > 0 && selectedProviderFilter !== null && renderUnreadBadges(totalUnread)}
         </button>
       )}
 
@@ -252,7 +275,7 @@ export function ProviderFilterBar({
         const isSelected = selectedProviderFilter === instanceId;
         const colorVariation = getColorVariation(provider);
         const displayName = provider.instanceName || provider.name;
-        const unreadCount = unreadByInstance[instanceId] ?? 0;
+        const unreadCounts = unreadByInstance[instanceId] ?? emptyUnreadBadgeCounts();
         const syncError = syncErrors[instanceId];
 
         return (
@@ -272,13 +295,9 @@ export function ProviderFilterBar({
             >
               <ProtocolIcon protocol={provider.id} size={24} />
             </div>
-            {unreadCount > 0 && (
-              <span className="provider-filter-bar__unread-badge absolute -top-1 -right-1 h-4 min-w-4 px-0.5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-4 text-center pointer-events-none">
-                {unreadCount > 99 ? "99+" : unreadCount}
-              </span>
-            )}
+            {unreadCounts.total > 0 && renderUnreadBadges(unreadCounts)}
             {syncError && (
-              <span className="provider-filter-bar__sync-error-badge absolute -bottom-1 -right-1 h-4 w-4 flex items-center justify-center rounded-full bg-orange-500 pointer-events-none">
+              <span className="provider-filter-bar__sync-error-badge absolute -bottom-1 -left-1 h-4 w-4 flex items-center justify-center rounded-full bg-orange-500 pointer-events-none">
                 <AlertTriangle className="h-2.5 w-2.5 text-white" />
               </span>
             )}

@@ -1,8 +1,8 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Calendar, Info, MessageSquare, Pin } from "lucide-react";
+import { Bell, BellOff, Calendar, Info, MessageSquare, Pin } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { GetConfiguredProviders } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, SetConversationMuted } from "../../wailsjs/go/main/App";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import { TypingIndicator } from "./TypingIndicator";
@@ -41,6 +41,12 @@ export function MessageHeader({
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const showThreads = useAppStore((state) => state.showThreads);
+  const isBadgeTracked = useAppStore(
+    (state) => !state.badgeUntrackedConversationIds[conversationId]
+  );
+  const setConversationBadgeTracked = useAppStore(
+    (state) => state.setConversationBadgeTracked
+  );
   const setSelectedContactProfile = useAppStore((state) => state.setSelectedContactProfile);
   const isTyping = useTypingStore(
     (state) => (state.typingByConversation[conversationId]?.length ?? 0) > 0
@@ -50,6 +56,9 @@ export function MessageHeader({
   const selectedAccount = activeAccount ?? linkedAccounts[0];
   const instanceId = selectedAccount?.providerInstanceId;
   const supportsThreads = instanceId ? capabilities[instanceId]?.supportsThreads ?? false : false;
+  const supportsNativeMute = instanceId
+    ? capabilities[instanceId]?.supportsMuteConversation ?? false
+    : false;
   const isGroup = selectedAccount?.isGroup ?? false;
   const accountStatus = linkedAccounts.find(
     (account) => account.status && account.status !== "offline"
@@ -141,6 +150,26 @@ export function MessageHeader({
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        <Button
+          variant={isBadgeTracked ? "ghost" : "secondary"}
+          size="icon"
+          onClick={() => {
+            const nextTracked = !isBadgeTracked;
+            setConversationBadgeTracked(conversationId, nextTracked);
+            if (supportsNativeMute) {
+              SetConversationMuted(conversationId, !nextTracked).catch((error: unknown) => {
+                // Badge tracking is intentionally kept as a local fallback if
+                // the provider is temporarily unavailable or rejects the mute.
+                console.error("Failed to synchronize conversation mute state:", error);
+              });
+            }
+          }}
+          title={t(isBadgeTracked ? "exclude_from_app_badge" : "include_in_app_badge")}
+          aria-label={t(isBadgeTracked ? "exclude_from_app_badge" : "include_in_app_badge")}
+          aria-pressed={!isBadgeTracked}
+        >
+          {isBadgeTracked ? <Bell className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+        </Button>
         {instanceId && capabilities[instanceId]?.supportsListMessagePins && (
           <Button variant="ghost" size="icon" className="relative" onClick={onTogglePins} title={t("pinned_messages")}>
             <Pin className="h-4 w-4" />

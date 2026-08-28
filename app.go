@@ -3163,6 +3163,38 @@ func (a *App) MarkConversationAsRead(conversationID string) error {
 	return a.getActiveProvider().MarkConversationAsRead(conversationID)
 }
 
+// SetConversationMuted synchronizes the mute state with providers that expose
+// this feature. Frontend-only badge tracking remains the fallback for providers
+// without the capability.
+func (a *App) SetConversationMuted(conversationID string, muted bool) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	if !provider.GetCapabilities().SupportsMuteConversation {
+		return fmt.Errorf("provider does not support muting conversations")
+	}
+
+	var err error
+	if muted {
+		err = provider.MuteConversation(conversationID)
+	} else {
+		err = provider.UnmuteConversation(conversationID)
+	}
+	if err != nil {
+		return err
+	}
+
+	if db.DB != nil {
+		if result := db.DB.Model(&models.Conversation{}).
+			Where("protocol_conv_id = ?", conversationID).
+			Update("is_muted", muted); result.Error != nil {
+			return fmt.Errorf("persist conversation mute state: %w", result.Error)
+		}
+	}
+	return nil
+}
+
 func (a *App) MarkMessageAsPlayed(conversationID, messageID string) error {
 	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")

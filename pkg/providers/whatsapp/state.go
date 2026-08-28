@@ -129,15 +129,25 @@ func (w *WhatsAppProvider) UnpinConversation(conversationID string) error {
 }
 
 func (w *WhatsAppProvider) MuteConversation(conversationID string) error {
-	// TODO: Implement muting
-	markUnused(conversationID)
-	return fmt.Errorf("muting not yet implemented")
+	return w.setConversationMuted(conversationID, true)
 }
 
 func (w *WhatsAppProvider) UnmuteConversation(conversationID string) error {
-	// TODO: Implement unmuting
-	markUnused(conversationID)
-	return fmt.Errorf("unmuting not yet implemented")
+	return w.setConversationMuted(conversationID, false)
+}
+
+func (w *WhatsAppProvider) setConversationMuted(conversationID string, muted bool) error {
+	if w.client == nil {
+		return fmt.Errorf("whatsapp: not connected")
+	}
+	chat, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil {
+		return fmt.Errorf("whatsapp: invalid conversation: %w", err)
+	}
+	if err := w.client.SendAppState(context.Background(), appstate.BuildMute(chat, muted, 0)); err != nil {
+		return fmt.Errorf("whatsapp: update conversation mute state: %w", err)
+	}
+	return nil
 }
 
 func (w *WhatsAppProvider) GetConversationState(conversationID string) (*models.Conversation, error) {

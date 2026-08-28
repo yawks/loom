@@ -46,6 +46,8 @@ interface AppState {
   setUnreadNavigationTarget: (target: { conversationId: string; messageId: string; threadId?: string } | null) => void;
   contactSortBy: ContactSortOption;
   setContactSortBy: (sortBy: ContactSortOption) => void;
+  badgeUntrackedConversationIds: Record<string, true>;
+  setConversationBadgeTracked: (conversationId: string, tracked: boolean) => void;
   selectedUserId: string | null;
   setSelectedUserId: (userId: string | null) => void;
   capabilities: Record<string, core.Capabilities>;
@@ -155,6 +157,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   setContactSortBy: (sortBy) => {
     set({ contactSortBy: sortBy });
     saveToStorage("contactSortBy", sortBy);
+  },
+  badgeUntrackedConversationIds: loadFromStorage<Record<string, true>>(
+    "badgeUntrackedConversationIds",
+    {}
+  ),
+  setConversationBadgeTracked: (conversationId, tracked) => {
+    if (!conversationId) return;
+    set((state) => {
+      const next = { ...state.badgeUntrackedConversationIds };
+      if (tracked) {
+        delete next[conversationId];
+      } else {
+        next[conversationId] = true;
+      }
+      saveToStorage("badgeUntrackedConversationIds", next);
+      return { badgeUntrackedConversationIds: next };
+    });
   },
   selectedUserId: null,
   setSelectedUserId: (userId) => set({ selectedUserId: userId }),

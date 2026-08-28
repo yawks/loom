@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
+import { countUnreadMessages } from "@/lib/unreadBadgeCounts";
 
 // Helper function to call UpdateSystemTrayBadge via Wails runtime
 const updateSystemTrayBadge = (count: number): Promise<void> => {
@@ -54,6 +55,9 @@ export function useSystemTrayBadge() {
     (state) => state.readByConversation
   );
   const contacts = useAppStore((state) => state.metaContacts);
+  const badgeUntrackedConversationIds = useAppStore(
+    (state) => state.badgeUntrackedConversationIds
+  );
 
   // Calculate total unread count across all conversations
   const totalUnreadCount = useMemo(() => {
@@ -65,17 +69,13 @@ export function useSystemTrayBadge() {
         const conversationId = account.conversationId;
         if (!conversationId || countedConversations.has(conversationId)) return;
         countedConversations.add(conversationId);
-        const conversationState = readStateByConversation[conversationId];
-        if (!conversationState) return;
-        const unreadCount = Object.entries(conversationState).filter(
-          ([key, isRead]) => !key.startsWith("_") && !isRead
-        ).length;
-        total += unreadCount;
+        if (badgeUntrackedConversationIds[conversationId]) return;
+        total += countUnreadMessages(readStateByConversation[conversationId]);
       });
     });
 
     return total;
-  }, [readStateByConversation, contacts]);
+  }, [badgeUntrackedConversationIds, readStateByConversation, contacts]);
 
   // Update system tray badge when unread count changes — debounced to avoid
   // hammering the macOS badge API during bulk sync (hundreds of messages arrive in burst).

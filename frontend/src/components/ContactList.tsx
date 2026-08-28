@@ -20,6 +20,7 @@ import { useSortedContacts } from "@/hooks/useSortedContacts";
 import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
 import { TypingIndicator } from "./TypingIndicator";
+import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount } from "@/lib/unreadBadgeCounts";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -237,6 +238,9 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
+  const badgeUntrackedConversationIds = useAppStore(
+    (state) => state.badgeUntrackedConversationIds
+  );
 
   const accountConversationId = (account: models.LinkedAccount) =>
     account.conversationId ||
@@ -260,21 +264,21 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
         const conversationId = accountUnreadConversationId(account);
         if (!conversationId || visited.has(conversationId)) return;
         visited.add(conversationId);
-        const conversationState = readStateByConversation[conversationId];
-        counts[conversationId] = conversationState
-          ? Object.entries(conversationState).filter(
-              ([key, isRead]) => !key.startsWith("_") && !isRead
-            ).length
-          : 0;
+        counts[conversationId] = countUnreadMessages(
+          readStateByConversation[conversationId]
+        );
       });
     });
     return counts;
   }, [readStateByConversation, selectedProviderFilter, sortedContacts]);
 
-  const totalUnreadCount = useMemo(
-    () => Object.values(unreadCountsByConversation).reduce((sum, n) => sum + n, 0),
-    [unreadCountsByConversation]
-  );
+  const unreadBadgeCounts = useMemo(() => {
+    const counts = emptyUnreadBadgeCounts();
+    Object.entries(unreadCountsByConversation).forEach(([conversationId, unread]) => {
+      addUnreadCount(counts, unread, !badgeUntrackedConversationIds[conversationId]);
+    });
+    return counts;
+  }, [badgeUntrackedConversationIds, unreadCountsByConversation]);
 
   // Detect active incoming calls (not terminated) for all conversations in one query
   // This is much more efficient than making individual queries for each conversation
@@ -454,11 +458,24 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             title={t("unread") || "Unread"}
           >
             <Inbox className="h-3.5 w-3.5" />
-            {totalUnreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 h-3.5 min-w-3.5 px-0.5 rounded-full bg-blue-600 dark:bg-blue-500 text-white text-[9px] font-bold leading-3.5 text-center">
-                {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
-              </span>
-            )}
+            <span className="absolute -right-1 -top-1 flex flex-col items-end gap-0.5 pointer-events-none">
+              {unreadBadgeCounts.tracked > 0 && (
+                <span
+                  className="h-3.5 min-w-3.5 rounded-full bg-blue-600 px-0.5 text-center text-[9px] font-bold leading-3.5 text-white dark:bg-blue-500"
+                  aria-label={t("tracked_unread_badge_aria", { count: unreadBadgeCounts.tracked })}
+                >
+                  {formatUnreadCount(unreadBadgeCounts.tracked)}
+                </span>
+              )}
+              {unreadBadgeCounts.untracked > 0 && (
+                <span
+                  className="h-3.5 min-w-3.5 rounded-full bg-muted-foreground/35 px-0.5 text-center text-[9px] font-bold leading-3.5 text-foreground"
+                  aria-label={t("untracked_unread_badge_aria", { count: unreadBadgeCounts.untracked })}
+                >
+                  {formatUnreadCount(unreadBadgeCounts.untracked)}
+                </span>
+              )}
+            </span>
           </button>
         </div>
       </div>
@@ -502,8 +519,8 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             const conversationId = activeAccount ? accountConversationId(activeAccount) : "";
             const typingConversationId = typingAccount ? accountConversationId(typingAccount) : "";
             const unreadCount = unreadCountsByConversation[conversationId] ?? 0;
-            const displayUnreadCount =
-              unreadCount > 99 ? "99+" : unreadCount.toString();
+            const displayUnreadCount = formatUnreadCount(unreadCount);
+            const isBadgeTracked = !badgeUntrackedConversationIds[conversationId];
             const isSelected = selectedContact?.id === contact.id;
             const isTyping = typingConversationId !== "";
             const messageCount = messageCountByConversation[conversationId] ?? 0;
@@ -686,8 +703,16 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                       )}
                       {unreadCount > 0 && (
                         <span
-                          className="contact-list__unread-badge inline-flex min-w-[1.5rem] justify-center rounded-full bg-blue-600 dark:bg-blue-500 px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                          aria-label={t("unread_badge_aria", { count: unreadCount })}
+                          className={cn(
+                            "contact-list__unread-badge inline-flex min-w-[1.5rem] justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                            isBadgeTracked
+                              ? "bg-blue-600 text-white dark:bg-blue-500"
+                              : "bg-muted-foreground/35 text-foreground"
+                          )}
+                          aria-label={t(
+                            isBadgeTracked ? "tracked_unread_badge_aria" : "untracked_unread_badge_aria",
+                            { count: unreadCount }
+                          )}
                         >
                           {displayUnreadCount}
                         </span>
