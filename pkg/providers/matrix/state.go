@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"Loom/pkg/core"
@@ -40,7 +41,25 @@ func (p *Provider) setPushRule(room string, mute bool) error {
 	return p.do(noCancel(), http.MethodPut, path, nil, map[string]any{"actions": []any{"dont_notify"}}, nil)
 }
 func (p *Provider) GetConversationState(room string) (*models.Conversation, error) {
-	return &models.Conversation{ProtocolConvID: p.namespacedRoom(core.StripConvID(room))}, nil
+	var rule struct {
+		Actions []any `json:"actions"`
+	}
+	path := "/pushrules/global/room/" + url.PathEscape(core.StripConvID(room))
+	err := p.do(noCancel(), http.MethodGet, path, nil, nil, &rule)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "HTTP 404:") {
+			return &models.Conversation{ProtocolConvID: p.namespacedRoom(core.StripConvID(room))}, nil
+		}
+		return nil, err
+	}
+	muted := false
+	for _, action := range rule.Actions {
+		if actionName, ok := action.(string); ok && actionName == "dont_notify" {
+			muted = true
+			break
+		}
+	}
+	return &models.Conversation{ProtocolConvID: p.namespacedRoom(core.StripConvID(room)), IsMuted: muted}, nil
 }
 func (p *Provider) PinConversation(string) error {
 	return fmt.Errorf("matrix: pinning conversations is not a protocol feature")

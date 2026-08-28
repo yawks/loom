@@ -1134,6 +1134,16 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "conversation-read-status", string(readStatusJSON))
 					}
+				case core.ConversationMuteStatusEvent:
+					if db.DB != nil {
+						db.DB.Model(&models.Conversation{}).
+							Where("protocol_conv_id = ?", e.ConversationID).
+							Update("is_muted", e.Muted)
+					}
+					muteStatusJSON, _ := json.Marshal(e)
+					if a.ctx != nil {
+						runtime.EventsEmit(a.ctx, "conversation-mute-status", string(muteStatusJSON))
+					}
 				}
 			}
 		}
@@ -2505,7 +2515,11 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	if provider == nil {
 		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return provider.SendMessage(conversationID, content, nil, nil)
+	message, err := provider.SendMessage(conversationID, content, nil, nil)
+	if err == nil {
+		a.invalidateMessageCaches()
+	}
+	return message, err
 }
 
 func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.Time, parentMsgID string) (*models.ScheduledMessage, error) {
@@ -3193,6 +3207,19 @@ func (a *App) SetConversationMuted(conversationID string, muted bool) error {
 		}
 	}
 	return nil
+}
+
+// GetConversationState returns provider-owned conversation settings when the
+// provider exposes them.
+func (a *App) GetConversationState(conversationID string) (*models.Conversation, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	if !provider.GetCapabilities().SupportsMuteConversation {
+		return nil, fmt.Errorf("provider does not support conversation state")
+	}
+	return provider.GetConversationState(conversationID)
 }
 
 func (a *App) MarkMessageAsPlayed(conversationID, messageID string) error {

@@ -2,14 +2,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bell, BellOff, Calendar, Info, MessageSquare, Pin } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { GetConfiguredProviders, SetConversationMuted } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, GetConversationState, SetConversationMuted } from "../../wailsjs/go/main/App";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import { TypingIndicator } from "./TypingIndicator";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { usePresenceStore } from "@/lib/presenceStore";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -59,6 +59,23 @@ export function MessageHeader({
   const supportsNativeMute = instanceId
     ? capabilities[instanceId]?.supportsMuteConversation ?? false
     : false;
+
+  useEffect(() => {
+    if (!supportsNativeMute || !conversationId) return;
+    let cancelled = false;
+    GetConversationState(conversationId)
+      .then((conversation) => {
+        if (!cancelled) {
+          setConversationBadgeTracked(conversationId, !conversation.isMuted);
+        }
+      })
+      .catch((error: unknown) => {
+        console.debug("Failed to load native conversation mute state:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, setConversationBadgeTracked, supportsNativeMute]);
   const isGroup = selectedAccount?.isGroup ?? false;
   const accountStatus = linkedAccounts.find(
     (account) => account.status && account.status !== "offline"

@@ -30,6 +30,8 @@ const (
 	EventTypeSyncStatus EventType = "sync_status"
 	// EventTypeConversationReadStatus represents a conversation read status update (last read timestamp).
 	EventTypeConversationReadStatus EventType = "conversation_read_status"
+	// EventTypeConversationMuteStatus represents a native conversation mute change.
+	EventTypeConversationMuteStatus EventType = "conversation_mute_status"
 )
 
 // ProviderEvent is the base interface for all provider events.
@@ -249,4 +251,16 @@ type ConversationReadStatusEvent struct {
 // Type returns the event type for ConversationReadStatusEvent.
 func (e ConversationReadStatusEvent) Type() EventType {
 	return EventTypeConversationReadStatus
+}
+
+// ConversationMuteStatusEvent represents a provider-side mute change, including
+// changes made from another native client.
+type ConversationMuteStatusEvent struct {
+	InstanceID     string `json:"instanceId"`
+	ConversationID string `json:"conversationId"`
+	Muted          bool   `json:"muted"`
+}
+
+func (e ConversationMuteStatusEvent) Type() EventType {
+	return EventTypeConversationMuteStatus
 }

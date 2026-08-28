@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 )
 
@@ -136,6 +137,7 @@ func (p *Provider) GetConversationHistory(roomID string, limit int, before, sinc
 		}
 	}
 	sort.Slice(messages, func(i, j int) bool { return messages[i].Timestamp.Before(messages[j].Timestamp) })
+	p.storeMessages(core.StripConvID(roomID), messages)
 	return messages, nil
 }
 
@@ -179,7 +181,61 @@ func (p *Provider) sendMessage(roomID, text string, file *core.Attachment, threa
 	self := p.userID
 	p.mu.RUnlock()
 	now := time.Now()
-	return &models.Message{ProtocolConvID: p.namespacedRoom(rawRoom), ProtocolMsgID: response.EventID, SenderID: self, SenderName: self, Body: text, Timestamp: now, IsFromMe: true, ThreadID: threadID, QuotedMessageID: quotedID}, nil
+	message := models.Message{ProtocolConvID: p.namespacedRoom(rawRoom), ProtocolMsgID: response.EventID, SenderID: self, SenderName: self, Body: text, Timestamp: now, IsFromMe: true, ThreadID: threadID, QuotedMessageID: quotedID}
+	if file != nil {
+		attachmentType := "document"
+		if strings.HasPrefix(file.MimeType, "image/") {
+			attachmentType = "image"
+		} else if strings.HasPrefix(file.MimeType, "video/") {
+			attachmentType = "video"
+		} else if strings.HasPrefix(file.MimeType, "audio/") {
+			attachmentType = "audio"
+		}
+		attachments, _ := json.Marshal([]models.Attachment{{Type: attachmentType, FileName: file.FileName, FileSize: int64(file.FileSize), MimeType: file.MimeType}})
+		message.Attachments = string(attachments)
+	}
+	p.storeMessages(rawRoom, []models.Message{message})
+	return &message, nil
+}
+
+func (p *Provider) storeMessages(roomID string, messages []models.Message) {
+	if db.DB == nil || len(messages) == 0 {
+		return
+	}
+	rawRoom := core.StripConvID(roomID)
+	namespacedRoom := p.namespacedRoom(rawRoom)
+	var conversation models.Conversation
+	db.DB.Where("protocol_conv_id = ?", namespacedRoom).First(&conversation)
+	if conversation.ID == 0 {
+		if summary, err := p.roomState(rawRoom); err == nil {
+			userID := rawRoom
+			if summary.IsDirect {
+				for _, member := range summary.Members {
+					if member != p.CurrentUserID() {
+						userID = member
+						break
+					}
+				}
+			}
+			p.persistRoom(models.LinkedAccount{Protocol: "matrix", ProviderInstanceID: p.getInstanceID(), UserID: userID, Username: summary.Name, AvatarURL: summary.Avatar, IsGroup: !summary.IsDirect}, rawRoom)
+			db.DB.Where("protocol_conv_id = ?", namespacedRoom).First(&conversation)
+		}
+	}
+	if conversation.ID == 0 {
+		return
+	}
+	for i := range messages {
+		if messages[i].ProtocolMsgID == "" {
+			continue
+		}
+		messages[i].ConversationID = conversation.ID
+		messages[i].ProtocolConvID = namespacedRoom
+		var existing models.Message
+		if db.DB.Where("protocol_msg_id = ?", messages[i].ProtocolMsgID).First(&existing).Error == nil {
+			continue
+		}
+		db.DB.Create(&messages[i])
+	}
 }
 
 func (p *Provider) SendMessage(c, t string, f *core.Attachment, thread *string) (*models.Message, error) {

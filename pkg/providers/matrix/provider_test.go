@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"Loom/pkg/core"
+	"Loom/pkg/db"
+	"Loom/pkg/models"
 )
 
 func TestCapabilitiesMatchImplementedMatrixFeatures(t *testing.T) {
@@ -89,4 +92,55 @@ func TestPasswordLoginDiscoversHomeserverAndReplacesPassword(t *testing.T) {
 
 func jsonResponse(body string) *http.Response {
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestSentMessageIsPersistedForRecentConversations(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if sqlDB, err := db.DB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+	meta := models.MetaContact{DisplayName: "Bob"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "matrix", ProviderInstanceID: "matrix-2", UserID: "@bob:matrix.org", Username: "Bob"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversationID := "matrix-2::!MHvONIbUofiwKosHzh:matrix.org"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: conversationID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	p := NewProvider()
+	p.config = core.ProviderConfig{"_instance_id": "matrix-2"}
+	p.instanceID = "matrix-2"
+	p.userID = "@alice:matrix.org"
+	p.homeserver = "https://matrix.example.org"
+	p.accessToken = "token"
+	p.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if !strings.Contains(request.URL.Path, "/rooms/!MHvONIbUofiwKosHzh:matrix.org/send/m.room.message/") {
+			t.Fatalf("unexpected send path %s", request.URL.Path)
+		}
+		return jsonResponse(`{"event_id":"$sent"}`), nil
+	})}
+	message, err := p.SendMessage(conversationID, "hello", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored models.Message
+	if err := db.DB.Where("protocol_msg_id = ?", "$sent").First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ProtocolConvID != conversationID || stored.ConversationID != conversation.ID || stored.Body != "hello" {
+		t.Fatalf("unexpected stored message: %+v", stored)
+	}
+	if time.Since(message.Timestamp) > time.Second {
+		t.Fatalf("unexpected message timestamp %v", message.Timestamp)
+	}
 }

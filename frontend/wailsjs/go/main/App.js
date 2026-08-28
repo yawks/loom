@@ -138,6 +138,10 @@ export function GetContactProfile(arg1, arg2) {
   return window['go']['main']['App']['GetContactProfile'](arg1, arg2);
 }
 
+export function GetConversationState(arg1) {
+  return window['go']['main']['App']['GetConversationState'](arg1);
+}
+
 export function GetConversationsWithMessages() {
   return window['go']['main']['App']['GetConversationsWithMessages']();
 }

@@ -4,6 +4,7 @@
   "pinned_messages": "Messages épinglés",
   "exclude_from_app_badge": "Ne pas compter les nouveaux messages de cette conversation dans le badge de l’application",
   "include_in_app_badge": "Compter les nouveaux messages de cette conversation dans le badge de l’application",
+  "conversation_muted": "Conversation en mode silencieux",
   "tracked_unread_badge_aria": "{{count}} message(s) non lu(s) compté(s) dans le badge de l’application",
   "untracked_unread_badge_aria": "{{count}} message(s) non lu(s) non compté(s) dans le badge de l’application",
   "pinned_messages_help": "Retrouvez les messages importants",
