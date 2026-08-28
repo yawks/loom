@@ -247,8 +247,15 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: account.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
-	if err := p.repairStoredHTMLFormatting(); err != nil {
+	repairedFormatting, err := p.repairStoredHTMLFormatting()
+	if err != nil {
 		return err
+	}
+	for conversationID, messages := range repairedFormatting {
+		p.emit(core.MessageBatchEvent{
+			InstanceID: p.instance, ConversationID: conversationID,
+			Messages: messages, IsHistorical: true,
+		})
 	}
 	repairedCards, err := p.repairStoredCards(client)
 	if err != nil {

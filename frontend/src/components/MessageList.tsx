@@ -465,6 +465,10 @@ export function MessageList({
   useEffect(() => {
     if (!conversationId) return;
     if (!hasWindowFocus) return;
+    // Selecting a conversation is not enough to prove that its newest messages
+    // were seen. When the reader has scrolled up, keep live arrivals unread
+    // until the viewport returns to the live edge.
+    if (!atBottom) return;
     // Only messages already classified as main messages may be consumed here.
     // A new thread reply reaches the read store just before threadsByParent is
     // recomputed; scanning every store entry would mark it read in that gap.
@@ -500,7 +504,7 @@ export function MessageList({
         readMarkTimerRef.current = null;
       }
     };
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, hasWindowFocus, focusReturnReadDeadline]);
+  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, hasWindowFocus, focusReturnReadDeadline, atBottom]);
 
   // Older provider versions could persist unsupported wrappers as empty
   // messages. Such a message is deliberately absent from mainMessages, so

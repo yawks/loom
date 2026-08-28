@@ -524,6 +524,42 @@ func TestTeamsHTMLNormalizesLiteralMalformedBold(t *testing.T) {
 	}
 }
 
+func TestTeamsHTMLNormalizesEscapedMarkdownTable(t *testing.T) {
+	input := `<p>\| KPI | Cible \</p><p>\| --- | --- |\</p>` +
+		`<p>\| Disponibilité | ≥ 99,5 % \</p><p>% du temps accessible.</p>` +
+		`<p>\| Temps de réponse | ≤ 3 s \</p><p>Texte après \| inchangé</p>`
+	want := "| KPI | Cible |\n| --- | --- |\n| Disponibilité | ≥ 99,5 %<br>% du temps accessible. |\n" +
+		"| Temps de réponse | ≤ 3 s |\nTexte après \\| inchangé"
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("escaped Teams table = %q, want %q", got, want)
+	}
+}
+
+func TestTeamsHTMLMovesOneColumnSeparatorBehindFirstNumberedRow(t *testing.T) {
+	input := `<p>\| 1. Taux de compréhension correcte |\</p><p>|</p><p>&nbsp;</p>` +
+		`<p>| % des demandes correctement interprétées. ≥ 90–95 % |</p>` +
+		`<p>| -------------------------------------------------------------- |</p>` +
+		`<p>| 2. Taux d'exactitude des réponses |</p>`
+	want := "| 1. Taux de compréhension correcte<br>% des demandes correctement interprétées. ≥ 90–95 % |  |\n" +
+		"| --- | --- |\n" +
+		"| 2. Taux d'exactitude des réponses |  |"
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("one-column Teams table = %q, want %q", got, want)
+	}
+}
+
+func TestTeamsHTMLRepairsPersistedFirstRowShape(t *testing.T) {
+	input := "Introduction\n\n| 1. Taux de compréhension correcte (Intent Recognition Accuracy) |\n |\n\n\n" +
+		"% des demandes utilisateur correctement interprétées. | ≥ 90–95 % | \n" +
+		"| --- | --- |\n| 2. Taux d'exactitude des réponses contractuelles |"
+	want := "Introduction\n\n| 1. Taux de compréhension correcte (Intent Recognition Accuracy)<br>% des demandes utilisateur correctement interprétées. | ≥ 90–95 % |\n" +
+		"| --- | --- |\n" +
+		"| 2. Taux d'exactitude des réponses contractuelles |  |"
+	if got := normalizeTeamsEscapedTable(input); got != want {
+		t.Fatalf("persisted first row = %q, want %q", got, want)
+	}
+}
+
 func TestTeamsHTMLNormalizesDuplicatedMarkdownLink(t *testing.T) {
 	input := `[[https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios)]\([https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios))`
 	want := `[https://www.linkedin.com/in/melanieantonelli?utm\_source=share\_via&utm\_content=profile&utm\_medium=member\_ios](https://www.linkedin.com/in/melanieantonelli?utm_source=share_via\&utm_content=profile\&utm_medium=member_ios)`

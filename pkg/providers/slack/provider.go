@@ -391,6 +391,44 @@ func slackConversationMetadataValue(metadata map[string]string, conversationID s
 	return value, ok
 }
 
+func partitionSlackIncrementalMessages(messages []models.Message, lastRead string) (read, unread []models.Message) {
+	lastReadSeconds, lastReadErr := strconv.ParseFloat(lastRead, 64)
+	for _, message := range messages {
+		isCall := strings.TrimSpace(message.CallType) != ""
+		isThreadReply := message.ThreadID != nil &&
+			strings.TrimSpace(*message.ThreadID) != "" &&
+			*message.ThreadID != message.ProtocolMsgID
+		if message.IsFromMe || isCall {
+			read = append(read, message)
+			continue
+		}
+		if !isThreadReply && lastReadErr == nil && float64(message.Timestamp.UnixNano())/1e9 <= lastReadSeconds {
+			read = append(read, message)
+			continue
+		}
+		unread = append(unread, message)
+	}
+	return read, unread
+}
+
+func (p *SlackProvider) emitIncrementalMessageBatches(conversationID string, messages []models.Message, lastRead string) {
+	read, unread := partitionSlackIncrementalMessages(messages, lastRead)
+	batches := []core.MessageBatchEvent{
+		{InstanceID: p.getInstanceId(), ConversationID: conversationID, Messages: read, ForceRead: true},
+		{InstanceID: p.getInstanceId(), ConversationID: conversationID, Messages: unread, ForceUnread: true},
+	}
+	for _, batch := range batches {
+		if len(batch.Messages) == 0 {
+			continue
+		}
+		select {
+		case p.eventChan <- batch:
+		default:
+			p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping classified batch for %s\n", conversationID)
+		}
+	}
+}
+
 func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, contactLastRead map[string]string) {
 	if db.DB == nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
@@ -515,8 +553,9 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		p.log("SlackProvider.incrementalSyncExistingConversations: Syncing %s (last message: %s, looking for messages after)\n",
 			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
 
+		lastRead, _ := slackConversationMetadataValue(contactLastRead, conv.ProtocolConvID)
 		// Emit last_read BEFORE messages so the frontend knows the read state when messages arrive.
-		if lastRead, ok := slackConversationMetadataValue(contactLastRead, conv.ProtocolConvID); ok && lastRead != "" {
+		if lastRead != "" {
 			select {
 			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
 				ConversationID: conv.ProtocolConvID,
@@ -540,17 +579,10 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			successCount++
 			totalNewMessages += len(newMessages)
 
-			// Emit one batch event per conversation instead of one MessageEvent per message.
-			// This reduces React re-renders and macOS badge API calls from N to 1 per conversation.
-			select {
-			case p.eventChan <- core.MessageBatchEvent{
-				InstanceID:     p.getInstanceId(),
-				ConversationID: conv.ProtocolConvID,
-				Messages:       newMessages,
-			}:
-			default:
-				p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, skipping batch event\n")
-			}
+			// Recovered messages need an explicit classification. In particular,
+			// channels without a native last_read cursor must not silently turn newly
+			// discovered incoming messages into read history.
+			p.emitIncrementalMessageBatches(conv.ProtocolConvID, newMessages, lastRead)
 		} else {
 			p.log("SlackProvider.incrementalSyncExistingConversations: No new main messages for %s — checking thread replies\n",
 				conv.ProtocolConvID)
@@ -576,15 +608,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 						p.log("SlackProvider.incrementalSyncExistingConversations: Lookback found %d missed messages for %s\n", len(missed), conv.ProtocolConvID)
 						successCount++
 						totalNewMessages += len(missed)
-						select {
-						case p.eventChan <- core.MessageBatchEvent{
-							InstanceID:     p.getInstanceId(),
-							ConversationID: conv.ProtocolConvID,
-							Messages:       missed,
-						}:
-						default:
-							p.log("SlackProvider.incrementalSyncExistingConversations: Event channel full, dropping lookback batch\n")
-						}
+						p.emitIncrementalMessageBatches(conv.ProtocolConvID, missed, lastRead)
 					}
 				}
 			}
@@ -728,15 +752,7 @@ func (p *SlackProvider) refreshThreadReplies(convID string) int {
 
 	p.storeMessagesForConversation(convID, newReplies)
 	p.log("SlackProvider.refreshThreadReplies: stored %d new thread replies for %s\n", len(newReplies), convID)
-	select {
-	case p.eventChan <- core.MessageBatchEvent{
-		InstanceID:     p.getInstanceId(),
-		ConversationID: convID,
-		Messages:       newReplies,
-	}:
-	default:
-		p.log("SlackProvider.refreshThreadReplies: event channel full, dropping batch event\n")
-	}
+	p.emitIncrementalMessageBatches(convID, newReplies, "")
 	return len(newReplies)
 }
 

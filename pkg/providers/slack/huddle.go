@@ -197,12 +197,12 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 	}
 }
 
-// pollLatestHuddles discovers newly started huddles without search.messages.
-// Slack includes the latest message in conversations.list results; while a
-// huddle is active its huddle_thread message is normally the conversation's
-// latest item. This costs one paginated conversations.list pass rather than a
-// history request for every conversation.
-func (p *SlackProvider) pollLatestHuddles(ctx context.Context) {
+// pollLatestConversationUpdates recovers messages omitted or delayed by
+// search.messages. Slack includes the latest message in conversations.list, so
+// history is fetched only for conversations whose advertised latest ID is not
+// present locally. This also retains the huddle fallback previously implemented
+// by this polling pass.
+func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
@@ -222,13 +222,13 @@ func (p *SlackProvider) pollLatestHuddles(ctx context.Context) {
 			ExcludeArchived: true,
 		})
 		if err != nil {
-			p.log("SlackProvider.pollLatestHuddles: failed listing conversations: %v\n", err)
+			p.log("SlackProvider.pollLatestConversationUpdates: failed listing conversations: %v\n", err)
 			return
 		}
 
 		for _, channel := range channels {
 			latest := channel.Latest
-			if latest == nil || latest.Timestamp == "" || !isSlackHuddleSubtype(latest.SubType) {
+			if latest == nil || latest.Timestamp == "" {
 				continue
 			}
 			normalizedConvID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(channel.ID))
@@ -239,31 +239,49 @@ func (p *SlackProvider) pollLatestHuddles(ctx context.Context) {
 				continue
 			}
 
-			timestamp, err := strconv.ParseFloat(latest.Timestamp, 64)
-			if err != nil {
-				p.log("SlackProvider.pollLatestHuddles: invalid timestamp %q: %v\n", latest.Timestamp, err)
+			var localLatest *time.Time
+			if err := db.DB.Model(&models.Message{}).
+				Where("protocol_conv_id = ?", normalizedConvID).
+				Select("MAX(timestamp)").Scan(&localLatest).Error; err != nil {
+				p.log("SlackProvider.pollLatestConversationUpdates: failed reading local cursor for %s: %v\n", normalizedConvID, err)
 				continue
 			}
-			seconds := int64(timestamp)
-			startedAt := time.Unix(seconds, int64((timestamp-float64(seconds))*1e9))
-			// Leave a full second of margin: Slack timestamps have microsecond
-			// precision and converting through float64 can round a few nanoseconds.
-			since := startedAt.Add(-time.Second)
-			messages, err := p.GetConversationHistory(channel.ID, 10, nil, &since)
-			if err != nil {
-				p.log("SlackProvider.pollLatestHuddles: failed fetching huddle %s in %s: %v\n", latest.Timestamp, channel.ID, err)
-				continue
-			}
-			for _, message := range messages {
-				if message.ProtocolMsgID != latest.Timestamp || message.CallType == "" {
+			var since time.Time
+			if localLatest != nil {
+				since = *localLatest
+			} else {
+				timestamp, parseErr := strconv.ParseFloat(latest.Timestamp, 64)
+				if parseErr != nil {
+					p.log("SlackProvider.pollLatestConversationUpdates: invalid timestamp %q: %v\n", latest.Timestamp, parseErr)
 					continue
 				}
-				select {
-				case p.eventChan <- core.MessageEvent{InstanceID: p.getInstanceId(), Message: message}:
-					p.log("SlackProvider.pollLatestHuddles: discovered huddle %s in %s\n", latest.Timestamp, channel.ID)
-				default:
-					p.log("SlackProvider.pollLatestHuddles: event channel full for huddle %s\n", latest.Timestamp)
+				seconds := int64(timestamp)
+				since = time.Unix(seconds, int64((timestamp-float64(seconds))*1e9)).Add(-time.Second)
+			}
+
+			var existingIDs []string
+			db.DB.Model(&models.Message{}).
+				Where("protocol_conv_id = ? AND timestamp > ?", normalizedConvID, since).
+				Pluck("protocol_msg_id", &existingIDs)
+			existing := make(map[string]struct{}, len(existingIDs))
+			for _, id := range existingIDs {
+				existing[id] = struct{}{}
+			}
+
+			messages, err := p.GetConversationHistory(channel.ID, 100, nil, &since)
+			if err != nil {
+				p.log("SlackProvider.pollLatestConversationUpdates: failed fetching updates for %s: %v\n", channel.ID, err)
+				continue
+			}
+			newMessages := make([]models.Message, 0, len(messages))
+			for _, message := range messages {
+				if _, found := existing[message.ProtocolMsgID]; !found {
+					newMessages = append(newMessages, message)
 				}
+			}
+			if len(newMessages) > 0 {
+				p.emitIncrementalMessageBatches(normalizedConvID, newMessages, channel.LastRead)
+				p.log("SlackProvider.pollLatestConversationUpdates: recovered %d message(s) for %s\n", len(newMessages), normalizedConvID)
 			}
 		}
 
