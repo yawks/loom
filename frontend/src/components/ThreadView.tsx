@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
-import { AddReaction, DeleteMessage, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, GetHighlightedMessageRefs, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageReactions } from "./MessageReactions";
@@ -199,6 +199,7 @@ export function ThreadView() {
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const messageLayout = useAppStore((state) => state.messageLayout);
+  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const selectedThreadParentMessage = useAppStore((state) => state.selectedThreadParentMessage);
   const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const unreadNavigationTarget = useAppStore((state) => state.unreadNavigationTarget);
@@ -221,6 +222,17 @@ export function ThreadView() {
       ? `${activeAccount.providerInstanceId}::${activeAccount.userId}`
       : activeAccount?.userId) ||
     "";
+  const { data: highlightedMessageRefs = [] } = useQuery({
+    queryKey: ["highlightedMessageRefs"],
+    queryFn: () => GetHighlightedMessageRefs().catch(() => []),
+    enabled: showHighlights,
+    staleTime: 5000,
+  });
+  const highlightedMessageIds = useMemo(() => new Set(
+    highlightedMessageRefs
+      .filter((ref) => ref.conversationId === conversationId)
+      .map((ref) => ref.messageId)
+  ), [conversationId, highlightedMessageRefs]);
   const conversationReadState = useMessageReadStore(
     (state) => state.readByConversation[conversationId] ?? {}
   );
@@ -481,9 +493,14 @@ export function ThreadView() {
     if (unreadNavigationTarget.threadId !== selectedThreadId || sortedThreadMessages.length === 0) return;
     const target = document.querySelector<HTMLElement>(`[data-thread-message-id="${CSS.escape(unreadNavigationTarget.messageId)}"]`);
     if (!target) return;
-    target.scrollIntoView({ block: "center", behavior: "auto" });
+    target.scrollIntoView({ block: unreadNavigationTarget.align ?? "center", behavior: "auto" });
+    // The navigation target is now demonstrably rendered in the open thread.
+    // Consume that exact unread ID before clearing the navigation state; the
+    // broader thread-read effect may run earlier while contact selection and
+    // the thread query are still settling.
+    markMultipleAsRead(conversationId, [unreadNavigationTarget.messageId]);
     setUnreadNavigationTarget(null);
-  }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, setUnreadNavigationTarget]);
+  }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, markMultipleAsRead, setUnreadNavigationTarget]);
 
   const currentUserId = useMemo(() => {
     for (const msg of sortedThreadMessages) {
@@ -494,6 +511,11 @@ export function ThreadView() {
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const focusComposer = useCallback(() => composerRef.current?.focus(), []);
+
+  const handleReplyClick = useCallback((message: models.Message) => {
+    setReplyingToMessage(message);
+    focusComposer();
+  }, [focusComposer]);
 
   const {
     editingMessageId,
@@ -779,7 +801,11 @@ export function ThreadView() {
                 <div
                   key={message.protocolMsgId || `thread-${message.id}`}
                   data-thread-message-id={messageId}
-                  className={cn("flex items-start gap-3 group relative", message.isFromMe && "justify-end")}
+                  className={cn(
+                    "flex items-start gap-3 group relative rounded-xl transition-colors",
+                    message.isFromMe && "justify-end",
+                    showHighlights && highlightedMessageIds.has(message.protocolMsgId) && "bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
+                  )}
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}
                 >
@@ -810,7 +836,7 @@ export function ThreadView() {
                           hasAttachments={Boolean(message.attachments?.trim())}
                           onEdit={() => handleEditMessage(message)}
                           onDelete={() => handleDeleteClick(message)}
-                          onReply={() => setReplyingToMessage(message)}
+                          onReply={() => handleReplyClick(message)}
                           onReact={(emoji) => handleReaction(message, emoji)}
                           currentReactions={(message.reactions || []).filter((r) => sameUserId(r.userId, currentUserId)).map((r) => r.emoji)}
                           messageId={messageId}
@@ -958,7 +984,10 @@ export function ThreadView() {
                 <div
                   key={message.protocolMsgId || `thread-${message.id}`}
                   data-thread-message-id={messageId}
-                  className="space-y-1 group relative"
+                  className={cn(
+                    "space-y-1 group relative rounded-md transition-colors",
+                    showHighlights && highlightedMessageIds.has(message.protocolMsgId) && "bg-amber-400/10 ring-2 ring-inset ring-amber-400/70"
+                  )}
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}
                 >
@@ -974,7 +1003,7 @@ export function ThreadView() {
                         hasAttachments={Boolean(message.attachments?.trim())}
                         onEdit={() => handleEditMessage(message)}
                         onDelete={() => handleDeleteClick(message)}
-                        onReply={() => setReplyingToMessage(message)}
+                        onReply={() => handleReplyClick(message)}
                         onReact={(emoji) => handleReaction(message, emoji)}
                         currentReactions={(message.reactions || []).filter((r) => sameUserId(r.userId, currentUserId)).map((r) => r.emoji)}
                         messageId={messageId}

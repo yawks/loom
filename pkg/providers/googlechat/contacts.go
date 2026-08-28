@@ -330,13 +330,15 @@ func (p *GoogleChatProvider) resolveUserInfo(userID string) (name, avatarURL str
 
 // GetContactName resolves a user ID to a display name from cache.
 func (p *GoogleChatProvider) GetContactName(contactID string) (string, error) {
+	contactID = strings.TrimPrefix(strings.TrimSpace(contactID), "users/")
 	p.userMu.RLock()
 	u, ok := p.userCache[contactID]
 	p.userMu.RUnlock()
-	if ok {
+	if ok && u.Name != "" && u.Name != contactID {
 		return u.Name, nil
 	}
-	return contactID, nil
+	name, _ := p.resolveUserInfo(contactID)
+	return name, nil
 }
 
 // RefreshContact is a no-op for Google Chat REST API.

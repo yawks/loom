@@ -2071,6 +2071,22 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 				avatarMap[instID][account.UserID] = account.AvatarURL
 			}
 		}
+
+		// Group/thread authors are participants, not necessarily LinkedAccounts.
+		// Ask the conversation's provider for unresolved identities so persisted
+		// messages still expose a canonical display name when opened directly.
+		if a.providerManager != nil {
+			if provider, providerErr := a.providerManager.GetProvider(instID); providerErr == nil {
+				for _, userID := range userIDList {
+					if _, found := nameMap[instID][userID]; found {
+						continue
+					}
+					if name, nameErr := provider.GetContactName(userID); nameErr == nil && name != "" && name != userID {
+						nameMap[instID][userID] = name
+					}
+				}
+			}
+		}
 	}
 
 	// 4. Enrich messages with names and avatars
@@ -2390,10 +2406,14 @@ func (a *App) GetHighlightedMessages(offset int) (models.MessageSearchPage, erro
 	if offset < 0 {
 		offset = 0
 	}
+	if err := reconcileAllWatchRules(db.DB); err != nil {
+		return page, err
+	}
+	watchWhere, watchArgs := highlightedMessagesWhere(db.DB)
 
 	var messages []models.Message
 	err := db.DB.
-		Where("deleted_at IS NULL AND is_deleted = ? AND highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)", false, "", "null", "[]").
+		Where(watchWhere, watchArgs...).
 		Order("timestamp DESC").
 		Limit(pageSize + 1).
 		Offset(offset).
@@ -2421,9 +2441,13 @@ func (a *App) GetHighlightedMessageRefs() ([]models.HighlightedMessageRef, error
 	if db.DB == nil {
 		return refs, nil
 	}
+	if err := reconcileAllWatchRules(db.DB); err != nil {
+		return refs, err
+	}
+	watchWhere, watchArgs := highlightedMessagesWhere(db.DB)
 	err := db.DB.Model(&models.Message{}).
 		Select("protocol_conv_id AS conversation_id, protocol_msg_id AS message_id").
-		Where("deleted_at IS NULL AND is_deleted = ? AND highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)", false, "", "null", "[]").
+		Where(watchWhere, watchArgs...).
 		Scan(&refs).Error
 	return refs, err
 }
@@ -3171,6 +3195,9 @@ func (a *App) LeaveGroup(conversationID string) error {
 	}
 	if err := provider.LeaveGroup(conversationID); err != nil {
 		return err
+	}
+	if err := deleteConversationWatchData(db.DB, conversationID); err != nil {
+		return fmt.Errorf("delete conversation watch data: %w", err)
 	}
 	a.emitContactsRefresh()
 	return nil

@@ -431,7 +431,19 @@ func (p *GoogleChatProvider) convertMessage(m ChatMessage, convID, selfID string
 
 		if senderID != "" {
 			p.userMu.Lock()
-			p.userCache[senderID] = cachedUser{Name: senderName, AvatarURL: senderAvatarURL}
+			cached := p.userCache[senderID]
+			// Message resources can omit displayName/avatarUrl even when contact or
+			// membership discovery already resolved them. Preserve that richer
+			// identity instead of replacing it with the bare numeric Google user ID.
+			if senderName == "" {
+				senderName = cached.Name
+			}
+			if senderAvatarURL == "" {
+				senderAvatarURL = cached.AvatarURL
+			}
+			if senderName != "" || senderAvatarURL != "" {
+				p.userCache[senderID] = cachedUser{Name: senderName, AvatarURL: senderAvatarURL, Email: cached.Email}
+			}
 			p.userMu.Unlock()
 		}
 	}

@@ -71,11 +71,12 @@ export function HighlightedMessagesInbox() {
                   conversationId: message.protocolConvId,
                   messageId: message.protocolMsgId,
                   threadId: message.threadId,
+                  align: "start",
                 });
               } else {
                 setSelectedThreadId(null);
                 setUnreadNavigationTarget(null);
-                setMessageSearchTargetId(message.protocolMsgId);
+                setMessageSearchTargetId(message.protocolMsgId, "start");
               }
               setSelectedProviderFilter(result.providerInstanceId);
               setSelectedContact(contact);

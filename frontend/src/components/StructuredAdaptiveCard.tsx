@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
+import { GetAttachmentData } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
@@ -40,6 +42,27 @@ function normalizeAdaptiveMarkdown(value: unknown): string {
     .replace(/\{\{DATE\(([^,]+),\s*SHORT\)\}\}/gi, (_, raw: string) => formatDate(raw, true))
     .replace(/\{\{TIME\(([^)]+)\)\}\}/gi, (_, raw: string) => formatDate(raw, false));
   return result;
+}
+
+function CardImage({ url, alt }: { url: string; alt: string }) {
+  const [source, setSource] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setSource("");
+    GetAttachmentData(url)
+      .then((data) => {
+        if (active) setSource(data);
+      })
+      .catch((error) => {
+        console.warn("[StructuredAdaptiveCard] Failed to load image:", error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [url]);
+
+  return source ? <img src={source} alt={alt} className="mt-2 max-h-48 max-w-full rounded object-contain" /> : null;
 }
 
 function CardElement({ element }: { element: CardNode }) {
@@ -85,7 +108,7 @@ function CardElement({ element }: { element: CardNode }) {
 
   if (type === "image") {
     const url = text(element.url);
-    return url ? <img src={url} alt={text(element.altText)} className="mt-2 max-h-48 max-w-full rounded object-contain" /> : null;
+    return url ? <CardImage url={url} alt={text(element.altText)} /> : null;
   }
 
   const children = [element.items, element.columns, element.body].flatMap(nodes);

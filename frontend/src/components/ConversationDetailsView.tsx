@@ -26,6 +26,7 @@ import { useAppStore } from "@/lib/store";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import { useTranslation } from "react-i18next";
 import { ToastContainer, useToast } from "@/components/ui/toast";
+import { MessageWatchRules } from "./MessageWatchRules";
 
 const fetchMessages = async (conversationID: string): Promise<models.Message[]> => {
   const result = await GetMessagesForConversation(conversationID);
@@ -293,6 +294,8 @@ export function ConversationDetailsView({
               />
             </Suspense>
           </div>
+
+          {conversationId && <MessageWatchRules conversationId={conversationId} />}
 
           {/* Debug: conversation ID */}
           {conversationId && (

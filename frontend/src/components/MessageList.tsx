@@ -3,6 +3,7 @@ import {
   CancelScheduledMessage,
   DeleteMessage,
   GetCapabilities,
+  GetHighlightedMessageRefs,
   GetPinnedMessageContext,
   GetPinnedMessages,
   GetScheduledMessages,
@@ -71,6 +72,8 @@ export function MessageList({
 
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const messageSearchTargetId = useAppStore((state) => state.messageSearchTargetId);
+  const messageSearchTargetAlign = useAppStore((state) => state.messageSearchTargetAlign);
+  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
 
   // When a provider filter is active, prefer the linked account from that provider.
@@ -89,6 +92,17 @@ export function MessageList({
       ? `${activeAccount.providerInstanceId}::${activeAccount.userId}`
       : activeAccount?.userId) ||
     "";
+  const { data: highlightedMessageRefs = [] } = useQuery({
+    queryKey: ["highlightedMessageRefs"],
+    queryFn: () => GetHighlightedMessageRefs().catch(() => []),
+    enabled: showHighlights,
+    staleTime: 5000,
+  });
+  const highlightedMessageIds = useMemo(() => new Set(
+    highlightedMessageRefs
+      .filter((ref) => ref.conversationId === conversationId)
+      .map((ref) => ref.messageId)
+  ), [conversationId, highlightedMessageRefs]);
 
   const providerInstanceId = activeAccount?.providerInstanceId;
   const protocol = activeAccount?.protocol;
@@ -322,7 +336,7 @@ export function MessageList({
     const index = displayedMessageGroups.findIndex((group) => group.messages.some((message) => message.protocolMsgId === messageSearchTargetId));
     if (index >= 0) {
       requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "auto" });
+        virtuosoRef.current?.scrollToIndex({ index, align: messageSearchTargetAlign, behavior: "auto" });
         setMessageSearchTargetId(null);
       });
     } else if (hasNextPage) {
@@ -330,7 +344,7 @@ export function MessageList({
     } else {
       setMessageSearchTargetId(null);
     }
-  }, [messageSearchTargetId, displayedMessageGroups, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
+  }, [messageSearchTargetId, messageSearchTargetAlign, displayedMessageGroups, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
 
   const currentUserName = useMemo(() => {
     if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);
@@ -853,7 +867,8 @@ export function MessageList({
 
   const handleReplyClick = useCallback((message: models.Message) => {
     setReplyingToMessage(message);
-  }, []);
+    focusComposer();
+  }, [focusComposer]);
 
   const handleForwardClick = useCallback((message: models.Message, groupedMessages?: models.Message[]) => {
     setForwardingMessages(groupedMessages?.length ? groupedMessages : [message]);
@@ -1006,6 +1021,7 @@ export function MessageList({
     threadReplyCounts,
     threadParticipantsByParent,
     unreadThreadIds,
+    highlightedMessageIds,
     virtuosoRef,
     handlers,
   };

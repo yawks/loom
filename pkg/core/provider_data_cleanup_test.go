@@ -17,6 +17,7 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 	if err := database.AutoMigrate(
 		&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{},
 		&models.GroupParticipant{}, &models.Message{}, &models.MessagePin{},
+		&models.MessageWatchRule{}, &models.MessageWatchMatch{},
 		&models.Reaction{}, &models.MessageReceipt{}, &models.ProviderConfiguration{},
 		&models.ContactAlias{}, &models.LIDMapping{},
 	); err != nil {
@@ -52,6 +53,9 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 	database.Create(&models.Reaction{MessageID: targetMessage.ID, UserID: "member"})
 	database.Create(&models.MessageReceipt{MessageID: targetMessage.ID, UserID: "member"})
 	database.Create(&models.MessagePin{ProviderInstanceID: "wa-work", ProtocolMsgID: "target-message"})
+	watchRule := models.MessageWatchRule{ConversationID: targetConv.ID, Pattern: "urgent"}
+	database.Create(&watchRule)
+	database.Create(&models.MessageWatchMatch{RuleID: watchRule.ID, MessageID: targetMessage.ID})
 	database.Create(&models.ProviderConfiguration{ProviderID: "whatsapp", InstanceID: "wa-work"})
 	database.Create(&models.ContactAlias{UserID: "shared-user", Alias: "Shared alias"})
 	database.Create(&models.ContactAlias{UserID: "target-user", Alias: "Target alias"})
@@ -81,6 +85,8 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 	assertCount(&models.MessageReceipt{}, "message_id = ?", []any{targetMessage.ID}, 0)
 	assertCount(&models.GroupParticipant{}, "conversation_id = ?", []any{targetConv.ID}, 0)
 	assertCount(&models.MessagePin{}, "provider_instance_id = ?", []any{"wa-work"}, 0)
+	assertCount(&models.MessageWatchRule{}, "conversation_id = ?", []any{targetConv.ID}, 0)
+	assertCount(&models.MessageWatchMatch{}, "rule_id = ?", []any{watchRule.ID}, 0)
 	assertCount(&models.ProviderConfiguration{}, "instance_id = ?", []any{"wa-work"}, 0)
 	assertCount(&models.MetaContact{}, "id = ?", []any{orphanMeta.ID}, 0)
 	assertCount(&models.MetaContact{}, "id = ?", []any{sharedMeta.ID}, 1)

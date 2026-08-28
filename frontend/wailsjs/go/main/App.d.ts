@@ -27,11 +27,15 @@ export function ConnectProvider(arg1:string):Promise<void>;
 
 export function CreateGroup(arg1:string,arg2:Array<string>):Promise<models.Conversation>;
 
+export function CreateMessageWatchRule(arg1:string,arg2:string,arg3:boolean):Promise<models.MessageWatchRule>;
+
 export function CreateProvider(arg1:string,arg2:Record<string, any>,arg3:string,arg4:string):Promise<string>;
 
 export function CreateProviderWithOptions(arg1:string,arg2:Record<string, any>,arg3:string,arg4:string,arg5:boolean):Promise<string>;
 
 export function DeleteMessage(arg1:string,arg2:string):Promise<void>;
+
+export function DeleteMessageWatchRule(arg1:number):Promise<void>;
 
 export function DemoteGroupAdmins(arg1:string,arg2:Array<string>):Promise<void>;
 
@@ -88,6 +92,8 @@ export function GetGroupParticipants(arg1:string):Promise<Array<models.GroupPart
 export function GetHighlightedMessageRefs():Promise<Array<models.HighlightedMessageRef>>;
 
 export function GetHighlightedMessages(arg1:number):Promise<models.MessageSearchPage>;
+
+export function GetMessageWatchRules(arg1:string):Promise<Array<models.MessageWatchRule>>;
 
 export function GetMessagesForConversation(arg1:string):Promise<Array<models.Message>>;
 
@@ -188,5 +194,7 @@ export function UpdateGroupDescription(arg1:string,arg2:string):Promise<void>;
 export function UpdateGroupName(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateGroupPhoto(arg1:string,arg2:string):Promise<void>;
+
+export function UpdateMessageWatchRule(arg1:number,arg2:string,arg3:boolean):Promise<models.MessageWatchRule>;
 
 export function UpdateSystemTrayBadge(arg1:number):Promise<void>;

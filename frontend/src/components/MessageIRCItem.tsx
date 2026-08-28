@@ -1,11 +1,12 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
-import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
-import { LinkPreviewCard } from "./LinkPreviewCard";
+import { cn, extractFirstUrl, timeToDate } from "@/lib/utils";
 import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
+import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
+import { LinkPreviewCard } from "./LinkPreviewCard";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageDateSeparator } from "./MessageDateSeparator";
@@ -16,12 +17,11 @@ import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { models } from "../../wailsjs/go/models";
-import { useTranslation } from "react-i18next";
-import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
-import { sameUserId } from "@/lib/userIdentity";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { models } from "../../wailsjs/go/models";
+import { sameUserId } from "@/lib/userIdentity";
 import { useAppStore } from "@/lib/store";
+import { useTranslation } from "react-i18next";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -49,6 +49,7 @@ interface MessageIRCItemProps {
   threadReplyCounts: Record<string, number>;
   threadParticipantsByParent: Record<string, models.ThreadParticipant[]>;
   unreadThreadIds: ReadonlySet<string>;
+  highlightedMessageIds: ReadonlySet<string>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
   photoGroupMessages?: models.Message[];
@@ -81,6 +82,7 @@ export function MessageIRCItem({
   threadReplyCounts,
   threadParticipantsByParent,
   unreadThreadIds,
+  highlightedMessageIds,
   virtuosoRef,
   handlers,
   photoGroupMessages,
@@ -106,6 +108,13 @@ export function MessageIRCItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
+  const isHighlighted = showHighlights && (
+    highlightedMessageIds.has(message.protocolMsgId) ||
+    (message.highlightReasons?.length ?? 0) > 0 ||
+    (photoGroupMessages?.some((item) =>
+      highlightedMessageIds.has(item.protocolMsgId) || (item.highlightReasons?.length ?? 0) > 0
+    ) ?? false)
+  );
   const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
     ? mergePhotoGroupBody(photoGroupMessages)
     : message.body;
@@ -157,7 +166,7 @@ export function MessageIRCItem({
       <div className="space-y-1">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
         {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
-        <div data-message-id={messageId} className="scroll-mt-28">
+        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-md", isHighlighted && "bg-amber-400/10 ring-2 ring-inset ring-amber-400/70")}>
           <CallMessage message={message} layout="irc" isGroup={isGroupConversation} />
         </div>
       </div>
@@ -173,7 +182,7 @@ export function MessageIRCItem({
           "flex items-start scroll-mt-28 group relative",
           isPending && "opacity-70",
           sendFailed && "border-l-2 border-destructive pl-1",
-          showHighlights && (message.highlightReasons?.length ?? 0) > 0 && "rounded-md bg-amber-400/10 ring-2 ring-inset ring-amber-400/70"
+          isHighlighted && "rounded-md bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 pb-2"
         )}
         data-message-id={messageId}
         onMouseEnter={() => handlers.setOpenActionsMessageId(messageId)}
