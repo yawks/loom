@@ -41,6 +41,28 @@ func TestConvertMessageMarksDirectMentionOfSelf(t *testing.T) {
 	}
 }
 
+func TestConvertMessagePreservesCachedSenderIdentityWhenMessageOmitsIt(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	provider.userCache["115390581687754305172"] = cachedUser{
+		Name:      "Alice Example",
+		AvatarURL: "https://example.com/alice.jpg",
+		Email:     "alice@example.com",
+	}
+
+	converted := provider.convertMessage(ChatMessage{
+		Name:       "spaces/space/messages/message",
+		Sender:     &ChatUser{Name: "users/115390581687754305172"},
+		CreateTime: time.Now(),
+	}, "spaces/space", "self")
+
+	if converted.SenderName != "Alice Example" || converted.SenderAvatarURL != "https://example.com/alice.jpg" {
+		t.Fatalf("cached sender identity was lost: %#v", converted)
+	}
+	if cached := provider.userCache[converted.SenderID]; cached.Email != "alice@example.com" {
+		t.Fatalf("cached sender email was lost: %#v", cached)
+	}
+}
+
 func TestListMessageReactionsIncludesUsersAndFollowsPages(t *testing.T) {
 	provider := NewGoogleChatProvider()
 	call := 0

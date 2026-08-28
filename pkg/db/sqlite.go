@@ -73,6 +73,9 @@ func initDatabase(dsn string) error {
 	if err := db.Exec("PRAGMA busy_timeout=30000").Error; err != nil {
 		fmt.Printf("Warning: Failed to set busy timeout: %v\n", err)
 	}
+	if err := db.Exec("PRAGMA foreign_keys=ON").Error; err != nil {
+		return fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
 	if err := db.Exec("PRAGMA cache_size=-32000").Error; err != nil { // 32 MB page cache
 		fmt.Printf("Warning: Failed to set cache_size: %v\n", err)
 	}
@@ -87,6 +90,8 @@ func initDatabase(dsn string) error {
 		&models.Conversation{},
 		&models.GroupParticipant{},
 		&models.Message{},
+		&models.MessageWatchRule{},
+		&models.MessageWatchMatch{},
 		&models.MessagePin{},
 		&models.Reaction{},
 		&models.MessageReceipt{},

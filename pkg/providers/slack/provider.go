@@ -382,6 +382,15 @@ func (p *SlackProvider) slackConversationSyncRows() ([]slackConversationSyncRow,
 // contactLatestTS maps convID -> Slack's latest message timestamp (from GetConversations API).
 // contactLastRead maps convID -> Slack's last_read timestamp.
 // Both maps are used to skip channels with no new messages and avoid redundant API calls.
+func slackConversationMetadataValue(metadata map[string]string, conversationID string) (string, bool) {
+	value, ok := metadata[core.StripConvID(conversationID)]
+	if ok {
+		return value, true
+	}
+	value, ok = metadata[conversationID]
+	return value, ok
+}
+
 func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, contactLastRead map[string]string) {
 	if db.DB == nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
@@ -469,7 +478,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		// Skip conversations where Slack confirms no new messages since our last stored one.
 		// contactLatestTS holds the timestamp of the most recent message in the channel
 		// as returned by GetConversations — no API call needed to know there's nothing new.
-		if slackLatestStr, ok := contactLatestTS[core.StripConvID(conv.ProtocolConvID)]; ok && slackLatestStr != "" {
+		if slackLatestStr, ok := slackConversationMetadataValue(contactLatestTS, conv.ProtocolConvID); ok && slackLatestStr != "" {
 			slackLatestF, err := strconv.ParseFloat(slackLatestStr, 64)
 			dbLatestF := float64(conv.LastTimestamp.UnixNano()) / 1e9
 			if err == nil && slackLatestF <= dbLatestF {
@@ -507,7 +516,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			conv.ProtocolConvID, conv.LastTimestamp.Format(time.RFC3339))
 
 		// Emit last_read BEFORE messages so the frontend knows the read state when messages arrive.
-		if lastRead, ok := contactLastRead[conv.ProtocolConvID]; ok && lastRead != "" {
+		if lastRead, ok := slackConversationMetadataValue(contactLastRead, conv.ProtocolConvID); ok && lastRead != "" {
 			select {
 			case p.eventChan <- core.ConversationReadStatusEvent{InstanceID: p.getInstanceId(),
 				ConversationID: conv.ProtocolConvID,

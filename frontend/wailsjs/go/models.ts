@@ -1,5 +1,5 @@
 export namespace core {
-
+	
 	export class Capabilities {
 	    supportsThreads: boolean;
 	    supportsReactions: boolean;
@@ -34,7 +34,7 @@ export namespace core {
 	    supportsGroupTitle: boolean;
 	    requiresGroupTitle: boolean;
 	    groupConversationTypes: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
 	    }
@@ -876,11 +876,11 @@ export namespace models {
 	export class HighlightedMessageRef {
 	    conversationId: string;
 	    messageId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HighlightedMessageRef(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.conversationId = source["conversationId"];
@@ -1056,6 +1056,82 @@ export namespace models {
 		}
 	}
 	
+	export class MessageWatchMatch {
+	    id: number;
+	    ruleId: number;
+	    messageId: number;
+	    createdAt: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new MessageWatchMatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.ruleId = source["ruleId"];
+	        this.messageId = source["messageId"];
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MessageWatchRule {
+	    id: number;
+	    conversationId: number;
+	    pattern: string;
+	    isRegex: boolean;
+	    createdAt: time.Time;
+	    updatedAt: time.Time;
+	
+	    static createFrom(source: any = {}) {
+	        return new MessageWatchRule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.conversationId = source["conversationId"];
+	        this.pattern = source["pattern"];
+	        this.isRegex = source["isRegex"];
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class OpenConversationRequest {
 	    providerInstanceId: string;
@@ -1223,3 +1299,4 @@ export namespace time {
 	}
 
 }
+

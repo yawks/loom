@@ -57,6 +57,11 @@ func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) 
 		}
 
 		if len(messageIDs) > 0 {
+			if tx.Migrator().HasTable(&models.MessageWatchMatch{}) {
+				if err := tx.Unscoped().Where("message_id IN ?", messageIDs).Delete(&models.MessageWatchMatch{}).Error; err != nil {
+					return err
+				}
+			}
 			if err := tx.Unscoped().Where("message_id IN ?", messageIDs).Delete(&models.Reaction{}).Error; err != nil {
 				return err
 			}
@@ -68,6 +73,20 @@ func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) 
 			}
 		}
 		if len(conversationIDs) > 0 {
+			if tx.Migrator().HasTable(&models.MessageWatchRule{}) {
+				var watchRuleIDs []uint
+				if err := tx.Unscoped().Model(&models.MessageWatchRule{}).Where("conversation_id IN ?", conversationIDs).Pluck("id", &watchRuleIDs).Error; err != nil {
+					return err
+				}
+				if len(watchRuleIDs) > 0 && tx.Migrator().HasTable(&models.MessageWatchMatch{}) {
+					if err := tx.Unscoped().Where("rule_id IN ?", watchRuleIDs).Delete(&models.MessageWatchMatch{}).Error; err != nil {
+						return err
+					}
+				}
+				if err := tx.Unscoped().Where("conversation_id IN ?", conversationIDs).Delete(&models.MessageWatchRule{}).Error; err != nil {
+					return err
+				}
+			}
 			if err := tx.Unscoped().Where("conversation_id IN ?", conversationIDs).Delete(&models.GroupParticipant{}).Error; err != nil {
 				return err
 			}

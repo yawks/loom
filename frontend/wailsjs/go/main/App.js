@@ -46,6 +46,10 @@ export function CreateGroup(arg1, arg2) {
   return window['go']['main']['App']['CreateGroup'](arg1, arg2);
 }
 
+export function CreateMessageWatchRule(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateMessageWatchRule'](arg1, arg2, arg3);
+}
+
 export function CreateProvider(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateProvider'](arg1, arg2, arg3, arg4);
 }
@@ -56,6 +60,10 @@ export function CreateProviderWithOptions(arg1, arg2, arg3, arg4, arg5) {
 
 export function DeleteMessage(arg1, arg2) {
   return window['go']['main']['App']['DeleteMessage'](arg1, arg2);
+}
+
+export function DeleteMessageWatchRule(arg1) {
+  return window['go']['main']['App']['DeleteMessageWatchRule'](arg1);
 }
 
 export function DemoteGroupAdmins(arg1, arg2) {
@@ -168,6 +176,10 @@ export function GetHighlightedMessageRefs() {
 
 export function GetHighlightedMessages(arg1) {
   return window['go']['main']['App']['GetHighlightedMessages'](arg1);
+}
+
+export function GetMessageWatchRules(arg1) {
+  return window['go']['main']['App']['GetMessageWatchRules'](arg1);
 }
 
 export function GetMessagesForConversation(arg1) {
@@ -368,6 +380,10 @@ export function UpdateGroupName(arg1, arg2) {
 
 export function UpdateGroupPhoto(arg1, arg2) {
   return window['go']['main']['App']['UpdateGroupPhoto'](arg1, arg2);
+}
+
+export function UpdateMessageWatchRule(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateMessageWatchRule'](arg1, arg2, arg3);
 }
 
 export function UpdateSystemTrayBadge(arg1) {

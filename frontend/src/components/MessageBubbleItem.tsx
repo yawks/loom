@@ -1,9 +1,12 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
-import type { VirtuosoHandle } from "react-virtuoso";
+import { cn, extractFirstUrl, timeToDate } from "@/lib/utils";
+import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
+import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
+import { LinkPreviewCard } from "./LinkPreviewCard";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageDateSeparator } from "./MessageDateSeparator";
@@ -12,15 +15,12 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
-import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
-import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
-import { LinkPreviewCard } from "./LinkPreviewCard";
-import { models } from "../../wailsjs/go/models";
-import { useTranslation } from "react-i18next";
-import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
-import { sameUserId } from "@/lib/userIdentity";
+import type { VirtuosoHandle } from "react-virtuoso";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { models } from "../../wailsjs/go/models";
+import { sameUserId } from "@/lib/userIdentity";
 import { useAppStore } from "@/lib/store";
+import { useTranslation } from "react-i18next";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -72,6 +72,7 @@ interface MessageBubbleItemProps {
   threadReplyCounts: Record<string, number>;
   threadParticipantsByParent: Record<string, models.ThreadParticipant[]>;
   unreadThreadIds: ReadonlySet<string>;
+  highlightedMessageIds: ReadonlySet<string>;
   virtuosoRef: RefObject<VirtuosoHandle | null>;
   handlers: MessageHandlers;
   photoGroupMessages?: models.Message[];
@@ -104,6 +105,7 @@ export function MessageBubbleItem({
   threadReplyCounts,
   threadParticipantsByParent,
   unreadThreadIds,
+  highlightedMessageIds,
   virtuosoRef,
   handlers,
   photoGroupMessages,
@@ -131,6 +133,13 @@ export function MessageBubbleItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
+  const isHighlighted = showHighlights && (
+    highlightedMessageIds.has(message.protocolMsgId) ||
+    (message.highlightReasons?.length ?? 0) > 0 ||
+    (photoGroupMessages?.some((item) =>
+      highlightedMessageIds.has(item.protocolMsgId) || (item.highlightReasons?.length ?? 0) > 0
+    ) ?? false)
+  );
   const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
     ? mergePhotoGroupBody(photoGroupMessages)
     : message.body;
@@ -159,7 +168,7 @@ export function MessageBubbleItem({
     isPending && "opacity-70",
     sendFailed && "border border-destructive bg-destructive/10 opacity-80",
     isDeleted && "border-dashed border-destructive/60 cursor-pointer group",
-    showHighlights && (message.highlightReasons?.length ?? 0) > 0 && "border-amber-400 ring-2 ring-amber-400/70 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]"
+    isHighlighted && "border-amber-400"
   );
 
   const deletedInteractionHandlers = isDeleted
@@ -181,7 +190,7 @@ export function MessageBubbleItem({
       <div className="space-y-2">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
         {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
-        <div data-message-id={messageId} className="scroll-mt-28">
+        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-xl", isHighlighted && "bg-amber-400/10 ring-2 ring-amber-400/70")}>
           <CallMessage message={message} layout="bubble" isGroup={isGroupConversation} />
         </div>
       </div>
@@ -194,7 +203,10 @@ export function MessageBubbleItem({
       {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
       <div
         data-message-id={messageId}
-        className="space-y-2 scroll-mt-28 group"
+        className={cn(
+          "space-y-2 scroll-mt-28 group rounded-xl transition-colors",
+          isHighlighted && "bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
+        )}
         onMouseEnter={() => handlers.setOpenActionsMessageId(messageId)}
         onMouseLeave={() => handlers.setOpenActionsMessageId(null)}
       >

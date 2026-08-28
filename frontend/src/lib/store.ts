@@ -41,9 +41,10 @@ interface AppState {
   selectedProviderFilter: string | null;
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   messageSearchTargetId: string | null;
-  setMessageSearchTargetId: (messageId: string | null) => void;
-  unreadNavigationTarget: { conversationId: string; messageId: string; threadId?: string } | null;
-  setUnreadNavigationTarget: (target: { conversationId: string; messageId: string; threadId?: string } | null) => void;
+  messageSearchTargetAlign: "start" | "center";
+  setMessageSearchTargetId: (messageId: string | null, align?: "start" | "center") => void;
+  unreadNavigationTarget: { conversationId: string; messageId: string; threadId?: string; align?: "start" | "center" } | null;
+  setUnreadNavigationTarget: (target: { conversationId: string; messageId: string; threadId?: string; align?: "start" | "center" } | null) => void;
   contactSortBy: ContactSortOption;
   setContactSortBy: (sortBy: ContactSortOption) => void;
   badgeUntrackedConversationIds: Record<string, true>;
@@ -150,7 +151,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     saveToStorage("selectedProviderFilter", providerInstanceId);
   },
   messageSearchTargetId: null,
-  setMessageSearchTargetId: (messageId) => set({ messageSearchTargetId: messageId }),
+  messageSearchTargetAlign: "center",
+  setMessageSearchTargetId: (messageId, align = "center") => set({
+    messageSearchTargetId: messageId,
+    messageSearchTargetAlign: messageId ? align : "center",
+  }),
   unreadNavigationTarget: null,
   setUnreadNavigationTarget: (target) => set({ unreadNavigationTarget: target }),
   contactSortBy: loadFromStorage<ContactSortOption>("contactSortBy", "last_message"),

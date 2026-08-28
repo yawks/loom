@@ -138,8 +138,34 @@ type Conversation struct {
 	IsMuted           bool               `json:"isMuted"`                                                      // Whether the conversation is muted
 	GroupParticipants []GroupParticipant `gorm:"foreignKey:ConversationID" json:"groupParticipants,omitempty"` // Group participants (only for groups)
 	Messages          []Message          `gorm:"foreignKey:ConversationID" json:"messages"`
+	WatchRules        []MessageWatchRule `gorm:"foreignKey:ConversationID;constraint:OnDelete:CASCADE" json:"-"`
 	CreatedAt         time.Time          `json:"createdAt"`
 	UpdatedAt         time.Time          `json:"updatedAt"`
+}
+
+// MessageWatchRule is a local, provider-neutral text matcher scoped to one
+// conversation. Patterns are interpreted either literally or with Go's RE2
+// regular-expression engine.
+type MessageWatchRule struct {
+	ID             uint                `gorm:"primarykey" json:"id"`
+	ConversationID uint                `gorm:"not null;index" json:"conversationId"`
+	Pattern        string              `gorm:"not null" json:"pattern"`
+	IsRegex        bool                `gorm:"not null;default:false" json:"isRegex"`
+	Matches        []MessageWatchMatch `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"-"`
+	CreatedAt      time.Time           `json:"createdAt"`
+	UpdatedAt      time.Time           `json:"updatedAt"`
+}
+
+// MessageWatchMatch records why a message appears in the attention inbox.
+// Keeping this relation separate from HighlightReasons makes rule edits and
+// deletion independent from canonical reasons such as direct mentions.
+type MessageWatchMatch struct {
+	ID        uint             `gorm:"primarykey" json:"id"`
+	RuleID    uint             `gorm:"not null;uniqueIndex:idx_watch_rule_message" json:"ruleId"`
+	Rule      MessageWatchRule `gorm:"constraint:OnDelete:CASCADE" json:"-"`
+	MessageID uint             `gorm:"not null;uniqueIndex:idx_watch_rule_message;index" json:"messageId"`
+	Message   Message          `gorm:"constraint:OnDelete:CASCADE" json:"-"`
+	CreatedAt time.Time        `json:"createdAt"`
 }
 
 // OpenConversationRequest describes the provider-neutral new conversation flow.
