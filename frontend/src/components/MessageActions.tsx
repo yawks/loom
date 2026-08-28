@@ -62,7 +62,7 @@ export function MessageActions({
   const supportsPinMessage = instanceId ? capabilities[instanceId]?.supportsPinMessage ?? false : false;
   const usesNamedReactions = instanceId
     ? !(capabilities[instanceId]?.nativeEmojiReactions ?? false)
-    : provider?.toLowerCase() === "slack";
+    : false;
 
   // Only allow popover to be open if this message is being hovered
   const canBeOpen = reactionPickerOpen || !messageId || openActionsMessageId === messageId;

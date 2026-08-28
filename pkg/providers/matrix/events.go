@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 )
 
 func noCancel() context.Context { return context.Background() }
@@ -98,13 +99,19 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			continue
 		}
 		if len(messages) > 0 {
-			read, unread := core.SplitRecoveredMessagesByOwnActivity(messages, p.CurrentUserID())
+			selfID := p.CurrentUserID()
+			activityAt := db.LatestOwnActivityAt(contact.ConversationID, selfID)
+			read, unread := core.SplitRecoveredMessagesAtOwnActivity(messages, selfID, activityAt)
 			if len(read) > 0 {
 				p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: read, ForceRead: true})
 			}
 			if len(unread) > 0 {
 				p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: unread, ForceUnread: true})
 			}
+		}
+		activityAt := db.LatestOwnActivityAt(contact.ConversationID, p.CurrentUserID())
+		if readThrough := db.MessagesReadThrough(contact.ConversationID, activityAt, 1000); len(readThrough) > 0 {
+			p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
 	return nil

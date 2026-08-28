@@ -125,7 +125,7 @@ func TestTeamsSwiftAdaptiveCardReplacesUnsupportedPlaceholder(t *testing.T) {
 	if message.Body != "Workflow completed" {
 		t.Fatalf("swift card body=%q", message.Body)
 	}
-	if !strings.Contains(message.Attachments, `"type":"teams_card"`) ||
+	if !strings.Contains(message.Attachments, `"type":"adaptive_card"`) ||
 		!strings.Contains(message.Attachments, `"cardJson"`) {
 		t.Fatalf("structured card attachment was not retained: %s", message.Attachments)
 	}
@@ -139,16 +139,17 @@ func TestCapabilities(t *testing.T) {
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
 		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
-		MessagePinScope:            string(models.MessagePinScopeShared),
-		SupportsGroupManagement:    true,
-		SupportsAddGroupMembers:    true,
-		SupportsRemoveGroupMembers: true,
-		SupportsRenameGroup:        true,
-		SupportsGroupDescription:   true,
-		SupportsGroupAdminRoles:    true,
-		SupportsLeaveGroup:         true,
-		NativeEmojiReactions:       true,
-		SupportsContactDirectory:   true, SupportsDirectConversation: true,
+		MessagePinScope:                       string(models.MessagePinScopeShared),
+		SupportsGroupManagement:               true,
+		SupportsAddGroupMembers:               true,
+		SupportsRemoveGroupMembers:            true,
+		SupportsRenameGroup:                   true,
+		SupportsGroupDescription:              true,
+		SupportsGroupAdminRoles:               true,
+		SupportsLeaveGroup:                    true,
+		NativeEmojiReactions:                  true,
+		ReadCursorAuthoritativeForNewMessages: true,
+		SupportsContactDirectory:              true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
 		GroupConversationTypes: "group",
 	}

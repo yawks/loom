@@ -2,7 +2,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { KeyboardEvent, RefObject } from "react";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
-import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 
 import { CallMessage } from "./CallMessage";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
-import { hasTeamsAdaptiveCard } from "./TeamsAdaptiveCard";
+import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 
 interface MessageIRCItemProps {
   message: models.Message;
@@ -86,7 +86,7 @@ export function MessageIRCItem({
   displayIndexByMessageId,
 }: MessageIRCItemProps) {
   const { t } = useTranslation();
-  message = normalizeSlackQuotedReply(message);
+  message = normalizeSerializedQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
   const nextMessage = index < mainMessages.length - 1 ? mainMessages[index + 1] : null;
@@ -284,19 +284,19 @@ export function MessageIRCItem({
                             </div>
                           </div>
                         )}
-						{!showSender && displayedBody && !hasTeamsAdaptiveCard(message.attachments) && (
+						{!showSender && displayedBody && !hasStructuredAdaptiveCard(message.attachments) && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-						{showSender && displayedBody?.trim() && !hasTeamsAdaptiveCard(message.attachments) && (
+						{showSender && displayedBody?.trim() && !hasStructuredAdaptiveCard(message.attachments) && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-						{previewUrl && !hasTeamsAdaptiveCard(message.attachments) && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
+						{previewUrl && !hasStructuredAdaptiveCard(message.attachments) && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                         {message.attachments?.trim() && (
                           <MessageAttachments
                             attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments}

@@ -937,6 +937,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 			senderID = resolvedID
 		}
 	}
+	senderID = w.NormalizeParticipantID(senderID)
 
 	// Check if message is from me
 	isFromMe := evt.Info.IsFromMe
@@ -1053,7 +1054,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 		// Get quoted sender ID (Participant)
 		if contextInfo.GetParticipant() != "" {
-			participant := contextInfo.GetParticipant()
+			participant := w.NormalizeParticipantID(contextInfo.GetParticipant())
 			quotedSenderID = &participant
 		}
 
@@ -2410,7 +2411,7 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	}
 
 	// Convert to our Message model
-	senderID := w.client.Store.ID.String()
+	senderID := w.client.Store.ID.ToNonAD().String()
 	senderName := w.lookupSenderName(*w.client.Store.ID)
 	if senderName == "" {
 		senderName = senderID
@@ -2551,7 +2552,7 @@ func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedM
 	}
 
 	// Convert to our Message model
-	senderID := w.client.Store.ID.String()
+	senderID := w.client.Store.ID.ToNonAD().String()
 	senderName := w.lookupSenderName(*w.client.Store.ID)
 	if senderName == "" {
 		senderName = senderID
@@ -2972,7 +2973,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 			attachmentsJSON, _ := json.Marshal([]models.Attachment{attachment})
 
 			// Convert to our Message model
-			senderID := w.client.Store.ID.String()
+			senderID := w.client.Store.ID.ToNonAD().String()
 			senderName := w.lookupSenderName(*w.client.Store.ID)
 			if senderName == "" {
 				senderName = senderID
@@ -3007,7 +3008,7 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	}
 
 	// If caching failed, still return the message without attachment info
-	senderID := w.client.Store.ID.String()
+	senderID := w.client.Store.ID.ToNonAD().String()
 	senderName := w.lookupSenderName(*w.client.Store.ID)
 	if senderName == "" {
 		senderName = senderID

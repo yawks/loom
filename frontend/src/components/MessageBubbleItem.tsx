@@ -13,13 +13,13 @@ import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { cn, timeToDate, extractFirstUrl } from "@/lib/utils";
-import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSlackQuotedReply } from "@/lib/messageUtils";
+import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDifferentDay, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { models } from "../../wailsjs/go/models";
 import { useTranslation } from "react-i18next";
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 import { sameUserId } from "@/lib/userIdentity";
-import { hasTeamsAdaptiveCard } from "./TeamsAdaptiveCard";
+import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 
 export interface MessageHandlers {
   onToggleDeletedMessage: (id: string) => void;
@@ -109,10 +109,9 @@ export function MessageBubbleItem({
   displayIndexByMessageId,
 }: MessageBubbleItemProps) {
   const { t } = useTranslation();
-  // The cache can briefly contain Slack's transport representation alongside
-  // valid reply metadata. Normalize at the final render boundary so the raw
-  // quote is never rendered below the reply card.
-  message = normalizeSlackQuotedReply(message);
+  // Older cache rows can contain Loom's serialized quote representation instead
+  // of canonical reply fields. Normalize at the final render boundary.
+  message = normalizeSerializedQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
   const prevMessageDate = prevMessage ? timeToDate(prevMessage.timestamp) : null;
@@ -133,7 +132,7 @@ export function MessageBubbleItem({
   const displayedBody = photoGroupMessages && photoGroupMessages.length > 1
     ? mergePhotoGroupBody(photoGroupMessages)
     : message.body;
-	const hasStructuredCard = hasTeamsAdaptiveCard(message.attachments);
+	const hasStructuredCard = hasStructuredAdaptiveCard(message.attachments);
 
   const resolvedSenderName = (!message.isFromMe && message.senderId)
     ? (participantNames.get(message.senderId) || message.senderName)

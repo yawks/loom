@@ -31,7 +31,7 @@ import { getMessageDomId } from "@/lib/messageUtils";
 import { sameUserId } from "@/lib/userIdentity";
 import { models } from "../../wailsjs/go/models";
 import { MessageReactions } from "./MessageReactions";
-import { TeamsAdaptiveCard } from "./TeamsAdaptiveCard";
+import { isStructuredAdaptiveCardAttachment, StructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -826,7 +826,7 @@ export function MessageAttachments({
     const uniqueAttachments: Attachment[] = [];
 	const seenAttachmentURLs = new Set<string>();
     for (const attachment of parsed) {
-	  const identity = attachment.type === "teams_card" ? `card:${attachment.cardJson}` : attachment.url;
+	  const identity = isStructuredAdaptiveCardAttachment(attachment) ? `card:${attachment.cardJson}` : attachment.url;
 	  if (!seenAttachmentURLs.has(identity)) {
 		seenAttachmentURLs.add(identity);
         uniqueAttachments.push(attachment);
@@ -1068,8 +1068,8 @@ export function MessageAttachments({
       ) : (
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
-		  if (attachment.type === "teams_card" && attachment.cardJson) {
-			return <TeamsAdaptiveCard key={`teams-card-${index}`} cardJson={attachment.cardJson} />;
+		  if (isStructuredAdaptiveCardAttachment(attachment) && attachment.cardJson) {
+			return <StructuredAdaptiveCard key={`adaptive-card-${index}`} cardJson={attachment.cardJson} />;
 		  }
           if (attachment.type === "contact") {
             const name = attachment.contactName?.trim() || t("contact");

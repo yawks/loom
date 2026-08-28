@@ -3,7 +3,7 @@ import { timeToDate } from "./utils";
 import { getUserDisplayName } from "./userDisplayNames";
 
 export const htmlFragmentToText = (text: string): string => {
-  // Do not treat Slack links such as <https://example.com|label> as HTML.
+  // Do not treat angle-bracket link markup such as <https://example.com|label> as HTML.
   if (!/<\/?(?:a|b|blockquote|br|div|em|i|li|ol|p|span|strong|u|ul)\b[^>]*>/i.test(text)) {
     return text;
   }
@@ -23,8 +23,7 @@ export const getMessageDomId = (message: models.Message): string => {
   return `ts-${timeToDate(message.timestamp).getTime()}`;
 };
 
-const comparableParticipantId = (userId?: string): string =>
-  (userId || "").replace(/:\d+@s\.whatsapp\.net$/, "@s.whatsapp.net");
+const comparableParticipantId = (userId?: string): string => (userId || "").trim().toLocaleLowerCase("en-US");
 
 export const getQuotedSenderDisplayName = (
   message: models.Message,
@@ -60,11 +59,10 @@ export const getQuotedSenderDisplayName = (
   return contactLabel;
 };
 
-// Slack has no native quoted-reply field: it serializes a reply as a block quote.
-// Older cached messages (and messages edited by older Loom versions) may therefore
-// arrive without the quoted* fields. Recover them before rendering so they keep the
-// same reply card as newly-created messages.
-export const normalizeSlackQuotedReply = (message: models.Message): models.Message => {
+// Compatibility for older persisted messages whose canonical quoted* fields are
+// absent but whose body starts with Loom's serialized quoted-reply block.
+// This intentionally detects the generic serialization format, not a provider.
+export const normalizeSerializedQuotedReply = (message: models.Message): models.Message => {
   if (!message.body) return message;
 
   const lines = message.body
@@ -72,7 +70,7 @@ export const normalizeSlackQuotedReply = (message: models.Message): models.Messa
     .replace(/\r\n/g, "\n")
     .replace(/^[\s\u200B]+/, "")
     .split("\n");
-  // Slack may normalize *name* to _name_ when returning an edited message.
+  // Accept both emphasis styles because remote rich-text converters may normalize them.
   const header = lines[0]?.match(/^>\s*(?:\*([^*]+)\*|_([^_]+)_|(.+?))\s*$/);
   if (!header) return message;
 
@@ -151,21 +149,8 @@ export function getSenderDisplayName(
   }
   if (senderName?.trim() && senderName !== senderId) return senderName;
 
-  const whatsappMatch = senderId.match(/^(\d+)@s\.whatsapp\.net$/);
-  if (whatsappMatch) {
-    const phoneNumber = whatsappMatch[1];
-    if (phoneNumber.startsWith("33") && phoneNumber.length >= 10) {
-      const countryCode = phoneNumber.substring(0, 2);
-      const rest = phoneNumber.substring(2);
-      return `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7)}`;
-    }
-    const formatted = phoneNumber.replace(/(\d{2})(?=\d)/g, "$1 ");
-    return `+${formatted}`;
-  }
-
   return senderId
     .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
     .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

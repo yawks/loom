@@ -25,6 +25,8 @@ export namespace core {
 	    supportsMuteConversation: boolean;
 	    supportsQRCodeAuth: boolean;
 	    nativeEmojiReactions: boolean;
+	    readCursorAuthoritativeForNewMessages: boolean;
+	    ownActivityAdvancesReadBoundary: boolean;
 	    supportsContactDirectory: boolean;
 	    supportsDirectConversation: boolean;
 	    supportsPhoneNumberRecipient: boolean;
@@ -63,6 +65,8 @@ export namespace core {
 	        this.supportsMuteConversation = source["supportsMuteConversation"];
 	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
 	        this.nativeEmojiReactions = source["nativeEmojiReactions"];
+	        this.readCursorAuthoritativeForNewMessages = source["readCursorAuthoritativeForNewMessages"];
+	        this.ownActivityAdvancesReadBoundary = source["ownActivityAdvancesReadBoundary"];
 	        this.supportsContactDirectory = source["supportsContactDirectory"];
 	        this.supportsDirectConversation = source["supportsDirectConversation"];
 	        this.supportsPhoneNumberRecipient = source["supportsPhoneNumberRecipient"];

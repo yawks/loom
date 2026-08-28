@@ -6335,13 +6335,11 @@ export function emojiNameToUnicode(name: string): string | null {
     return directMatch;
   }
 
-  // Emoji pickers sometimes expose human-readable aliases containing hyphens
-  // (for example "upside-down_face"), while Slack uses underscores in its
-  // canonical shortcodes. Accept both forms so previously stored reactions
-  // render and group with the canonical Slack reaction.
-  const slackCompatibleMatch = unicodeEmojiMap[name.replaceAll("-", "_")];
-  if (slackCompatibleMatch) {
-    return slackCompatibleMatch;
+  // Emoji APIs differ between hyphenated and underscored shortcode aliases.
+  // Accept both forms so previously stored reactions group canonically.
+  const underscoreCompatibleMatch = unicodeEmojiMap[name.replaceAll("-", "_")];
+  if (underscoreCompatibleMatch) {
+    return underscoreCompatibleMatch;
   }
 
   const toneMatch = name.match(SKIN_TONE_PATTERN);

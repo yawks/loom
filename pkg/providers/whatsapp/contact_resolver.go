@@ -127,11 +127,25 @@ func (w *WhatsAppProvider) resolveContactID(contactID string) (string, error) {
 // senders. WhatsApp commonly uses a LID for group reactions even when the
 // participant is already known by their phone-number JID.
 func (w *WhatsAppProvider) canonicalReactionUserID(userID string) string {
-	resolved, err := w.resolveContactID(userID)
-	if err == nil && resolved != "" {
+	return w.NormalizeParticipantID(userID)
+}
+
+// NormalizeParticipantID removes device qualification and resolves LID aliases
+// before an identity crosses the backend/frontend boundary.
+func (w *WhatsAppProvider) NormalizeParticipantID(userID string) string {
+	jid, err := types.ParseJID(userID)
+	if err != nil {
+		return userID
+	}
+	nonAD := jid.ToNonAD().String()
+	resolved, resolveErr := w.resolveContactID(nonAD)
+	if resolveErr == nil && resolved != "" {
+		if resolvedJID, parseErr := types.ParseJID(resolved); parseErr == nil {
+			return resolvedJID.ToNonAD().String()
+		}
 		return resolved
 	}
-	return userID
+	return nonAD
 }
 
 // resolveContactIDForGroup resolves a contact ID in a group context.

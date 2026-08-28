@@ -233,13 +233,18 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			return err
 		}
 		if len(messages) > 0 {
-			read, unread := core.SplitRecoveredMessagesByOwnActivity(messages, client.UserMRI())
+			activityAt := db.LatestOwnActivityAt(messages[0].ProtocolConvID, client.UserMRI())
+			read, unread := core.SplitRecoveredMessagesAtOwnActivity(messages, client.UserMRI(), activityAt)
 			if len(read) > 0 {
 				p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: read, ForceRead: true})
 			}
 			if len(unread) > 0 {
 				p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: unread, ForceUnread: true})
 			}
+		}
+		activityAt := db.LatestOwnActivityAt(account.ConversationID, client.UserMRI())
+		if readThrough := db.MessagesReadThrough(account.ConversationID, activityAt, 1000); len(readThrough) > 0 {
+			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: account.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
 	if err := p.repairStoredHTMLFormatting(); err != nil {
@@ -1055,16 +1060,17 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
 		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
-		MessagePinScope:            string(models.MessagePinScopeShared),
-		SupportsGroupManagement:    true,
-		SupportsLeaveGroup:         true,
-		SupportsAddGroupMembers:    true,
-		SupportsRemoveGroupMembers: true,
-		SupportsRenameGroup:        true,
-		SupportsGroupDescription:   true,
-		SupportsGroupAdminRoles:    true,
-		NativeEmojiReactions:       true,
-		SupportsContactDirectory:   true, SupportsDirectConversation: true,
+		MessagePinScope:                       string(models.MessagePinScopeShared),
+		SupportsGroupManagement:               true,
+		SupportsLeaveGroup:                    true,
+		SupportsAddGroupMembers:               true,
+		SupportsRemoveGroupMembers:            true,
+		SupportsRenameGroup:                   true,
+		SupportsGroupDescription:              true,
+		SupportsGroupAdminRoles:               true,
+		NativeEmojiReactions:                  true,
+		ReadCursorAuthoritativeForNewMessages: true,
+		SupportsContactDirectory:              true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
 		RequiresGroupTitle: false, GroupConversationTypes: "group",
 	}
@@ -1364,7 +1370,7 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	attachments := make([]models.Attachment, 0, len(remote.Attachments)+len(remote.SharedFiles))
 	for _, cardJSON := range teamsSwiftCardPayloads(remote.Content) {
 		attachments = append(attachments, models.Attachment{
-			Type: "teams_card", MimeType: "application/vnd.microsoft.card.adaptive", CardJSON: cardJSON,
+			Type: "adaptive_card", MimeType: "application/vnd.microsoft.card.adaptive", CardJSON: cardJSON,
 		})
 	}
 	seenAttachmentURLs := make(map[string]struct{})

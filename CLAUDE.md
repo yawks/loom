@@ -95,6 +95,27 @@ Now uses `getColorFromString` and `getSenderDisplayName` from `@/lib/messageUtil
 
 ## Conventions
 
+### Golden rule: provider-neutral frontend
+
+Except for provider configuration and bundled brand assets/icons, code under
+`frontend/src` must not know about individual providers.
+
+- Never branch on a provider ID or on a provider-specific conversation/message
+  ID prefix in frontend business logic.
+- Provider wire formats, remote IDs, receipts, reactions, quotes and attachments
+  must be normalized by the provider/backend into canonical Loom models.
+- UI differences must be driven by provider-neutral capabilities or data
+  contracts. Add a capability or canonical field instead of testing for Slack,
+  WhatsApp, Teams, Google Messages, etc.
+- A compatibility fallback for already-persisted data must detect a generic
+  format rather than a provider, be clearly identified as legacy behavior, and
+  have regression coverage.
+- Provider configuration flows and local mappings for brand icons are explicit
+  exceptions. Do not let their provider-specific behavior leak elsewhere.
+
+Before completing a frontend change, search `frontend/src` for provider names
+and justify every remaining occurrence outside the two exceptions.
+
 - The "bubble" and "irc" layouts are mutually exclusive branches in `Virtuoso.itemContent`
 - `MessageHandlers` is the shared interface for all interaction callbacks — passing it as a `handlers` prop avoids prop explosion
 - Optimistic React Query cache updates follow the pattern: immediate `queryClient.setQueryData` → API call → rollback on error

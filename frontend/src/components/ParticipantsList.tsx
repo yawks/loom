@@ -43,7 +43,7 @@ async function fetchParticipantsData(conversationId: string, isGroup: boolean): 
 }> {
   // Direct conversations derive their participants from messages. Calling the
   // provider's group endpoint for them is both unnecessary and an error for
-  // providers such as WhatsApp.
+  // providers that use separate conversation and participant identifiers.
   if (!isGroup) {
     return { groupParticipants: [], participantNames: {} };
   }
@@ -81,32 +81,9 @@ function getSenderDisplayName(
   if (senderName && senderName.trim().length > 0) {
     return senderName;
   }
-  // Robust handling: extract local part from various WhatsApp ID formats
-  // Supports: "33603018166@s.whatsapp.net", "186560595132538:6@lid", "187119343554767:7@lid"
-  let phoneNumber: string | null = null;
-
-  // Match "digits" optionally followed by ":digits@server"
-  const match = senderId.match(/^(\d+)(?::\d+)?@/);
-  if (match) {
-    phoneNumber = match[1];
-  }
-
-  if (phoneNumber) {
-    // If this looks like a French number (starts with 33 and 11 digits) format nicely
-    if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
-      const countryCode = phoneNumber.substring(0, 2); // "33"
-      const rest = phoneNumber.substring(2); // 9 digits
-      const formatted = `+${countryCode} ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
-      return formatted;
-    }
-    // For other numeric local parts, return with a leading + and no odd grouping
-    return `+${phoneNumber}`;
-  }
-
   // Fallback for other ID formats: try to return a readable label
   return senderId
     .replace(/^user-/, "")
-    .replace(/^whatsapp-/, "")
     .replace(/^[a-z]+-/, "")
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -268,12 +245,6 @@ export function ParticipantsList({
     // Ensure messages is an array before iterating
     if (messages && Array.isArray(messages)) {
       messages.forEach((msg) => {
-        // Skip messages from senders with malformed IDs (e.g., "186560595132538:6@lid")
-        // These are internal WhatsApp metadata, not real participants
-        if (/:\d+@/.test(msg.senderId)) {
-          return; // Skip this sender
-        }
-
         const existing = participantMap.get(msg.senderId);
         const msgTime = timeToDate(msg.timestamp);
 
@@ -371,21 +342,7 @@ export function ParticipantsList({
           participant.isFromMe
         );
 
-        // WhatsApp presence check via presenceMap
-        const isOnlinePresence = presenceMap[participant.senderId] === true;
-        let presenceMatch = isOnlinePresence;
-        if (!presenceMatch && participant.senderId.includes("@")) {
-          const jidPhone = participant.senderId.split("@")[0];
-          for (const [lid, online] of Object.entries(presenceMap)) {
-            if (online && lid.endsWith("@lid")) {
-              const lidPhone = lid.replace(/@lid$/, "").replace(/:\d+$/, "");
-              if (jidPhone === lidPhone) {
-                presenceMatch = true;
-                break;
-              }
-            }
-          }
-        }
+        const presenceMatch = presenceMap[participant.senderId] === true;
 
         // Find the participant's own linked account for provider status/avatar.
         // First try direct match in selectedConversation (works for DMs).

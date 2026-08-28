@@ -325,6 +325,12 @@ type Capabilities struct {
 	// NativeEmojiReactions indicates the provider's reaction API expects raw Unicode
 	// emoji characters (e.g. "👍") rather than Slack-style names (e.g. "+1").
 	NativeEmojiReactions bool `json:"nativeEmojiReactions"`
+	// ReadCursorAuthoritativeForNewMessages controls whether a conversation-level
+	// cursor may classify a newly observed incoming message as read.
+	ReadCursorAuthoritativeForNewMessages bool `json:"readCursorAuthoritativeForNewMessages"`
+	// OwnActivityAdvancesReadBoundary repairs local unread state through the most
+	// recent own message or reaction when the remote service exposes that signal.
+	OwnActivityAdvancesReadBoundary bool `json:"ownActivityAdvancesReadBoundary"`
 	// Conversation creation capabilities are intentionally more precise than
 	// SupportsGroupManagement, which also covers editing existing groups.
 	SupportsContactDirectory     bool `json:"supportsContactDirectory"`
@@ -389,6 +395,13 @@ type PhoneConversationCreator interface {
 
 type CurrentUserProvider interface {
 	CurrentUserID() string
+}
+
+// ParticipantIdentityNormalizer converts provider wire identifiers into the
+// stable identifier exposed by Loom's frontend model. Providers whose remote
+// service has aliases or device-qualified IDs should implement it.
+type ParticipantIdentityNormalizer interface {
+	NormalizeParticipantID(string) string
 }
 
 // ContactStatusRefresher provides accurate on-demand presence for providers

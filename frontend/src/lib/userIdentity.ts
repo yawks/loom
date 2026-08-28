@@ -2,8 +2,7 @@
 export function canonicalUserId(userId?: string): string {
   return (userId ?? "")
     .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/^(\d+):\d+@(?=(?:s\.whatsapp\.net|lid)$)/, "$1@");
+    .toLocaleLowerCase("en-US");
 }
 
 export function sameUserId(left?: string, right?: string): boolean {

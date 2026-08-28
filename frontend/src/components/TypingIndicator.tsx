@@ -33,19 +33,7 @@ export function TypingIndicator({ conversationId, variant = "input" }: TypingInd
         return user.userName;
       }
       
-      // Fallback: Extract phone number from WhatsApp JID if possible
-      const match = user.userId.match(/^(\d+)@/);
-      if (match) {
-        const phoneNumber = match[1];
-        // Format French numbers nicely
-        if (phoneNumber.startsWith("33") && phoneNumber.length === 11) {
-          const rest = phoneNumber.substring(2);
-          return `+33 ${rest.substring(0, 1)} ${rest.substring(1, 3)} ${rest.substring(3, 5)} ${rest.substring(5, 7)} ${rest.substring(7, 9)}`;
-        }
-        return `+${phoneNumber}`;
-      }
-      
-      // Last resort: use userId as-is
+      // Providers should resolve display names before emitting typing events.
       return user.userId;
     });
 
