@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 )
 
@@ -71,7 +72,15 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 		}
 		p.lastSeenMu.Unlock()
 
-		filter := `createTime > "` + since.UTC().Format(time.RFC3339) + `"`
+		// Include the boundary message again after the first poll. Google Chat
+		// changes reaction resources without changing the message createTime, so a
+		// strictly forward-only query can never observe a reaction on the latest
+		// message while Loom remains connected.
+		querySince := since
+		if ok {
+			querySince = since.Add(-time.Nanosecond)
+		}
+		filter := `createTime > "` + querySince.UTC().Format(time.RFC3339Nano) + `"`
 		params := url.Values{
 			"pageSize": {"50"},
 			"filter":   {filter},
@@ -93,9 +102,29 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 
 		var latest time.Time
 		newMessages := make([]models.Message, 0, len(rawMsgs))
+		reactionSnapshots := make(map[string][]models.Reaction)
 		for _, msg := range rawMsgs {
 			m := p.convertMessage(msg, space.Name, selfID)
 			m.ThreadID = resolveThreadID(msg, batchRoots)
+			// Message resources only contain reaction summaries. Fetch the actual
+			// reaction authors for both new messages and the re-read boundary message.
+			// An empty summary is authoritative and also detects removals.
+			if len(msg.EmojiReactionSummaries) == 0 {
+				reactionSnapshots[msg.Name] = nil
+			} else if reactions, err := p.listMessageReactions(msg.Name); err != nil {
+				p.log("GoogleChatProvider.pollAllSpaces: list reactions for %s: %v\n", msg.Name, err)
+			} else {
+				m.Reactions = reactions
+				reactionSnapshots[msg.Name] = reactions
+			}
+
+			isBoundaryRefresh := ok && !msg.CreateTime.After(since)
+			if isBoundaryRefresh {
+				if reactions, authoritative := reactionSnapshots[msg.Name]; authoritative {
+					p.emitReactionDiff(space.Name, msg.Name, reactions)
+				}
+				continue
+			}
 			// If the parent is not in this batch, fetch it via API.
 			if msg.ThreadReply && m.ThreadID == nil && msg.Thread != nil && msg.Thread.Name != "" {
 				if parentID := p.resolveThreadParentFromAPI(space.Name, msg.Thread.Name); parentID != "" {
@@ -118,7 +147,7 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 				latest = msg.CreateTime
 			}
 		}
-		p.storeMessagesForConversation(space.Name, newMessages)
+		p.storeMessagesForConversation(space.Name, newMessages, reactionSnapshots)
 
 		if !latest.IsZero() {
 			p.lastSeenMu.Lock()
@@ -129,6 +158,44 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 			p.lastSeenMu.Lock()
 			p.lastSeen[space.Name] = time.Now()
 			p.lastSeenMu.Unlock()
+		}
+	}
+}
+
+// emitReactionDiff turns a polled reaction snapshot into canonical live events.
+// Persistence is still handled centrally by the app event loop.
+func (p *GoogleChatProvider) emitReactionDiff(convID, messageID string, current []models.Reaction) {
+	if db.DB == nil {
+		return
+	}
+	var message models.Message
+	namespacedConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, namespacedConvID).First(&message).Error; err != nil {
+		return
+	}
+	var previous []models.Reaction
+	if err := db.DB.Where("message_id = ?", message.ID).Find(&previous).Error; err != nil {
+		return
+	}
+	key := func(reaction models.Reaction) string { return reaction.UserID + "\x00" + reaction.Emoji }
+	previousByKey := make(map[string]models.Reaction, len(previous))
+	currentByKey := make(map[string]models.Reaction, len(current))
+	for _, reaction := range previous {
+		previousByKey[key(reaction)] = reaction
+	}
+	for _, reaction := range current {
+		currentByKey[key(reaction)] = reaction
+		if _, exists := previousByKey[key(reaction)]; !exists {
+			timestamp := reaction.CreatedAt.Unix()
+			if timestamp <= 0 {
+				timestamp = time.Now().Unix()
+			}
+			p.emit(core.ReactionEvent{InstanceID: p.getInstanceID(), ConversationID: namespacedConvID, MessageID: messageID, UserID: reaction.UserID, Emoji: reaction.Emoji, Added: true, Timestamp: timestamp})
+		}
+	}
+	for _, reaction := range previous {
+		if _, exists := currentByKey[key(reaction)]; !exists {
+			p.emit(core.ReactionEvent{InstanceID: p.getInstanceID(), ConversationID: namespacedConvID, MessageID: messageID, UserID: reaction.UserID, Emoji: reaction.Emoji, Added: false, Timestamp: time.Now().Unix()})
 		}
 	}
 }

@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
+import type { PluggableList } from "unified";
 
 interface SerializedInlineQuote {
   sender: string;
@@ -20,6 +21,47 @@ interface SerializedInlineQuote {
 }
 
 const SAFE_RICH_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
+
+interface HastNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+function rehypeSearchHighlight(query: string) {
+  const escapedQuery = query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matcher = escapedQuery ? new RegExp(`(${escapedQuery})`, "giu") : null;
+
+  return (tree: HastNode) => {
+    if (!matcher) return;
+    const visit = (node: HastNode) => {
+      if (!node.children || node.tagName === "mark") return;
+      node.children = node.children.flatMap((child) => {
+        if (child.type !== "text" || !child.value) {
+          visit(child);
+          return [child];
+        }
+        const parts = child.value.split(matcher);
+        if (parts.length === 1) return [child];
+        return parts.filter(Boolean).map((part, index) =>
+          index % 2 === 1
+            ? {
+                type: "element",
+                tagName: "mark",
+                properties: {
+                  className: ["rounded-sm", "bg-yellow-300", "px-0.5", "text-inherit", "dark:bg-yellow-500/50"],
+                },
+                children: [{ type: "text", value: part }],
+              }
+            : { type: "text", value: part }
+        );
+      });
+    };
+    visit(tree);
+  };
+}
 
 function richTextStyle(element: Element): CSSProperties {
   const style: CSSProperties = {};
@@ -173,6 +215,7 @@ interface MessageTextProps {
   emojiSize?: number; // Size for emojis in pixels (default: 16)
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user
+  highlightQuery?: string; // Literal text to emphasize in search previews
 }
 
 /**
@@ -186,6 +229,7 @@ export const MessageText = memo(function MessageText({
   emojiSize = 16,
   preview = false,
   isFromMe = false,
+  highlightQuery = "",
 }: MessageTextProps) {
   useRenderCount("MessageText", { textLength: text?.length, preview });
   const serializedInlineQuote = useMemo(() => parseSerializedInlineQuote(text), [text]);
@@ -325,13 +369,20 @@ export const MessageText = memo(function MessageText({
     () => (preview ? [remarkGfm] : [remarkGfm, remarkBreaks]),
     [preview]
   );
+  const rehypePlugins = useMemo<PluggableList>(
+    () => [
+      [rehypeHighlight, { detect: true }],
+      [rehypeSearchHighlight, highlightQuery],
+    ],
+    [highlightQuery]
+  );
 
   if (!parsedContent) return null;
 
   const renderMarkdownBase = (content: string, isInline = false) => (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
-      rehypePlugins={[[rehypeHighlight, { detect: true }]]}
+      rehypePlugins={rehypePlugins}
       components={isInline ? inlineComponents : blockComponents}
       urlTransform={(url) => (url.startsWith("loom://") || url.startsWith("loom-emoji://") ? url : defaultUrlTransform(url))}
     >
@@ -373,7 +424,17 @@ export const MessageText = memo(function MessageText({
     const renderNodes = (nodes: NodeListOf<ChildNode> | ChildNode[], inline: boolean): ReactNode[] =>
       Array.from(nodes).map((node, index) => {
         if (node.nodeType === Node.TEXT_NODE) {
-          return <React.Fragment key={index}>{renderMarkdownBase(node.textContent ?? "", inline)}</React.Fragment>;
+          const value = node.textContent ?? "";
+          // Plain fragments already contain the exact spacing supplied by the
+          // canonical message. Sending each one through react-markdown creates
+          // a paragraph AST and can add separator whitespace around adjacent
+          // inline rich-text elements.
+          const needsMarkdown = /[\n*_~`<>]|https?:\/\/|loom-emoji:\/\//i.test(value) ||
+            value.includes("[") || value.includes("]");
+          if (!needsMarkdown) {
+            return <React.Fragment key={index}>{value}</React.Fragment>;
+          }
+          return <React.Fragment key={index}>{renderMarkdownBase(value, inline)}</React.Fragment>;
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return null;
         const element = node as Element;
@@ -384,7 +445,12 @@ export const MessageText = memo(function MessageText({
         }
         return <React.Fragment key={index}>{children}</React.Fragment>;
       });
-    return <>{renderNodes(documentNode.body.childNodes, isInline)}</>;
+    // The DOM nodes here are fragments of one Markdown document, not separate
+    // blocks. Rendering root text nodes in block mode makes react-markdown wrap
+    // the text on either side of an inline rich tag in separate <p> elements
+    // (for example `before <u>under</u> after`). Keep every fragment inline;
+    // explicit Markdown line breaks are still handled by remark-breaks.
+    return <>{renderNodes(documentNode.body.childNodes, true)}</>;
   };
 
   if (serializedInlineQuote) {

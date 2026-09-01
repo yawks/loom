@@ -528,25 +528,37 @@ export function MessageList({
   // Capture the unread boundary whenever the selected conversation contains
   // unread messages, independently from window focus. This layout-phase
   // snapshot happens before the passive effect that marks the conversation as
-  // read, and remains visible after the server/read-store update.
+  // read, and remains visible after the server/read-store update. Restrict the
+  // boundary to incoming messages: a provider echo can briefly be classified
+  // as incoming before its ownership metadata is enriched.
   useLayoutEffect(() => {
     const unreadIds = mainMessages
+      .filter((message) => !message.isFromMe)
       .map((message) => getMessageDomId(message))
       .filter((messageId) => conversationReadState[messageId] === false);
-    if (unreadIds.length === 0) return;
 
     setUnreadBoundary((current) => {
+      const currentBoundaryMessage = current?.conversationId === conversationId
+        ? mainMessages.find((message) => getMessageDomId(message) === current.firstMessageId)
+        : undefined;
+      const validCurrent = currentBoundaryMessage?.isFromMe ? null : current;
+      if (unreadIds.length === 0) {
+        if (validCurrent?.conversationId !== conversationId) return validCurrent;
+        // Keep a genuine incoming boundary after its read state is consumed,
+        // but discard a provider echo that was subsequently confirmed as ours.
+        return validCurrent;
+      }
       if (
-        current?.conversationId === conversationId &&
-        current.firstMessageId === unreadIds[0] &&
-        current.count === unreadIds.length
+        validCurrent?.conversationId === conversationId &&
+        validCurrent.firstMessageId === unreadIds[0] &&
+        validCurrent.count === unreadIds.length
       ) {
-        return current;
+        return validCurrent;
       }
       return {
         conversationId,
-        firstMessageId: current?.conversationId === conversationId
-          ? current.firstMessageId
+        firstMessageId: validCurrent?.conversationId === conversationId
+          ? validCurrent.firstMessageId
           : unreadIds[0],
         count: unreadIds.length,
       };
@@ -945,7 +957,9 @@ export function MessageList({
       return reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId);
     });
 
-    queryClient.setQueryData<InfiniteData<models.Message[]>>(
+    // Without a canonical self ID, wait for the backend event instead of
+    // inserting an anonymous optimistic author that would render as "?".
+    if (currentUserId) queryClient.setQueryData<InfiniteData<models.Message[]>>(
       ["messages", conversationId],
       (oldData) => {
         if (!oldData) return oldData;
@@ -958,7 +972,7 @@ export function MessageList({
                 ? (msg.reactions || []).filter((r) => {
                     return !(reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId));
                   })
-                : [...(msg.reactions || []), models.Reaction.createFrom({ id: 0, messageId: msg.id, userId: currentUserId || "", emoji: storedEmoji, createdAt: new Date(), updatedAt: new Date() })];
+                : [...(msg.reactions || []), models.Reaction.createFrom({ id: 0, messageId: msg.id, userId: currentUserId, emoji: storedEmoji, createdAt: new Date(), updatedAt: new Date() })];
               return models.Message.createFrom({ ...msg, reactions: updatedReactions });
             })
           ),
@@ -1049,6 +1063,7 @@ export function MessageList({
           </div>
         )}
         <MessageHeader
+          metaContactId={selectedConversation.id}
           displayName={selectedConversation.displayName}
           avatarUrl={selectedConversation.avatarUrl}
           conversationId={conversationId}

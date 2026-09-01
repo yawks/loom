@@ -421,6 +421,7 @@ func (p *GoogleChatProvider) RemoveReaction(convID, messageID, emoji string) err
 func (p *GoogleChatProvider) convertMessage(m ChatMessage, convID, selfID string) models.Message {
 	// convID may be a raw space name; namespace it for consistent storage.
 	convID = core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	selfID = p.recoverSelfID(selfID)
 	senderID := ""
 	senderName := ""
 	senderAvatarURL := ""
@@ -514,6 +515,35 @@ func (p *GoogleChatProvider) convertMessage(m ChatMessage, convID, selfID string
 		IsEdited:         isEdited,
 		EditedTimestamp:  editedTS,
 	}
+}
+
+// recoverSelfID falls back to identity already established by earlier outgoing
+// messages when Google's userinfo endpoint is temporarily unavailable. Without
+// this, messages sent from another native client during that startup are stored
+// as incoming and incorrectly become unread. Only an unambiguous historical ID
+// is accepted.
+func (p *GoogleChatProvider) recoverSelfID(selfID string) string {
+	if strings.TrimSpace(selfID) != "" || db.DB == nil {
+		return selfID
+	}
+	var senderIDs []string
+	db.DB.Model(&models.Message{}).
+		Distinct("messages.sender_id").
+		Joins("JOIN conversations ON conversations.protocol_conv_id = messages.protocol_conv_id").
+		Joins("JOIN linked_accounts ON linked_accounts.id = conversations.linked_account_id").
+		Where("linked_accounts.provider_instance_id = ? AND linked_accounts.protocol = ? AND messages.is_from_me = ? AND messages.sender_id <> ?", p.getInstanceID(), "googlechat", true, "").
+		Limit(2).
+		Pluck("messages.sender_id", &senderIDs)
+	if len(senderIDs) != 1 {
+		return selfID
+	}
+	p.mu.Lock()
+	if p.selfID == "" {
+		p.selfID = senderIDs[0]
+	}
+	selfID = p.selfID
+	p.mu.Unlock()
+	return selfID
 }
 
 // getMessageThreadName returns the Google Chat thread name (spaces/xxx/threads/yyy)
@@ -622,13 +652,14 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 
 	type existingRecord struct {
 		ThreadID *string
+		IsFromMe bool
 	}
 	var existing []models.Message
 	existingMap := make(map[string]existingRecord)
 	if len(msgIDs) > 0 {
 		db.DB.Where("protocol_msg_id IN ?", msgIDs).Find(&existing)
 		for _, m := range existing {
-			existingMap[m.ProtocolMsgID] = existingRecord{ThreadID: m.ThreadID}
+			existingMap[m.ProtocolMsgID] = existingRecord{ThreadID: m.ThreadID, IsFromMe: m.IsFromMe}
 		}
 	}
 
@@ -640,6 +671,14 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		}
 		seen[m.ProtocolMsgID] = true
 		if rec, exists := existingMap[m.ProtocolMsgID]; exists {
+			// A transient failure to resolve the current Google user can cause a
+			// native-client outgoing message to be inserted as incoming. Repair the
+			// canonical flag once identity is available on a later sync.
+			if m.IsFromMe && !rec.IsFromMe {
+				db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ? AND protocol_conv_id = ?", m.ProtocolMsgID, nsConvID).
+					Update("is_from_me", true)
+			}
 			// Patch thread_id when the API now reports a thread but the DB has none.
 			if m.ThreadID != nil && *m.ThreadID != "" && (rec.ThreadID == nil || *rec.ThreadID == "") {
 				db.DB.Model(&models.Message{}).
@@ -709,6 +748,19 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 			continue
 		}
 		err := db.DB.Transaction(func(tx *gorm.DB) error {
+			// Google Chat reaction resources may omit createTime. Preserve the
+			// timestamp of a reaction we already know; otherwise use the message
+			// timestamp as a conservative lower bound. Letting GORM fill a missing
+			// CreatedAt with time.Now() would make an unchanged conversation look
+			// active after every startup refresh.
+			var existingReactions []models.Reaction
+			if err := tx.Where("message_id = ?", stored.ID).Find(&existingReactions).Error; err != nil {
+				return err
+			}
+			existingCreatedAt := make(map[string]time.Time, len(existingReactions))
+			for _, reaction := range existingReactions {
+				existingCreatedAt[reaction.UserID+"\x00"+reaction.Emoji] = reaction.CreatedAt
+			}
 			if err := tx.Where("message_id = ?", stored.ID).Delete(&models.Reaction{}).Error; err != nil {
 				return err
 			}
@@ -719,6 +771,13 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 			for i := range storedReactions {
 				storedReactions[i].ID = 0
 				storedReactions[i].MessageID = stored.ID
+				if storedReactions[i].CreatedAt.IsZero() {
+					key := storedReactions[i].UserID + "\x00" + storedReactions[i].Emoji
+					storedReactions[i].CreatedAt = existingCreatedAt[key]
+					if storedReactions[i].CreatedAt.IsZero() {
+						storedReactions[i].CreatedAt = stored.Timestamp
+					}
+				}
 			}
 			return tx.Create(&storedReactions).Error
 		})

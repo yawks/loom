@@ -2303,6 +2303,8 @@ func normalizeSlackReactionName(emoji string) string {
 	// emoji-picker-react uses CLDR-style underscore names for these gendered
 	// ZWJ sequences, while Slack exposes them with hyphens.
 	switch emoji {
+	case "bicep", "biceps", "flex", "flexed_biceps", "flexing", "muscles", "strength", "strong":
+		return "muscle"
 	case "man_raising_hand":
 		return "man-raising-hand"
 	case "woman_raising_hand":

@@ -198,10 +198,10 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 }
 
 // pollLatestConversationUpdates recovers messages omitted or delayed by
-// search.messages. Slack includes the latest message in conversations.list, so
-// history is fetched only for conversations whose advertised latest ID is not
-// present locally. This also retains the huddle fallback previously implemented
-// by this polling pass.
+// search.messages. Some Slack user-token responses omit `latest` while still
+// reporting a non-zero unread count. In that case history must be queried too:
+// otherwise an account without search:read and rtm:stream can only receive the
+// message during a manual resync.
 func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 	p.mu.RLock()
 	client := p.client
@@ -228,14 +228,15 @@ func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 
 		for _, channel := range channels {
 			latest := channel.Latest
-			if latest == nil || latest.Timestamp == "" {
-				continue
-			}
 			normalizedConvID := core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(channel.ID))
-			var count int64
-			if err := db.DB.Model(&models.Message{}).
-				Where("protocol_conv_id = ? AND protocol_msg_id = ?", normalizedConvID, latest.Timestamp).
-				Count(&count).Error; err != nil || count > 0 {
+			if latest != nil && latest.Timestamp != "" {
+				var count int64
+				if err := db.DB.Model(&models.Message{}).
+					Where("protocol_conv_id = ? AND protocol_msg_id = ?", normalizedConvID, latest.Timestamp).
+					Count(&count).Error; err != nil || count > 0 {
+					continue
+				}
+			} else if channel.UnreadCount == 0 && channel.UnreadCountDisplay == 0 {
 				continue
 			}
 
@@ -249,7 +250,7 @@ func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 			var since time.Time
 			if localLatest != nil {
 				since = *localLatest
-			} else {
+			} else if latest != nil && latest.Timestamp != "" {
 				timestamp, parseErr := strconv.ParseFloat(latest.Timestamp, 64)
 				if parseErr != nil {
 					p.log("SlackProvider.pollLatestConversationUpdates: invalid timestamp %q: %v\n", latest.Timestamp, parseErr)
@@ -257,6 +258,11 @@ func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 				}
 				seconds := int64(timestamp)
 				since = time.Unix(seconds, int64((timestamp-float64(seconds))*1e9)).Add(-time.Second)
+			} else {
+				// Newly discovered unread conversation with no advertised latest
+				// message. A bounded lookback avoids an unbounded initial history
+				// fetch while still recovering the notification that exposed it.
+				since = time.Now().Add(-24 * time.Hour)
 			}
 
 			var existingIDs []string

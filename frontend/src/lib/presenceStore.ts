@@ -17,7 +17,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
   lastSeenMap: {},
 
   setPresence: (userID: string, isOnline: boolean, lastSeen: number) => {
-    console.log(`[PresenceStore] Setting presence for ${userID}: online=${isOnline}, lastSeen=${lastSeen}`);
     set((state) => {
       // Only update if the value actually changed
       const currentOnline = state.presenceMap[userID];
@@ -25,7 +24,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       
       if (currentOnline === isOnline && currentLastSeen === (lastSeen > 0 ? lastSeen : currentLastSeen)) {
         // No change, return state as-is to prevent unnecessary re-renders
-        console.log(`[PresenceStore] No change detected for ${userID}, skipping update`);
         return state;
       }
       
@@ -36,9 +34,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       if (lastSeen > 0) {
         newLastSeenMap[userID] = lastSeen;
       }
-      
-      console.log(`[PresenceStore] Updated presenceMap:`, Object.entries(newPresenceMap));
-      console.log(`[PresenceStore] New presenceMap object reference created`);
       
       return {
         presenceMap: newPresenceMap,
@@ -59,10 +54,8 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
 // Listen to presence events from backend
 if (typeof window !== "undefined") {
   EventsOn("presence", (eventData: string) => {
-    console.log("Presence event received:", eventData);
     try {
       const event = JSON.parse(eventData) as { userId: string; isOnline: boolean; lastSeen: number };
-      console.log("Parsed presence event:", event);
       usePresenceStore.getState().setPresence(event.userId, event.isOnline, event.lastSeen);
     } catch (error) {
       console.error("Failed to parse presence event:", error, eventData);

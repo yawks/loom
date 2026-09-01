@@ -128,8 +128,14 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 
 	var data []byte
 	var contentType string
-	if isSharedFile {
+	if isSharedFile && sharedFile.ItemID != "" {
 		data, contentType, err = client.FetchSharedFile(context.Background(), sharedFile)
+	} else if isSharedFile {
+		// Some Teams video shares omit the SharePoint item ID while still
+		// providing an authenticated file/share URL. The UniqueId endpoint cannot
+		// serve those files, so use SharePoint's direct download flow instead.
+		sharedURL := firstNonEmptySharedFileURL(sharedFile.ShareURL, sharedFile.FileURL, fileURL)
+		data, contentType, err = client.FetchSharedLink(context.Background(), sharedURL)
 	} else if isSharePointURL(fileURL) {
 		data, contentType, err = client.FetchSharedLink(context.Background(), fileURL)
 	} else {
@@ -145,6 +151,15 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 		return "", fmt.Errorf("%s: server returned HTML instead of file data", providerID)
 	}
 	return fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data)), nil
+}
+
+func firstNonEmptySharedFileURL(urls ...string) string {
+	for _, candidate := range urls {
+		if strings.TrimSpace(candidate) != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // ForwardAttachment downloads the source with the Teams credentials, then

@@ -29,8 +29,29 @@ func teamsHTMLToMarkdown(input string) string {
 			return
 		}
 		tag := strings.ToLower(node.Data)
+		if tag == "p" && strings.EqualFold(htmlAttribute(node, "itemtype"), "http://schema.skype.com/CodeBlockEditor") {
+			return
+		}
 		if tag == "table" {
 			out.WriteString(tableToMarkdown(node))
+			out.WriteByte('\n')
+			return
+		}
+		if tag == "pre" {
+			// A Teams CodeBlockEditor stores syntax colouring in nested spans.
+			// Those spans are presentation metadata, not separate code fragments:
+			// flatten them into one fenced Markdown block so Loom exposes one copy
+			// action for the complete snippet.
+			code := teamsPreformattedText(node)
+			fence := markdownCodeFence(code)
+			out.WriteByte('\n')
+			out.WriteString(fence)
+			out.WriteByte('\n')
+			out.WriteString(code)
+			if !strings.HasSuffix(code, "\n") {
+				out.WriteByte('\n')
+			}
+			out.WriteString(fence)
 			out.WriteByte('\n')
 			return
 		}
@@ -116,7 +137,99 @@ func teamsHTMLToMarkdown(input string) string {
 	render(root)
 	normalized := strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
 	normalized = normalizeTeamsEscapedTable(normalized)
-	return normalizeDuplicatedTeamsLinks(normalized)
+	normalized = normalizeDuplicatedTeamsLinks(normalized)
+	if repaired, ok := normalizeLegacyFragmentedCode(normalized); ok {
+		return repaired
+	}
+	return normalized
+}
+
+func teamsPreformattedText(node *html.Node) string {
+	var out strings.Builder
+	var walk func(*html.Node)
+	walk = func(current *html.Node) {
+		if current.Type == html.TextNode {
+			out.WriteString(current.Data)
+			return
+		}
+		if current.Type == html.ElementNode && strings.EqualFold(current.Data, "br") {
+			out.WriteByte('\n')
+			return
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.ReplaceAll(out.String(), "\r\n", "\n")
+}
+
+func markdownCodeFence(code string) string {
+	longest := 0
+	for _, run := range regexp.MustCompile("`+").FindAllString(code, -1) {
+		if len(run) > longest {
+			longest = len(run)
+		}
+	}
+	return strings.Repeat("`", max(3, longest+1))
+}
+
+var loomStyleTag = regexp.MustCompile(`(?i)</?loom-style\b[^>]*>`)
+var blankCodeLine = regexp.MustCompile(`\n[ \t]*\n`)
+
+func legacyFragmentedCode(body string) bool {
+	if !strings.Contains(strings.ToLower(body), "<loom-style") {
+		return false
+	}
+	indentedFragments := 0
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) != "" && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
+			indentedFragments++
+		}
+	}
+	return indentedFragments >= 3
+}
+
+// normalizeLegacyFragmentedCode is a compatibility path for canonical rows
+// written before Teams CodeBlockEditor boundaries were retained. Such rows
+// contain syntax-colour tags plus a sequence of indented fragments. Recover the
+// boundary generically, discard the obsolete colours, and emit one code fence.
+func normalizeLegacyFragmentedCode(body string) (string, bool) {
+	if !legacyFragmentedCode(body) {
+		return body, false
+	}
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	firstIndented := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) != "" && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
+			firstIndented = index
+			break
+		}
+	}
+	if firstIndented < 0 {
+		return body, false
+	}
+	codeStart := firstIndented
+	for index := firstIndented - 1; index >= 0; index-- {
+		if strings.TrimSpace(lines[index]) != "" {
+			codeStart = index
+			break
+		}
+	}
+	if codeStart == firstIndented {
+		return body, false
+	}
+	intro := strings.TrimSpace(strings.Join(lines[:codeStart], "\n"))
+	code := loomStyleTag.ReplaceAllString(strings.Join(lines[codeStart:], "\n"), "")
+	// Teams doubled each visual line break in this legacy representation. One
+	// pass removes the artificial gap while preserving intentional blank lines,
+	// which arrived as two consecutive gaps.
+	code = strings.TrimSpace(blankCodeLine.ReplaceAllString(code, "\n"))
+	fence := markdownCodeFence(code)
+	if intro == "" {
+		return fence + "\n" + code + "\n" + fence, true
+	}
+	return intro + "\n\n" + fence + "\n" + code + "\n" + fence, true
 }
 
 var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t]+)\*\*`)

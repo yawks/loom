@@ -419,15 +419,19 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 				}
 			}
 
-			mpimChannels = append(mpimChannels, channel)
 			displayName = "Group Chat"
 			if instanceID != "" {
 				if existing, found := db.ContactStore.FindByProviderUser(instanceID, channel.ID); found &&
-					existing.Username != "" &&
-					existing.Username != "Group Chat" &&
-					!strings.HasPrefix(existing.Username, "mpdm-") {
+					!mpimNeedsNameResolution(existing.Username) {
 					displayName = existing.Username
 				}
+			}
+			// A resolved MPIM name is persisted in LinkedAccount.Username. Re-resolving
+			// every MPIM on startup only rewrites the same contact rows and can trigger
+			// avoidable Slack API calls. Technical/placeholder names remain eligible so
+			// they can be repaired on a later contact refresh.
+			if mpimNeedsNameResolution(displayName) {
+				mpimChannels = append(mpimChannels, channel)
 			}
 		}
 
@@ -470,6 +474,11 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 
 	p.log("SlackProvider.GetContacts: Total contacts (users + channels): %d\n", len(contacts))
 	return contacts, nil
+}
+
+func mpimNeedsNameResolution(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == "" || name == "Group Chat" || strings.HasPrefix(name, "mpdm-")
 }
 
 // updateMPIMNamesAsync processes MPIM channels asynchronously and updates their names in the database.
@@ -646,6 +655,9 @@ func (p *SlackProvider) updateMPIMNamesAsync(mpimChannels []slack.Channel, users
 		} else {
 			for _, r := range slugResolved {
 				if existing, found := db.ContactStore.FindByProviderUser(instanceID, r.channel.ID); found {
+					if existing.Username == r.displayName {
+						continue
+					}
 					existing.Username = r.displayName
 					existing.UpdatedAt = now
 					tx.Model(&models.LinkedAccount{}).
@@ -730,6 +742,9 @@ func (p *SlackProvider) updateLinkedAccountName(instanceID, userID, username str
 
 	// Fast path: record already in the in-memory store — update DB then store.
 	if existing, found := db.ContactStore.FindByProviderUser(instanceID, userID); found {
+		if existing.Username == username {
+			return nil
+		}
 		existing.Username = username
 		existing.UpdatedAt = now
 		if err := db.DB.Model(&models.LinkedAccount{}).

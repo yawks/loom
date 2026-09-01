@@ -11,6 +11,15 @@ interface ProtocolIconProps {
 export function ProtocolIcon({ protocol, className = "", size = 20 }: ProtocolIconProps) {
   const protocolLower = protocol.toLowerCase();
 
+  if (protocolLower === "signal") {
+    return (
+      <svg viewBox="0 0 24 24" className={className} width={size} height={size} aria-label="Signal">
+        <circle cx="12" cy="12" r="10" fill="#3A76F0" />
+        <path fill="white" d="M6.2 11.8a5.8 5.8 0 1 1 2.1 4.47L5.2 17l.82-2.84A5.76 5.76 0 0 1 6.2 11.8Zm2.1 3.1.34.25a4.22 4.22 0 1 0-1.1-1.24l.2.34-.35 1.2 1.3-.3-.39-.25Z" />
+      </svg>
+    );
+  }
+
   if (protocolLower === "whatsapp") {
     return (
       <svg

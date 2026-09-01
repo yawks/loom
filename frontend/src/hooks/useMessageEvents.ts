@@ -75,7 +75,10 @@ export function useMessageEvents() {
     if (typeof window === "undefined" || !window.runtime) return;
 
     let isMounted = true;
-    const unsubscribe = EventsOn("new-message", (eventJSON: string) => {
+    let messageTimer: ReturnType<typeof setTimeout> | null = null;
+    const pendingMessages: string[] = [];
+
+    const processMessage = (eventJSON: string) => {
       if (!isMounted) return;
       
       try {
@@ -190,10 +193,34 @@ export function useMessageEvents() {
       } catch (error) {
         console.error("useMessageEvents: Failed to parse message event:", error);
       }
+    };
+
+    // Some reconnects replay live events one by one instead of using a history
+    // batch. Queue them just like batch events so a burst cannot monopolize the
+    // WebKit main thread. A single message still runs on the next task and is
+    // therefore effectively immediate to the user.
+    const drainMessages = () => {
+      messageTimer = null;
+      if (!isMounted) return;
+      const nextMessage = pendingMessages.shift();
+      if (nextMessage !== undefined) processMessage(nextMessage);
+      if (pendingMessages.length > 0) {
+        messageTimer = setTimeout(drainMessages, 0);
+      }
+    };
+
+    const unsubscribe = EventsOn("new-message", (eventJSON: string) => {
+      if (!isMounted) return;
+      pendingMessages.push(eventJSON);
+      if (messageTimer === null) {
+        messageTimer = setTimeout(drainMessages, 0);
+      }
     });
     
     return () => {
       isMounted = false;
+      pendingMessages.length = 0;
+      if (messageTimer !== null) clearTimeout(messageTimer);
       if (unsubscribe) unsubscribe();
     };
   }, [queryClient, registerIncomingMessage, setNotTyping]);
@@ -203,7 +230,10 @@ export function useMessageEvents() {
     if (typeof window === "undefined" || !window.runtime) return;
 
     let isMounted = true;
-    const unsubscribeBatch = EventsOn("new-messages-batch", (batchJSON: string) => {
+    let batchTimer: ReturnType<typeof setTimeout> | null = null;
+    const pendingBatches: string[] = [];
+
+    const processBatch = (batchJSON: string) => {
       if (!isMounted) return;
       try {
         const batch: {
@@ -222,6 +252,12 @@ export function useMessageEvents() {
           batch.forceRead === true,
           batch.forceUnread === true
         );
+
+        // Incremental synchronization arrives through new-messages-batch, not
+        // new-message. Keep both attention-inbox queries in sync so newly
+        // highlighted unread messages update the tab badge as well as the list.
+        queryClient.invalidateQueries({ queryKey: ["highlightedMessages"] });
+        queryClient.invalidateQueries({ queryKey: ["highlightedMessageRefs"] });
 
         // Update last-message and timestamp caches in one pass per conversation
         const lastMessageByConv: Record<string, models.Message> = {};
@@ -270,10 +306,35 @@ export function useMessageEvents() {
       } catch (error) {
         console.error("useMessageEvents: Failed to parse batch message event:", error);
       }
+    };
+
+    // History synchronization can emit hundreds of batches in a short burst.
+    // Processing all of them directly in the Wails event callback monopolizes
+    // WebKit's main thread, preventing paint and input for several seconds.
+    // Handle one batch per task so the browser gets a rendering/input
+    // opportunity between batches while the UI updates progressively.
+    const drainBatches = () => {
+      batchTimer = null;
+      if (!isMounted) return;
+      const nextBatch = pendingBatches.shift();
+      if (nextBatch !== undefined) processBatch(nextBatch);
+      if (pendingBatches.length > 0) {
+        batchTimer = setTimeout(drainBatches, 0);
+      }
+    };
+
+    const unsubscribeBatch = EventsOn("new-messages-batch", (batchJSON: string) => {
+      if (!isMounted) return;
+      pendingBatches.push(batchJSON);
+      if (batchTimer === null) {
+        batchTimer = setTimeout(drainBatches, 0);
+      }
     });
 
     return () => {
       isMounted = false;
+      pendingBatches.length = 0;
+      if (batchTimer !== null) clearTimeout(batchTimer);
       if (unsubscribeBatch) unsubscribeBatch();
     };
   }, [queryClient, registerBatchMessages]);

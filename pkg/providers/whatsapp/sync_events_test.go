@@ -70,7 +70,26 @@ func TestReclassifyNewIncomingWhatsAppMessages(t *testing.T) {
 	newIDs := map[string]struct{}{"new-incoming": {}, "new-own": {}, "forced": {}}
 	forcedIDs := map[string]struct{}{"forced": {}}
 
-	read, unread := reclassifyNewIncomingWhatsAppMessages(read, nil, newIDs, forcedIDs)
+	read, unread := reclassifyNewIncomingWhatsAppMessages(read, nil, newIDs, forcedIDs, false)
+	if len(read) != 3 {
+		t.Fatalf("read messages = %#v", read)
+	}
+	if len(unread) != 1 || unread[0].ProtocolMsgID != "new-incoming" {
+		t.Fatalf("unread messages = %#v", unread)
+	}
+}
+
+func TestReclassifyOnDemandWhatsAppHistoryKeepsExistingMessagesRead(t *testing.T) {
+	unread := []models.Message{
+		{ProtocolMsgID: "existing", Timestamp: time.Unix(1, 0)},
+		{ProtocolMsgID: "new-incoming", Timestamp: time.Unix(2, 0)},
+		{ProtocolMsgID: "new-own", IsFromMe: true, Timestamp: time.Unix(3, 0)},
+		{ProtocolMsgID: "forced", Timestamp: time.Unix(4, 0)},
+	}
+	newIDs := map[string]struct{}{"new-incoming": {}, "new-own": {}, "forced": {}}
+	forcedIDs := map[string]struct{}{"forced": {}}
+
+	read, unread := reclassifyNewIncomingWhatsAppMessages(nil, unread, newIDs, forcedIDs, true)
 	if len(read) != 3 {
 		t.Fatalf("read messages = %#v", read)
 	}

@@ -154,6 +154,10 @@ export function GetConversationsWithMessages() {
   return window['go']['main']['App']['GetConversationsWithMessages']();
 }
 
+export function GetCurrentUserID(arg1) {
+  return window['go']['main']['App']['GetCurrentUserID'](arg1);
+}
+
 export function GetCustomEmojis(arg1) {
   return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
@@ -300,6 +304,10 @@ export function ScheduleMessage(arg1, arg2, arg3, arg4) {
 
 export function SearchMessages(arg1, arg2) {
   return window['go']['main']['App']['SearchMessages'](arg1, arg2);
+}
+
+export function SearchMessagesInConversation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SearchMessagesInConversation'](arg1, arg2, arg3);
 }
 
 export function SearchProviderContacts(arg1, arg2) {

@@ -86,6 +86,7 @@ export namespace core {
 	    isActive: boolean;
 	    configSchema: Record<string, any>;
 	    syncError: string;
+	    authFlow: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderInfo(source);
@@ -102,6 +103,7 @@ export namespace core {
 	        this.isActive = source["isActive"];
 	        this.configSchema = source["configSchema"];
 	        this.syncError = source["syncError"];
+	        this.authFlow = source["authFlow"];
 	    }
 	}
 

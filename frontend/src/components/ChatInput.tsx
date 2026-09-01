@@ -1,5 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bold, ChevronDown, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
+import { Bold, ChevronDown, Code, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -699,6 +699,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const makeItalic = useCallback(() => replaceSelection("*"), [replaceSelection]);
   const makeUnderline = useCallback(() => replaceSelection("<u>", "</u>"), [replaceSelection]);
   const makeStrikethrough = useCallback(() => replaceSelection("~~"), [replaceSelection]);
+  const makeCodeBlock = useCallback(() => replaceSelection("```\n", "\n```"), [replaceSelection]);
   const makeBulletedList = useCallback(() => formatSelectedLines(false), [formatSelectedLines]);
   const makeNumberedList = useCallback(() => formatSelectedLines(true), [formatSelectedLines]);
 
@@ -745,6 +746,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         (!e.shiftKey && key === "u" && makeUnderline) ||
         (!e.shiftKey && key === "k" && openLinkEditor) ||
         (e.shiftKey && key === "x" && makeStrikethrough) ||
+        (e.shiftKey && key === "c" && makeCodeBlock) ||
         (e.shiftKey && key === "7" && makeNumberedList) ||
         (e.shiftKey && key === "8" && makeBulletedList);
 
@@ -1165,6 +1167,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                     <button type="button" title={t("format_italic")} aria-label={t("format_italic")} className="rounded p-1.5 hover:bg-accent" onClick={makeItalic}><Italic className="h-4 w-4" /></button>
                     <button type="button" title={t("format_underline")} aria-label={t("format_underline")} className="rounded p-1.5 hover:bg-accent" onClick={makeUnderline}><Underline className="h-4 w-4" /></button>
                     <button type="button" title={t("format_strikethrough")} aria-label={t("format_strikethrough")} className="rounded p-1.5 hover:bg-accent" onClick={makeStrikethrough}><Strikethrough className="h-4 w-4" /></button>
+                    <button type="button" title={t("format_code_block")} aria-label={t("format_code_block")} className="rounded p-1.5 hover:bg-accent" onClick={makeCodeBlock}><Code className="h-4 w-4" /></button>
                     <button type="button" title={t("format_link")} aria-label={t("format_link")} className="rounded p-1.5 hover:bg-accent" onClick={openLinkEditor}><Link className="h-4 w-4" /></button>
                     <button type="button" title={t("format_bulleted_list")} aria-label={t("format_bulleted_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeBulletedList}><List className="h-4 w-4" /></button>
                     <button type="button" title={t("format_numbered_list")} aria-label={t("format_numbered_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeNumberedList}><ListOrdered className="h-4 w-4" /></button>

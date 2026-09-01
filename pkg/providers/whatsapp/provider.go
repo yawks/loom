@@ -98,6 +98,8 @@ type WhatsAppProvider struct {
 	activeCalls          map[string]*activeCallInfo      // Active call tracker keyed by callID
 	activeCallsMu        sync.RWMutex                    // Mutex for activeCalls map
 	callLogFullSyncOnce  sync.Once                       // Recover call logs missed while Loom was offline once per startup
+	syncFallbackMu       sync.Mutex                      // Protects the reconnect completion fallback
+	syncFallbackTimer    *time.Timer                     // Cancelled when OfflineSyncCompleted arrives
 	logger               *logging.ProviderLogger         // Logger for this provider instance
 }
 
@@ -590,6 +592,7 @@ func (w *WhatsAppProvider) Connect() error {
 }
 
 func (w *WhatsAppProvider) Disconnect() error {
+	w.cancelSyncFallback()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

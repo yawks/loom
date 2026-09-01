@@ -60,22 +60,39 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
     setLoading(true);
     setError(null);
     try {
-      const [available, configured] = await Promise.all([
+      const [availableResult, configuredResult] = await Promise.allSettled([
         GetAvailableProviders(),
         GetConfiguredProviders(),
       ]);
-      setAvailableProviders(available);
-      setConfiguredProviders(configured);
+
+      // Keep the last successful list when one backend call temporarily fails.
+      // A single slow provider must not blank both sections of the settings UI.
+      if (availableResult.status === "fulfilled") {
+        setAvailableProviders(availableResult.value);
+      }
+      if (configuredResult.status === "fulfilled") {
+        setConfiguredProviders(configuredResult.value);
+      }
+      if (availableResult.status === "rejected" || configuredResult.status === "rejected") {
+        console.error("Failed to load providers:", {
+          available: availableResult.status === "rejected" ? availableResult.reason : undefined,
+          configured: configuredResult.status === "rejected" ? configuredResult.reason : undefined,
+        });
+        setError(t("providers_modal_load_error"));
+      }
 
       // Update selectedProvider if it exists to get the latest instanceId
       // Use a ref or state to avoid dependency issues
-      setSelectedProvider(current => {
-        if (!current) return current;
-        const updatedProvider = configured.find(p =>
-          (p.instanceId || p.id) === (current.instanceId || current.id)
-        );
-        return updatedProvider || current;
-      });
+      if (configuredResult.status === "fulfilled") {
+        const configured = configuredResult.value;
+        setSelectedProvider(current => {
+          if (!current) return current;
+          const updatedProvider = configured.find(p =>
+            (p.instanceId || p.id) === (current.instanceId || current.id)
+          );
+          return updatedProvider || current;
+        });
+      }
     } catch (err) {
       console.error("Failed to load providers:", err);
       setError(t("providers_modal_load_error"));
@@ -394,7 +411,7 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
                         </div>
                       )}
                       <CardContent className="flex gap-2 flex-wrap">
-                        {(provider.syncError || provider.id === "whatsapp") && (
+                        {(provider.syncError || provider.authFlow === "qr") && (
                           <Button
                             variant={provider.syncError ? "default" : "outline"}
                             className={`providers-modal__reauth-button flex items-center gap-2 ${provider.syncError ? "bg-orange-500 hover:bg-orange-600 text-white" : ""}`}

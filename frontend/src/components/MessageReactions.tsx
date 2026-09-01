@@ -4,8 +4,10 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useMemo, useState, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useTranslation } from "react-i18next";
+import { GetParticipantNames } from "../../wailsjs/go/main/App";
 
 import { Emoji } from "./Emoji";
 import { cleanEmoji } from "@/lib/userDisplayNames";
@@ -148,6 +150,26 @@ export function MessageReactions({
     return Array.from(groups.values());
   }, [reactions]);
 
+  const unresolvedReactionUserIds = useMemo(() => {
+    const ids = new Set<string>();
+    reactions.forEach((reaction) => {
+      if (
+        reaction.userId &&
+        !sameUserId(reaction.userId, currentUserId) &&
+        getDisplayName(reaction.userId, participantNames, allMessages) === reaction.userId
+      ) {
+        ids.add(reaction.userId);
+      }
+    });
+    return Array.from(ids).sort();
+  }, [allMessages, currentUserId, participantNames, reactions]);
+  const { data: resolvedReactionNames = {} } = useQuery<Record<string, string>>({
+    queryKey: ["reaction-participant-names", unresolvedReactionUserIds.join(",")],
+    queryFn: () => GetParticipantNames(unresolvedReactionUserIds),
+    enabled: unresolvedReactionUserIds.length > 0,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const rootRef = useRef<HTMLDivElement>(null);
 
   if (reactionGroups.length === 0) {
@@ -193,7 +215,7 @@ export function MessageReactions({
                   const isMe = sameUserId(userId, currentUserId);
                   const name = isMe
                     ? t("you") || "Vous"
-                    : getDisplayName(userId, participantNames, allMessages);
+                    : resolvedReactionNames[userId] || getDisplayName(userId, participantNames, allMessages);
                   const avatarUrl = getUserAvatarUrl(userId, allMessages);
                   const fallbackInitials = name ? name.substring(0, 2).toUpperCase() : "?";
 

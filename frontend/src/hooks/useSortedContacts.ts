@@ -47,7 +47,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
   });
 
   // Récupérer tous les derniers messages complets en une seule requête
-  const { data: allLastMessages = {} } = useQuery<Record<string, models.Message | null>, Error>({
+  const { data: allLastMessages = {}, isFetched: areLastMessagesFetched } = useQuery<Record<string, models.Message | null>, Error>({
     queryKey: ["allLastMessages"],
     queryFn: async () => {
       try {
@@ -149,5 +149,5 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     return sorted;
   }, [contactsWithAliases, sortBy, lastMessageDates, selectedProviderFilter]);
 
-  return { sortedContacts, lastMessages };
+  return { sortedContacts, lastMessages, areLastMessagesFetched };
 }

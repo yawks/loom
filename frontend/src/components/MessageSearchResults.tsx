@@ -1,5 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetConfiguredProviders, SearchMessages } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, SearchMessages, SearchMessagesInConversation } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
@@ -14,9 +14,13 @@ import { useTranslation } from "react-i18next";
 export function MessageSearchResults({
   query,
   onResultSelected,
+  metaContactId,
+  debounceMs = 3000,
 }: {
   query: string;
   onResultSelected: () => void;
+  metaContactId?: number;
+  debounceMs?: number;
 }) {
   const { t } = useTranslation();
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -42,16 +46,24 @@ export function MessageSearchResults({
 
   useEffect(() => {
     const trimmed = query.trim();
+    // Reset prior result state whenever a distinct search starts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDebouncedQuery("");
     setShowAllResults(false);
     if (trimmed.length < 3) return;
-    const timer = setTimeout(() => setDebouncedQuery(trimmed), 3000);
+    if (debounceMs === 0) {
+      setDebouncedQuery(trimmed);
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedQuery(trimmed), debounceMs);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [debounceMs, query]);
 
   const search = useInfiniteQuery({
-    queryKey: ["messageSearch", debouncedQuery],
-    queryFn: ({ pageParam }) => SearchMessages(debouncedQuery, pageParam as number),
+    queryKey: ["messageSearch", debouncedQuery, metaContactId ?? "all"],
+    queryFn: ({ pageParam }) => metaContactId
+      ? SearchMessagesInConversation(debouncedQuery, pageParam as number, metaContactId)
+      : SearchMessages(debouncedQuery, pageParam as number),
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => lastPage.hasMore ? pages.length * 15 : undefined,
     enabled: debouncedQuery.length >= 3,
@@ -106,7 +118,7 @@ export function MessageSearchResults({
 
         return (
           <div className="message-search-results__group" key={`${result.message.protocolMsgId}-${index}`}>
-            {startsGroup && (
+            {startsGroup && metaContactId === undefined && (
               <div className="message-search-results__header flex items-center gap-2 px-2 pt-2">
                 <Avatar className="h-8 w-8">
                   <AvatarImage src={result.conversationAvatar} />
@@ -136,6 +148,7 @@ export function MessageSearchResults({
             >
               <MessageText
                 text={normalizedMessage.body}
+                highlightQuery={debouncedQuery}
                 providerInstanceId={result.providerInstanceId}
                 emojiSize={14}
                 preview

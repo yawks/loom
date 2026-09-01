@@ -23,6 +23,22 @@ function AppContent() {
   const fontSize = useAppStore((state) => state.fontSize);
 
   useEffect(() => {
+    if (!import.meta.env.DEV || typeof performance.clearMeasures !== "function") return;
+
+    // React's development build records User Timing measures for renders.
+    // WebKit keeps those entries indefinitely, which can retain gigabytes in a
+    // long-running `wails dev` session. They are diagnostic data only and are
+    // not used by Loom, so keep the timeline bounded between inspections.
+    const clearReactPerformanceEntries = () => {
+      performance.clearMeasures();
+      performance.clearMarks();
+    };
+    const interval = window.setInterval(clearReactPerformanceEntries, 15_000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     const root = document.documentElement;
     const applyTheme = (isDark: boolean) => {
       root.classList.toggle("dark", isDark);
