@@ -81,6 +81,8 @@ export function GetConversationState(arg1:string):Promise<models.Conversation>;
 
 export function GetConversationsWithMessages():Promise<Array<string>>;
 
+export function GetCurrentUserID(arg1:string):Promise<string>;
+
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
 export function GetGoogleChatWebCookies(arg1:string):Promise<Record<string, string>>;
@@ -154,6 +156,8 @@ export function SaveConfig(arg1:Record<string, any>):Promise<void>;
 export function ScheduleMessage(arg1:string,arg2:string,arg3:time.Time,arg4:string):Promise<models.ScheduledMessage>;
 
 export function SearchMessages(arg1:string,arg2:number):Promise<models.MessageSearchPage>;
+
+export function SearchMessagesInConversation(arg1:string,arg2:number,arg3:number):Promise<models.MessageSearchPage>;
 
 export function SearchProviderContacts(arg1:string,arg2:string):Promise<Array<models.MetaContact>>;
 

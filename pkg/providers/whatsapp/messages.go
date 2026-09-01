@@ -1739,7 +1739,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 					forcedReadIDs[message.ProtocolMsgID] = struct{}{}
 				}
 				readMessages, unreadMessages = reclassifyNewIncomingWhatsAppMessages(
-					readMessages, unreadMessages, newMessageIDs, forcedReadIDs,
+					readMessages, unreadMessages, newMessageIDs, forcedReadIDs, isOnDemand,
 				)
 			}
 			// WhatsApp may retain a stale unread count when another linked client
@@ -1849,6 +1849,7 @@ func whatsappUnstoredMessageIDs(messages []models.Message) map[string]struct{} {
 func reclassifyNewIncomingWhatsAppMessages(
 	readMessages, unreadMessages []models.Message,
 	newMessageIDs, forcedReadIDs map[string]struct{},
+	isOnDemand bool,
 ) ([]models.Message, []models.Message) {
 	keptRead := make([]models.Message, 0, len(readMessages))
 	for _, message := range readMessages {
@@ -1859,6 +1860,23 @@ func reclassifyNewIncomingWhatsAppMessages(
 			continue
 		}
 		keptRead = append(keptRead, message)
+	}
+	if isOnDemand {
+		// ON_DEMAND history has no trustworthy unread cursor. It is requested by
+		// Loom's global audit and commonly returns messages that were imported and
+		// read long ago. Preserve those existing messages as read; only genuinely
+		// new incoming messages may become unread.
+		keptUnread := make([]models.Message, 0, len(unreadMessages))
+		for _, message := range unreadMessages {
+			_, isNew := newMessageIDs[message.ProtocolMsgID]
+			_, isForcedRead := forcedReadIDs[message.ProtocolMsgID]
+			if isNew && !message.IsFromMe && !isForcedRead {
+				keptUnread = append(keptUnread, message)
+				continue
+			}
+			keptRead = append(keptRead, message)
+		}
+		unreadMessages = keptUnread
 	}
 	sort.SliceStable(unreadMessages, func(i, j int) bool {
 		return unreadMessages[i].Timestamp.Before(unreadMessages[j].Timestamp)

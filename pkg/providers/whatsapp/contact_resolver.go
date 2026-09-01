@@ -130,6 +130,17 @@ func (w *WhatsAppProvider) canonicalReactionUserID(userID string) string {
 	return w.NormalizeParticipantID(userID)
 }
 
+// CurrentUserID exposes the same canonical identity used for senders and
+// reactions, without leaking whatsmeow's device-qualified JID to the frontend.
+func (w *WhatsAppProvider) CurrentUserID() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.client == nil || w.client.Store == nil || w.client.Store.ID == nil {
+		return ""
+	}
+	return w.NormalizeParticipantID(w.client.Store.ID.String())
+}
+
 // NormalizeParticipantID removes device qualification and resolves LID aliases
 // before an identity crosses the backend/frontend boundary.
 func (w *WhatsAppProvider) NormalizeParticipantID(userID string) string {

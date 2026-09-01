@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,18 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
+
+func isExpectedAvatarAbsence(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return errors.Is(err, whatsmeow.ErrProfilePictureNotSet) ||
+		errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized) ||
+		strings.Contains(errStr, "does not have a profile picture") ||
+		strings.Contains(errStr, "not-authorized") ||
+		strings.Contains(errStr, "401")
+}
 
 func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
 	if w.client == nil || jid.IsEmpty() {
@@ -57,10 +70,11 @@ func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
 	if err != nil || picInfo == nil || picInfo.URL == "" {
 		// Profile picture not available or error
 		if err != nil {
-			errStr := err.Error()
-			// Check if it's a 401/not-authorized error
-			if strings.Contains(errStr, "not-authorized") || strings.Contains(errStr, "401") {
-				// Mark this avatar as failed to avoid retrying
+			// A missing or privacy-protected picture is a normal negative result,
+			// not a transient failure. Cache it until WhatsApp emits a Picture event
+			// (or an explicit hourly contact refresh retries it), otherwise every
+			// synchronization repeats the same query and log line.
+			if isExpectedAvatarAbsence(err) {
 				w.avatarFailuresMu.Lock()
 				if w.avatarFailures == nil {
 					w.avatarFailures = make(map[string]bool)
@@ -69,7 +83,7 @@ func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
 				w.avatarFailuresMu.Unlock()
 				// Save failures to disk
 				w.saveAvatarFailures()
-				// Don't log 401 errors as they're expected for some contacts
+				// Expected absence: no noisy log entry.
 			} else {
 				fmt.Printf("WhatsApp: Failed to get profile picture info for %s: %v\n", jidStr, err)
 			}

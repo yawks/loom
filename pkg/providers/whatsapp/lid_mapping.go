@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm/clause"
 )
 
 func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
@@ -27,22 +29,28 @@ func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
 			LastSeen: time.Now(),
 		}
 
-		// Upsert: update if exists, create if not
-		err := db.DB.Where("lid = ?", lid).Assign(models.LIDMapping{
-			JID:      jid,
-			Protocol: "whatsapp",
-			LastSeen: time.Now(),
-		}).FirstOrCreate(&mapping).Error
-
-		if err != nil {
-			return fmt.Errorf("failed to save LID mapping to database: %w", err)
+		// A reconnect rediscovers the same mappings many times. Do not turn
+		// those confirmations into writes: SQLite has a single writer and a
+		// burst of no-op updates delays every other wake-up query. A genuinely
+		// new or changed mapping still updates the canonical row atomically.
+		result := db.DB.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "lid"}},
+			DoUpdates: clause.AssignmentColumns([]string{"jid", "protocol", "last_seen", "updated_at"}),
+			Where: clause.Where{Exprs: []clause.Expression{
+				clause.Expr{SQL: "jid <> excluded.jid OR protocol <> excluded.protocol"},
+			}},
+		}).Create(&mapping)
+		if result.Error != nil {
+			return fmt.Errorf("failed to save LID mapping to database: %w", result.Error)
 		}
 
 		// Reactions may have arrived before WhatsApp exposed this mapping. Rewrite
 		// only reactions belonging to this provider instance so their author can be
 		// resolved immediately to a contact name or, at minimum, a phone number.
-		if err := w.canonicalizePersistedReactionAuthor(lid, jid); err != nil {
-			return fmt.Errorf("failed to canonicalize reaction authors for %s: %w", lid, err)
+		if result.RowsAffected > 0 {
+			if err := w.canonicalizePersistedReactionAuthor(lid, jid); err != nil {
+				return fmt.Errorf("failed to canonicalize reaction authors for %s: %w", lid, err)
+			}
 		}
 	}
 
@@ -67,14 +75,34 @@ func (w *WhatsAppProvider) loadLIDMappingsFromDB() error {
 	w.lidToJIDMu.Unlock()
 
 	// Also repair reactions stored before their LID mapping became available.
-	for _, mapping := range mappings {
-		if err := w.canonicalizePersistedReactionAuthor(mapping.LID, mapping.JID); err != nil {
-			return err
-		}
+	// Do it once for this instance instead of issuing one UPDATE per global
+	// mapping (most of which affect zero rows).
+	if err := w.canonicalizeAllPersistedReactionAuthors(); err != nil {
+		return err
 	}
 
 	fmt.Printf("WhatsApp: Loaded %d LID->JID mappings from database into cache\n", len(mappings))
 	return nil
+}
+
+func (w *WhatsAppProvider) canonicalizeAllPersistedReactionAuthors() error {
+	if db.DB == nil {
+		return nil
+	}
+	instancePrefix := w.getInstanceId() + "::%"
+	return db.DB.Exec(`
+		UPDATE reactions
+		SET user_id = (
+			SELECT jid FROM lid_mappings
+			WHERE lid = reactions.user_id AND protocol = 'whatsapp'
+		), updated_at = ?
+		WHERE user_id IN (
+			SELECT lid FROM lid_mappings WHERE protocol = 'whatsapp'
+		)
+		AND message_id IN (
+			SELECT id FROM messages WHERE protocol_conv_id LIKE ?
+		)
+	`, time.Now(), instancePrefix).Error
 }
 
 func (w *WhatsAppProvider) canonicalizePersistedReactionAuthor(lid, jid string) error {

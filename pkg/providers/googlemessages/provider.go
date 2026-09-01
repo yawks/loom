@@ -412,6 +412,7 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 		}
 		storedAccount = account
 	} else {
+		accountChanged := false
 		if storedAccount.MetaContactID == 0 {
 			meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
 			if err := db.DB.Create(&meta).Error; err != nil {
@@ -419,10 +420,19 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 			}
 			db.ContactStore.UpsertMetaContact(meta)
 			storedAccount.MetaContactID = meta.ID
+			accountChanged = true
 		}
-		storedAccount.Username, storedAccount.AvatarURL, storedAccount.IsGroup, storedAccount.Status = account.Username, account.AvatarURL, account.IsGroup, account.Status
-		if err := db.DB.Save(&storedAccount).Error; err != nil {
-			return err
+		if storedAccount.Username != account.Username ||
+			storedAccount.AvatarURL != account.AvatarURL ||
+			storedAccount.IsGroup != account.IsGroup ||
+			storedAccount.Status != account.Status {
+			storedAccount.Username, storedAccount.AvatarURL, storedAccount.IsGroup, storedAccount.Status = account.Username, account.AvatarURL, account.IsGroup, account.Status
+			accountChanged = true
+		}
+		if accountChanged {
+			if err := db.DB.Save(&storedAccount).Error; err != nil {
+				return err
+			}
 		}
 	}
 	// Google Messages conversation titles are authoritative. The message view
@@ -430,11 +440,13 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 	if storedAccount.MetaContactID != 0 {
 		var meta models.MetaContact
 		if err := db.DB.First(&meta, storedAccount.MetaContactID).Error; err == nil {
-			meta.DisplayName, meta.AvatarURL = storedAccount.Username, storedAccount.AvatarURL
-			if err := db.DB.Save(&meta).Error; err != nil {
-				return err
+			if meta.DisplayName != storedAccount.Username || meta.AvatarURL != storedAccount.AvatarURL {
+				meta.DisplayName, meta.AvatarURL = storedAccount.Username, storedAccount.AvatarURL
+				if err := db.DB.Save(&meta).Error; err != nil {
+					return err
+				}
+				db.ContactStore.UpsertMetaContact(meta)
 			}
-			db.ContactStore.UpsertMetaContact(meta)
 		}
 	}
 	// In a DM, the conversation title is Google's authoritative contact name.
@@ -443,7 +455,7 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 	if !storedAccount.IsGroup && storedAccount.Username != "" && storedAccount.Username != storedAccount.UserID {
 		nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
 		if err := db.DB.Model(&models.Message{}).
-			Where("protocol_conv_id = ? AND is_from_me = ?", nsConvID, false).
+			Where("protocol_conv_id = ? AND is_from_me = ? AND (sender_name IS NULL OR sender_name <> ?)", nsConvID, false, storedAccount.Username).
 			Update("sender_name", storedAccount.Username).Error; err != nil {
 			return err
 		}
@@ -460,9 +472,14 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 		db.ContactStore.UpsertConversation(storedAccount.ID, conversation.ProtocolConvID)
 		return nil
 	}
-	conversation.LinkedAccountID, conversation.IsGroup, conversation.GroupName, conversation.IsPinned = storedAccount.ID, remote.GetIsGroupChat(), remote.GetName(), remote.GetPinned()
-	if err := db.DB.Save(&conversation).Error; err != nil {
-		return err
+	if conversation.LinkedAccountID != storedAccount.ID ||
+		conversation.IsGroup != remote.GetIsGroupChat() ||
+		conversation.GroupName != remote.GetName() ||
+		conversation.IsPinned != remote.GetPinned() {
+		conversation.LinkedAccountID, conversation.IsGroup, conversation.GroupName, conversation.IsPinned = storedAccount.ID, remote.GetIsGroupChat(), remote.GetName(), remote.GetPinned()
+		if err := db.DB.Save(&conversation).Error; err != nil {
+			return err
+		}
 	}
 	db.ContactStore.UpsertConversation(storedAccount.ID, conversation.ProtocolConvID)
 	return nil

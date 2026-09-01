@@ -18,10 +18,12 @@ func LatestOwnActivityAt(conversationID, currentUserID string) time.Time {
 
 	var latestMessage models.Message
 	var activityAt time.Time
+	// Find with an explicit limit treats "no own activity" as the normal empty
+	// result it is, instead of making GORM log a misleading record-not-found.
 	if err := DB.Where(
 		"protocol_conv_id = ? AND (is_from_me = ? OR lower(sender_id) = lower(?))",
 		conversationID, true, currentUserID,
-	).Order("timestamp DESC").First(&latestMessage).Error; err == nil {
+	).Order("timestamp DESC").Limit(1).Find(&latestMessage).Error; err == nil && latestMessage.ID != 0 {
 		activityAt = latestMessage.Timestamp
 	}
 

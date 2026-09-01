@@ -141,8 +141,8 @@ export function ProviderConfigForm({
   };
 
   // Providers with a dedicated connection flow in this form (they handle connect themselves).
-  const hasOwnConnectFlow = provider.id === "whatsapp" || provider.id === "slack" || provider.id === "googlemessages" || provider.id === "teams";
-  const usesQRCodeAuth = provider.id === "whatsapp";
+  const usesQRCodeAuth = provider.authFlow === "qr";
+  const hasOwnConnectFlow = usesQRCodeAuth || provider.id === "slack" || provider.id === "googlemessages" || provider.id === "teams";
 
   const handleSave = useCallback(async () => {
     setIsSaving(true);
@@ -175,8 +175,8 @@ export function ProviderConfigForm({
   }, [provider.id, provider.instanceId, currentInstanceID, values, instanceName, hasOwnConnectFlow, onRefresh, onClose, t, showToast]);
 
   const fetchQRCode = useCallback(async () => {
-	  // Google Messages uses account-cookie pairing and emoji confirmation, not QR.
-	  // Keep this guard even though only WhatsApp renders the QR card: reauth can
+	  // Non-QR providers may use account-cookie, browser, or form authentication.
+	  // Keep this guard even though only QR providers render the card: reauth can
 	  // otherwise invoke this callback before the form has re-rendered.
 	  if (!usesQRCodeAuth) {
 		return;
@@ -457,7 +457,7 @@ export function ProviderConfigForm({
         </Card>
       )}
 
-      {provider.id === "whatsapp" && (
+      {usesQRCodeAuth && (
       <Card>
         <CardHeader>
           <CardTitle>{t("connection")}</CardTitle>

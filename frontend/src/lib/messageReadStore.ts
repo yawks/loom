@@ -867,6 +867,12 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       let hasChanged = false;
       let removedCount = 0;
 
+      // validMessageIds only describes the pages currently loaded by the
+      // renderer; it is not proof that an absent message was deleted. Keep
+      // read entries as bounded tombstones so a later provider sync cannot
+      // recreate an already-consumed message as unread. Explicit deletions go
+      // through removeMessage, and boundConversationReadState limits growth.
+      //
       // Thread replies are not part of the main-message page represented by
       // validMessageIds. Preserve unread replies until the thread is opened.
       Object.keys(existingState).forEach((messageId) => {
@@ -882,6 +888,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           messageId === "_lastReadTS" ||
           isValidThreadMarker ||
           unreadThreadMarker ||
+          (!messageId.startsWith("_") && existingState[messageId] === true) ||
           (!messageId.startsWith("_") && (validMessageIds.has(messageId) || markedUnreadThreadReply))
         ) {
           nextState[messageId] = existingState[messageId];
@@ -895,14 +902,17 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         return state;
       }
 
+      const boundedState = boundConversationReadState(nextState);
       const updatedMap = {
         ...state.readByConversation,
-        [conversationId]: nextState,
+        [conversationId]: boundedState,
       };
       persistState(updatedMap);
 
-      const unreadCount = Object.values(nextState).filter(r => !r).length;
-      console.log(`messageReadStore: cleanupObsoleteMessages - conversationId: ${conversationId}, removed: ${removedCount}, remaining: ${Object.keys(nextState).length}, unread count: ${unreadCount}`);
+      const unreadCount = Object.entries(boundedState).filter(
+        ([key, isRead]) => !key.startsWith("_") && !isRead
+      ).length;
+      console.log(`messageReadStore: cleanupObsoleteMessages - conversationId: ${conversationId}, removed: ${removedCount}, remaining: ${Object.keys(boundedState).length}, unread count: ${unreadCount}`);
 
       return { readByConversation: updatedMap };
     });

@@ -122,15 +122,10 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
       }
 
       refreshTimeoutRef.current = setTimeout(() => {
-        // Invalidate and refetch contacts when sync completes or new message arrives
+        // Contact metadata refreshes do not change message summaries. Message
+        // events have their own invalidation path; coupling both paths turns
+        // avatar, presence and directory updates into full-history scans.
         queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
-        queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
-        // Invalidate last message queries to update sorting and previews
-        queryClient.invalidateQueries({ queryKey: ["lastMessage"] });
-        queryClient.invalidateQueries({ queryKey: ["allLastMessages"] });
-        queryClient.invalidateQueries({ queryKey: ["allLastMessageTimestamps"] });
-        // Invalidate active calls queries to update call badges
-        queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });
       }, 500); // 500ms debounce
     });
 
@@ -145,6 +140,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   }, [queryClient, refreshTimeoutRef]);
 
   // Listen for contact status change events
+  const contactStatusRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const unsubscribe = EventsOn("contact-status", (statusJSON: string) => {
       try {
@@ -155,16 +151,26 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
           statusText?: string;
         };
 
-        // Invalidate contacts query to refetch with updated status
-        // This ensures the UI reflects the latest status and emoji
-        queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
-        queryClient.refetchQueries({ queryKey: ["metaContacts"], type: "active" });
+        // A contact synchronization can emit a status event for every contact.
+        // Collapse the burst into one refresh after it settles. Invalidating an
+        // active query already schedules its refetch, so a separate refetch call
+        // would duplicate the work.
+        if (contactStatusRefreshTimeoutRef.current) {
+          clearTimeout(contactStatusRefreshTimeoutRef.current);
+        }
+        contactStatusRefreshTimeoutRef.current = setTimeout(() => {
+          contactStatusRefreshTimeoutRef.current = null;
+          queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+        }, 500);
       } catch (error) {
         console.error("Failed to parse contact-status event:", error, statusJSON);
       }
     });
 
     return () => {
+      if (contactStatusRefreshTimeoutRef.current) {
+        clearTimeout(contactStatusRefreshTimeoutRef.current);
+      }
       if (unsubscribe) {
         unsubscribe();
       }
@@ -211,19 +217,49 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   }, [contacts, setMetaContacts]);
 
   // Use shared hook for sorted contacts
-  const { sortedContacts: sortedContactsBase, lastMessages } = useSortedContacts(sortBy);
+  const { sortedContacts: sortedContactsBase, lastMessages, areLastMessagesFetched } = useSortedContacts(sortBy);
 
   // Safety net: ensure all last messages are registered in the message read store
   const registerBatchMessages = useMessageReadStore((state) => state.registerBatchMessages);
+  const registerIncomingMessage = useMessageReadStore((state) => state.registerIncomingMessage);
+  const lastPreviewMessageIdsRef = useRef<Record<string, string>>({});
+  const hasHydratedPreviewMessagesRef = useRef(false);
   useEffect(() => {
+    if (!areLastMessagesFetched) return;
     const messages = Object.values(lastMessages).filter(
       (message): message is models.Message => message !== null
     );
-    // These are loaded from the contact-list cache, not received events.
-    // Registering them as history prevents a first render from manufacturing
-    // unread badges for old conversations.
-    registerBatchMessages(messages, true);
-  }, [lastMessages, registerBatchMessages]);
+    const nextIds: Record<string, string> = {};
+    messages.forEach((message) => {
+      if (message.protocolConvId && message.protocolMsgId) {
+        nextIds[message.protocolConvId] = message.protocolMsgId;
+      }
+    });
+
+    if (!hasHydratedPreviewMessagesRef.current) {
+      // Only the first contact-list snapshot is historical. It represents the
+      // state that existed before this renderer installed its event listeners.
+      registerBatchMessages(messages, true);
+      hasHydratedPreviewMessagesRef.current = true;
+    } else {
+      // A later preview ID is newly observed activity. Register it through the
+      // live path so a missed/reordered Wails event cannot silently turn an
+      // incoming message into read history.
+      messages.forEach((message) => {
+        const conversationId = message.protocolConvId;
+        const messageId = message.protocolMsgId;
+        if (
+          conversationId &&
+          messageId &&
+          lastPreviewMessageIdsRef.current[conversationId] !== messageId
+        ) {
+          registerIncomingMessage(message);
+        }
+      });
+    }
+
+    lastPreviewMessageIdsRef.current = nextIds;
+  }, [areLastMessagesFetched, lastMessages, registerBatchMessages, registerIncomingMessage]);
 
   // Filter contacts by selected provider
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
@@ -596,6 +632,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
             return (
               <div
                 key={contact.id}
+                style={{ contentVisibility: "auto", containIntrinsicSize: "0 56px" }}
                 className={cn(
                   "contact-list__item flex items-center space-x-3 px-2 py-2 rounded-lg cursor-pointer transition-colors",
                   isSelected

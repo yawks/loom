@@ -63,6 +63,61 @@ func TestConvertMessagePreservesCachedSenderIdentityWhenMessageOmitsIt(t *testin
 	}
 }
 
+func TestStoreMessagesRepairsExistingOutgoingMessage(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatalf("InitMockDatabase: %v", err)
+	}
+	defer func() {
+		sqlDB, err := db.DB.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+	provider := NewGoogleChatProvider()
+	provider.config = core.ProviderConfig{"_instance_id": "googlechat-own-repair-test"}
+
+	meta := models.MetaContact{DisplayName: "Own repair test"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-own-repair-test", UserID: "spaces/own-repair"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	convID := "googlechat-own-repair-test::spaces/own-repair"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: convID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/own-repair/messages/reply", SenderID: "self", Timestamp: time.Now(), IsFromMe: false}
+	if err := db.DB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	seed := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/own-repair/messages/seed", SenderID: "self", Timestamp: message.Timestamp.Add(-time.Minute), IsFromMe: true}
+	if err := db.DB.Create(&seed).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	converted := provider.convertMessage(ChatMessage{
+		Name:       message.ProtocolMsgID,
+		Sender:     &ChatUser{Name: "users/self"},
+		CreateTime: message.Timestamp,
+	}, "spaces/own-repair", "")
+	if !converted.IsFromMe {
+		t.Fatal("persisted outgoing identity was not recovered")
+	}
+	provider.storeMessagesForConversation("spaces/own-repair", []models.Message{converted})
+
+	var repaired models.Message
+	if err := db.DB.First(&repaired, message.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !repaired.IsFromMe {
+		t.Fatal("existing outgoing message remained marked as incoming")
+	}
+}
+
 func TestListMessageReactionsIncludesUsersAndFollowsPages(t *testing.T) {
 	provider := NewGoogleChatProvider()
 	call := 0
@@ -142,6 +197,107 @@ func TestStoreMessagesReconcilesReactionsForExistingMessage(t *testing.T) {
 	}
 	if len(reactions) != 1 || reactions[0].UserID != "new-user" || reactions[0].Emoji != "👍" {
 		t.Fatalf("stored reactions were not reconciled: %#v", reactions)
+	}
+}
+
+func TestStoreMessagesReactionRefreshDoesNotMakeConversationRecent(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatalf("InitMockDatabase: %v", err)
+	}
+	defer func() {
+		sqlDB, err := db.DB.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+	provider := NewGoogleChatProvider()
+	provider.config = core.ProviderConfig{"_instance_id": "googlechat-refresh-test"}
+
+	meta := models.MetaContact{DisplayName: "Refresh test"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-refresh-test", UserID: "spaces/refresh-test"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	convID := "googlechat-refresh-test::spaces/refresh-test"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: convID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	messageTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	message := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/refresh-test/messages/latest", Timestamp: messageTime}
+	if err := db.DB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	originalReactionTime := messageTime.Add(time.Hour)
+	if err := db.DB.Create(&models.Reaction{MessageID: message.ID, UserID: "user-1", Emoji: "👍", CreatedAt: originalReactionTime}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// The REST response contains the reaction but omits createTime.
+	provider.storeMessagesForConversation("spaces/refresh-test", []models.Message{message}, map[string][]models.Reaction{
+		message.ProtocolMsgID: {{UserID: "user-1", Emoji: "👍"}},
+	})
+
+	var refreshed models.Reaction
+	if err := db.DB.Where("message_id = ?", message.ID).First(&refreshed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed.CreatedAt.Equal(originalReactionTime) {
+		t.Fatalf("reaction timestamp changed during refresh: got %s, want %s", refreshed.CreatedAt, originalReactionTime)
+	}
+}
+
+func TestEmitReactionDiffReportsAddedAndRemovedReactions(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatalf("InitMockDatabase: %v", err)
+	}
+	defer func() {
+		sqlDB, err := db.DB.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+	provider := NewGoogleChatProvider()
+	provider.config = core.ProviderConfig{"_instance_id": "googlechat-poll-test"}
+
+	meta := models.MetaContact{DisplayName: "Poll reaction test"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-poll-test", UserID: "spaces/poll-test"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	convID := "googlechat-poll-test::spaces/poll-test"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: convID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/poll-test/messages/latest", Timestamp: time.Now()}
+	if err := db.DB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.Create(&models.Reaction{MessageID: message.ID, UserID: "removed-user", Emoji: "👎"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	provider.emitReactionDiff("spaces/poll-test", message.ProtocolMsgID, []models.Reaction{{UserID: "added-user", Emoji: "👍", CreatedAt: time.Now()}})
+
+	first := (<-provider.eventChan).(core.ReactionEvent)
+	second := (<-provider.eventChan).(core.ReactionEvent)
+	if !first.Added || first.UserID != "added-user" || first.Emoji != "👍" {
+		t.Fatalf("unexpected added event: %#v", first)
+	}
+	if second.Added || second.UserID != "removed-user" || second.Emoji != "👎" {
+		t.Fatalf("unexpected removed event: %#v", second)
+	}
+	if first.ConversationID != convID || second.ConversationID != convID {
+		t.Fatalf("events use wrong conversation: %#v %#v", first, second)
 	}
 }
 

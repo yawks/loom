@@ -232,9 +232,9 @@ func (p *Provider) SyncHistory(since time.Time) error {
 		if err := p.storeMessages(messages); err != nil {
 			return err
 		}
+		activityAt := db.LatestOwnActivityAt(account.ConversationID, client.UserMRI())
 		if len(messages) > 0 {
-			activityAt := db.LatestOwnActivityAt(messages[0].ProtocolConvID, client.UserMRI())
-			read, unread := core.SplitRecoveredMessagesAtOwnActivity(messages, client.UserMRI(), activityAt)
+			read, unread := splitTeamsRecoveredMessages(messages, chat.ConsumptionHorizon, client.UserMRI(), activityAt)
 			if len(read) > 0 {
 				p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: read, ForceRead: true})
 			}
@@ -242,7 +242,6 @@ func (p *Provider) SyncHistory(since time.Time) error {
 				p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: chat.ID, Messages: unread, ForceUnread: true})
 			}
 		}
-		activityAt := db.LatestOwnActivityAt(account.ConversationID, client.UserMRI())
 		if readThrough := db.MessagesReadThrough(account.ConversationID, activityAt, 1000); len(readThrough) > 0 {
 			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: account.ConversationID, Messages: readThrough, ForceRead: true})
 		}
@@ -274,6 +273,33 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: completionMessage, Progress: 100})
 	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	return nil
+}
+
+// splitTeamsRecoveredMessages prefers Teams' authoritative per-user read
+// cursor. Own activity is only a fallback for payloads that omit that cursor.
+func splitTeamsRecoveredMessages(messages []models.Message, horizon, currentUserID string, activityAt time.Time) (read, unread []models.Message) {
+	horizonID := strings.TrimSpace(strings.SplitN(horizon, ";", 2)[0])
+	if horizonID == "" {
+		return core.SplitRecoveredMessagesAtOwnActivity(messages, currentUserID, activityAt)
+	}
+	horizonNumber, numericHorizonErr := strconv.ParseInt(horizonID, 10, 64)
+	if numericHorizonErr == nil {
+		for _, message := range messages {
+			messageNumber, err := strconv.ParseInt(message.ProtocolMsgID, 10, 64)
+			if err == nil && messageNumber <= horizonNumber {
+				read = append(read, message)
+			} else {
+				unread = append(unread, message)
+			}
+		}
+		return read, unread
+	}
+	for index, message := range messages {
+		if message.ProtocolMsgID == horizonID {
+			return messages[:index+1], messages[index+1:]
+		}
+	}
+	return core.SplitRecoveredMessagesAtOwnActivity(messages, currentUserID, activityAt)
 }
 
 // conversationSyncSince prevents the provider-wide watermark from creating
@@ -1685,6 +1711,9 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 			IsTyping: !event.TypingStop,
 		})
 	case msteams.EventTypeChatUpdate:
+		// A membership event can be the first time this chat is visible locally.
+		// Persist it before asking the frontend to reload its conversation list.
+		_, _ = p.ensureConversationStored(client, event.ThreadID)
 		p.emit(core.ContactStatusEvent{InstanceID: p.instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	}
 }

@@ -10,11 +10,20 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
 	"gorm.io/gorm"
 )
+
+const slackSearchPollingOverlap = 10 * time.Minute
+
+const slackHistoryFallbackBatchSize = 4
+
+func slackSearchPollSince(lastPoll time.Time) time.Time {
+	return lastPoll.Add(-slackSearchPollingOverlap)
+}
 
 // StreamEvents returns a channel that emits provider events (messages, reactions, etc.).
 // This uses polling to periodically check for new messages since RTM is deprecated.
@@ -70,6 +79,7 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 	// yourself. Keep an independent cursor for that conversation so messages
 	// sent from another Slack client still reach Loom without a manual sync.
 	lastSelfDMPollTime := lastPollTime.Add(-10 * time.Second)
+	historyFallbackCursor := 0
 
 	for {
 		select {
@@ -81,10 +91,20 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			return
 		case <-messageTicker.C:
 			// Poll for all new messages using Search API
-			newLastPollTime, err := p.pollGlobalUpdates(ctx, lastPollTime)
+			// Search indexing is asynchronous. Keep an overlap so a message that
+			// appears in the index after newer activity is not lost forever behind
+			// the forward-only cursor. SQLite deduplication keeps this idempotent.
+			newLastPollTime, err := p.pollGlobalUpdates(ctx, slackSearchPollSince(lastPollTime))
 			if err != nil {
 				p.log("SlackProvider.startPolling: Error polling global updates: %v\n", err)
-			} else if !newLastPollTime.IsZero() {
+				if strings.Contains(err.Error(), "missing_scope") {
+					historyFallbackCursor = p.pollKnownConversationHistoryFallback(
+						ctx,
+						historyFallbackCursor,
+						slackHistoryFallbackBatchSize,
+					)
+				}
+			} else if newLastPollTime.After(lastPollTime) {
 				lastPollTime = newLastPollTime
 			}
 			newSelfDMPollTime, err := p.pollSelfDMUpdates(lastSelfDMPollTime)
@@ -206,6 +226,80 @@ func (p *SlackProvider) pollSelfDMUpdates(since time.Time) (time.Time, error) {
 	return latest, nil
 }
 
+// pollKnownConversationHistoryFallback is the reliable fallback for Slack user
+// tokens that lack both search:read and rtm:stream. conversations.list cannot be
+// used as a change feed for those tokens because Slack omits latest and unread
+// metadata from its response. Poll a small rotating batch of locally known
+// conversations instead, keeping request volume bounded while guaranteeing that
+// every conversation is revisited without a manual resync.
+func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context, cursor, batchSize int) int {
+	if db.DB == nil || batchSize <= 0 || ctx.Err() != nil {
+		return cursor
+	}
+
+	type conversationCursor struct {
+		ProtocolConvID string
+		// SQLite returns aggregate date values such as MAX(timestamp) as text,
+		// even though individual timestamp columns scan into time.Time.
+		LastTimestamp string
+	}
+	var conversations []conversationCursor
+	prefix := core.BuildConvID(p.getInstanceId(), "") + "%"
+	if err := db.DB.Model(&models.Message{}).
+		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
+		Where("protocol_conv_id LIKE ?", prefix).
+		Where("deleted_at IS NULL").
+		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
+		Group("protocol_conv_id").
+		Order("last_timestamp DESC").
+		Scan(&conversations).Error; err != nil {
+		p.log("SlackProvider.pollKnownConversationHistoryFallback: failed listing local conversations: %v\n", err)
+		return cursor
+	}
+	if len(conversations) == 0 {
+		return 0
+	}
+	if cursor < 0 || cursor >= len(conversations) {
+		cursor = 0
+	}
+
+	end := cursor + batchSize
+	if end > len(conversations) {
+		end = len(conversations)
+	}
+	for _, conversation := range conversations[cursor:end] {
+		if ctx.Err() != nil {
+			return cursor
+		}
+		lastTimestampMillis := db.ParseTimeMillis(conversation.LastTimestamp)
+		if lastTimestampMillis == 0 {
+			p.log("SlackProvider.pollKnownConversationHistoryFallback: invalid local timestamp %q for %s\n", conversation.LastTimestamp, conversation.ProtocolConvID)
+			continue
+		}
+		lastTimestamp := time.UnixMilli(lastTimestampMillis)
+		messages, err := p.GetConversationHistory(
+			conversation.ProtocolConvID,
+			100,
+			nil,
+			&lastTimestamp,
+		)
+		if err != nil {
+			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
+			continue
+		}
+		if len(messages) == 0 {
+			continue
+		}
+		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, messages, "")
+		p.log("SlackProvider.pollKnownConversationHistoryFallback: recovered %d message(s) for %s\n", len(messages), conversation.ProtocolConvID)
+	}
+
+	if end == len(conversations) {
+		return 0
+	}
+	return end
+}
+
 // reconcileSlackMessageWindow marks locally present messages as deleted when
 // Slack no longer returns them in a fully covered conversations.history range.
 func (p *SlackProvider) reconcileSlackMessageWindow(conversationID string, remote []slack.Message, coveredSince, coveredUntil time.Time) {
@@ -317,6 +411,18 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			// Normalize DM channel IDs ("D...") to User IDs ("U...") for consistency
 			// This ensures messages match the conversationId stored in contacts
 			conversationID = core.BuildConvID(p.getInstanceId(), p.normalizeDMConversationID(conversationID))
+
+			// The overlap intentionally returns already processed matches. Reject
+			// them before user lookup and AuthTest so the safety window remains
+			// cheap even in an active workspace.
+			if db.DB != nil {
+				var exists int64
+				if err := db.DB.Model(&models.Message{}).
+					Where("protocol_msg_id = ?", match.Timestamp).
+					Count(&exists).Error; err == nil && exists > 0 {
+					continue
+				}
+			}
 
 			// Check if we know this conversation (users or channels)
 			// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh

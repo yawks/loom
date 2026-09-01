@@ -26,6 +26,7 @@ type ProviderInfo struct {
 	IsActive     bool                   `json:"isActive"`     // Whether the provider is currently active
 	ConfigSchema map[string]interface{} `json:"configSchema"` // Schema for configuration fields
 	SyncError    string                 `json:"syncError"`    // Non-empty when the provider failed to authenticate or connect at startup
+	AuthFlow     string                 `json:"authFlow"`     // Provider-neutral configuration flow: form, qr, browser, or device_confirmation
 }
 
 // ProviderFactory is a function that creates a new provider instance.
@@ -88,9 +89,14 @@ func (pm *ProviderManager) GetAvailableProviders() []ProviderInfo {
 // GetConfiguredProviders returns a list of configured (initialized) providers.
 func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	type configuredProvider struct {
+		instanceID string
+		provider   Provider
+		info       ProviderInfo
+	}
+	snapshot := make([]configuredProvider, 0, len(pm.providers))
+	activeInstanceID := pm.activeInstanceID
 
-	providers := make([]ProviderInfo, 0)
 	for instanceID, provider := range pm.providers {
 		// Extract providerID from instanceID (e.g., "whatsapp-1" -> "whatsapp")
 		parts := strings.Split(instanceID, "-")
@@ -108,7 +114,17 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 				Name: providerID,
 			}
 		}
+		snapshot = append(snapshot, configuredProvider{instanceID: instanceID, provider: provider, info: info})
+	}
+	pm.mu.RUnlock()
 
+	// Provider.GetConfig and database reads are external work. Keeping the
+	// manager lock around them lets one provider stall every list/read and also
+	// blocks unrelated provider lifecycle operations.
+	providers := make([]ProviderInfo, 0, len(snapshot))
+	for _, configured := range snapshot {
+		instanceID := configured.instanceID
+		info := configured.info
 		// Load instance name from database
 		var config models.ProviderConfiguration
 		if db.DB != nil {
@@ -120,8 +136,8 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		if info.InstanceName == "" {
 			info.InstanceName = instanceID
 		}
-		info.Config = provider.GetConfig()
-		info.IsActive = (instanceID == pm.activeInstanceID)
+		info.Config = configured.provider.GetConfig()
+		info.IsActive = (instanceID == activeInstanceID)
 		providers = append(providers, info)
 	}
 

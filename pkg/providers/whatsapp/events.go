@@ -16,6 +16,46 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
+func (w *WhatsAppProvider) cancelSyncFallback() {
+	w.syncFallbackMu.Lock()
+	if w.syncFallbackTimer != nil {
+		w.syncFallbackTimer.Stop()
+		w.syncFallbackTimer = nil
+	}
+	w.syncFallbackMu.Unlock()
+}
+
+func (w *WhatsAppProvider) scheduleSyncFallback() {
+	w.syncFallbackMu.Lock()
+	if w.syncFallbackTimer != nil {
+		w.syncFallbackTimer.Stop()
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(30*time.Second, func() {
+		w.syncFallbackMu.Lock()
+		if w.syncFallbackTimer != timer {
+			w.syncFallbackMu.Unlock()
+			return
+		}
+		w.syncFallbackTimer = nil
+		w.syncFallbackMu.Unlock()
+
+		w.mu.RLock()
+		connected := w.client != nil && w.client.Store != nil && w.client.Store.ID != nil && !w.disconnected
+		w.mu.RUnlock()
+		if !connected {
+			return
+		}
+		contacts, err := w.GetContacts()
+		if err == nil && len(contacts) > 0 {
+			fmt.Printf("WhatsApp: Fallback - emitting completed sync status after 30s timeout with %d conversations\n", len(contacts))
+			w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
+		}
+	})
+	w.syncFallbackTimer = timer
+	w.syncFallbackMu.Unlock()
+}
+
 func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	// Log ALL events to help debug
 	eventType := fmt.Sprintf("%T", evt)
@@ -622,20 +662,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// Don't emit completed here - wait for OfflineSyncCompleted which is the final event
 			w.emitSyncStatus(core.SyncStatusFetchingContacts, "Connected, synchronizing...", -1)
 
-			// Fallback: If OfflineSyncCompleted is not received within 30 seconds, emit completed anyway
-			go func() {
-				time.Sleep(30 * time.Second)
-				// Check if we're still connected and have conversations
-				if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
-					contacts, err := w.GetContacts()
-					if err == nil && len(contacts) > 0 {
-						fmt.Printf("WhatsApp: Fallback - emitting completed sync status after 30s timeout with %d conversations\n", len(contacts))
-						w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
-					}
-				}
-			}()
+			// Fallback only if OfflineSyncCompleted never arrives. A new reconnect
+			// replaces the previous timer and the real completion cancels it.
+			w.scheduleSyncFallback()
 		}
 	case *events.Disconnected:
+		w.cancelSyncFallback()
 		fmt.Printf("WhatsApp: Disconnected event received\n")
 	case *events.LoggedOut:
 		fmt.Println("WhatsApp: Logged out event received")
@@ -819,6 +851,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		default:
 		}
 	case *events.OfflineSyncCompleted:
+		w.cancelSyncFallback()
 		// Offline sync completed - all data is now synced
 		// This is the FINAL sync event - emit completed status here
 		fmt.Println("WhatsApp: Offline sync completed - conversations should now be available")

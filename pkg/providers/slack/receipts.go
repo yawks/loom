@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"time"
-
-	"github.com/slack-go/slack"
 )
 
 // MarkMessageAsRead marks a message as read by setting the read cursor in Slack.
@@ -22,29 +20,9 @@ func (p *SlackProvider) MarkMessageAsRead(conversationID string, messageID strin
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	// Handle different ID types for Slack conversations (user ID -> channel ID for DMs)
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
-		// Open DM to get channel ID
-		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users:    []string{conversationID},
-			ReturnIM: true,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to open DM conversation: %w", err)
-		}
-		if channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
-		}
-	} else if len(conversationID) > 0 && conversationID[0] == 'D' {
-		// For DM channel IDs, ensure the conversation is open
-		_, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			ChannelID: conversationID,
-		})
-		if err != nil {
-			// Log but don't fail - the conversation might already be open
-			p.log("SlackProvider.MarkMessageAsRead: Warning - failed to open DM conversation %s: %v (may already be open)\n", conversationID, err)
-		}
+	actualChannelID, err := p.slackPinChannel(conversationID)
+	if err != nil {
+		return fmt.Errorf("resolve conversation for read receipt: %w", err)
 	}
 
 	// messageID is a Slack timestamp string (e.g., "1502126650.000003")
@@ -52,7 +30,7 @@ func (p *SlackProvider) MarkMessageAsRead(conversationID string, messageID strin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := client.MarkConversationContext(ctx, actualChannelID, messageID)
+	err = client.MarkConversationContext(ctx, actualChannelID, messageID)
 	if err != nil {
 		return fmt.Errorf("failed to mark conversation as read: %w", err)
 	}
@@ -72,36 +50,16 @@ func (p *SlackProvider) MarkConversationAsRead(conversationID string) error {
 		return fmt.Errorf("slack client not initialized")
 	}
 
-	// Handle different ID types for Slack conversations
-	actualChannelID := conversationID
-	if len(conversationID) > 0 && conversationID[0] == 'U' {
-		// Open DM to get channel ID
-		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users:    []string{conversationID},
-			ReturnIM: true,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to open DM conversation: %w", err)
-		}
-		if channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
-		}
-	} else if len(conversationID) > 0 && conversationID[0] == 'D' {
-		// For DM channel IDs, ensure the conversation is open
-		_, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			ChannelID: conversationID,
-		})
-		if err != nil {
-			// Log but don't fail - the conversation might already be open
-			p.log("SlackProvider.MarkConversationAsRead: Warning - failed to open DM conversation %s: %v (may already be open)\n", conversationID, err)
-		}
+	actualChannelID, err := p.slackPinChannel(conversationID)
+	if err != nil {
+		return fmt.Errorf("resolve conversation for read receipt: %w", err)
 	}
 
 	// Get the latest message timestamp in the conversation to mark everything as read
 	var timestamp string
 	if db.DB != nil {
 		var latestMessage models.Message
-		if err := db.DB.Where("protocol_conv_id = ?", actualChannelID).
+		if err := db.DB.Where("protocol_conv_id = ?", conversationID).
 			Order("timestamp DESC").
 			Limit(1).
 			First(&latestMessage).Error; err == nil && latestMessage.ProtocolMsgID != "" {
@@ -119,7 +77,7 @@ func (p *SlackProvider) MarkConversationAsRead(conversationID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := client.MarkConversationContext(ctx, actualChannelID, timestamp)
+	err = client.MarkConversationContext(ctx, actualChannelID, timestamp)
 	if err != nil {
 		return fmt.Errorf("failed to mark conversation as read: %w", err)
 	}

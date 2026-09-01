@@ -1,15 +1,16 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bell, BellOff, Calendar, Info, MessageSquare, Pin } from "lucide-react";
+import { Bell, BellOff, Calendar, Info, MessageSquare, Pin, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { GetConfiguredProviders, GetConversationState, SetConversationMuted } from "../../wailsjs/go/main/App";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { ProtocolSwitcher } from "./ProtocolSwitcher";
 import { TypingIndicator } from "./TypingIndicator";
+import { ConversationSearchModal } from "./ConversationSearchModal";
 import { cn } from "@/lib/utils";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePresenceStore } from "@/lib/presenceStore";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -26,6 +27,7 @@ export function MessageHeader({
   onToggleDetails,
   onTogglePins,
   pinCount,
+  metaContactId,
 }: {
   displayName: string;
   avatarUrl?: string;
@@ -37,6 +39,7 @@ export function MessageHeader({
   onToggleDetails: () => void;
   onTogglePins: () => void;
   pinCount: number;
+  metaContactId: number;
 }) {
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
@@ -52,6 +55,7 @@ export function MessageHeader({
     (state) => (state.typingByConversation[conversationId]?.length ?? 0) > 0
   );
   const presenceMap = usePresenceStore((state) => state.presenceMap);
+  const [isConversationSearchOpen, setIsConversationSearchOpen] = useState(false);
 
   const selectedAccount = activeAccount ?? linkedAccounts[0];
   const instanceId = selectedAccount?.providerInstanceId;
@@ -76,6 +80,18 @@ export function MessageHeader({
       cancelled = true;
     };
   }, [conversationId, setConversationBadgeTracked, supportsNativeMute]);
+
+  useEffect(() => {
+    const handleConversationSearchShortcut = (event: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes("MAC");
+      if ((isMac ? event.metaKey : event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setIsConversationSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleConversationSearchShortcut);
+    return () => window.removeEventListener("keydown", handleConversationSearchShortcut);
+  }, []);
   const isGroup = selectedAccount?.isGroup ?? false;
   const accountStatus = linkedAccounts.find(
     (account) => account.status && account.status !== "offline"
@@ -104,6 +120,7 @@ export function MessageHeader({
   }, [configuredProviders, linkedAccounts]);
 
   return (
+    <>
     <div className={cn("message-header p-4 border-b flex justify-between items-center shrink-0 transition-opacity duration-200", showThreads && "opacity-20")}>
       <div className="message-header__identity flex items-center gap-3 min-w-0">
         <button
@@ -168,6 +185,15 @@ export function MessageHeader({
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setIsConversationSearchOpen(true)}
+          title={t("search_in_conversation")}
+          aria-label={t("search_in_conversation")}
+        >
+          <Search className="h-4 w-4" />
+        </Button>
+        <Button
           variant={isBadgeTracked ? "ghost" : "secondary"}
           size="icon"
           onClick={() => {
@@ -214,5 +240,13 @@ export function MessageHeader({
         <ProtocolSwitcher linkedAccounts={linkedAccounts} />
       </div>
     </div>
+    <ConversationSearchModal
+      open={isConversationSearchOpen}
+      onOpenChange={setIsConversationSearchOpen}
+      metaContactId={metaContactId}
+      displayName={displayName}
+      avatarUrl={avatarUrl}
+    />
+    </>
   );
 }

@@ -219,6 +219,15 @@ func (p *Provider) ensureConversationStored(client *msteams.Client, threadID str
 	if count > 0 {
 		return false, nil
 	}
+	// A membership event often arrives before the new chat is reflected by the
+	// paginated conversation list. Fetching the announced thread directly avoids
+	// waiting for the next manual/full synchronization.
+	if chat, err := client.GetChat(context.Background(), threadID); err == nil && chat != nil {
+		if err := p.storeConversation(p.linkedAccount(client, *chat)); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	chats, err := client.ListChats(context.Background())
 	if err != nil {
 		return false, err

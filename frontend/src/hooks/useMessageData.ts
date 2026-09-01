@@ -1,4 +1,4 @@
-import { GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
+import { GetCurrentUserID, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -175,12 +175,13 @@ export function useMessageData(
     [threadSummaries]
   );
 
-  const currentUserId = useMemo(() => {
-    for (const msg of messages) {
-      if (msg.isFromMe && msg.senderId) return msg.senderId;
-    }
-    return undefined;
-  }, [messages]);
+  const { data: providerCurrentUserId } = useQuery<string>({
+    queryKey: ["current-user-id", conversationId],
+    queryFn: () => GetCurrentUserID(conversationId),
+    enabled: Boolean(conversationId),
+    staleTime: Infinity,
+  });
+  const currentUserId = providerCurrentUserId || messages.find((msg) => msg.isFromMe && msg.senderId)?.senderId;
 
   useEffect(() => {
     if (!conversationId) {

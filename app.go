@@ -61,6 +61,7 @@ type metaContactsCache struct {
 // collapses startup bursts into a single DB hit per query type.
 type queryCache[T any] struct {
 	mu        sync.RWMutex
+	loadMu    sync.Mutex
 	data      T
 	expiresAt time.Time
 }
@@ -399,6 +400,26 @@ func (a *App) getSingleProviderByProtocol(protocol string) core.Provider {
 	return matched
 }
 
+// GetCurrentUserID returns the provider's canonical self identity. It must not
+// be inferred from the currently loaded messages: some conversations have no
+// recent outgoing message, which used to create optimistic reactions with an
+// empty author ID.
+func (a *App) GetCurrentUserID(conversationID string) string {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return ""
+	}
+	currentUser, ok := provider.(core.CurrentUserProvider)
+	if !ok {
+		return ""
+	}
+	userID := currentUser.CurrentUserID()
+	if normalizer, ok := provider.(core.ParticipantIdentityNormalizer); ok {
+		return normalizer.NormalizeParticipantID(userID)
+	}
+	return userID
+}
+
 // getProviderForConversation returns the provider that owns the given conversation ID.
 // It looks up the conversation's LinkedAccount in the DB to find the correct provider
 // instance, falling back to the active provider when the conversation isn't in the DB yet.
@@ -547,6 +568,7 @@ func (a *App) startup(ctx context.Context) {
 		ID:          "whatsapp",
 		Name:        "WhatsApp",
 		Description: "WhatsApp messaging provider",
+		AuthFlow:    "qr",
 		ConfigSchema: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
@@ -554,6 +576,17 @@ func (a *App) startup(ctx context.Context) {
 	}, func() core.Provider {
 		return providers.NewWhatsAppProvider()
 	})
+
+	a.providerManager.RegisterProvider("signal", core.ProviderInfo{
+		ID:          "signal",
+		Name:        "Signal",
+		Description: "Signal via a linked device",
+		AuthFlow:    "qr",
+		ConfigSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	}, func() core.Provider { return providers.NewSignalProvider() })
 
 	a.providerManager.RegisterProvider("slack", core.ProviderInfo{
 		ID:          "slack",
@@ -1021,6 +1054,9 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "new-messages-batch", string(batchJSON))
 					}
 				case core.ReactionEvent:
+					if normalizer, ok := provider.(core.ParticipantIdentityNormalizer); ok {
+						e.UserID = normalizer.NormalizeParticipantID(e.UserID)
+					}
 					// Basic DB saving/removing for reactions
 					if db.DB != nil {
 						var message models.Message
@@ -1070,13 +1106,20 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
 					}
 				case core.ContactStatusEvent:
-					if e.Status == "avatar_updated" || (e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received" || e.Status == "mpim_updated" || e.Status == "new_conversations_discovered")) {
+					isAvatarUpdate := e.Status == "avatar_updated"
+					if isAvatarUpdate || (e.UserID == "refresh" && (e.Status == "sync_complete" || e.Status == "message_received" || e.Status == "mpim_updated" || e.Status == "new_conversations_discovered")) {
 						a.emitContactsRefresh()
 					}
 
-					statusJSON, _ := json.Marshal(e)
-					if a.ctx != nil {
-						runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
+					// Avatar synchronization can produce hundreds of events. The
+					// debounced contacts-refresh above is the canonical UI signal for
+					// those updates; forwarding every item would flood WebKit's main
+					// thread and repeatedly rebuild the entire contact list.
+					if !isAvatarUpdate {
+						statusJSON, _ := json.Marshal(e)
+						if a.ctx != nil {
+							runtime.EventsEmit(a.ctx, "contact-status", string(statusJSON))
+						}
 					}
 				case core.PresenceEvent:
 					if db.DB != nil && e.UserID != "" {
@@ -1085,17 +1128,25 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						// UPDATE that can only affect zero rows, and update by primary key for
 						// known accounts.
 						if account, ok := db.ContactStore.FindByProviderUser(e.InstanceID, e.UserID); ok {
-							account.Status = map[bool]string{true: "online", false: "offline"}[e.IsOnline]
-							updates := map[string]interface{}{"status": account.Status}
+							desiredStatus := map[bool]string{true: "online", false: "offline"}[e.IsOnline]
+							updates := make(map[string]interface{}, 2)
+							if account.Status != desiredStatus {
+								account.Status = desiredStatus
+								updates["status"] = desiredStatus
+							}
 							if e.LastSeen > 0 {
 								lastSeen := time.Unix(e.LastSeen, 0)
-								account.LastSeen = &lastSeen
-								updates["last_seen"] = lastSeen
+								if account.LastSeen == nil || lastSeen.After(*account.LastSeen) {
+									account.LastSeen = &lastSeen
+									updates["last_seen"] = lastSeen
+								}
 							}
-							if result := db.DB.Model(&models.LinkedAccount{}).
-								Where("id = ?", account.ID).
-								Updates(updates); result.Error == nil {
-								db.ContactStore.UpsertLinkedAccount(account)
+							if len(updates) > 0 {
+								if result := db.DB.Model(&models.LinkedAccount{}).
+									Where("id = ?", account.ID).
+									Updates(updates); result.Error == nil {
+									db.ContactStore.UpsertLinkedAccount(account)
+								}
 							}
 						}
 					}
@@ -1947,7 +1998,6 @@ func (a *App) emitContactsRefresh() {
 	}
 	a.contactsRefreshTimer = time.AfterFunc(500*time.Millisecond, func() {
 		a.invalidateMetaContactsCache()
-		a.invalidateMessageCaches()
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "contacts-refresh", "{}")
 		}
@@ -2314,6 +2364,20 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 // SearchMessages searches persisted message bodies, newest first. Offset-based
 // pagination is sufficient here because search pages are deliberately small.
 func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage, error) {
+	return a.searchMessages(query, offset, nil)
+}
+
+// SearchMessagesInConversation searches messages belonging to every linked
+// account of one canonical meta-contact. This keeps aggregated conversations
+// provider-neutral while limiting results to the conversation shown in the UI.
+func (a *App) SearchMessagesInConversation(query string, offset int, metaContactID uint) (models.MessageSearchPage, error) {
+	if metaContactID == 0 {
+		return models.MessageSearchPage{Items: []models.MessageSearchResult{}}, nil
+	}
+	return a.searchMessages(query, offset, &metaContactID)
+}
+
+func (a *App) searchMessages(query string, offset int, metaContactID *uint) (models.MessageSearchPage, error) {
 	const pageSize = 15
 	page := models.MessageSearchPage{Items: []models.MessageSearchResult{}}
 	query = strings.TrimSpace(query)
@@ -2331,8 +2395,16 @@ func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage
 		`_`, `\_`,
 	).Replace(strings.ToLower(query))
 	pattern := "%" + escapedQuery + "%"
-	err := db.DB.
-		Where(`deleted_at IS NULL AND is_deleted = ? AND LOWER(body) LIKE ? ESCAPE '\'`, false, pattern).
+	messageQuery := db.DB.
+		Where(`deleted_at IS NULL AND is_deleted = ? AND LOWER(body) LIKE ? ESCAPE '\'`, false, pattern)
+	if metaContactID != nil {
+		conversationIDs := db.DB.Table("conversations AS scoped_c").
+			Select("scoped_c.id").
+			Joins("JOIN linked_accounts AS scoped_la ON scoped_la.id = scoped_c.linked_account_id").
+			Where("scoped_la.meta_contact_id = ?", *metaContactID)
+		messageQuery = messageQuery.Where("conversation_id IN (?)", conversationIDs)
+	}
+	err := messageQuery.
 		Order("timestamp DESC").
 		Limit(pageSize + 1).
 		Offset(offset).
@@ -3030,6 +3102,7 @@ func (a *App) RemoveProvider(instanceID string) error {
 	if err := a.providerManager.RemoveProvider(instanceID); err != nil {
 		return err
 	}
+	a.invalidateMessageCaches()
 	a.emitContactsRefresh()
 	return nil
 }
@@ -3298,10 +3371,11 @@ func (a *App) SendTypingIndicator(conversationID string, isTyping bool) error {
 }
 
 func (a *App) MarkConversationAsRead(conversationID string) error {
-	if a.getActiveProvider() == nil {
-		return fmt.Errorf("no active provider")
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
 	}
-	return a.getActiveProvider().MarkConversationAsRead(conversationID)
+	return provider.MarkConversationAsRead(conversationID)
 }
 
 // SetConversationMuted synchronizes the mute state with providers that expose
@@ -3796,22 +3870,44 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 	}
 	a.lastMessagesCache.mu.RUnlock()
 
+	// Only one caller may refill an expired cache. React components can mount at
+	// the same time, and without this lock each cache miss runs the same full
+	// message query concurrently. Re-check after acquiring the lock because a
+	// preceding caller may have populated the cache while this one was waiting.
+	a.lastMessagesCache.loadMu.Lock()
+	defer a.lastMessagesCache.loadMu.Unlock()
+
+	a.lastMessagesCache.mu.RLock()
+	if time.Now().Before(a.lastMessagesCache.expiresAt) {
+		cached := a.lastMessagesCache.data
+		a.lastMessagesCache.mu.RUnlock()
+		return cached, nil
+	}
+	a.lastMessagesCache.mu.RUnlock()
+
 	var messages []models.Message
 	// Providers persist timestamps with different UTC offsets. julianday normalizes
 	// them before comparison; ordering the raw TEXT values would compare wall-clock
 	// times and put e.g. 21:00+02:00 after 20:00+00:00 incorrectly.
 	// ID makes equal timestamps deterministic.
 	// Thread replies intentionally participate: activity in a thread makes its
-	// conversation recent too. GORM silently ignores the rn column.
+	// conversation recent too. Rank IDs using the expression index first, then
+	// load full rows for only the winning message in each conversation. Selecting
+	// every column inside the window forces a table lookup for every historical
+	// message even though all but one per conversation are discarded.
 	err := db.DB.Raw(`
-		SELECT * FROM (
-			SELECT *, ROW_NUMBER() OVER (
-				PARTITION BY protocol_conv_id
-				ORDER BY julianday(timestamp) DESC, id DESC
-			) AS rn
-			FROM messages
-			WHERE deleted_at IS NULL
-		) WHERE rn = 1
+		SELECT messages.*
+		FROM messages
+		JOIN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (
+					PARTITION BY protocol_conv_id
+					ORDER BY julianday(timestamp) DESC, id DESC
+				) AS rn
+				FROM messages INDEXED BY idx_messages_conv_latest_jd
+				WHERE deleted_at IS NULL
+			) WHERE rn = 1
+		) AS latest ON latest.id = messages.id
 	`).Find(&messages).Error
 
 	if err != nil {

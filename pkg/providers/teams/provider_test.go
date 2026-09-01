@@ -55,6 +55,23 @@ func TestToModelMessage(t *testing.T) {
 	}
 }
 
+func TestSplitTeamsRecoveredMessagesUsesConsumptionHorizon(t *testing.T) {
+	messages := []models.Message{
+		{ProtocolMsgID: "1700000000000"},
+		{ProtocolMsgID: "1700000001000"},
+		{ProtocolMsgID: "1700000002000"},
+	}
+	read, unread := splitTeamsRecoveredMessages(
+		messages,
+		"1700000001000;1700000001500;1700000001000",
+		"self",
+		time.Time{},
+	)
+	if len(read) != 2 || len(unread) != 1 || unread[0].ProtocolMsgID != "1700000002000" {
+		t.Fatalf("unexpected split: read=%v unread=%v", read, unread)
+	}
+}
+
 func TestReplyParentIsExtractedFromTeamsHTML(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",
@@ -483,6 +500,41 @@ func TestTeamsHTMLRichPresentation(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("rich text %q does not contain %q", got, expected)
 		}
+	}
+}
+
+func TestTeamsHTMLCodeBlockEditorBecomesOneFencedBlock(t *testing.T) {
+	input := `<p>Try this:</p>` +
+		`<p itemtype="http://schema.skype.com/CodeBlockEditor">&nbsp;</p>` +
+		`<pre itemid="codeBlockEditor-123"><code>` +
+		`function test() {<br>` +
+		`  return <span style="color: #BDCB4C">"one"</span>;<br>` +
+		`}</code></pre>`
+	want := "Try this:\n\n```\nfunction test() {\n  return \"one\";\n}\n```"
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("Teams code block = %q, want %q", got, want)
+	}
+}
+
+func TestLegacyFragmentedCodeDetector(t *testing.T) {
+	fragmented := "function test() {\n\n  var value = <loom-style color=\"#fff\">\"x\"</loom-style>;\n\n    return value;\n\n  }"
+	if !legacyFragmentedCode(fragmented) {
+		t.Fatal("expected legacy fragmented code to be detected")
+	}
+	if legacyFragmentedCode(`Normal <loom-style color="#fff">coloured prose</loom-style>`) {
+		t.Fatal("ordinary rich text must not be detected as fragmented code")
+	}
+}
+
+func TestNormalizeLegacyFragmentedCodeCreatesSingleCompactFence(t *testing.T) {
+	input := "Intro\n\nfunction test() {\n\n  var value = <loom-style color=\"#fff\">\"x\"</loom-style>;\n\n    return value;\n\n  }"
+	want := "Intro\n\n```\nfunction test() {\n  var value = \"x\";\n    return value;\n  }\n```"
+	got, ok := normalizeLegacyFragmentedCode(input)
+	if !ok || got != want {
+		t.Fatalf("normalized legacy code = %q, %v; want %q", got, ok, want)
+	}
+	if strings.Count(got, "```") != 2 {
+		t.Fatalf("expected exactly one fenced block, got %q", got)
 	}
 }
 

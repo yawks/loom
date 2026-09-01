@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
-import { AddReaction, DeleteMessage, GetHighlightedMessageRefs, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
+import { AddReaction, DeleteMessage, GetCurrentUserID, GetHighlightedMessageRefs, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageReactions } from "./MessageReactions";
@@ -390,7 +390,13 @@ export function ThreadView() {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const threadContentRef = useRef<HTMLDivElement>(null);
+  const threadViewRef = useRef<HTMLDivElement>(null);
   const shouldStickToThreadBottomRef = useRef(true);
+  const [isAtThreadBottom, setIsAtThreadBottom] = useState(true);
+  const [hasThreadFocus, setHasThreadFocus] = useState(false);
+  const [hasWindowFocus, setHasWindowFocus] = useState(() =>
+    typeof document === "undefined" ? true : document.hasFocus()
+  );
   const threadBottomFrameRef = useRef<number | null>(null);
   const previousThreadMessageCountRef = useRef(0);
 
@@ -502,12 +508,13 @@ export function ThreadView() {
     setUnreadNavigationTarget(null);
   }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, markMultipleAsRead, setUnreadNavigationTarget]);
 
-  const currentUserId = useMemo(() => {
-    for (const msg of sortedThreadMessages) {
-      if (msg.isFromMe && msg.senderId) return msg.senderId;
-    }
-    return undefined;
-  }, [sortedThreadMessages]);
+  const { data: providerCurrentUserId } = useQuery<string>({
+    queryKey: ["current-user-id", conversationId],
+    queryFn: () => GetCurrentUserID(conversationId),
+    enabled: Boolean(conversationId),
+    staleTime: Infinity,
+  });
+  const currentUserId = providerCurrentUserId || sortedThreadMessages.find((msg) => msg.isFromMe && msg.senderId)?.senderId;
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const focusComposer = useCallback(() => composerRef.current?.focus(), []);
@@ -597,9 +604,24 @@ export function ThreadView() {
   useEffect(() => {
     if (!selectedThreadId) return;
     shouldStickToThreadBottomRef.current = true;
+    setIsAtThreadBottom(true);
     previousThreadMessageCountRef.current = 0;
     scheduleThreadBottomCorrection();
+    // Opening a thread is an explicit navigation action. Give its viewport DOM
+    // focus so replies are consumed only while attention remains in this panel.
+    scrollContainerRef.current?.focus({ preventScroll: true });
   }, [selectedThreadId, scheduleThreadBottomCorrection]);
+
+  useEffect(() => {
+    const handleFocus = () => setHasWindowFocus(true);
+    const handleBlur = () => setHasWindowFocus(false);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -607,6 +629,7 @@ export function ThreadView() {
 
     const stopFollowingBottom = () => {
       shouldStickToThreadBottomRef.current = false;
+      setIsAtThreadBottom(false);
     };
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) stopFollowingBottom();
@@ -619,7 +642,9 @@ export function ThreadView() {
     };
     const handleScroll = () => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (distanceFromBottom <= 2) shouldStickToThreadBottomRef.current = true;
+      const atBottom = distanceFromBottom <= 2;
+      shouldStickToThreadBottomRef.current = atBottom;
+      setIsAtThreadBottom(atBottom);
     };
 
     // Observe one stable content box. A subtree MutationObserver made every
@@ -669,11 +694,12 @@ export function ThreadView() {
 
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
+    if (!hasWindowFocus || !hasThreadFocus || !isAtThreadBottom) return;
     const unreadIds = sortedThreadMessages
       .filter((msg) => !msg.isFromMe)
       .map((msg) => getMessageDomId(msg));
     if (unreadIds.length > 0) markMultipleAsRead(conversationId, unreadIds);
-  }, [selectedThreadId, conversationId, sortedThreadMessages, markMultipleAsRead]);
+  }, [selectedThreadId, conversationId, sortedThreadMessages, markMultipleAsRead, hasWindowFocus, hasThreadFocus, isAtThreadBottom]);
 
   // Thread list view (no thread selected yet)
   if (!selectedThreadId) {
@@ -747,7 +773,21 @@ export function ThreadView() {
   }
 
   return (
-    <div className="thread-view flex flex-col h-full overflow-hidden">
+    <div
+      ref={threadViewRef}
+      className="thread-view flex flex-col h-full overflow-hidden"
+      onFocusCapture={() => setHasThreadFocus(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setHasThreadFocus(false);
+        }
+      }}
+      onPointerDownCapture={() => {
+        if (!threadViewRef.current?.contains(document.activeElement)) {
+          scrollContainerRef.current?.focus({ preventScroll: true });
+        }
+      }}
+    >
       <div className="thread-view__header px-4 py-3 border-b flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {threadOpenedFromList && (
@@ -768,6 +808,7 @@ export function ThreadView() {
       </div>
       <div
         ref={scrollContainerRef}
+        tabIndex={-1}
         className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area"
         style={{ overflowAnchor: "none" }}
       >
