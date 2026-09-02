@@ -913,7 +913,14 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 		var syncErr error
 		if reason == "manual" {
 			if globalSyncer, ok := provider.(core.GlobalHistorySyncer); ok {
-				syncErr = globalSyncer.SyncAllHistory(since)
+				// A manual audit is explicitly allowed to be more expensive. Do
+				// not let a recent successful watermark hide an older hole inside
+				// the standard 30-day repair window.
+				auditSince := since
+				if floor := time.Now().Add(-30 * 24 * time.Hour); auditSince.After(floor) {
+					auditSince = floor
+				}
+				syncErr = globalSyncer.SyncAllHistory(auditSince)
 			} else {
 				syncErr = provider.SyncHistory(since)
 			}

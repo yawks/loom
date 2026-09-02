@@ -10,6 +10,7 @@ import { ProtocolIcon } from "./ProtocolIcon";
 import { normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
+import { timeToDate } from "@/lib/utils";
 
 export function MessageSearchResults({
   query,
@@ -22,7 +23,7 @@ export function MessageSearchResults({
   metaContactId?: number;
   debounceMs?: number;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [showAllResults, setShowAllResults] = useState(false);
   const trimmedQuery = query.trim();
@@ -115,6 +116,11 @@ export function MessageSearchResults({
         const startsGroup = !previous || previous.metaContactId !== result.metaContactId;
         const contact = contacts.find((item) => item.id === result.metaContactId);
         const normalizedMessage = normalizeSerializedQuotedReply(result.message);
+        const messageDate = timeToDate(result.message.timestamp);
+        const formattedTimestamp = messageDate.toLocaleString(i18n.language, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
 
         return (
           <div className="message-search-results__group" key={`${result.message.protocolMsgId}-${index}`}>
@@ -146,6 +152,13 @@ export function MessageSearchResults({
                 onResultSelected();
               }}
             >
+              <time
+                dateTime={messageDate.toISOString()}
+                className="mb-1 block text-xs text-muted-foreground"
+                title={formattedTimestamp}
+              >
+                {formattedTimestamp}
+              </time>
               <MessageText
                 text={normalizedMessage.body}
                 highlightQuery={debouncedQuery}

@@ -72,6 +72,15 @@ func TestSplitTeamsRecoveredMessagesUsesConsumptionHorizon(t *testing.T) {
 	}
 }
 
+func TestTeamsSyncLowerBoundUsesRequestedOlderWindow(t *testing.T) {
+	newest := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	requested := newest.Add(-24 * time.Hour)
+	got := teamsSyncLowerBound(requested, &newest)
+	if want := requested.Add(-5 * time.Minute); !got.Equal(want) {
+		t.Fatalf("lower bound=%s, want %s", got, want)
+	}
+}
+
 func TestReplyParentIsExtractedFromTeamsHTML(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",

@@ -604,11 +604,18 @@ export function MessageList({
 
     if (!mainMessages.length) return;
     if (scrollInitializedRef.current === conversationId) return;
+    if (!virtuosoRef.current || !scrollerElementRef.current) return;
     scrollInitializedRef.current = conversationId;
-
-    if (!virtuosoRef.current) return;
     virtuosoRef.current.scrollToIndex({ index: displayedMessageGroups.length - 1, align: 'end', behavior: 'auto' });
-  }, [conversationId, mainMessages.length, displayedMessageGroups.length]);
+    const scroller = scrollerElementRef.current;
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  }, [conversationId, mainMessages.length, displayedMessageGroups.length, isLoading, isFetching]);
+
+  const correctBottomImmediately = useCallback(() => {
+    const el = scrollerElementRef.current;
+    if (!el || !isStabilizingRef.current) return;
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+  }, []);
 
   // Re-anchor to bottom when a pending message is added or confirmed.
   // Keep the live-edge intent through the optimistic→confirmed transition.
@@ -617,7 +624,7 @@ export function MessageList({
     [mainMessages]
   );
   const prevHasPendingRef = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const wasPending = prevHasPendingRef.current;
     prevHasPendingRef.current = hasPendingMessage;
     if (wasPending === hasPendingMessage) return;
@@ -627,15 +634,12 @@ export function MessageList({
     // Sending a message always means returning to the live edge. Keep that
     // intent through both the optimistic and confirmed render.
     isStabilizingRef.current = true;
+    atBottomRef.current = true;
     setIsStabilizing(true);
-    // The layout effect below owns the single bottom correction after commit.
-  }, [hasPendingMessage, conversationId, mainMessages.length]);
-
-  const correctBottomImmediately = useCallback(() => {
-    const el = scrollerElementRef.current;
-    if (!el || !isStabilizingRef.current) return;
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
-  }, []);
+    setAtBottom(true);
+    pendingAnchorRef.current = null;
+    correctBottomImmediately();
+  }, [hasPendingMessage, conversationId, mainMessages.length, correctBottomImmediately]);
 
   const saveVisibleAnchor = useCallback(() => {
     const scroller = scrollerElementRef.current;
@@ -674,6 +678,11 @@ export function MessageList({
     const el = ref instanceof HTMLElement ? ref : null;
     scrollerElementRef.current = el;
     if (!el) return;
+
+    // The scroller can mount after the message data effect has run (notably
+    // when replacing the loading state). Honour the opening/send live-edge
+    // intent as soon as the actual viewport exists.
+    if (isStabilizingRef.current) correctBottomImmediately();
 
     const stopFollowingBottom = () => {
       // Record the user's intent immediately, before the browser dispatches

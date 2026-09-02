@@ -7,7 +7,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { MessageText } from "./MessageText";
 import { ProtocolIcon } from "./ProtocolIcon";
-import { normalizeSerializedQuotedReply } from "@/lib/messageUtils";
+import { getFirstAttachmentFileName, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { cn } from "@/lib/utils";
@@ -53,12 +53,13 @@ export function HighlightedMessagesInbox() {
       {results.map((result, index) => {
         const contact = contacts.find((item) => item.id === result.metaContactId);
         const message = normalizeSerializedQuotedReply(result.message);
+        const previewText = message.body?.trim() || getFirstAttachmentFileName(message.attachments) || "";
         const isUnread = readByConversation[message.protocolConvId]?.[message.protocolMsgId] === false;
         return (
           <button
             key={`${message.protocolMsgId}-${index}`}
             className={cn(
-              "w-full rounded-lg border px-2 py-2 text-left transition-colors hover:border-amber-400/40 hover:bg-sidebar-hover focus:outline-none focus:ring-2 focus:ring-amber-500",
+              "h-auto min-h-0 w-full overflow-hidden rounded-lg border px-2 py-2 text-left align-top transition-colors hover:border-amber-400/40 hover:bg-sidebar-hover focus:outline-none focus:ring-2 focus:ring-amber-500",
               isUnread
                 ? "border-amber-400/50 bg-amber-400/10 text-sidebar-foreground"
                 : "border-transparent"
@@ -98,7 +99,7 @@ export function HighlightedMessagesInbox() {
               </div>
             </div>
             <div className={cn("line-clamp-3 text-sm", isUnread ? "font-semibold text-sidebar-foreground" : "text-sidebar-muted-foreground")}>
-              <MessageText text={message.body} providerInstanceId={result.providerInstanceId} emojiSize={14} preview isFromMe={message.isFromMe} />
+              <MessageText text={previewText} providerInstanceId={result.providerInstanceId} emojiSize={14} preview isFromMe={message.isFromMe} />
             </div>
           </button>
         );
