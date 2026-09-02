@@ -42,6 +42,10 @@ type Provider struct {
 	unsupportedProvider
 
 	mu             sync.RWMutex
+	historySyncMu  sync.Mutex
+	recoveryMu     sync.Mutex
+	recoveryActive bool
+	recoverySince  time.Time
 	fileMu         sync.RWMutex
 	config         core.ProviderConfig
 	instance       string
@@ -180,6 +184,19 @@ func (p *Provider) StreamEvents() (<-chan core.ProviderEvent, error) {
 }
 
 func (p *Provider) SyncHistory(since time.Time) error {
+	return p.syncHistory(since, false)
+}
+
+// SyncAllHistory audits the caller's complete requested time window instead
+// of resuming near each conversation's newest local message. This repairs old
+// holes while keeping the normal incremental synchronization inexpensive.
+func (p *Provider) SyncAllHistory(since time.Time) error {
+	return p.syncHistory(since, true)
+}
+
+func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error {
+	p.historySyncMu.Lock()
+	defer p.historySyncMu.Unlock()
 	client, instance, err := p.connectedClient()
 	if err != nil {
 		return err
@@ -206,7 +223,10 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			ConversationID: chat.ID, Message: "Syncing Microsoft Teams history",
 			Progress: (index * 100) / max(1, len(chats)),
 		})
-		conversationSince := p.conversationSyncSince(chat.ID, since)
+		conversationSince := since
+		if !auditRequestedWindow {
+			conversationSince = p.conversationSyncSince(chat.ID, since)
+		}
 		messages, err := p.GetConversationHistory(chat.ID, 0, nil, &conversationSince)
 		if err != nil {
 			if isSkippableHistoryError(err) {
@@ -1715,7 +1735,46 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 		// Persist it before asking the frontend to reload its conversation list.
 		_, _ = p.ensureConversationStored(client, event.ThreadID)
 		p.emit(core.ContactStatusEvent{InstanceID: p.instance, UserID: "refresh", Status: "new_conversations_discovered"})
+	case msteams.EventTypeHistorySync:
+		p.scheduleHistoryRecovery(event.Timestamp)
 	}
+}
+
+// scheduleHistoryRecovery coalesces repeated loss/reconnect signals and keeps
+// the realtime event consumer free while the HTTP history audit is running.
+func (p *Provider) scheduleHistoryRecovery(since time.Time) {
+	if since.IsZero() {
+		since = time.Now().Add(-24 * time.Hour)
+	}
+	p.recoveryMu.Lock()
+	if p.recoverySince.IsZero() || since.Before(p.recoverySince) {
+		p.recoverySince = since
+	}
+	if p.recoveryActive {
+		p.recoveryMu.Unlock()
+		return
+	}
+	p.recoveryActive = true
+	p.recoveryMu.Unlock()
+
+	go func() {
+		for {
+			p.recoveryMu.Lock()
+			windowStart := p.recoverySince
+			p.recoverySince = time.Time{}
+			p.recoveryMu.Unlock()
+
+			_ = p.SyncAllHistory(windowStart)
+
+			p.recoveryMu.Lock()
+			if p.recoverySince.IsZero() {
+				p.recoveryActive = false
+				p.recoveryMu.Unlock()
+				return
+			}
+			p.recoveryMu.Unlock()
+		}
+	}()
 }
 
 func (p *Provider) watchConversationList(ctx context.Context, client *msteams.Client) {

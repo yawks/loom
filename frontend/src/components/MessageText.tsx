@@ -6,7 +6,7 @@ import { CodeBlock } from "./CodeBlock";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { transformUrls, fixCodeBlocks } from "../lib/utils";
+import { annotateUnlabeledCodeFences, transformUrls, fixCodeBlocks } from "../lib/utils";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
@@ -182,6 +182,12 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean,
           />
         );
       }
+      // Message previews are text summaries. Rich cards can contain Markdown
+      // images with large intrinsic dimensions; keeping those images inside a
+      // line-clamped snippet makes the line box retain that height and leaves a
+      // large blank area in compact lists. Preserve useful alternative text,
+      // but never render the media itself in preview mode.
+      if (preview) return alt ? <span>{alt}</span> : null;
       return <img src={src} alt={alt ?? ""} {...props} />;
     },
     p: ({ className, ...props }) => (
@@ -259,6 +265,7 @@ export const MessageText = memo(function MessageText({
       processedText = processedText.replace(/^\s*>\s?/gm, "");
     }
     processedText = fixCodeBlocks(processedText);
+    processedText = annotateUnlabeledCodeFences(processedText);
 
     if (preview) {
       processedText = processedText.replace(/\n+/g, " ");

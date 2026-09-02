@@ -17,6 +17,44 @@ export const htmlFragmentToText = (text: string): string => {
   return documentNode.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() ?? text;
 };
 
+type AttachmentFileName = {
+  fileName?: unknown;
+  filename?: unknown;
+  name?: unknown;
+};
+
+/**
+ * Returns the first usable filename from the canonical attachment payload.
+ * `filename` and `name` are generic legacy aliases kept for already-persisted
+ * attachment rows created before `fileName` became canonical.
+ */
+export const getFirstAttachmentFileName = (serializedAttachments?: string): string | null => {
+  if (!serializedAttachments?.trim()) return null;
+
+  try {
+    const attachments = JSON.parse(serializedAttachments) as unknown;
+    if (!Array.isArray(attachments)) return null;
+
+    for (const attachment of attachments) {
+      if (typeof attachment === "string") {
+        const fileName = attachment.split(/[\\/]/).pop()?.trim();
+        if (fileName) return fileName;
+        continue;
+      }
+      if (!attachment || typeof attachment !== "object") continue;
+
+      const candidate = attachment as AttachmentFileName;
+      for (const value of [candidate.fileName, candidate.filename, candidate.name]) {
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    }
+  } catch {
+    // An invalid legacy payload should not prevent the surrounding message
+    // list from rendering.
+  }
+  return null;
+};
+
 export const getMessageDomId = (message: models.Message): string => {
   if (message.protocolMsgId?.trim()) return message.protocolMsgId;
   if (message.id) return `message-${message.id}`;

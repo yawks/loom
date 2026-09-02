@@ -133,6 +133,51 @@ export function fixCodeBlocks(text: string): string {
   return fixed;
 }
 
+/**
+ * Adds a language to unlabeled Markdown fences when the syntax provides a
+ * strong signal. highlight.js otherwise commonly mistakes short Java/C-like
+ * snippets for SQL. Ambiguous blocks remain unlabeled and use its normal
+ * automatic detection.
+ */
+export function annotateUnlabeledCodeFences(text: string): string {
+  if (!text.includes("```")) return text;
+
+  return text.replace(/(^|\n)```[ \t]*\n([\s\S]*?)\n```(?=\n|$)/g, (match, prefix, code) => {
+    const language = inferCodeLanguage(code);
+    return language ? `${prefix}\`\`\`${language}\n${code}\n\`\`\`` : match;
+  });
+}
+
+function inferCodeLanguage(code: string): string | null {
+  const signals: Array<[string, RegExp[]]> = [
+    ["json", [/^\s*[\[{]/, /"[^"\n]+"\s*:/, /\b(?:true|false|null)\b/]],
+    ["java", [
+      /\b(?:public|private|protected|class|interface|extends|implements|throws|package|import)\b/,
+      /\b(?:byte|short|int|long|float|double|boolean|char|String)\s+(?:\[\]\s*)?[A-Za-z_$][\w$]*/,
+      /\b[A-Z][\w$]*(?:<[^;\n]+>)?\[\]\s+[A-Za-z_$][\w$]*/,
+    ]],
+    ["typescript", [/\b(?:interface|type|enum|implements|readonly|keyof)\b/, /:\s*(?:string|number|boolean|unknown|never|void)\b/]],
+    ["javascript", [
+      /\bfunction\s+[A-Za-z_$][\w$]*\s*\(/,
+      /\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*(?:=|;)/,
+      /\b(?:undefined|typeof|async|await)\b/,
+      /=>/,
+    ]],
+    ["python", [/^\s*(?:def|class|from|import)\s+/m, /:\s*(?:#.*)?$/m, /\b(?:None|True|False|elif)\b/]],
+    ["go", [/^\s*(?:package|func|type)\s+/m, /:=/, /\b(?:chan|defer|goroutine)\b/]],
+    ["rust", [/\b(?:fn|let mut|impl|trait|pub struct|match)\b/, /&mut\b/, /::/]],
+    ["sql", [/\bSELECT\b[\s\S]+\bFROM\b/i, /\b(?:INSERT INTO|UPDATE|DELETE FROM|CREATE TABLE|ALTER TABLE)\b/i]],
+    ["bash", [/^\s*#!.*\b(?:ba|z)?sh\b/m, /^\s*(?:export|source|sudo)\s+/m, /\$\{[^}]+\}/]],
+  ];
+
+  let best: { language: string; score: number } | null = null;
+  for (const [language, patterns] of signals) {
+    const score = patterns.reduce((total, pattern) => total + (pattern.test(code) ? 1 : 0), 0);
+    if (score >= 2 && (!best || score > best.score)) best = { language, score };
+  }
+  return best?.language ?? null;
+}
+
 const URL_RE = /https?:\/\/[^\s<>"'\])​]+/;
 
 /** Returns the first http/https URL found in text, or null. */
