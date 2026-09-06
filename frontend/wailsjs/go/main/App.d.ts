@@ -165,6 +165,8 @@ export function SendFile(arg1:string,arg2:string,arg3:string,arg4:string):Promis
 
 export function SendMessage(arg1:string,arg2:string):Promise<models.Message>;
 
+export function SendMessageWithMentions(arg1:string,arg2:string,arg3:Array<core.Mention>,arg4:string,arg5:string):Promise<models.Message>;
+
 export function SendReply(arg1:string,arg2:string,arg3:string):Promise<models.Message>;
 
 export function SendThreadFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<models.Message>;

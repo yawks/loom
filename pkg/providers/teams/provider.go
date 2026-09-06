@@ -793,6 +793,17 @@ func oldestTeamsMessageTime(messages []msteams.Message) time.Time {
 }
 
 func (p *Provider) SendMessage(conversationID, text string, file *core.Attachment, threadID *string) (*models.Message, error) {
+	return p.sendMessageWithMentions(conversationID, text, file, threadID, nil)
+}
+
+func (p *Provider) SendMessageWithMentions(conversationID, text string, mentions []core.Mention, threadID, quotedMessageID *string) (*models.Message, error) {
+	if quotedMessageID != nil {
+		return p.SendReply(conversationID, text, *quotedMessageID)
+	}
+	return p.sendMessageWithMentions(conversationID, text, nil, threadID, mentions)
+}
+
+func (p *Provider) sendMessageWithMentions(conversationID, text string, file *core.Attachment, threadID *string, mentions []core.Mention) (*models.Message, error) {
 	if threadID != nil {
 		return nil, unsupported("threads")
 	}
@@ -823,7 +834,22 @@ func (p *Provider) SendMessage(conversationID, text string, file *core.Attachmen
 	}
 	nsConvID := core.BuildConvID(p.instance, rawConvID)
 	opts := msteams.SendOptions{ContentType: "html"}
-	content := msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(text))
+	providerText := core.FormatMentions(text, mentions, func(mention core.Mention) string {
+		for index, candidate := range mentions {
+			if candidate.Start == mention.Start && candidate.UserID == mention.UserID {
+				return fmt.Sprintf("LOOMMENTION%dTOKEN", index)
+			}
+		}
+		return "@" + mention.DisplayName
+	})
+	content := msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(providerText))
+	for index, mention := range mentions {
+		if mention.UserID != "" {
+			opts.Mentions = append(opts.Mentions, msteams.Mention{UserID: mention.UserID})
+			span := fmt.Sprintf(`<span itemtype="http://schema.skype.com/Mention" itemid="%d">@%s</span>`, index, html.EscapeString(mention.DisplayName))
+			content = strings.ReplaceAll(content, fmt.Sprintf("LOOMMENTION%dTOKEN", index), span)
+		}
+	}
 	var modelAttachment *models.Attachment
 	if file != nil {
 		if len(file.Data) == 0 {

@@ -211,6 +211,23 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 	return &m, nil
 }
 
+func (p *GoogleChatProvider) SendMessageWithMentions(convID, text string, mentions []core.Mention, threadID, quotedMessageID *string) (*models.Message, error) {
+	providerText := core.FormatMentions(text, mentions, func(mention core.Mention) string {
+		return "<users/" + strings.TrimPrefix(mention.UserID, "users/") + ">"
+	})
+	var message *models.Message
+	var err error
+	if quotedMessageID != nil {
+		message, err = p.SendReply(convID, providerText, *quotedMessageID)
+	} else {
+		message, err = p.SendMessage(convID, providerText, nil, threadID)
+	}
+	if message != nil {
+		message.Body = text
+	}
+	return message, err
+}
+
 func (p *GoogleChatProvider) SendReply(convID, text, quotedMessageID string) (*models.Message, error) {
 	threadName := p.getMessageThreadName(quotedMessageID)
 	if threadName == "" {

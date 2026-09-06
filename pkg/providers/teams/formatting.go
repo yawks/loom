@@ -232,8 +232,13 @@ func normalizeLegacyFragmentedCode(body string) (string, bool) {
 	return intro + "\n\n" + fence + "\n" + code + "\n" + fence, true
 }
 
-var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t]+)\*\*`)
-var teamsEmptyStrong = regexp.MustCompile(`\*\*[ \t]+\*\*`)
+var teamsStrongLeadingSpace = regexp.MustCompile(`\*\*([ \t\x{00a0}]+)(\S[^*\n]*)\*\*`)
+var teamsStrongTrailingSpace = regexp.MustCompile(`\*\*([^*\n]*\S)([ \t\x{00a0}]+)\*\*`)
+var teamsEmphasisLeadingSpace = regexp.MustCompile(`(^|[^*])\*([ \t\x{00a0}]+)(\S[^*\n]*)\*`)
+var teamsEmphasisTrailingSpace = regexp.MustCompile(`(^|[^*])\*([^*\n]*\S)([ \t\x{00a0}]+)\*`)
+var teamsStrikeLeadingSpace = regexp.MustCompile(`~~([ \t\x{00a0}]+)(\S[^~\n]*)~~`)
+var teamsStrikeTrailingSpace = regexp.MustCompile(`~~([^~\n]*\S)([ \t\x{00a0}]+)~~`)
+var teamsEmptyStrong = regexp.MustCompile(`\*\*[ \t\x{00a0}]+\*\*`)
 var teamsEscapedStrong = regexp.MustCompile(`\\\*\\\*([^\n]*\S)[ \t]*\\\*\\\*`)
 var duplicatedTeamsLink = regexp.MustCompile(`\[\[([^\]\n]+)\]\((https?://[^\s)]+)\)\]\\\(\[([^\]\n]+)\]\((https?://[^\s)]+)\)\)`)
 
@@ -242,8 +247,13 @@ var duplicatedTeamsLink = regexp.MustCompile(`\[\[([^\]\n]+)\]\((https?://[^\s)]
 // already-serialized Markdown in the same payload.
 func normalizeTeamsMarkdown(input string) string {
 	input = teamsEscapedStrong.ReplaceAllString(input, `**$1**`)
+	input = teamsStrongLeadingSpace.ReplaceAllString(input, `$1**$2**`)
 	input = teamsStrongTrailingSpace.ReplaceAllString(input, `**$1**$2`)
 	input = teamsEmptyStrong.ReplaceAllString(input, "")
+	input = teamsEmphasisLeadingSpace.ReplaceAllString(input, `$1$2*$3*`)
+	input = teamsEmphasisTrailingSpace.ReplaceAllString(input, `$1*$2*$3`)
+	input = teamsStrikeLeadingSpace.ReplaceAllString(input, `$1~~$2~~`)
+	input = teamsStrikeTrailingSpace.ReplaceAllString(input, `~~$1~~$2`)
 	return normalizeTeamsEscapedTable(input)
 }
 

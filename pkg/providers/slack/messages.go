@@ -187,6 +187,21 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	return sentMessage, nil
 }
 
+func (p *SlackProvider) SendMessageWithMentions(conversationID, text string, mentions []core.Mention, threadID, quotedMessageID *string) (*models.Message, error) {
+	providerText := core.FormatMentions(text, mentions, func(mention core.Mention) string { return "<@" + mention.UserID + ">" })
+	if quotedMessageID != nil {
+		if threadID != nil {
+			return p.SendThreadReply(conversationID, providerText, *threadID, *quotedMessageID)
+		}
+		return p.SendReply(conversationID, providerText, *quotedMessageID)
+	}
+	message, err := p.SendMessage(conversationID, providerText, nil, threadID)
+	if message != nil {
+		message.Body = text
+	}
+	return message, err
+}
+
 // ScheduleMessage queues a text message using Slack's native scheduler.
 func (p *SlackProvider) ScheduleMessage(conversationID, text string, scheduledAt time.Time, _ string) (*models.ScheduledMessage, error) {
 	if strings.TrimSpace(text) == "" {

@@ -297,6 +297,22 @@ type Provider interface {
 	RefreshContact(contactID string) error
 }
 
+// Mention identifies a canonical participant reference in a message body.
+// Start and Length are UTF-16 offsets so browser clients can pass textarea
+// selections without knowing anything about a provider's wire format.
+type Mention struct {
+	UserID      string `json:"userId"`
+	DisplayName string `json:"displayName"`
+	Start       int    `json:"start"`
+	Length      int    `json:"length"`
+}
+
+// MentionMessageProvider is implemented by providers with native mentions.
+// Providers that don't implement it receive the readable plain-text body.
+type MentionMessageProvider interface {
+	SendMessageWithMentions(conversationID, text string, mentions []Mention, threadID, quotedMessageID *string) (*models.Message, error)
+}
+
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
 	SupportsThreads               bool   `json:"supportsThreads"`

@@ -74,6 +74,7 @@
   "schedule_not_allowed_token": "Your Slack token type does not support scheduled messages. Use a bot token (xoxb) or a user OAuth token (xoxp).",
   "send_failed": "Failed to send message",
   "participants": "Participants",
+  "mention_participant": "Mention a participant",
   "add_group_member": "Add member",
   "remove_group_member": "Remove member",
   "remove_group_member_confirm": "Remove {{name}} from the group?",

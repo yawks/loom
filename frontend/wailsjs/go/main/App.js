@@ -322,6 +322,10 @@ export function SendMessage(arg1, arg2) {
   return window['go']['main']['App']['SendMessage'](arg1, arg2);
 }
 
+export function SendMessageWithMentions(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SendMessageWithMentions'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function SendReply(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendReply'](arg1, arg2, arg3);
 }

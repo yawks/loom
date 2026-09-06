@@ -319,6 +319,59 @@ func (p *Provider) GetContactName(contactID string) (string, error) {
 	return "", fmt.Errorf("%s: contact %s not found", providerID, contactID)
 }
 
+// GetContactProfile exposes the phone number carried by Google Messages'
+// participant model through Loom's provider-neutral contact card. For direct
+// chats, callers may identify the contact by either its participant ID or the
+// conversation ID persisted in LinkedAccount.
+func (p *Provider) GetContactProfile(contactID string) (models.ContactProfile, error) {
+	p.mu.RLock()
+	client := p.client
+	instance := p.instance
+	p.mu.RUnlock()
+	if client == nil || !p.IsAuthenticated() {
+		return models.ContactProfile{}, fmt.Errorf("%s: not authenticated", providerID)
+	}
+	response, err := client.ListConversations(1000, gmproto.ListConversationsRequest_INBOX)
+	if err != nil {
+		return models.ContactProfile{}, fmt.Errorf("%s: list conversations: %w", providerID, err)
+	}
+	for _, conversation := range response.GetConversations() {
+		for _, participant := range conversation.GetParticipants() {
+			matchesParticipant := participant.GetID().GetParticipantID() == contactID
+			matchesDirectConversation := !conversation.GetIsGroupChat() &&
+				conversation.GetConversationID() == core.StripConvID(contactID) &&
+				!participant.GetIsMe()
+			if matchesParticipant || matchesDirectConversation {
+				return googleMessagesContactProfile(participant, instance), nil
+			}
+		}
+	}
+	return models.ContactProfile{}, fmt.Errorf("%s: contact %s not found", providerID, contactID)
+}
+
+func googleMessagesContactProfile(participant *gmproto.Participant, instance string) models.ContactProfile {
+	number := strings.TrimSpace(participant.GetFormattedNumber())
+	if number == "" {
+		number = strings.TrimSpace(participant.GetID().GetNumber())
+	}
+	phones := []string{}
+	if number != "" {
+		phones = append(phones, number)
+	}
+	displayName := strings.TrimSpace(participant.GetFullName())
+	if displayName == "" {
+		displayName = strings.TrimSpace(participant.GetFirstName())
+	}
+	if displayName == "" {
+		displayName = number
+	}
+	return models.ContactProfile{
+		UserID: participant.GetID().GetParticipantID(), DisplayName: displayName,
+		Protocol: providerID, ProviderInstanceID: instance,
+		PhoneNumbers: phones, Emails: []string{}, ProviderFields: map[string]string{},
+	}
+}
+
 func (p *Provider) GetConversationHistory(conversationID string, limit int, beforeTimestamp *time.Time, sinceTimestamp *time.Time) ([]models.Message, error) {
 	p.mu.RLock()
 	client := p.client

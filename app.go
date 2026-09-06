@@ -2725,6 +2725,37 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 	return message, err
 }
 
+// SendMessageWithMentions sends canonical participant references. Protocol
+// encoding deliberately stays behind the provider interface.
+func (a *App) SendMessageWithMentions(conversationID, content string, mentions []core.Mention, threadID, quotedMessageID string) (*models.Message, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	var thread, quoted *string
+	if threadID != "" {
+		thread = &threadID
+	}
+	if quotedMessageID != "" {
+		quoted = &quotedMessageID
+	}
+	mentionProvider, ok := provider.(core.MentionMessageProvider)
+	if !ok {
+		if quoted != nil {
+			if thread != nil {
+				return provider.SendThreadReply(conversationID, content, *thread, *quoted)
+			}
+			return provider.SendReply(conversationID, content, *quoted)
+		}
+		return provider.SendMessage(conversationID, content, nil, thread)
+	}
+	message, err := mentionProvider.SendMessageWithMentions(conversationID, content, mentions, thread, quoted)
+	if err == nil {
+		a.invalidateMessageCaches()
+	}
+	return message, err
+}
+
 func (a *App) ScheduleMessage(conversationID, content string, scheduledAt time.Time, parentMsgID string) (*models.ScheduledMessage, error) {
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {

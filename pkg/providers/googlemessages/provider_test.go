@@ -97,6 +97,39 @@ func TestGoogleMessagesPhoneRecipientCapabilities(t *testing.T) {
 	}
 }
 
+func TestGoogleMessagesContactProfileUsesFormattedPhoneNumber(t *testing.T) {
+	participant := &gmproto.Participant{
+		ID:              &gmproto.SmallInfo{ParticipantID: "participant-1", Number: "+33612345678"},
+		FullName:        "Alice Martin",
+		FormattedNumber: "06 12 34 56 78",
+	}
+
+	profile := googleMessagesContactProfile(participant, "googlemessages-1")
+	if profile.DisplayName != "Alice Martin" {
+		t.Fatalf("display name = %q", profile.DisplayName)
+	}
+	if len(profile.PhoneNumbers) != 1 || profile.PhoneNumbers[0] != "06 12 34 56 78" {
+		t.Fatalf("phone numbers = %#v", profile.PhoneNumbers)
+	}
+	if profile.Protocol != providerID || profile.ProviderInstanceID != "googlemessages-1" {
+		t.Fatalf("provider identity = %q / %q", profile.Protocol, profile.ProviderInstanceID)
+	}
+}
+
+func TestGoogleMessagesContactProfileFallsBackToRawPhoneNumber(t *testing.T) {
+	participant := &gmproto.Participant{
+		ID: &gmproto.SmallInfo{ParticipantID: "participant-1", Number: "+33612345678"},
+	}
+
+	profile := googleMessagesContactProfile(participant, "googlemessages-1")
+	if len(profile.PhoneNumbers) != 1 || profile.PhoneNumbers[0] != "+33612345678" {
+		t.Fatalf("phone numbers = %#v", profile.PhoneNumbers)
+	}
+	if profile.DisplayName != "+33612345678" {
+		t.Fatalf("display name = %q", profile.DisplayName)
+	}
+}
+
 func TestValidPhoneNumberAcceptsLocalAndInternationalFormats(t *testing.T) {
 	for _, number := range []string{"36180", "0612345678", "+33612345678", "+14155552671", "+442079460018"} {
 		if !validPhoneNumber(number) {

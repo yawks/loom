@@ -153,7 +153,20 @@ func (p *Provider) GetConversationHistory(roomID string, limit int, before, sinc
 }
 
 func (p *Provider) sendMessage(roomID, text string, file *core.Attachment, threadID, quotedID *string) (*models.Message, error) {
+	return p.sendMessageWithMentions(roomID, text, file, threadID, quotedID, nil)
+}
+
+func (p *Provider) sendMessageWithMentions(roomID, text string, file *core.Attachment, threadID, quotedID *string, mentions []core.Mention) (*models.Message, error) {
 	content := map[string]any{"msgtype": "m.text", "body": text}
+	if len(mentions) > 0 {
+		userIDs := make([]string, 0, len(mentions))
+		for _, mention := range mentions {
+			if mention.UserID != "" {
+				userIDs = append(userIDs, mention.UserID)
+			}
+		}
+		content["m.mentions"] = map[string]any{"user_ids": userIDs}
+	}
 	if file != nil {
 		mxc, err := p.upload(file)
 		if err != nil {
@@ -251,6 +264,9 @@ func (p *Provider) storeMessages(roomID string, messages []models.Message) {
 
 func (p *Provider) SendMessage(c, t string, f *core.Attachment, thread *string) (*models.Message, error) {
 	return p.sendMessage(c, t, f, thread, nil)
+}
+func (p *Provider) SendMessageWithMentions(c, t string, mentions []core.Mention, thread, quoted *string) (*models.Message, error) {
+	return p.sendMessageWithMentions(c, t, nil, thread, quoted, mentions)
 }
 func (p *Provider) SendReply(c, t, q string) (*models.Message, error) {
 	return p.sendMessage(c, t, nil, nil, &q)
