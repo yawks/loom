@@ -3944,6 +3944,11 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 				) AS rn
 				FROM messages INDEXED BY idx_messages_conv_latest_jd
 				WHERE deleted_at IS NULL
+				  AND (
+					trim(coalesce(body, '')) != '' OR
+					trim(coalesce(attachments, '')) NOT IN ('', '[]', 'null') OR
+					trim(coalesce(call_type, '')) != ''
+				  )
 			) WHERE rn = 1
 		) AS latest ON latest.id = messages.id
 	`).Find(&messages).Error

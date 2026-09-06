@@ -861,6 +861,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		go func() {
 			time.Sleep(2 * time.Second) // Wait for store to be fully populated
 
+			// HistorySync may report the unread cursor that was current before an
+			// action performed from another linked client. Re-run the persisted
+			// own-activity reconciliation at the end of offline sync, after both
+			// history storage and the renderer event subscription are ready.
+			w.lookbackSync()
+
 			contacts, err := w.GetContacts()
 			if err != nil {
 				fmt.Printf("WhatsApp: Failed to fetch contacts after offline sync: %v\n", err)

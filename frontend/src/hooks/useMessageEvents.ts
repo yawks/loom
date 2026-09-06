@@ -50,7 +50,18 @@ const activityTime = (timestamp: unknown): number => {
 const keepLatestMessage = (
   current: models.Message | null | undefined,
   candidate: models.Message
-): models.Message => !current || messageTime(candidate) >= messageTime(current) ? candidate : current;
+): models.Message => {
+  // Providers may persist protocol/control events that have no user-visible
+  // content. They still advance activity timestamps, but must not replace the
+  // last displayable message used by the conversation snippet.
+  const hasPreview = Boolean(
+    candidate.body?.trim() ||
+    (candidate.attachments?.trim() && !["[]", "null"].includes(candidate.attachments.trim())) ||
+    candidate.callType?.trim()
+  );
+  if (!hasPreview && current) return current;
+  return !current || messageTime(candidate) >= messageTime(current) ? candidate : current;
+};
 
 export function useMessageEvents() {
   const queryClient = useQueryClient();

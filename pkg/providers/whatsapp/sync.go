@@ -287,16 +287,20 @@ func (w *WhatsAppProvider) emitStoredReadThroughOwnMessage(conversationID string
 	if len(messages) == 0 {
 		return
 	}
-	select {
-	case w.eventChan <- core.MessageBatchEvent{
+	event := core.MessageBatchEvent{
 		InstanceID:     w.getInstanceId(),
 		ConversationID: conversationID,
 		Messages:       messages,
 		IsHistorical:   true,
 		ForceRead:      true,
-	}:
-	default:
-		w.log("WhatsApp: read-through repair event dropped for %s (channel full)\n", conversationID)
+	}
+	// This is a correctness repair, not a best-effort UI refresh. In particular,
+	// a reconnect can fill the provider queue with history batches whose stale
+	// unread cursor this event is meant to override. Wait for the listener to
+	// accept it instead of silently retaining the stale unread state.
+	select {
+	case w.eventChan <- event:
+	case <-w.ctx.Done():
 	}
 }
 

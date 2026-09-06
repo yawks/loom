@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
 import { TypingIndicator } from "./TypingIndicator";
 import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount } from "@/lib/unreadBadgeCounts";
+import { getFirstAttachmentFileName } from "@/lib/messageUtils";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -807,14 +808,16 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                       return <TypingIndicator conversationId={typingConversationId} variant="list" />;
                     }
                     const lastMessage = lastMessages[conversationId];
-                    if (lastMessage?.body) {
+                    const previewText = lastMessage?.body?.trim() ||
+                      getFirstAttachmentFileName(lastMessage?.attachments);
+                    if (previewText) {
                       return (
                         <div className={cn(
                           "contact-list__item-preview mt-0.5 block h-4 max-h-4 overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs leading-4 [&_*]:inline [&_br]:hidden [&_li]:list-none [&_ol]:m-0 [&_ol]:p-0 [&_ul]:m-0 [&_ul]:p-0",
                           isSelected ? "opacity-75" : "text-sidebar-muted-foreground"
                         )}>
                           <MessageText
-                            text={lastMessage.body}
+                            text={previewText}
                             providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}
                             emojiSize={12}
                             className="inline"
