@@ -578,10 +578,26 @@ func TestTeamsHTMLNormalizesLiteralMalformedBold(t *testing.T) {
 			`<p>\*\*On n'est pas bons là \*\*</p>`,
 			`**On n'est pas bons là**`,
 		},
+		{
+			`<p>**-&gt; **👍</p>`,
+			`**->** 👍`,
+		},
+		{
+			`<p>DELIGNIERES** created** this</p>`,
+			`DELIGNIERES **created** this`,
+		},
 	} {
 		if got := teamsHTMLToMarkdown(test.input); got != test.want {
 			t.Errorf("teamsHTMLToMarkdown(%q) = %q, want %q", test.input, got, test.want)
 		}
+	}
+}
+
+func TestTeamsHTMLNormalizesLiteralMalformedInlineFormatting(t *testing.T) {
+	input := `<p>*italique *👍 et ~~barré ~~✅ puis* autre* et ~~ encore~~</p>`
+	want := `*italique* 👍 et ~~barré~~ ✅ puis *autre* et  ~~encore~~`
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("Teams inline formatting = %q, want %q", got, want)
 	}
 }
 

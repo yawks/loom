@@ -125,10 +125,20 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 	for _, configured := range snapshot {
 		instanceID := configured.instanceID
 		info := configured.info
-		// Load instance name from database
+		// Read the persisted configuration instead of calling Provider.GetConfig.
+		// Providers synchronize their live state independently; waiting for one of
+		// their locks here could make the entire accounts screen hang during sync.
 		var config models.ProviderConfiguration
 		if db.DB != nil {
-			db.DB.Where("instance_id = ?", instanceID).First(&config)
+			if result := db.DB.Where("instance_id = ?", instanceID).First(&config); result.Error == nil {
+				var persistedConfig ProviderConfig
+				if err := json.Unmarshal([]byte(config.ConfigJSON), &persistedConfig); err == nil {
+					info.Config = persistedConfig
+				}
+			}
+		} else {
+			// Primarily useful for in-memory/test managers without an application DB.
+			info.Config = configured.provider.GetConfig()
 		}
 
 		info.InstanceID = instanceID
@@ -136,7 +146,6 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		if info.InstanceName == "" {
 			info.InstanceName = instanceID
 		}
-		info.Config = configured.provider.GetConfig()
 		info.IsActive = (instanceID == activeInstanceID)
 		providers = append(providers, info)
 	}

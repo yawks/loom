@@ -76,6 +76,24 @@ export namespace core {
 	        this.groupConversationTypes = source["groupConversationTypes"];
 	    }
 	}
+	export class Mention {
+	    userId: string;
+	    displayName: string;
+	    start: number;
+	    length: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Mention(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.userId = source["userId"];
+	        this.displayName = source["displayName"];
+	        this.start = source["start"];
+	        this.length = source["length"];
+	    }
+	}
 	export class ProviderInfo {
 	    id: string;
 	    instanceId: string;

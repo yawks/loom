@@ -76,6 +76,7 @@
   "schedule_not_allowed_token": "Votre type de token Slack ne supporte pas l'envoi différé. Utilisez un bot token (xoxb) ou un user OAuth token (xoxp).",
   "send_failed": "Échec de l'envoi du message",
   "participants": "Participants",
+  "mention_participant": "Mentionner un participant",
   "add_group_member": "Ajouter un membre",
   "remove_group_member": "Retirer le membre",
   "remove_group_member_confirm": "Retirer {{name}} du groupe ?",

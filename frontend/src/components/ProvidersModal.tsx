@@ -51,40 +51,35 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
   const [providerToDelete, setProviderToDelete] = useState<string | null>(null);
   const [syncingInstances, setSyncingInstances] = useState<Set<string>>(new Set());
   const prevOpenRef = useRef(false);
+  const refreshGenerationRef = useRef(0);
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const removeCapabilities = useAppStore((state) => state.removeCapabilities);
   const clearProviderReadState = useMessageReadStore((state) => state.clearProvider);
 
   const refreshProviders = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current;
     setLoading(true);
     setError(null);
-    try {
-      const [availableResult, configuredResult] = await Promise.allSettled([
-        GetAvailableProviders(),
-        GetConfiguredProviders(),
-      ]);
+    let failed = false;
 
-      // Keep the last successful list when one backend call temporarily fails.
-      // A single slow provider must not blank both sections of the settings UI.
-      if (availableResult.status === "fulfilled") {
-        setAvailableProviders(availableResult.value);
-      }
-      if (configuredResult.status === "fulfilled") {
-        setConfiguredProviders(configuredResult.value);
-      }
-      if (availableResult.status === "rejected" || configuredResult.status === "rejected") {
-        console.error("Failed to load providers:", {
-          available: availableResult.status === "rejected" ? availableResult.reason : undefined,
-          configured: configuredResult.status === "rejected" ? configuredResult.reason : undefined,
-        });
-        setError(t("providers_modal_load_error"));
-      }
+    // Commit each result as soon as it arrives. In particular, reading one
+    // account's state must not keep the independent catalogue section blank.
+    const availableRequest = GetAvailableProviders()
+      .then((providers) => {
+        if (refreshGenerationRef.current === generation) {
+          setAvailableProviders(providers);
+        }
+      })
+      .catch((reason) => {
+        failed = true;
+        console.error("Failed to load available providers:", reason);
+      });
 
-      // Update selectedProvider if it exists to get the latest instanceId
-      // Use a ref or state to avoid dependency issues
-      if (configuredResult.status === "fulfilled") {
-        const configured = configuredResult.value;
+    const configuredRequest = GetConfiguredProviders()
+      .then((configured) => {
+        if (refreshGenerationRef.current !== generation) return;
+        setConfiguredProviders(configured);
         setSelectedProvider(current => {
           if (!current) return current;
           const updatedProvider = configured.find(p =>
@@ -92,11 +87,15 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
           );
           return updatedProvider || current;
         });
-      }
-    } catch (err) {
-      console.error("Failed to load providers:", err);
-      setError(t("providers_modal_load_error"));
-    } finally {
+      })
+      .catch((reason) => {
+        failed = true;
+        console.error("Failed to load configured providers:", reason);
+      });
+
+    await Promise.allSettled([availableRequest, configuredRequest]);
+    if (refreshGenerationRef.current === generation) {
+      setError(failed ? t("providers_modal_load_error") : null);
       setLoading(false);
     }
   }, [t]);

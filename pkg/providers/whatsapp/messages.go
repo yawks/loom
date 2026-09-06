@@ -2480,6 +2480,57 @@ func (w *WhatsAppProvider) SendMessage(conversationID string, text string, file 
 	return sentMessage, nil
 }
 
+func (w *WhatsAppProvider) SendMessageWithMentions(conversationID, text string, mentions []core.Mention, threadID, quotedMessageID *string) (*models.Message, error) {
+	if quotedMessageID != nil {
+		return w.SendReply(conversationID, text, *quotedMessageID)
+	}
+	if w.client == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
+	providerText := core.FormatMentions(text, mentions, func(mention core.Mention) string {
+		jid, err := types.ParseJID(mention.UserID)
+		if err != nil {
+			return "@" + mention.DisplayName
+		}
+		return "@" + jid.User
+	})
+	rawConvID := core.StripConvID(conversationID)
+	conversationJID, err := types.ParseJID(rawConvID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid conversation ID: %w", err)
+	}
+	mentionedJIDs := make([]string, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention.UserID != "" {
+			mentionedJIDs = append(mentionedJIDs, mention.UserID)
+		}
+	}
+	msg := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+		Text:        &providerText,
+		ContextInfo: &waE2E.ContextInfo{MentionedJID: mentionedJIDs},
+	}}
+	resp, err := w.client.SendMessage(w.ctx, conversationJID, msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send message: %w", err)
+	}
+	senderID := w.client.Store.ID.ToNonAD().String()
+	senderName := w.lookupSenderName(*w.client.Store.ID)
+	if senderName == "" {
+		senderName = senderID
+	}
+	sent := &models.Message{
+		ProtocolConvID: core.BuildConvID(w.getInstanceId(), rawConvID), ProtocolMsgID: resp.ID,
+		SenderID: senderID, SenderName: senderName, SenderAvatarURL: w.getProfilePictureURL(*w.client.Store.ID),
+		Body: text, Timestamp: time.Now(), IsFromMe: true,
+	}
+	w.appendMessageToConversation(sent)
+	select {
+	case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *sent}:
+	default:
+	}
+	return sent, nil
+}
+
 func (w *WhatsAppProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
 	canonicalText := text
 	providerText := messageformat.WhatsApp(text)

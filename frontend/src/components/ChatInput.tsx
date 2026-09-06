@@ -1,6 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, ChevronDown, Code, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
-import { GetCustomEmojis, GetGroupDetails, ScheduleMessage, SendMessage, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
+import { GetCustomEmojis, GetGroupDetails, GetGroupParticipants, GetParticipantNames, ScheduleMessage, SendMessage, SendMessageWithMentions, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastContainer, useToast } from "@/components/ui/toast";
@@ -13,7 +13,7 @@ import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
-import { models } from "../../wailsjs/go/models";
+import { core, models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 import { orderCustomEmojis, prepareEmojiSuggestions, recordCustomEmojiUsage, recordStandardEmojiUsage } from "@/lib/emojiUsage";
@@ -154,6 +154,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const theme = useAppStore((state) => state.theme);
   const capabilities = useAppStore((state) => state.capabilities);
+  const metaContacts = useAppStore((state) => state.metaContacts);
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const showThreads = useAppStore((state) => state.showThreads);
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
@@ -198,7 +199,46 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     [conversationId, activeAccount?.providerInstanceId, threadId]
   );
   const [message, setMessage] = useState(() => readDraft(draftStorageKey));
+  const [mentions, setMentions] = useState<core.Mention[]>([]);
+  const [mentionCursor, setMentionCursor] = useState(0);
   const queryClient = useQueryClient();
+  const { data: mentionParticipantData = [] } = useQuery({
+    queryKey: ["composer-mention-participants", conversationId],
+    enabled: Boolean(activeAccount?.isGroup && conversationId),
+    queryFn: async () => {
+      const participants = await GetGroupParticipants(conversationId ?? "");
+      const visible = (participants ?? []).filter((participant) => !participant.isSelf && participant.userId);
+      const names = visible.length ? await GetParticipantNames(visible.map((participant) => participant.userId)) : {};
+      return visible.map((participant) => ({
+        userId: participant.userId,
+        displayName: names?.[participant.userId]?.trim() || participant.userId,
+      }));
+    },
+    staleTime: 15000,
+  });
+  const mentionParticipants = useMemo(() => {
+    const cachedMessages = queryClient.getQueryData<InfiniteData<models.Message[]>>(["messages", conversationId]);
+    return mentionParticipantData.map((participant) => {
+      const linkedAccount = selectedContact?.linkedAccounts?.find((account) => account.userId === participant.userId)
+        ?? metaContacts.flatMap((contact) => contact.linkedAccounts ?? []).find((account) => account.userId === participant.userId);
+      const senderMessage = cachedMessages?.pages.flat().find((item) =>
+        item.senderId === participant.userId && Boolean(item.senderAvatarUrl)
+      );
+      return { ...participant, avatarUrl: linkedAccount?.avatarUrl || senderMessage?.senderAvatarUrl };
+    });
+  }, [conversationId, mentionParticipantData, metaContacts, queryClient, selectedContact]);
+  const mentionMatch = useMemo(() => {
+    const cursor = mentionCursor;
+    const prefix = message.slice(0, cursor);
+    const match = prefix.match(/(^|\s)@([^@\n]*)$/);
+    if (!match) return null;
+    return { start: cursor - match[2].length - 1, query: match[2].toLocaleLowerCase() };
+  }, [message, mentionCursor]);
+  const mentionSuggestions = useMemo(() => mentionMatch
+    ? mentionParticipants.filter((participant) => participant.displayName.toLocaleLowerCase().includes(mentionMatch.query))
+    : [], [mentionMatch, mentionParticipants]);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  useEffect(() => setActiveMentionIndex(0), [mentionMatch?.query]);
 
   const updateTypingState = useCallback((hasText: boolean) => {
     if (hasTextRef.current === hasText) return;
@@ -264,7 +304,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }, [selectedContact]);
 
   const sendMessageMutation = useMutation({
-    mutationFn: async ({ conversationId, text, quotedMessageId }: { conversationId: string; text: string; quotedMessageId?: string; quotedBody?: string; quotedSenderName?: string }) => {
+    mutationFn: async ({ conversationId, text, quotedMessageId, mentions }: { conversationId: string; text: string; quotedMessageId?: string; mentions: core.Mention[] }) => {
+      if (mentions.length > 0) {
+        return await SendMessageWithMentions(conversationId, text, mentions, threadId || "", quotedMessageId || "");
+      }
       if (threadId) {
         if (quotedMessageId) {
           return await SendThreadReply(conversationId, text, threadId, quotedMessageId);
@@ -626,13 +669,42 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = e.target.value;
+    let prefix = 0;
+    while (prefix < message.length && prefix < newValue.length && message[prefix] === newValue[prefix]) prefix++;
+    let oldSuffix = message.length;
+    let newSuffix = newValue.length;
+    while (oldSuffix > prefix && newSuffix > prefix && message[oldSuffix - 1] === newValue[newSuffix - 1]) { oldSuffix--; newSuffix--; }
+    const delta = (newSuffix - prefix) - (oldSuffix - prefix);
+    // Shift mentions around an edit and discard only those whose visible token
+    // was actually touched.
+    setMentions((current) => current.flatMap((mention) => {
+      const end = mention.start + mention.length;
+      const shifted = oldSuffix <= mention.start ? { ...mention, start: mention.start + delta } : mention;
+      if (prefix < end && oldSuffix > mention.start) return [];
+      return newValue.slice(shifted.start, shifted.start + shifted.length) === `@${shifted.displayName}` ? [shifted] : [];
+    }));
     setMessage(newValue);
+    setMentionCursor(e.target.selectionStart);
     scheduleDraftSave(draftStorageKey, newValue);
     adjustTextareaHeight();
 
     // Hide unread divider when user starts typing
     updateTypingState(newValue.trim().length > 0);
   };
+
+  const chooseMention = useCallback((participant: { userId: string; displayName: string }) => {
+    if (!mentionMatch) return;
+    const token = `@${participant.displayName}`;
+    const next = message.slice(0, mentionMatch.start) + token + " " + message.slice(mentionCursor);
+    setMessage(next);
+    setMentions((current) => [...current, { userId: participant.userId, displayName: participant.displayName, start: mentionMatch.start, length: token.length }]);
+    setMentionCursor(mentionMatch.start + token.length + 1);
+    scheduleDraftSave(draftStorageKey, next);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(mentionMatch.start + token.length + 1, mentionMatch.start + token.length + 1);
+    });
+  }, [draftStorageKey, mentionCursor, mentionMatch, message, scheduleDraftSave]);
 
   const updateTextSelection = useCallback(() => {
     const textarea = textareaRef.current;
@@ -706,11 +778,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const handleSendMessage = async () => {
     if (message.trim() && selectedContact) {
       const text = message.trim();
+      const leadingWhitespace = message.length - message.trimStart().length;
       const quotedMessageId = replyingToMessage?.protocolMsgId;
       // Commit the cleared composer before the optimistic cache update. React
       // otherwise batches both operations until this handler returns, so the
       // cache/list work can make the typed text linger visibly after Enter.
       flushSync(() => setMessage(""));
+      const sentMentions = mentions
+        .filter((mention) => mention.start >= leadingWhitespace && mention.start + mention.length <= leadingWhitespace + text.length)
+        .map((mention) => ({ ...mention, start: mention.start - leadingWhitespace }));
+      setMentions([]);
       saveDraftImmediately(draftStorageKey, "");
       updateTypingState(false); // Reset typing state after sending
       if (textareaRef.current) {
@@ -729,6 +806,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           conversationId: conversationId ?? "",
           text,
           quotedMessageId,
+          mentions: sentMentions,
         });
       } catch (error) {
         // Error handling is done in onError
@@ -738,6 +816,19 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionMatch && mentionSuggestions.length > 0) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveMentionIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + mentionSuggestions.length) % mentionSuggestions.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        chooseMention(mentionSuggestions[activeMentionIndex]);
+        return;
+      }
+      if (e.key === "Escape") { setMentionCursor(-1); return; }
+    }
     if (textSelection && (e.metaKey || e.ctrlKey)) {
       const key = e.key.toLowerCase();
       const formattingShortcut =
@@ -1126,6 +1217,23 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           </Popover>
 
           <div className="relative flex-1">
+            {mentionMatch && mentionSuggestions.length > 0 && (
+              <div role="listbox" aria-label={t("mention_participant")} className="absolute bottom-full left-0 z-30 mb-1 max-h-[408px] w-72 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
+                {mentionSuggestions.map((participant, index) => (
+                  <button key={participant.userId} type="button" role="option" aria-selected={index === activeMentionIndex}
+                    className={cn("flex h-10 w-full items-center gap-2 rounded px-2 text-left text-sm", index === activeMentionIndex && "bg-accent")}
+                    onMouseDown={(event) => { event.preventDefault(); chooseMention(participant); }}>
+                    <Avatar className="h-7 w-7 shrink-0">
+                      <AvatarImage src={participant.avatarUrl} alt={participant.displayName} />
+                      <AvatarFallback className="text-[10px]">
+                        {participant.displayName.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="truncate">{participant.displayName}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {textSelection && (
               <div
                 className="absolute bottom-full left-1/2 z-20 mb-1 flex -translate-x-1/2 items-center rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
@@ -1182,6 +1290,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               onSelect={updateTextSelection}
+              onClick={(event) => setMentionCursor(event.currentTarget.selectionStart)}
               onBlur={() => {
                 if (!isLinkEditorOpen) setTextSelection(null);
               }}
