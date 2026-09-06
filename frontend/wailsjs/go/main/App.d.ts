@@ -103,6 +103,8 @@ export function GetMessagesForConversationBefore(arg1:string,arg2:time.Time):Pro
 
 export function GetMetaContacts():Promise<Array<models.MetaContact>>;
 
+export function GetNotificationSettings(arg1:string):Promise<models.NotificationSettings>;
+
 export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, string>>;
 
 export function GetPinnedMessageContext(arg1:string,arg2:string):Promise<models.MessageContext>;
@@ -152,6 +154,8 @@ export function ResetProviderAuthentication(arg1:string):Promise<void>;
 export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;
+
+export function SaveNotificationSettings(arg1:models.NotificationSettings):Promise<models.NotificationSettings>;
 
 export function ScheduleMessage(arg1:string,arg2:string,arg3:time.Time,arg4:string):Promise<models.ScheduledMessage>;
 

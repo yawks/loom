@@ -168,6 +168,21 @@ type MessageWatchMatch struct {
 	CreatedAt time.Time        `json:"createdAt"`
 }
 
+// NotificationSettings stores the provider-neutral notification policy. An
+// empty ProviderInstanceID is the global default; account rows are overrides.
+type NotificationSettings struct {
+	ID                   uint      `gorm:"primarykey" json:"id"`
+	ProviderInstanceID   string    `gorm:"uniqueIndex;not null" json:"providerInstanceId"`
+	UseGlobal            bool      `gorm:"not null" json:"useGlobal"`
+	Enabled              bool      `gorm:"not null" json:"enabled"`
+	ShowConversationName bool      `gorm:"not null" json:"showConversationName"`
+	ShowMessageDetail    bool      `gorm:"not null" json:"showMessageDetail"`
+	ConversationScope    string    `gorm:"not null" json:"conversationScope"`
+	Trigger              string    `gorm:"not null" json:"trigger"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+}
+
 // OpenConversationRequest describes the provider-neutral new conversation flow.
 type OpenConversationRequest struct {
 	ProviderInstanceID string   `json:"providerInstanceId"`

@@ -123,6 +123,7 @@ func initDatabase(dsn string) error {
 		&models.Message{},
 		&models.MessageWatchRule{},
 		&models.MessageWatchMatch{},
+		&models.NotificationSettings{},
 		&models.MessagePin{},
 		&models.Reaction{},
 		&models.MessageReceipt{},
