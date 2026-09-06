@@ -28,7 +28,9 @@ func TestGetAllLastMessagesCollapsesConcurrentCacheMisses(t *testing.T) {
 	messages := []models.Message{
 		{ProtocolConvID: "conversation-a", ProtocolMsgID: "older", Body: "older", Timestamp: base},
 		{ProtocolConvID: "conversation-a", ProtocolMsgID: "newer", Body: "newer", Timestamp: base.Add(time.Minute)},
+		{ProtocolConvID: "conversation-a", ProtocolMsgID: "empty-technical", Timestamp: base.Add(2 * time.Minute)},
 		{ProtocolConvID: "conversation-b", ProtocolMsgID: "only", Body: "only", Timestamp: base},
+		{ProtocolConvID: "conversation-c", ProtocolMsgID: "media", Attachments: `[{"type":"image","fileName":"image.jpg"}]`, Timestamp: base},
 	}
 	if err := database.Create(&messages).Error; err != nil {
 		t.Fatal(err)
@@ -80,6 +82,9 @@ func TestGetAllLastMessagesCollapsesConcurrentCacheMisses(t *testing.T) {
 		}
 		if got := result["conversation-b"].ProtocolMsgID; got != "only" {
 			t.Fatalf("latest message = %q, want only", got)
+		}
+		if got := result["conversation-c"].ProtocolMsgID; got != "media" {
+			t.Fatalf("latest media message = %q, want media", got)
 		}
 	}
 	if got := queries.Load(); got != 1 {
