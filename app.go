@@ -1047,6 +1047,10 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				switch e := event.(type) {
 				case core.MessageEvent:
 					a.invalidateMessageCaches()
+					if notification := a.prepareSystemNotification(e); notification != nil && a.ctx != nil {
+						notificationJSON, _ := json.Marshal(notification)
+						runtime.EventsEmit(a.ctx, "system-notification", string(notificationJSON))
+					}
 					msgJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-message", string(msgJSON))
@@ -1056,9 +1060,21 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					if len(e.Messages) > maxFrontendSyncBatchMessages {
 						e.Messages = e.Messages[len(e.Messages)-maxFrontendSyncBatchMessages:]
 					}
+					batchNotifications := make([]SystemNotification, 0)
+					if !e.IsHistorical {
+						for _, message := range e.Messages {
+							if notification := a.prepareSystemNotification(core.MessageEvent{InstanceID: e.InstanceID, Message: message}); notification != nil {
+								batchNotifications = append(batchNotifications, *notification)
+							}
+						}
+					}
 					batchJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "new-messages-batch", string(batchJSON))
+						if len(batchNotifications) > 0 {
+							notificationsJSON, _ := json.Marshal(batchNotifications)
+							runtime.EventsEmit(a.ctx, "system-notification-batch", string(notificationsJSON))
+						}
 					}
 				case core.ReactionEvent:
 					if normalizer, ok := provider.(core.ParticipantIdentityNormalizer); ok {

@@ -198,6 +198,10 @@ export function GetMetaContacts() {
   return window['go']['main']['App']['GetMetaContacts']();
 }
 
+export function GetNotificationSettings(arg1) {
+  return window['go']['main']['App']['GetNotificationSettings'](arg1);
+}
+
 export function GetParticipantNames(arg1) {
   return window['go']['main']['App']['GetParticipantNames'](arg1);
 }
@@ -296,6 +300,10 @@ export function SaveAttachmentToFile(arg1, arg2) {
 
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
+}
+
+export function SaveNotificationSettings(arg1) {
+  return window['go']['main']['App']['SaveNotificationSettings'](arg1);
 }
 
 export function ScheduleMessage(arg1, arg2, arg3, arg4) {

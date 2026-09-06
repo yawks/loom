@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAppStore } from "@/lib/store";
 import i18n from "@/i18n";
 import "./App.css";
+import { useSystemNotifications } from "@/hooks/useSystemNotifications";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +19,7 @@ const queryClient = new QueryClient({
 });
 
 function AppContent() {
+  useSystemNotifications();
   const theme = useAppStore((state) => state.theme);
   const language = useAppStore((state) => state.language);
   const fontSize = useAppStore((state) => state.fontSize);

@@ -1,10 +1,11 @@
-import { ChevronDown, MessageSquare, Monitor, Moon, Settings, Sun, Terminal, Trash2, Type, Waypoints } from "lucide-react";
+import { Bell, ChevronDown, MessageSquare, Monitor, Moon, Settings, Sun, Terminal, Trash2, Type, Waypoints } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ProviderSettings } from "@/components/ProvidersModal";
+import { NotificationSettings } from "@/components/NotificationSettings";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import i18n from "@/i18n";
@@ -18,7 +19,7 @@ interface SettingsModalProps {
   initialSection?: SettingsSection;
 }
 
-export type SettingsSection = "general" | "providers";
+export type SettingsSection = "general" | "providers" | "notifications";
 
 const languages = [
   { code: "fr", name: "Français", flag: "🇫🇷" },
@@ -54,6 +55,10 @@ export function SettingsModal({
   const [isMessageLayoutPopoverOpen, setIsMessageLayoutPopoverOpen] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+
+  useEffect(() => {
+    if (open) setActiveSection(initialSection);
+  }, [open, initialSection]);
 
   // Font size options: 50%, 75%, 100%, 125%, 150%
   const fontSizeOptions = [50, 75, 100, 125, 150] as const;
@@ -98,6 +103,20 @@ export function SettingsModal({
           >
             <button
               type="button"
+              onClick={() => setActiveSection("general")}
+              className={cn(
+                "flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
+                activeSection === "general"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+              aria-current={activeSection === "general" ? "page" : undefined}
+            >
+              <Settings className="h-4 w-4" />
+              {t("settings_general")}
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveSection("providers")}
               className={cn(
                 "flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
@@ -112,17 +131,17 @@ export function SettingsModal({
             </button>
             <button
               type="button"
-              onClick={() => setActiveSection("general")}
+              onClick={() => setActiveSection("notifications")}
               className={cn(
                 "flex min-w-max items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition-colors",
-                activeSection === "general"
+                activeSection === "notifications"
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground"
               )}
-              aria-current={activeSection === "general" ? "page" : undefined}
+              aria-current={activeSection === "notifications" ? "page" : undefined}
             >
-              <Settings className="h-4 w-4" />
-              {t("settings_general")}
+              <Bell className="h-4 w-4" />
+              {t("settings_notifications")}
             </button>
           </nav>
 
@@ -130,7 +149,7 @@ export function SettingsModal({
             <div className="flex min-h-0 flex-1 p-6">
               <ProviderSettings open={open} onOpenChange={onOpenChange} />
             </div>
-          ) : (
+          ) : activeSection === "notifications" ? <NotificationSettings /> : (
           <div className="space-y-6 overflow-y-auto flex-1 min-h-0 scroll-area p-6">
           <div className="space-y-3">
             <div className="text-sm font-semibold">
