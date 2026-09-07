@@ -6,12 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"github.com/glebarez/sqlite"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+	"gorm.io/gorm"
 )
 
 func TestSetCachedConversationMessagesLockedBoundsMessages(t *testing.T) {
@@ -356,6 +359,60 @@ func TestStoreMessagesForConversationPreservesEditedState(t *testing.T) {
 	}
 }
 
+func TestPersistMessageBatchCreatesAndUpdatesWithoutRevertingEdits(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	convID := "whatsapp-1::33600000000@s.whatsapp.net"
+	editTime := time.Unix(200, 0)
+	existing := models.Message{
+		ProtocolConvID: convID, ProtocolMsgID: "existing", Body: "edited",
+		IsEdited: true, EditedTimestamp: &editTime, Timestamp: time.Unix(100, 0),
+	}
+	if err := database.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	batch := []models.Message{
+		{ProtocolMsgID: "existing", Body: "stale original", Timestamp: time.Unix(100, 0), Reactions: []models.Reaction{{UserID: "alice", Emoji: "👍"}}},
+		{ProtocolMsgID: "new", Body: "new message", Timestamp: time.Unix(300, 0)},
+	}
+	provider.storeMessagesForConversation(convID, batch)
+
+	var stored []models.Message
+	if err := database.Order("protocol_msg_id").Find(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored message count = %d, want 2", len(stored))
+	}
+	for i := range stored {
+		if stored[i].ProtocolMsgID == "existing" && (stored[i].Body != "edited" || !stored[i].IsEdited) {
+			t.Fatalf("existing edit was reverted: %#v", stored[i])
+		}
+		if stored[i].ProtocolConvID != convID {
+			t.Fatalf("conversation ID = %q, want %q", stored[i].ProtocolConvID, convID)
+		}
+	}
+	var reactionCount int64
+	if err := database.Model(&models.Reaction{}).Where("message_id = ?", existing.ID).Count(&reactionCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reactionCount != 1 {
+		t.Fatalf("reaction count = %d, want 1", reactionCount)
+	}
+}
+
 func TestHandleEditedProtocolMessageUpdatesCacheAndPendingEdits(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"
@@ -439,4 +496,3 @@ func TestHandleEditedProtocolMessageUpdatesCacheAndPendingEdits(t *testing.T) {
 		t.Fatalf("pending edit was not applied to converted message: %#v", converted)
 	}
 }
-

@@ -20,6 +20,10 @@ func (p *Provider) syncLoop(ctx context.Context) {
 		since := p.nextBatch
 		p.mu.RUnlock()
 		q := url.Values{"timeout": {"30000"}}
+		// An unfiltered initial /sync can return the complete state and timeline of
+		// every room on every startup. Keep it bounded; explicit history sync owns
+		// the deeper message import.
+		q.Set("filter", `{"room":{"timeline":{"limit":20},"state":{"lazy_load_members":true}}}`)
 		if since != "" {
 			q.Set("since", since)
 		}
@@ -95,11 +99,18 @@ func (p *Provider) syncLoop(ctx context.Context) {
 }
 
 func (p *Provider) SyncHistory(since time.Time) error {
+	instanceID := p.getInstanceID()
+	p.emit(core.SyncStatusEvent{InstanceID: instanceID, Status: core.SyncStatusFetchingContacts, Message: "Fetching Matrix rooms", Progress: -1})
 	contacts, err := p.GetContacts()
 	if err != nil {
 		return err
 	}
-	for _, contact := range contacts {
+	for index, contact := range contacts {
+		progress := 90
+		if len(contacts) > 0 {
+			progress = 10 + (index * 80 / len(contacts))
+		}
+		p.emit(core.SyncStatusEvent{InstanceID: instanceID, Status: core.SyncStatusFetchingHistory, ConversationID: contact.ConversationID, Message: "Synchronizing Matrix history", Progress: progress})
 		selfID := p.CurrentUserID()
 		activityAt := db.LatestOwnActivityAt(contact.ConversationID, selfID)
 		messages, e := p.GetConversationHistory(contact.ConversationID, 100, nil, &since)
@@ -119,5 +130,6 @@ func (p *Provider) SyncHistory(since time.Time) error {
 			p.emit(core.MessageBatchEvent{InstanceID: p.getInstanceID(), ConversationID: contact.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
+	p.emit(core.SyncStatusEvent{InstanceID: instanceID, Status: core.SyncStatusCompleted, Message: "Matrix synchronization complete", Progress: 100})
 	return nil
 }

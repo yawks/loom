@@ -56,6 +56,35 @@ func (w *WhatsAppProvider) cacheGroupParticipants(groupJID types.JID) {
 	w.mu.Unlock()
 }
 
+// scheduleGroupParticipantsCache prevents a large HistorySync from spawning an
+// unbounded number of network requests and SQLite writers. Repeated discoveries
+// of the same group while a request is running are coalesced.
+func (w *WhatsAppProvider) scheduleGroupParticipantsCache(groupJID types.JID) {
+	key := groupJID.String()
+	w.groupCacheMu.Lock()
+	if w.groupCacheInFlight[key] {
+		w.groupCacheMu.Unlock()
+		return
+	}
+	w.groupCacheInFlight[key] = true
+	w.groupCacheMu.Unlock()
+
+	go func() {
+		defer func() {
+			w.groupCacheMu.Lock()
+			delete(w.groupCacheInFlight, key)
+			w.groupCacheMu.Unlock()
+		}()
+		select {
+		case w.groupCacheSem <- struct{}{}:
+			defer func() { <-w.groupCacheSem }()
+		case <-w.ctx.Done():
+			return
+		}
+		w.cacheGroupParticipants(groupJID)
+	}()
+}
+
 func (w *WhatsAppProvider) CreateGroup(groupName string, participantIDs []string) (*models.Conversation, error) {
 	w.mu.RLock()
 	client := w.client
@@ -187,7 +216,7 @@ func (w *WhatsAppProvider) updateGroupParticipants(conversationID string, partic
 			return fmt.Errorf("%s participant %s: WhatsApp error %d", action, result.JID, result.Error)
 		}
 	}
-	go w.cacheGroupParticipants(groupJID)
+	w.scheduleGroupParticipantsCache(groupJID)
 	return nil
 }
 

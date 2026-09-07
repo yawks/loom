@@ -74,6 +74,9 @@ type WhatsAppProvider struct {
 	cancel               context.CancelFunc
 	knownGroups          map[string]string               // Map of group JID to group name (tracked from messages)
 	groupParticipants    map[string]map[types.JID]string // Map of group JID to map of participant JID to phone number
+	groupCacheSem        chan struct{}                   // Bounds concurrent group metadata network requests
+	groupCacheMu         sync.Mutex
+	groupCacheInFlight   map[string]bool                 // Coalesces duplicate requests during history bursts
 	conversations        map[string]models.LinkedAccount // Cached conversations from history sync
 	conversationMessages map[string][]models.Message     // Cached messages per conversation
 	disconnected         bool                            // Track if already disconnected
@@ -185,6 +188,8 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		cancel:               cancel,
 		knownGroups:          make(map[string]string),
 		groupParticipants:    make(map[string]map[types.JID]string),
+		groupCacheSem:        make(chan struct{}, 4),
+		groupCacheInFlight:   make(map[string]bool),
 		conversations:        make(map[string]models.LinkedAccount),
 		conversationMessages: make(map[string][]models.Message),
 		avatarLoading:        make(map[string]bool),

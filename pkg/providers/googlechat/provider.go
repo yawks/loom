@@ -180,28 +180,6 @@ func (p *GoogleChatProvider) connectWithToken(ctx context.Context, oauthConf *oa
 
 	go p.pollLoop(ctx)
 
-	// Initial contact + conversation sync
-	go func() {
-		p.syncMu.Lock()
-		contacts, err := p.GetContacts()
-		p.syncMu.Unlock()
-		if err != nil {
-			p.log("GoogleChatProvider: initial GetContacts error: %v\n", err)
-		} else {
-			p.log("GoogleChatProvider: initial GetContacts OK: %d contacts\n", len(contacts))
-		}
-		refresh := core.ContactStatusEvent{
-			InstanceID: p.getInstanceID(),
-			UserID:     "refresh",
-			Status:     "new_conversations_discovered",
-		}
-		p.emit(refresh)
-		// Re-emit after a delay: the first event can be missed if the backend
-		// event loop isn't ready yet (e.g. right after the OAuth flow completes).
-		time.Sleep(3 * time.Second)
-		p.emit(refresh)
-	}()
-
 	return nil
 }
 
@@ -237,6 +215,7 @@ func (p *GoogleChatProvider) SyncHistory(since time.Time) error {
 	// contact discovery instead of racing it.
 	p.syncMu.Lock()
 	defer p.syncMu.Unlock()
+	p.emit(core.SyncStatusEvent{InstanceID: p.getInstanceID(), Status: core.SyncStatusFetchingContacts, Message: "Fetching Google Chat conversations", Progress: -1})
 	if _, err := p.GetContacts(); err != nil {
 		return fmt.Errorf("googlechat: refresh contacts: %w", err)
 	}
@@ -247,7 +226,9 @@ func (p *GoogleChatProvider) SyncHistory(since time.Time) error {
 	})
 	// Per-conversation forward sync + 24h lookback to catch messages that were
 	// missed because they were read on another client before this sync ran.
+	p.emit(core.SyncStatusEvent{InstanceID: p.getInstanceID(), Status: core.SyncStatusFetchingHistory, Message: "Synchronizing Google Chat history", Progress: -1})
 	p.incrementalSync()
+	p.emit(core.SyncStatusEvent{InstanceID: p.getInstanceID(), Status: core.SyncStatusCompleted, Message: "Google Chat synchronization complete", Progress: 100})
 	return nil
 }
 

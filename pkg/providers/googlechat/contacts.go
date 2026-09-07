@@ -18,9 +18,6 @@ func (p *GoogleChatProvider) GetContacts() ([]models.LinkedAccount, error) {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// Pre-populate user cache from Workspace directory (DOMAIN_PROFILE data).
-	p.loadDirectoryPeople()
-
 	var spaces []Space
 	pageToken := ""
 	for {
@@ -136,8 +133,6 @@ func (p *GoogleChatProvider) loadDirectoryPeople() {
 
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		p.log("GoogleChatProvider.loadDirectoryPeople: raw=%s\n", string(body))
-
 		var result struct {
 			People []struct {
 				ResourceName string `json:"resourceName"`

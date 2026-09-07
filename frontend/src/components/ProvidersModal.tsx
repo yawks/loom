@@ -26,6 +26,7 @@ import type { core } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
+import { getProviderInstanceColorStyle } from "@/lib/providerPresentation";
 
 interface ProviderSettingsProps {
   open: boolean;
@@ -33,6 +34,12 @@ interface ProviderSettingsProps {
 }
 
 type ViewState = "list" | "config";
+
+const formatProviderTimestamp = (value: unknown, neverLabel: string) => {
+  if (!value) return neverLabel;
+  const date = new Date(typeof value === "object" && value !== null && "Time" in value ? String((value as { Time: unknown }).Time) : String(value));
+  return Number.isNaN(date.getTime()) ? neverLabel : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+};
 
 interface SyncStatusPayload {
   Status?: string;
@@ -276,47 +283,10 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
 
   const configuredIds = useMemo(() => new Set(configuredProviders.map((p) => p.id)), [configuredProviders]);
 
-  // Color variations for multiple instances of the same provider
-  const COLOR_VARIATIONS = [
-    { filter: "hue-rotate(0deg)" },
-    { filter: "hue-rotate(60deg)" },
-    { filter: "hue-rotate(120deg)" },
-    { filter: "hue-rotate(180deg)" },
-    { filter: "hue-rotate(240deg)" },
-    { filter: "hue-rotate(300deg)" },
-  ];
-
-  // Group providers by providerId to determine color variations
-  const providersByType = useMemo(() => {
-    const groups: Record<string, core.ProviderInfo[]> = {};
-    configuredProviders.forEach((provider) => {
-      const key = provider.id;
-      if (!groups[key]) {
-        groups[key] = [];
-      }
-      groups[key].push(provider);
-    });
-    return groups;
-  }, [configuredProviders]);
-
-  // Get color variation for a provider instance
-  const getColorVariation = (provider: core.ProviderInfo) => {
-    const instances = providersByType[provider.id] || [];
-    if (instances.length <= 1) {
-      return null; // No variation needed for single instance
-    }
-    const index = instances.findIndex(
-      (p) => (p.instanceId || p.id) === (provider.instanceId || provider.id)
-    );
-    return index >= 0 && index < COLOR_VARIATIONS.length
-      ? COLOR_VARIATIONS[index]
-      : null;
-  };
-
   // Keep all provider branding in one component so official colors stay
   // consistent everywhere in the application.
   const getProviderIcon = (provider: core.ProviderInfo) => {
-    const colorVariation = getColorVariation(provider);
+    const colorVariation = getProviderInstanceColorStyle(provider, configuredProviders);
     const iconContent = (
       <ProtocolIcon protocol={provider.id} className="h-5 w-5" size={20} />
     );
@@ -409,6 +379,14 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
                           <span>{provider.syncError}</span>
                         </div>
                       )}
+                      <div className="mx-6 mb-3 grid gap-1 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <span>
+                          {t("providers_modal_last_complete_sync")}: <span className="text-foreground">{formatProviderTimestamp(provider.lastCompletedSyncAt, t("providers_modal_never"))}</span>
+                        </span>
+                        <span>
+                          {t("providers_modal_last_live_event")}: <span className="text-foreground">{formatProviderTimestamp(provider.lastLiveEventAt, t("providers_modal_never"))}</span>
+                        </span>
+                      </div>
                       <CardContent className="flex gap-2 flex-wrap">
                         {(provider.syncError || provider.authFlow === "qr") && (
                           <Button

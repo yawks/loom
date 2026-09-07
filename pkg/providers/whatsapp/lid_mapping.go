@@ -15,8 +15,14 @@ func (w *WhatsAppProvider) saveLIDMapping(lid, jid string) error {
 		return fmt.Errorf("lid and jid cannot be empty")
 	}
 
-	// Update cache first (fast)
+	// A reconnect rediscovers the same mappings through many groups. The cache is
+	// authoritative for this process, so avoid even acquiring SQLite's writer for
+	// confirmations that cannot change persisted state.
 	w.lidToJIDMu.Lock()
+	if existing, ok := w.lidToJIDMap[lid]; ok && existing == jid {
+		w.lidToJIDMu.Unlock()
+		return nil
+	}
 	w.lidToJIDMap[lid] = jid
 	w.lidToJIDMu.Unlock()
 

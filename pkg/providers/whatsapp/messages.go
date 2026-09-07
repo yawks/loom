@@ -25,6 +25,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"gorm.io/gorm"
 )
 
 func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, mediaType string) *models.Attachment {
@@ -357,10 +358,6 @@ func (w *WhatsAppProvider) extractAttachments(evt *events.Message) []models.Atta
 			ContactName:   name,
 			ContactPhones: phones,
 		})
-	}
-
-	if len(attachments) == 0 {
-		fmt.Printf("WhatsApp: extractAttachments: No attachments found in message %s\n", evt.Info.ID)
 	}
 
 	return attachments
@@ -917,7 +914,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		}
 		w.mu.Unlock()
 		if !known && w.client != nil {
-			go w.cacheGroupParticipants(chatJID)
+			w.scheduleGroupParticipantsCache(chatJID)
 		}
 	}
 
@@ -1442,7 +1439,6 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 	convID = core.BuildConvID(w.getInstanceId(), core.StripConvID(convID))
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	existing := append([]models.Message{}, w.conversationMessages[convID]...)
 	combined := append(existing, messages...)
@@ -1474,75 +1470,98 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 	}
 
 	w.setCachedConversationMessagesLocked(convID, dedup)
+	total := len(w.conversationMessages[convID])
+	w.mu.Unlock()
 
 	// Persist messages to database
 	if db.DB != nil {
-		// Store messages in database (upsert by ProtocolMsgID)
-		// Note: We store messages with ProtocolConvID, even if Conversation doesn't exist yet
-		// This allows us to load messages on startup and filter conversations properly
-		for _, msg := range messages {
-			if msg.ProtocolMsgID == "" {
-				continue
-			}
-			isCallMsg := msg.CallType != ""
-			if isCallMsg {
-				fmt.Printf("WhatsApp: [CALL MSG] Storing call message to DB: ProtocolMsgID=%s, ProtocolConvID=%s, CallType=%s\n",
-					msg.ProtocolMsgID, convID, msg.CallType)
-			}
-			var existingMsg models.Message
-			err := db.DB.Where("protocol_msg_id = ?", msg.ProtocolMsgID).First(&existingMsg).Error
-			if err != nil {
-				// Message doesn't exist, create it
-				// Set ProtocolConvID so we can query by conversation later
-				msg.ProtocolConvID = convID
-				if err := db.DB.Create(&msg).Error; err != nil {
-					if isCallMsg {
-						fmt.Printf("WhatsApp: [CALL MSG] ERROR - Failed to persist call message %s: %v\n", msg.ProtocolMsgID, err)
-					} else {
-						fmt.Printf("WhatsApp: Failed to persist message %s: %v\n", msg.ProtocolMsgID, err)
-					}
-				} else {
-					if isCallMsg {
-						fmt.Printf("WhatsApp: [CALL MSG] SUCCESS - Persisted call message %s to DB with ProtocolConvID=%s\n", msg.ProtocolMsgID, convID)
-					}
-				}
-			} else {
-				// Message exists, update it if needed
-				if existingMsg.IsEdited && !msg.IsEdited {
-					msg.Body = existingMsg.Body
-					msg.IsEdited = true
-					msg.EditedTimestamp = existingMsg.EditedTimestamp
-				}
-				msg.ID = existingMsg.ID
-				oldConvID := existingMsg.ProtocolConvID
-				msg.ProtocolConvID = convID
-				if err := db.DB.Save(&msg).Error; err != nil {
-					if isCallMsg {
-						fmt.Printf("WhatsApp: [CALL MSG] ERROR - Failed to update call message %s: %v\n", msg.ProtocolMsgID, err)
-					} else {
-						fmt.Printf("WhatsApp: Failed to update message %s: %v\n", msg.ProtocolMsgID, err)
-					}
-				} else {
-					if isCallMsg && oldConvID != convID {
-						fmt.Printf("WhatsApp: [CALL MSG] Updated call message %s ProtocolConvID from %s to %s\n", msg.ProtocolMsgID, oldConvID, convID)
-					}
-					// GORM Save does not cascade to has-many associations, so persist
-					// any reactions that arrived via HistorySync explicitly.
-					if len(msg.Reactions) > 0 {
-						for _, r := range msg.Reactions {
-							var existing models.Reaction
-							if db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, r.UserID, r.Emoji).First(&existing).Error != nil {
-								r.MessageID = msg.ID
-								db.DB.Create(&r)
-							}
-						}
-					}
-				}
-			}
+		if err := w.persistMessageBatch(convID, messages); err != nil {
+			fmt.Printf("WhatsApp: Failed to persist message batch for %s: %v\n", convID, err)
 		}
 	}
 
-	return len(w.conversationMessages[convID])
+	return total
+}
+
+func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.Message) error {
+	messageIDs := make([]string, 0, len(messages))
+	for i := range messages {
+		if messages[i].ProtocolMsgID != "" {
+			messageIDs = append(messageIDs, messages[i].ProtocolMsgID)
+		}
+	}
+	if len(messageIDs) == 0 {
+		return nil
+	}
+
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		var stored []models.Message
+		if err := tx.Where("protocol_msg_id IN ?", messageIDs).Find(&stored).Error; err != nil {
+			return err
+		}
+		storedByID := make(map[string]models.Message, len(stored))
+		storedDatabaseIDs := make([]uint, 0, len(stored))
+		for i := range stored {
+			storedByID[stored[i].ProtocolMsgID] = stored[i]
+			storedDatabaseIDs = append(storedDatabaseIDs, stored[i].ID)
+		}
+		type reactionKey struct {
+			MessageID uint
+			UserID    string
+			Emoji     string
+		}
+		existingReactions := make(map[reactionKey]struct{})
+		if len(storedDatabaseIDs) > 0 {
+			var reactions []models.Reaction
+			if err := tx.Where("message_id IN ?", storedDatabaseIDs).Find(&reactions).Error; err != nil {
+				return err
+			}
+			for i := range reactions {
+				existingReactions[reactionKey{MessageID: reactions[i].MessageID, UserID: reactions[i].UserID, Emoji: reactions[i].Emoji}] = struct{}{}
+			}
+		}
+
+		for i := range messages {
+			if messages[i].ProtocolMsgID == "" {
+				continue
+			}
+			msg := messages[i]
+			msg.ProtocolConvID = convID
+			existing, found := storedByID[msg.ProtocolMsgID]
+			if !found {
+				if err := tx.Create(&msg).Error; err != nil {
+					return err
+				}
+				storedByID[msg.ProtocolMsgID] = msg
+				continue
+			}
+
+			if existing.IsEdited && !msg.IsEdited {
+				msg.Body = existing.Body
+				msg.IsEdited = true
+				msg.EditedTimestamp = existing.EditedTimestamp
+			}
+			msg.ID = existing.ID
+			// Reactions are persisted explicitly below after batch-prefetching their
+			// keys. Letting Save cascade this association would insert them once here
+			// and a second time in the deduplicated path.
+			if err := tx.Omit("Reactions").Save(&msg).Error; err != nil {
+				return err
+			}
+			for _, reaction := range msg.Reactions {
+				key := reactionKey{MessageID: msg.ID, UserID: reaction.UserID, Emoji: reaction.Emoji}
+				if _, found := existingReactions[key]; !found {
+					reaction.ID = 0
+					reaction.MessageID = msg.ID
+					if err := tx.Create(&reaction).Error; err != nil {
+						return err
+					}
+					existingReactions[key] = struct{}{}
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // setCachedConversationMessagesLocked stores a bounded slice and evicts the
@@ -2069,41 +2088,6 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 						fmt.Printf("WhatsApp: Extracted %d receipts from history for message %s (status: %v)\n", len(receipts), msg.ProtocolMsgID, status)
 						msg.Receipts = receipts
 					}
-				}
-
-				// Check if message has attachments but they weren't extracted (download might have failed)
-				if msg.Attachments == "" {
-					// Try to extract attachments asynchronously for history messages
-					// This is done in a goroutine to avoid blocking the history sync
-					go func(evtCopy *events.Message, msgID string) {
-						fmt.Printf("WhatsApp: Attempting to extract attachments for history message %s\n", msgID)
-						attachments := w.extractAttachments(evtCopy)
-						if len(attachments) > 0 {
-							attJSON, err := json.Marshal(attachments)
-							if err == nil {
-								// Update message in database with attachments
-								if db.DB != nil {
-									var dbMsg models.Message
-									if err := db.DB.Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
-										dbMsg.Attachments = string(attJSON)
-										if err := db.DB.Save(&dbMsg).Error; err == nil {
-											fmt.Printf("WhatsApp: Successfully saved attachments for history message %s\n", msgID)
-										} else {
-											fmt.Printf("WhatsApp: Failed to save attachments for history message %s: %v\n", msgID, err)
-										}
-									}
-								}
-							}
-						} else {
-							// Check if message has media but no attachments were extracted
-							msg := evtCopy.Message
-							if msg != nil && (msg.GetImageMessage() != nil || msg.GetVideoMessage() != nil || msg.GetAudioMessage() != nil || msg.GetDocumentMessage() != nil || msg.GetStickerMessage() != nil) {
-								fmt.Printf("WhatsApp: History message %s has media but attachments extraction failed or returned empty\n", msgID)
-							}
-						}
-					}(evt, msg.ProtocolMsgID)
-				} else {
-					fmt.Printf("WhatsApp: History message %s already has attachments: %s\n", msg.ProtocolMsgID, msg.Attachments)
 				}
 
 				converted = append(converted, *msg)
@@ -2711,6 +2695,55 @@ func (w *WhatsAppProvider) clearLegacyMessageRequest(messageID string) {
 	w.legacyRequestMu.Lock()
 	delete(w.legacyRequests, messageID)
 	w.legacyRequestMu.Unlock()
+}
+
+// requestMissingQuotedMessage repairs a broken quote using the exact message key
+// embedded by WhatsApp in the reply. This is cheaper and more reliable than
+// widening every conversation history request in the hope of crossing the gap.
+func (w *WhatsAppProvider) requestMissingQuotedMessage(convID, messageID, senderID string) bool {
+	if db.DB == nil || w.client == nil || !w.client.IsConnected() || !w.client.IsLoggedIn() || messageID == "" || senderID == "" {
+		return false
+	}
+	var count int64
+	if err := db.DB.Model(&models.Message{}).
+		Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, convID).
+		Count(&count).Error; err != nil || count > 0 {
+		return false
+	}
+
+	w.legacyRequestMu.Lock()
+	if _, pending := w.legacyRequests[messageID]; pending {
+		w.legacyRequestMu.Unlock()
+		return false
+	}
+	w.legacyRequests[messageID] = convID
+	w.legacyRequestMu.Unlock()
+	time.AfterFunc(20*time.Second, func() { w.clearLegacyMessageRequest(messageID) })
+
+	chatJID, err := types.ParseJID(core.StripConvID(convID))
+	if err != nil {
+		w.clearLegacyMessageRequest(messageID)
+		return false
+	}
+	senderJID, err := types.ParseJID(senderID)
+	if err != nil {
+		w.clearLegacyMessageRequest(messageID)
+		return false
+	}
+	requestSenderJID := senderJID
+	if senderJID.Server == types.DefaultUserServer && w.client.Store != nil && w.client.Store.LIDs != nil {
+		if lid, mapErr := w.client.Store.LIDs.GetLIDForPN(w.ctx, senderJID); mapErr == nil && !lid.IsEmpty() {
+			requestSenderJID = lid
+		}
+	}
+	w.log("WhatsApp: Requesting missing quoted message %s in %s (sender=%s)\n", messageID, convID, requestSenderJID.String())
+	request := w.client.BuildUnavailableMessageRequest(chatJID, requestSenderJID, messageID)
+	if _, err := w.client.SendPeerMessage(w.ctx, request); err != nil {
+		w.log("WhatsApp: Missing quoted message request failed for %s in %s: %v\n", messageID, convID, err)
+		w.clearLegacyMessageRequest(messageID)
+		return false
+	}
+	return true
 }
 
 func (w *WhatsAppProvider) logLegacyMessageResponse(evt *events.Message) {

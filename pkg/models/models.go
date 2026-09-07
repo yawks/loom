@@ -458,15 +458,17 @@ type Attachment struct {
 
 // ProviderConfiguration stores the configuration of a provider instance.
 type ProviderConfiguration struct {
-	ID           uint       `gorm:"primarykey" json:"id"`
-	ProviderID   string     `gorm:"index;not null" json:"providerId"` // e.g., "whatsapp", "mock"
-	InstanceID   string     `gorm:"uniqueIndex" json:"instanceId"`    // Unique instance identifier (e.g., "whatsapp-1", "whatsapp-2") - nullable for migration compatibility
-	InstanceName string     `gorm:"" json:"instanceName"`             // Display name for this instance (e.g., "WhatsApp Personal", "WhatsApp Work") - nullable for migration compatibility
-	ConfigJSON   string     `gorm:"type:text" json:"configJson"`      // JSON-encoded configuration
-	IsActive     bool       `json:"isActive"`                         // Whether this provider is currently active
-	LastSyncAt   *time.Time `json:"lastSyncAt,omitempty"`             // Last time messages were synced
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	ID                  uint       `gorm:"primarykey" json:"id"`
+	ProviderID          string     `gorm:"index;not null" json:"providerId"` // e.g., "whatsapp", "mock"
+	InstanceID          string     `gorm:"uniqueIndex" json:"instanceId"`    // Unique instance identifier (e.g., "whatsapp-1", "whatsapp-2") - nullable for migration compatibility
+	InstanceName        string     `gorm:"" json:"instanceName"`             // Display name for this instance (e.g., "WhatsApp Personal", "WhatsApp Work") - nullable for migration compatibility
+	ConfigJSON          string     `gorm:"type:text" json:"configJson"`      // JSON-encoded configuration
+	IsActive            bool       `json:"isActive"`                         // Whether this provider is currently active
+	LastSyncAt          *time.Time `json:"lastSyncAt,omitempty"`             // Last time messages were synced
+	LastCompletedSyncAt *time.Time `json:"lastCompletedSyncAt,omitempty"`    // Last provider-reported complete synchronization
+	LastLiveEventAt     *time.Time `json:"lastLiveEventAt,omitempty"`        // Last functional event received outside history sync
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
 }
 
 // ContactAlias stores user-defined custom names for contacts.

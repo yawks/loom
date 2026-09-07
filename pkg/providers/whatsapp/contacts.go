@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -488,29 +489,51 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 			}
 		}
 
-		// Create new contacts individually (rare after first sync).
-		for i := range newContacts {
-			mc := models.MetaContact{
-				DisplayName: newContacts[i].Username,
-				AvatarURL:   newContacts[i].AvatarURL,
-				CreatedAt:   now,
-				UpdatedAt:   now,
+		// Create all new contact pairs under one writer lock. Values mutated by GORM
+		// are rebuilt on every retry so rolled-back IDs cannot leak into the next try.
+		createdContacts := make([]models.LinkedAccount, 0, len(newContacts))
+		createdMetas := make([]models.MetaContact, 0, len(newContacts))
+		if len(newContacts) > 0 {
+			err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+				attemptContacts := make([]models.LinkedAccount, 0, len(newContacts))
+				attemptMetas := make([]models.MetaContact, 0, len(newContacts))
+				for i := range newContacts {
+					mc := models.MetaContact{
+						DisplayName: newContacts[i].Username,
+						AvatarURL:   newContacts[i].AvatarURL,
+						CreatedAt:   now,
+						UpdatedAt:   now,
+					}
+					if err := tx.Create(&mc).Error; err != nil {
+						return err
+					}
+					account := newContacts[i]
+					account.ID = 0
+					account.MetaContactID = mc.ID
+					if err := tx.Create(&account).Error; err != nil {
+						return err
+					}
+					attemptMetas = append(attemptMetas, mc)
+					attemptContacts = append(attemptContacts, account)
+				}
+				createdMetas = attemptMetas
+				createdContacts = attemptContacts
+				return nil
+			})
+			if err != nil {
+				fmt.Printf("WhatsApp: Failed to batch-create %d contacts: %v\n", len(newContacts), err)
+				createdContacts = nil
+				createdMetas = nil
 			}
-			if err := db.DB.Create(&mc).Error; err != nil {
-				fmt.Printf("WhatsApp: Failed to create MetaContact for %s: %v\n", newContacts[i].Username, err)
-				continue
-			}
-			db.ContactStore.UpsertMetaContact(mc)
-			newContacts[i].MetaContactID = mc.ID
-			newContacts[i].ID = 0
-			if err := db.DB.Create(&newContacts[i]).Error; err != nil {
-				fmt.Printf("WhatsApp: Failed to create LinkedAccount for %s: %v\n", newContacts[i].UserID, err)
-				continue
-			}
-			db.ContactStore.UpsertLinkedAccount(newContacts[i])
+		}
+		for i := range createdMetas {
+			db.ContactStore.UpsertMetaContact(createdMetas[i])
+		}
+		for i := range createdContacts {
+			db.ContactStore.UpsertLinkedAccount(createdContacts[i])
 		}
 
-		fmt.Printf("WhatsApp: Contacts saved (%d updated, %d created)\n", updateCount, len(newContacts))
+		fmt.Printf("WhatsApp: Contacts saved (%d updated, %d created)\n", updateCount, len(createdContacts))
 	} else {
 		fmt.Printf("WhatsApp: WARNING - Skipping contact save (DB=%v, InstanceID=%s)\n", db.DB != nil, instanceID)
 	}
@@ -670,7 +693,11 @@ func (w *WhatsAppProvider) getContactsFallback() ([]models.LinkedAccount, error)
 
 	if shouldFetchGroups && w.client != nil && w.client.Store.ID != nil {
 		fmt.Printf("WhatsApp: Attempting to fetch groups via GetJoinedGroups...\n")
-		groups, err := w.client.GetJoinedGroups(w.ctx)
+		// Group discovery enriches the cached conversation list, but a stalled IQ
+		// response must never keep the whole synchronization active indefinitely.
+		groupsCtx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
+		groups, err := w.client.GetJoinedGroups(groupsCtx)
+		cancel()
 		if err == nil && len(groups) > 0 {
 			fmt.Printf("WhatsApp: Found %d groups via GetJoinedGroups\n", len(groups))
 			groupsAdded := 0

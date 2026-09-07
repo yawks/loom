@@ -180,6 +180,10 @@ func ensureIndices(db *gorm.DB) error {
 		Cols  string
 	}{
 		{"idx_linked_accounts_meta_contact_id", "linked_accounts", "meta_contact_id"},
+		// Contact reconciliation and LID resolution identify an account by these
+		// tuples. Separate single-column indexes still require scanning an instance.
+		{"idx_linked_accounts_provider_user", "linked_accounts", "provider_instance_id, user_id"},
+		{"idx_linked_accounts_protocol_provider_user", "linked_accounts", "protocol, provider_instance_id, user_id"},
 		{"idx_conversations_linked_account_id", "conversations", "linked_account_id"},
 		{"idx_conversations_protocol_conv_id", "conversations", "protocol_conv_id"},
 		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},

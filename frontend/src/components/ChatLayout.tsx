@@ -20,7 +20,6 @@ import { MessageListSkeleton } from "@/components/MessageListSkeleton";
 import { ProviderFilterBar } from "./ProviderFilterBar";
 import { SearchModal } from "./SearchModal";
 import { SettingsModal, type SettingsSection } from "./SettingsModal";
-import { SyncStatusFooter } from "./SyncStatusFooter";
 import { ThreadView } from "./ThreadView";
 import { useAppStore } from "@/lib/store";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -306,7 +305,6 @@ export function ChatLayout() {
               )}
             </ResizablePanelGroup>
           </div>
-          <SyncStatusFooter />
         </>
       )}
 

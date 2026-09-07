@@ -17,16 +17,18 @@ import (
 
 // ProviderInfo represents information about a provider.
 type ProviderInfo struct {
-	ID           string                 `json:"id"`           // Provider type identifier (e.g., "whatsapp", "mock")
-	InstanceID   string                 `json:"instanceId"`   // Unique instance identifier (e.g., "whatsapp-1", "whatsapp-2")
-	InstanceName string                 `json:"instanceName"` // Display name for this instance (e.g., "WhatsApp Personal")
-	Name         string                 `json:"name"`         // Display name (e.g., "WhatsApp", "Mock")
-	Description  string                 `json:"description"`  // Description of the provider
-	Config       ProviderConfig         `json:"config"`       // Current configuration
-	IsActive     bool                   `json:"isActive"`     // Whether the provider is currently active
-	ConfigSchema map[string]interface{} `json:"configSchema"` // Schema for configuration fields
-	SyncError    string                 `json:"syncError"`    // Non-empty when the provider failed to authenticate or connect at startup
-	AuthFlow     string                 `json:"authFlow"`     // Provider-neutral configuration flow: form, qr, browser, or device_confirmation
+	ID                  string                 `json:"id"`           // Provider type identifier (e.g., "whatsapp", "mock")
+	InstanceID          string                 `json:"instanceId"`   // Unique instance identifier (e.g., "whatsapp-1", "whatsapp-2")
+	InstanceName        string                 `json:"instanceName"` // Display name for this instance (e.g., "WhatsApp Personal")
+	Name                string                 `json:"name"`         // Display name (e.g., "WhatsApp", "Mock")
+	Description         string                 `json:"description"`  // Description of the provider
+	Config              ProviderConfig         `json:"config"`       // Current configuration
+	IsActive            bool                   `json:"isActive"`     // Whether the provider is currently active
+	ConfigSchema        map[string]interface{} `json:"configSchema"` // Schema for configuration fields
+	SyncError           string                 `json:"syncError"`    // Non-empty when the provider failed to authenticate or connect at startup
+	AuthFlow            string                 `json:"authFlow"`     // Provider-neutral configuration flow: form, qr, browser, or device_confirmation
+	LastCompletedSyncAt string                 `json:"lastCompletedSyncAt,omitempty"`
+	LastLiveEventAt     string                 `json:"lastLiveEventAt,omitempty"`
 }
 
 // ProviderFactory is a function that creates a new provider instance.
@@ -77,13 +79,43 @@ func (pm *ProviderManager) GetAvailableProviders() []ProviderInfo {
 		fmt.Printf("ProviderManager.GetAvailableProviders: added provider %s (name: %s)\n", id, info.Name)
 	}
 
-	// Sort providers by name (alphabetically)
+	// Map iteration order is deliberately random in Go. Include provider and
+	// instance IDs as deterministic tie-breakers so multi-instance providers keep
+	// the same visual order across refreshes and application restarts.
 	sort.Slice(providers, func(i, j int) bool {
-		return providers[i].Name < providers[j].Name
+		left, right := providers[i], providers[j]
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		return providerInstanceIDLess(left.InstanceID, right.InstanceID)
 	})
 
 	fmt.Printf("ProviderManager.GetAvailableProviders: returning %d providers (sorted alphabetically)\n", len(providers))
 	return providers
+}
+
+func providerInstanceIDLess(left, right string) bool {
+	leftPrefix, leftNumber, leftNumeric := splitProviderInstanceID(left)
+	rightPrefix, rightNumber, rightNumeric := splitProviderInstanceID(right)
+	if leftNumeric && rightNumeric && leftPrefix == rightPrefix && leftNumber != rightNumber {
+		return leftNumber < rightNumber
+	}
+	return left < right
+}
+
+func splitProviderInstanceID(instanceID string) (string, int, bool) {
+	separator := strings.LastIndexByte(instanceID, '-')
+	if separator < 0 || separator == len(instanceID)-1 {
+		return instanceID, 0, false
+	}
+	number, err := strconv.Atoi(instanceID[separator+1:])
+	if err != nil || number < 0 {
+		return instanceID, 0, false
+	}
+	return instanceID[:separator], number, true
 }
 
 // GetConfiguredProviders returns a list of configured (initialized) providers.
@@ -143,6 +175,12 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 
 		info.InstanceID = instanceID
 		info.InstanceName = config.InstanceName
+		if config.LastCompletedSyncAt != nil {
+			info.LastCompletedSyncAt = config.LastCompletedSyncAt.Format(time.RFC3339)
+		}
+		if config.LastLiveEventAt != nil {
+			info.LastLiveEventAt = config.LastLiveEventAt.Format(time.RFC3339)
+		}
 		if info.InstanceName == "" {
 			info.InstanceName = instanceID
 		}
@@ -150,9 +188,17 @@ func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 		providers = append(providers, info)
 	}
 
-	// Sort providers by name (alphabetically)
+	// Keep instances deterministic even when several entries share the same
+	// provider name. The source snapshot came from a map.
 	sort.Slice(providers, func(i, j int) bool {
-		return providers[i].Name < providers[j].Name
+		left, right := providers[i], providers[j]
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		return providerInstanceIDLess(left.InstanceID, right.InstanceID)
 	})
 
 	return providers

@@ -109,8 +109,9 @@ type App struct {
 	// A SyncStatusCompleted event from one provider is suppressed until all
 	// active providers have finished, preventing "sync complete" from appearing
 	// while another provider is still fetching history.
-	syncingProviders   map[string]bool
-	syncingProvidersMu sync.Mutex
+	syncingProviders          map[string]bool
+	suppressedSyncCompletions map[string]int
+	syncingProvidersMu        sync.Mutex
 
 	// syncInProgress prevents a wake-up, a manual refresh, and a startup catch-up
 	// from running the same provider sync concurrently.
@@ -127,13 +128,18 @@ type App struct {
 	// linkPreviewCache caches fetched Open Graph previews (1-hour TTL).
 	linkPreviewCache   map[string]linkPreviewEntry
 	linkPreviewCacheMu sync.RWMutex
+
+	providerActivityMu       sync.Mutex
+	lastPersistedLiveEventAt map[string]time.Time
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{
-		eventCancels:   make(map[string]context.CancelFunc),
-		syncInProgress: make(map[string]bool),
+		eventCancels:              make(map[string]context.CancelFunc),
+		syncInProgress:            make(map[string]bool),
+		suppressedSyncCompletions: make(map[string]int),
+		lastPersistedLiveEventAt:  make(map[string]time.Time),
 	}
 }
 
@@ -792,6 +798,13 @@ func (a *App) resyncAllProviders() {
 	}
 
 	providers := a.providerManager.GetConfiguredProviders()
+	instanceIDs := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if _, err := a.providerManager.GetProvider(provider.InstanceID); err == nil {
+			instanceIDs = append(instanceIDs, provider.InstanceID)
+		}
+	}
+	a.emitSyncCycleStart(instanceIDs)
 	log.Printf("[App] Resyncing %d configured providers after system wake", len(providers))
 
 	for _, pInfo := range providers {
@@ -816,6 +829,9 @@ func (a *App) resyncAllProviders() {
 // synchronization.
 func (a *App) resyncProviderAfterWake(instanceID string) {
 	since := a.syncSince(instanceID, 24*time.Hour)
+	a.syncingProvidersMu.Lock()
+	a.suppressedSyncCompletions[instanceID]++
+	a.syncingProvidersMu.Unlock()
 	a.syncProviderHistory(instanceID, since, "system wake")
 
 	select {
@@ -982,10 +998,19 @@ func (a *App) domReady(ctx context.Context) {
 				a.setProviderError(providerStartup.instanceID, "Session expired — please re-authenticate")
 				return
 			}
+			if !providerStartup.since.IsZero() {
+				// Connection itself may perform discovery work. Announce the cycle
+				// before it starts so the sidebar never looks idle during that phase.
+				a.emitSyncCycleStart([]string{providerStartup.instanceID})
+			}
 
 			if err := providerStartup.provider.Connect(); err != nil {
 				log.Printf("Warning: Failed to connect provider %s: %v", providerStartup.instanceID, err)
-				a.setProviderError(providerStartup.instanceID, fmt.Sprintf("Connection failed: %v", err))
+				message := fmt.Sprintf("Connection failed: %v", err)
+				a.setProviderError(providerStartup.instanceID, message)
+				if !providerStartup.since.IsZero() {
+					a.emitSyncStatusCoordinated(core.SyncStatusEvent{InstanceID: providerStartup.instanceID, Status: core.SyncStatusError, Message: message, Progress: -1})
+				}
 				return
 			}
 			a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
@@ -1042,6 +1067,9 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 			case event, ok := <-eventChan:
 				if !ok {
 					return
+				}
+				if isFunctionalLiveEvent(event) {
+					a.recordProviderLiveEvent(instanceID)
 				}
 				// Add instanceID to event if needed or handle it here
 				switch e := event.(type) {
@@ -1226,10 +1254,8 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 	}()
 }
 
-// emitSyncStatusCoordinated forwards a SyncStatusEvent to the frontend, but
-// suppresses per-provider "completed" events until all active providers have
-// finished. This prevents "sync complete" from appearing in the footer while
-// a second provider is still fetching history.
+// emitSyncStatusCoordinated forwards every per-instance transition. The frontend
+// owns cycle-level presentation and needs each completion to render its checkmark.
 func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 	if a.ctx == nil {
 		return
@@ -1249,22 +1275,33 @@ func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 
 	case core.SyncStatusCompleted:
 		delete(a.syncingProviders, e.InstanceID)
-		stillSyncing := len(a.syncingProviders) > 0
+		if remaining := a.suppressedSyncCompletions[e.InstanceID]; remaining > 0 {
+			if remaining == 1 {
+				delete(a.suppressedSyncCompletions, e.InstanceID)
+			} else {
+				a.suppressedSyncCompletions[e.InstanceID] = remaining - 1
+			}
+			a.syncingProvidersMu.Unlock()
+			return
+		}
 		a.syncingProvidersMu.Unlock()
 		a.clearProviderError(e.InstanceID)
-
-		if stillSyncing {
-			// At least one other provider is still active — swallow this event.
-			// The frontend will receive "completed" once the last provider finishes.
-			return
+		if db.DB != nil {
+			now := time.Now()
+			if err := db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", e.InstanceID).
+				Update("last_completed_sync_at", now).Error; err != nil {
+				log.Printf("[App] Failed to persist completed sync time for %s: %v", e.InstanceID, err)
+			}
 		}
 
 	case core.SyncStatusError:
 		delete(a.syncingProviders, e.InstanceID)
+		delete(a.suppressedSyncCompletions, e.InstanceID)
 		a.syncingProvidersMu.Unlock()
 
 	case core.SyncStatusNeedsReauth:
 		delete(a.syncingProviders, e.InstanceID)
+		delete(a.suppressedSyncCompletions, e.InstanceID)
 		a.syncingProvidersMu.Unlock()
 		// Persist the error so the orange badge appears in the providers list
 		// immediately (picked up by GetConfiguredProviders on next call).
@@ -1276,6 +1313,52 @@ func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 
 	syncStatusJSON, _ := json.Marshal(e)
 	runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+}
+
+func (a *App) emitSyncCycleStart(instanceIDs []string) {
+	if a.ctx == nil || len(instanceIDs) == 0 {
+		return
+	}
+	payload, _ := json.Marshal(struct {
+		InstanceIDs []string `json:"instanceIds"`
+	}{InstanceIDs: instanceIDs})
+	runtime.EventsEmit(a.ctx, "sync-cycle-start", string(payload))
+}
+
+func isFunctionalLiveEvent(event core.ProviderEvent) bool {
+	switch e := event.(type) {
+	case core.MessageBatchEvent:
+		return !e.IsHistorical
+	case core.MessageEvent, core.ReactionEvent, core.TypingEvent, core.PresenceEvent,
+		core.GroupChangeEvent, core.ReceiptEvent, core.RetryReceiptEvent,
+		core.ConversationReadStatusEvent, core.ConversationMuteStatusEvent:
+		return true
+	case core.ContactStatusEvent:
+		return e.UserID != "refresh" && e.Status != "avatar_updated"
+	default:
+		return false
+	}
+}
+
+// Live streams can be noisy (typing and presence in particular). Persist at most
+// once every ten seconds per instance while retaining a useful activity timestamp.
+func (a *App) recordProviderLiveEvent(instanceID string) {
+	if db.DB == nil || instanceID == "" {
+		return
+	}
+	now := time.Now()
+	a.providerActivityMu.Lock()
+	if last := a.lastPersistedLiveEventAt[instanceID]; !last.IsZero() && now.Sub(last) < 10*time.Second {
+		a.providerActivityMu.Unlock()
+		return
+	}
+	a.lastPersistedLiveEventAt[instanceID] = now
+	a.providerActivityMu.Unlock()
+
+	if err := db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).
+		Update("last_live_event_at", now).Error; err != nil {
+		log.Printf("[App] Failed to persist live event time for %s: %v", instanceID, err)
+	}
 }
 
 // GetAvatar retrieves an avatar file and returns a base64 data URL
@@ -3702,6 +3785,7 @@ func (a *App) SyncProvider(providerID string) error {
 
 	// Return immediately to the frontend while retaining a five-minute overlap from
 	// the last successful sync, so manual refreshes also recover missed messages.
+	a.emitSyncCycleStart([]string{providerID})
 	go a.syncProviderHistory(providerID, a.syncSince(providerID, 30*24*time.Hour), "manual")
 	return nil
 }
@@ -3715,7 +3799,16 @@ func (a *App) SyncAllProviders() error {
 		return fmt.Errorf("provider manager is not initialized")
 	}
 
-	for _, info := range a.providerManager.GetConfiguredProviders() {
+	configured := a.providerManager.GetConfiguredProviders()
+	instanceIDs := make([]string, 0, len(configured))
+	for _, info := range configured {
+		if _, err := a.providerManager.GetProvider(info.InstanceID); err == nil {
+			instanceIDs = append(instanceIDs, info.InstanceID)
+		}
+	}
+	a.emitSyncCycleStart(instanceIDs)
+
+	for _, info := range configured {
 		if _, err := a.providerManager.GetProvider(info.InstanceID); err != nil {
 			continue
 		}

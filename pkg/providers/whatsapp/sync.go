@@ -216,6 +216,43 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 		requested++
 	}
 	w.log("WhatsApp: Global history audit sent %d requests (%d failed)\n", requested, failed)
+
+	// A reply contains the exact ID and sender of its quoted source. Repair
+	// recent references whose source row is absent even when the normal 50-item
+	// history window fails to include that individual message.
+	type missingQuote struct {
+		ProtocolConvID string
+		MessageID      string
+		SenderID       string
+	}
+	var missingQuotes []missingQuote
+	if queryErr := db.DB.Raw(`
+		SELECT DISTINCT reply.protocol_conv_id,
+			reply.quoted_message_id AS message_id,
+			reply.quoted_sender_id AS sender_id
+		FROM messages AS reply
+		LEFT JOIN messages AS source
+			ON source.protocol_conv_id = reply.protocol_conv_id
+			AND source.protocol_msg_id = reply.quoted_message_id
+		WHERE reply.protocol_conv_id LIKE ?
+			AND reply.timestamp >= ?
+			AND reply.quoted_message_id IS NOT NULL AND reply.quoted_message_id != ''
+			AND reply.quoted_sender_id IS NOT NULL AND reply.quoted_sender_id != ''
+			AND source.id IS NULL
+		ORDER BY reply.timestamp DESC
+		LIMIT 25`, prefix, cutoff).Scan(&missingQuotes).Error; queryErr != nil {
+		w.log("WhatsApp: Failed to inspect missing quoted messages: %v\n", queryErr)
+	} else {
+		quotedRequested := 0
+		for _, missing := range missingQuotes {
+			if w.requestMissingQuotedMessage(missing.ProtocolConvID, missing.MessageID, missing.SenderID) {
+				quotedRequested++
+			}
+		}
+		if quotedRequested > 0 {
+			w.log("WhatsApp: Requested %d missing quoted message(s)\n", quotedRequested)
+		}
+	}
 	if requested == 0 && failed > 0 {
 		return fmt.Errorf("all %d history audit requests failed", failed)
 	}

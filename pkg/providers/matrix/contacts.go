@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"Loom/pkg/db"
 	"Loom/pkg/models"
@@ -79,10 +80,28 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 	if err != nil {
 		return nil, err
 	}
+	type roomResult struct {
+		summary roomSummary
+		err     error
+	}
+	results := make([]roomResult, len(rooms))
+	semaphore := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for index, room := range rooms {
+		wg.Add(1)
+		go func(index int, room string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			results[index].summary, results[index].err = p.roomState(room)
+		}(index, room)
+	}
+	wg.Wait()
+
 	out := make([]models.LinkedAccount, 0, len(rooms))
-	for _, room := range rooms {
-		s, e := p.roomState(room)
-		if e != nil {
+	for index, room := range rooms {
+		s := results[index].summary
+		if results[index].err != nil {
 			continue
 		}
 		userID := room

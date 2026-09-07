@@ -107,6 +107,8 @@ export namespace core {
 	    configSchema: Record<string, any>;
 	    syncError: string;
 	    authFlow: string;
+	    lastCompletedSyncAt?: string;
+	    lastLiveEventAt?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderInfo(source);
@@ -124,6 +126,8 @@ export namespace core {
 	        this.configSchema = source["configSchema"];
 	        this.syncError = source["syncError"];
 	        this.authFlow = source["authFlow"];
+	        this.lastCompletedSyncAt = source["lastCompletedSyncAt"];
+	        this.lastLiveEventAt = source["lastLiveEventAt"];
 	    }
 	}
 

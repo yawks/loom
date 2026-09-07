@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { GetConfiguredProviders, SyncAllProviders } from "../../wailsjs/go/main/App";
-import { AlertTriangle, Layers, RefreshCw, Settings } from "lucide-react";
+import { AlertCircle, AlertTriangle, Check, Layers, RefreshCw, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
 import type { core } from "../../wailsjs/go/models";
@@ -10,18 +10,23 @@ import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
 import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount, type UnreadBadgeCounts } from "@/lib/unreadBadgeCounts";
-
-const COLOR_VARIATIONS = [
-  { filter: "hue-rotate(0deg)" },
-  { filter: "hue-rotate(60deg)" },
-  { filter: "hue-rotate(120deg)" },
-  { filter: "hue-rotate(180deg)" },
-  { filter: "hue-rotate(240deg)" },
-  { filter: "hue-rotate(300deg)" },
-];
+import { getProviderInstanceColorStyle } from "@/lib/providerPresentation";
 
 interface ProviderFilterBarProps {
   onOpenSettings: () => void;
+}
+
+type ProviderSyncStatus = { status: string; progress: number; message: string };
+
+function SidebarSyncRing({ sync }: { sync?: ProviderSyncStatus }) {
+  if (!sync || sync.status === "completed" || sync.status === "error" || sync.status === "needs_reauth") return null;
+  const determinate = sync.progress >= 0 && sync.progress <= 100;
+  const circumference = 2 * Math.PI * 15;
+  if (!determinate) return <span className="absolute inset-0 animate-spin rounded-full border-2 border-primary/25 border-t-primary pointer-events-none" />;
+  return <svg className="absolute inset-0 -rotate-90 pointer-events-none" viewBox="0 0 36 36" aria-hidden="true">
+    <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" strokeWidth="2" className="text-primary/20" />
+    <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="text-primary transition-[stroke-dashoffset] duration-300" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - sync.progress / 100)} />
+  </svg>;
 }
 
 export function ProviderFilterBar({
@@ -34,6 +39,7 @@ export function ProviderFilterBar({
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(
     new Set()
   );
+  const [syncStatuses, setSyncStatuses] = useState<Record<string, ProviderSyncStatus>>({});
   const selectedProviderFilter = useAppStore(
     (state) => state.selectedProviderFilter
   );
@@ -121,13 +127,25 @@ export function ProviderFilterBar({
   }, []);
 
   useEffect(() => {
+    const unsubscribeCycle = EventsOn("sync-cycle-start", (payload: string) => {
+      try {
+        const raw = JSON.parse(payload);
+        const ids = (raw.instanceIds || raw.InstanceIDs || []).filter(Boolean) as string[];
+        setSyncingProviders(current => new Set([...current, ...ids]));
+        setSyncStatuses(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, { status: "pending", progress: -1, message: "" }])) }));
+      } catch (error) {
+        console.error("Failed to parse sync cycle in ProviderFilterBar:", error);
+      }
+    });
     const unsubscribe = EventsOn("sync-status", (statusJSON: string) => {
       try {
         const parsed = JSON.parse(statusJSON);
         const instanceId = parsed.InstanceID || parsed.instanceId;
         const status = (parsed.Status || parsed.status || "").toLowerCase();
         const message = parsed.Message || parsed.message || "";
+        const progress = Number(parsed.Progress ?? parsed.progress ?? -1);
         if (!instanceId) return;
+        setSyncStatuses(current => ({ ...current, [instanceId]: { status, progress, message } }));
         const isActive = [
           "fetching_contacts",
           "fetching_history",
@@ -136,8 +154,17 @@ export function ProviderFilterBar({
         if (isActive) {
           setSyncingProviders((current) => new Set(current).add(instanceId));
         } else if (status === "completed") {
-          // The backend only forwards completion once every active provider is done.
-          setSyncingProviders(new Set());
+          setSyncingProviders((current) => {
+            const next = new Set(current);
+            next.delete(instanceId);
+            return next;
+          });
+          window.setTimeout(() => setSyncStatuses(current => {
+            if (current[instanceId]?.status !== "completed") return current;
+            const next = { ...current };
+            delete next[instanceId];
+            return next;
+          }), 3000);
         } else if (status === "error" || status === "needs_reauth") {
           setSyncingProviders((current) => {
             const next = new Set(current);
@@ -155,6 +182,7 @@ export function ProviderFilterBar({
       }
     });
     return () => {
+      if (unsubscribeCycle) unsubscribeCycle();
       if (unsubscribe) unsubscribe();
     };
   }, [setSyncError, clearSyncError]);
@@ -187,27 +215,6 @@ export function ProviderFilterBar({
       window.removeEventListener("online", handleOnline);
     };
   }, [syncAll]);
-
-  const providersByType = useMemo(() => {
-    const groups: Record<string, core.ProviderInfo[]> = {};
-    configuredProviders.forEach((provider) => {
-      const key = provider.id;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(provider);
-    });
-    return groups;
-  }, [configuredProviders]);
-
-  const getColorVariation = (provider: core.ProviderInfo) => {
-    const instances = providersByType[provider.id] || [];
-    if (instances.length <= 1) return null;
-    const index = instances.findIndex(
-      (p) => (p.instanceId || p.id) === (provider.instanceId || provider.id)
-    );
-    return index >= 0 && index < COLOR_VARIATIONS.length
-      ? COLOR_VARIATIONS[index]
-      : null;
-  };
 
   const totalUnread = Object.values(unreadByInstance).reduce((total, counts) => ({
     tracked: total.tracked + counts.tracked,
@@ -273,10 +280,12 @@ export function ProviderFilterBar({
       {configuredProviders.map((provider) => {
         const instanceId = provider.instanceId || provider.id;
         const isSelected = selectedProviderFilter === instanceId;
-        const colorVariation = getColorVariation(provider);
+        const colorVariation = getProviderInstanceColorStyle(provider, configuredProviders);
         const displayName = provider.instanceName || provider.name;
         const unreadCounts = unreadByInstance[instanceId] ?? emptyUnreadBadgeCounts();
         const syncError = syncErrors[instanceId];
+        const syncStatus = syncStatuses[instanceId];
+        const syncTitle = syncStatus?.message ? `${displayName} — ${syncStatus.message}` : displayName;
 
         return (
           <button
@@ -287,13 +296,17 @@ export function ProviderFilterBar({
               isSelected && "bg-black/10 text-foreground dark:bg-white/15 dark:text-white"
             )}
             onClick={() => setSelectedProviderFilter(instanceId)}
-            title={syncError ? `${displayName} — ${syncError}` : displayName}
+            title={syncError ? `${displayName} — ${syncError}` : syncTitle}
           >
             <div
-              className="provider-filter-bar__provider-icon h-6 w-6 flex items-center justify-center"
-              style={colorVariation || undefined}
+              className="provider-filter-bar__provider-icon relative h-9 w-9 flex items-center justify-center"
             >
-              <ProtocolIcon protocol={provider.id} size={24} />
+              <SidebarSyncRing sync={syncStatus} />
+              <span className="flex h-6 w-6 items-center justify-center" style={colorVariation || undefined}>
+                <ProtocolIcon protocol={provider.id} size={24} />
+              </span>
+              {syncStatus?.status === "completed" && <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-white ring-2 ring-sidebar-rail"><Check className="h-2.5 w-2.5" strokeWidth={3} /></span>}
+              {(syncStatus?.status === "error" || syncStatus?.status === "needs_reauth") && <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-white ring-2 ring-sidebar-rail"><AlertCircle className="h-2.5 w-2.5" /></span>}
             </div>
             {unreadCounts.total > 0 && renderUnreadBadges(unreadCounts)}
             {syncError && (

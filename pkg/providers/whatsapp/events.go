@@ -46,11 +46,16 @@ func (w *WhatsAppProvider) scheduleSyncFallback() {
 		if !connected {
 			return
 		}
+		startedAt := time.Now()
+		fmt.Printf("WhatsApp: Sync fallback starting contact finalization after 30s quiet period\n")
 		contacts, err := w.GetContacts()
-		if err == nil && len(contacts) > 0 {
-			fmt.Printf("WhatsApp: Fallback - emitting completed sync status after 30s timeout with %d conversations\n", len(contacts))
-			w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
+		if err != nil {
+			fmt.Printf("WhatsApp: Sync fallback contact finalization failed after %s: %v\n", time.Since(startedAt), err)
+			w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
+			return
 		}
+		fmt.Printf("WhatsApp: Fallback completed contact finalization in %s with %d conversations\n", time.Since(startedAt), len(contacts))
+		w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Sync completed - %d conversations available", len(contacts)), 100)
 	})
 	w.syncFallbackTimer = timer
 	w.syncFallbackMu.Unlock()
@@ -83,7 +88,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.knownGroups[v.JID.String()] = groupName
 			w.mu.Unlock()
 		}
-		go w.cacheGroupParticipants(v.JID)
+		w.scheduleGroupParticipantsCache(v.JID)
 		select {
 		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: convID, ChangeType: changeType, GroupName: groupName, ParticipantID: participantID, Timestamp: v.Timestamp.Unix()}:
 		default:
@@ -94,7 +99,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// the refresh triggered by GroupChangeEvent can expose it without waiting
 		// for the cache to expire.
 		w.cacheJoinedGroup(v.JID, v.Name)
-		go w.cacheGroupParticipants(v.JID)
+		w.scheduleGroupParticipantsCache(v.JID)
 		select {
 		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), v.JID.String()), ChangeType: core.GroupChangeCreated, GroupName: v.Name, Timestamp: time.Now().Unix()}:
 		default:
@@ -374,6 +379,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				fmt.Printf("WhatsApp: WARNING - Message %s has media but no attachments were extracted! Chat: %s, Sender: %s\n", msg.ProtocolMsgID, v.Info.Chat.String(), v.Info.Sender.String())
 			}
 			w.appendMessageToConversation(msg)
+			if msg.QuotedMessageID != nil && *msg.QuotedMessageID != "" && msg.QuotedSenderID != nil && *msg.QuotedSenderID != "" {
+				go w.requestMissingQuotedMessage(msg.ProtocolConvID, *msg.QuotedMessageID, *msg.QuotedSenderID)
+			}
 
 			// Update last sync timestamp when receiving a new message
 			w.saveLastSyncTimestamp(msg.Timestamp)
@@ -758,6 +766,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	case *events.HistorySync:
 		// History sync contains conversations and messages
 		fmt.Println("WhatsApp: History sync received - conversations are being synced")
+		w.emitSyncStatus(core.SyncStatusFetchingHistory, "Processing message history...", -1)
 
 		// Cache conversations from the history sync data so we can display them immediately
 		// IMPORTANT: We only cache conversations, not messages (like Slack)
@@ -777,8 +786,13 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.saveLastSyncTimestamp(now)
 		}
 
-		// Emit sync status event - fetching contacts (conversations only, not messages)
+		// Message conversion and persistence above can dominate a large resync. Only
+		// advertise contact synchronization after that work has actually completed.
 		w.emitSyncStatus(core.SyncStatusFetchingContacts, "Fetching conversations...", -1)
+		// OfflineSyncCompleted is not guaranteed to be the last event: full imports
+		// can deliver another HistorySync afterwards. Rearm the quiet-period fallback
+		// so a late chunk cannot leave the UI permanently in an active state.
+		w.scheduleSyncFallback()
 		// Trigger a contact refresh after history sync
 		// Use a goroutine to delay the refresh slightly to allow whatsmeow to process the sync
 		go func() {
@@ -826,6 +840,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Emit sync status event - app state sync completed, now fetching contacts
 		// Don't emit completed here - wait for OfflineSyncCompleted which is the final event
 		w.emitSyncStatus(core.SyncStatusFetchingContacts, "Fetching conversations...", -1)
+		w.scheduleSyncFallback()
 		go func() {
 			// Check if provider is still active before sending event
 			w.mu.RLock()
@@ -898,7 +913,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// action performed from another linked client. Re-run the persisted
 			// own-activity reconciliation at the end of offline sync, after both
 			// history storage and the renderer event subscription are ready.
+			startedAt := time.Now()
+			fmt.Printf("WhatsApp: Final sync reconciliation starting\n")
 			w.lookbackSync()
+			fmt.Printf("WhatsApp: Final sync lookback completed in %s; refreshing contacts\n", time.Since(startedAt))
 
 			contacts, err := w.GetContacts()
 			if err != nil {
@@ -906,6 +924,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				fmt.Printf("WhatsApp: Emitting error sync status event\n")
 				w.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to refresh conversations: %v", err), -1)
 			} else {
+				w.cancelSyncFallback()
 				fmt.Printf("WhatsApp: Fetched %d conversations after offline sync\n", len(contacts))
 				// This is the final completed event - sync is fully done
 				fmt.Printf("WhatsApp: Emitting completed sync status event with %d conversations\n", len(contacts))
@@ -1968,84 +1987,12 @@ func (w *WhatsAppProvider) cacheConversationsFromHistory(history *waHistorySync.
 		// This ensures we can resolve participant names even during initial sync
 		if jid.Server == types.GroupServer {
 			verboseLogf("WhatsApp: Caching participants for group %s\n", jid.String())
-			go w.cacheGroupParticipants(jid)
+			w.scheduleGroupParticipantsCache(jid)
 		}
 
-		// Save to database for persistence - use FirstOrCreate to avoid duplicates
-		if db.DB != nil {
-			var existing models.LinkedAccount
-			// Try to find existing conversation (check by instanceID if available)
-			query := db.DB.Where("user_id = ? AND protocol = ?", linked.UserID, "whatsapp")
-			if instanceID != "" {
-				query = query.Where("provider_instance_id = ?", instanceID)
-			}
-			result := query.First(&existing)
-			if result.Error == nil {
-				// Update existing with new name if it's better (not a phone number)
-				if linked.Username != "" && !strings.HasPrefix(linked.Username, "+") {
-					existing.Username = linked.Username
-					existing.UpdatedAt = linked.UpdatedAt
-				}
-				existing.IsGroup = linked.IsGroup
-
-				// If existing contact doesn't have MetaContactID, create one
-				if existing.MetaContactID == 0 {
-					metaContact := models.MetaContact{
-						DisplayName: existing.Username,
-						AvatarURL:   existing.AvatarURL,
-						CreatedAt:   time.Now(),
-						UpdatedAt:   time.Now(),
-					}
-					if err := db.DB.Create(&metaContact).Error; err != nil {
-						fmt.Printf("WhatsApp: Error creating MetaContact for existing LinkedAccount %s: %v\n", linked.UserID, err)
-					} else {
-						existing.MetaContactID = metaContact.ID
-						fmt.Printf("WhatsApp: Created MetaContact (ID=%d) for existing LinkedAccount %s\n", metaContact.ID, linked.UserID)
-					}
-				}
-
-				// Update MetaContact.DisplayName to match LinkedAccount.Username
-				if existing.MetaContactID > 0 {
-					var metaContact models.MetaContact
-					if err := db.DB.First(&metaContact, existing.MetaContactID).Error; err == nil {
-						if metaContact.DisplayName != existing.Username && existing.Username != "" {
-							metaContact.DisplayName = existing.Username
-							metaContact.UpdatedAt = time.Now()
-							if err := db.DB.Save(&metaContact).Error; err != nil {
-								fmt.Printf("WhatsApp: Failed to update MetaContact.DisplayName for %s: %v\n", linked.UserID, err)
-							}
-						}
-					}
-				}
-
-				if err := db.DB.Save(&existing).Error; err != nil {
-					fmt.Printf("WhatsApp: Error updating conversation %s: %v\n", linked.UserID, err)
-				}
-			} else {
-				// Create new MetaContact and LinkedAccount (like Slack does)
-				// 1. Create MetaContact
-				metaContact := models.MetaContact{
-					DisplayName: linked.Username,
-					AvatarURL:   linked.AvatarURL,
-					CreatedAt:   time.Now(),
-					UpdatedAt:   time.Now(),
-				}
-				if err := db.DB.Create(&metaContact).Error; err != nil {
-					fmt.Printf("WhatsApp: Error creating MetaContact for %s: %v\n", linked.Username, err)
-					continue
-				}
-
-				// 2. Create LinkedAccount linked to MetaContact
-				linked.MetaContactID = metaContact.ID
-				linked.CreatedAt = time.Now()
-				linked.UpdatedAt = time.Now()
-				if err := db.DB.Create(&linked).Error; err != nil {
-					fmt.Printf("WhatsApp: Error creating LinkedAccount for %s: %v\n", linked.UserID, err)
-				} else {
-					fmt.Printf("WhatsApp: Created MetaContact (ID=%d) and LinkedAccount for %s (%s)\n", metaContact.ID, linked.Username, linked.UserID)
-				}
-			}
-		}
+		// Persist the complete snapshot once in GetContacts. Writing every partial
+		// HistorySync chunk here caused a SELECT/SAVE sequence per conversation, then
+		// repeated the same reconciliation during the contact refresh.
 
 		if jid.Server == types.GroupServer {
 			w.knownGroups[linked.UserID] = displayName
