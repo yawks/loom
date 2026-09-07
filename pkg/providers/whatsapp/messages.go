@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"Loom/pkg/providers/messageformat"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1279,8 +1280,49 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 	if poll != nil {
 		result.PollTransportSenderID = evt.Info.Sender.String()
+		result.PollEncKey = whatsappPollEncKey(evt.Message)
+		if len(result.PollEncKey) > 0 {
+			w.registerPollSecret(evt.Info.Chat, evt.Info.Sender, evt.Info.ID, result.PollEncKey)
+		}
 	}
 	return result
+}
+
+func whatsappPollEncKey(msg *waE2E.Message) []byte {
+	if msg == nil {
+		return nil
+	}
+	creation := whatsappPollCreation(msg)
+	if creation != nil && len(creation.GetEncKey()) > 0 {
+		return creation.GetEncKey()
+	}
+	if ctxInfo := msg.GetMessageContextInfo(); ctxInfo != nil && len(ctxInfo.GetMessageSecret()) > 0 {
+		return ctxInfo.GetMessageSecret()
+	}
+	if nested := msg.GetPollCreationMessageV4().GetMessage(); nested != nil && nested != msg {
+		if ctxInfo := nested.GetMessageContextInfo(); ctxInfo != nil && len(ctxInfo.GetMessageSecret()) > 0 {
+			return ctxInfo.GetMessageSecret()
+		}
+	}
+	return nil
+}
+
+func (w *WhatsAppProvider) registerPollSecret(chat types.JID, sender types.JID, msgID string, encKey []byte) {
+	if len(encKey) == 0 || msgID == "" || w.deviceStore == nil || w.deviceStore.MsgSecrets == nil {
+		return
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id := types.MessageID(msgID)
+	_ = w.deviceStore.MsgSecrets.PutMessageSecret(ctx, chat, sender, id, encKey)
+	if !sender.IsEmpty() {
+		_ = w.deviceStore.MsgSecrets.PutMessageSecret(ctx, chat, sender.ToNonAD(), id, encKey)
+	}
+	if chat.Server == types.GroupServer {
+		_ = w.deviceStore.MsgSecrets.PutMessageSecret(ctx, chat, types.EmptyJID, id, encKey)
+	}
 }
 
 func whatsappPollCreation(msg *waE2E.Message) *waE2E.PollCreationMessage {
@@ -1541,6 +1583,9 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 				msg.IsEdited = true
 				msg.EditedTimestamp = existing.EditedTimestamp
 			}
+			if len(existing.PollEncKey) > 0 && len(msg.PollEncKey) == 0 {
+				msg.PollEncKey = existing.PollEncKey
+			}
 			msg.ID = existing.ID
 			// Reactions are persisted explicitly below after batch-prefetching their
 			// keys. Letting Save cascade this association would insert them once here
@@ -1629,6 +1674,9 @@ func reconcileDuplicateMessage(existing, incoming *models.Message) {
 	if existing.Poll == nil && incoming.Poll != nil {
 		existing.Poll = incoming.Poll
 		existing.PollTransportSenderID = incoming.PollTransportSenderID
+	}
+	if len(existing.PollEncKey) == 0 && len(incoming.PollEncKey) > 0 {
+		existing.PollEncKey = incoming.PollEncKey
 	}
 }
 
@@ -1723,6 +1771,21 @@ func (w *WhatsAppProvider) handlePollVote(evt *events.Message, emit bool) bool {
 		return true
 	}
 	decrypted, err := w.client.DecryptPollVote(w.ctx, evt)
+	if err != nil {
+		convID := core.BuildConvID(w.getInstanceId(), w.normalizeChatJID(evt.Info.Chat).String())
+		var stored models.Message
+		if db.DB != nil && db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", key.GetID(), convID).First(&stored).Error == nil && len(stored.PollEncKey) > 0 {
+			senderJID, _ := types.ParseJID(key.GetParticipant())
+			if senderJID.IsEmpty() {
+				senderJID, _ = types.ParseJID(stored.SenderID)
+			}
+			w.registerPollSecret(evt.Info.Chat, senderJID, key.GetID(), stored.PollEncKey)
+			if !evt.Info.Sender.IsEmpty() {
+				w.registerPollSecret(evt.Info.Chat, evt.Info.Sender, key.GetID(), stored.PollEncKey)
+			}
+			decrypted, err = w.client.DecryptPollVote(w.ctx, evt)
+		}
+	}
 	if err != nil {
 		w.log("WhatsApp: Failed to decrypt live poll vote for %s: %v\n", key.GetID(), err)
 		return true
@@ -2104,6 +2167,25 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 
 			total := w.storeMessagesForConversation(convID, converted)
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
+			if len(historyPollVotes) > 0 {
+				for _, msg := range converted {
+					if msg.Poll != nil && len(msg.PollEncKey) > 0 {
+						senderJID, _ := types.ParseJID(msg.SenderID)
+						w.registerPollSecret(chatJID, senderJID, msg.ProtocolMsgID, msg.PollEncKey)
+					}
+				}
+				if db.DB != nil {
+					var storedPolls []models.Message
+					if err := db.DB.Where("protocol_conv_id = ? AND poll IS NOT NULL AND poll != ''", core.BuildConvID(w.getInstanceId(), convID)).Find(&storedPolls).Error; err == nil {
+						for _, sp := range storedPolls {
+							if len(sp.PollEncKey) > 0 {
+								senderJID, _ := types.ParseJID(sp.SenderID)
+								w.registerPollSecret(chatJID, senderJID, sp.ProtocolMsgID, sp.PollEncKey)
+							}
+						}
+					}
+				}
+			}
 			for _, vote := range historyPollVotes {
 				w.handlePollVote(vote, false)
 			}
@@ -2610,9 +2692,21 @@ func (w *WhatsAppProvider) maybeRequestLegacyMessageBackfill(convID string, chat
 		w.log("WhatsApp: Cannot request targeted legacy-message history for %s: no usable anchor\n", convID)
 		return
 	}
+	anchorSenderJID, _ := types.ParseJID(anchor.SenderID)
+	if anchorSenderJID.Server == types.DefaultUserServer && w.client.Store != nil && w.client.Store.LIDs != nil {
+		if lid, mapErr := w.client.Store.LIDs.GetLIDForPN(w.ctx, anchorSenderJID); mapErr == nil && !lid.IsEmpty() {
+			anchorSenderJID = lid
+		}
+	}
 	request := w.client.BuildHistorySyncRequest(&types.MessageInfo{
-		MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: anchor.IsFromMe, IsGroup: chatJID.Server == types.GroupServer},
-		ID:            types.MessageID(anchor.ProtocolMsgID), Timestamp: anchor.Timestamp,
+		MessageSource: types.MessageSource{
+			Chat:     chatJID,
+			Sender:   anchorSenderJID,
+			IsFromMe: anchor.IsFromMe,
+			IsGroup:  chatJID.Server == types.GroupServer,
+		},
+		ID:        types.MessageID(anchor.ProtocolMsgID),
+		Timestamp: anchor.Timestamp,
 	}, 50)
 	missingMessages := legacyMessageBackfillBurst(messages, 10)
 	for _, existing := range messages {
@@ -2770,6 +2864,8 @@ func (w *WhatsAppProvider) logLegacyMessageResponse(evt *events.Message) {
 	w.log("WhatsApp: Legacy message response %s canonical poll=%t\n", evt.Info.ID, poll != nil)
 }
 
+
+
 // requestRecentLegacyMessageBackfills makes legacy recovery independent from
 // whether the frontend happens to ask the provider for a conversation's first
 // page. It deliberately uses only canonical persisted fields to identify
@@ -2813,8 +2909,23 @@ func (w *WhatsAppProvider) requestRecentLegacyMessageBackfills() {
 		for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
 			messages[left], messages[right] = messages[right], messages[left]
 		}
+		hasPollWithEmptyFollowers := false
+		for i, m := range messages {
+			if m.Poll != nil {
+				emptyAfterPoll := 0
+				for _, cand := range messages[i+1:] {
+					if isLegacyEmptyMessage(cand) {
+						emptyAfterPoll++
+					}
+				}
+				if emptyAfterPoll >= 2 {
+					hasPollWithEmptyFollowers = true
+					break
+				}
+			}
+		}
 		burst := legacyMessageBackfillBurst(messages, 10)
-		if len(burst) < 3 || legacyBurstSenderCount(burst) < 3 {
+		if !hasPollWithEmptyFollowers && (len(burst) < 3 || legacyBurstSenderCount(burst) < 3) {
 			continue
 		}
 		w.maybeRequestLegacyMessageBackfill(candidate.ProtocolConvID, chatJID, messages)
@@ -2827,12 +2938,24 @@ func (w *WhatsAppProvider) requestRecentLegacyMessageBackfills() {
 
 func legacyMessageBackfillState(messages []models.Message) (int, bool) {
 	emptyCount := 0
-	for _, message := range messages {
+	hasPollWithEmptyFollowers := false
+	for i, message := range messages {
 		if isLegacyEmptyMessage(message) {
 			emptyCount++
 		}
+		if message.Poll != nil {
+			emptyAfterPoll := 0
+			for _, candidate := range messages[i+1:] {
+				if isLegacyEmptyMessage(candidate) {
+					emptyAfterPoll++
+				}
+			}
+			if emptyAfterPoll >= 2 {
+				hasPollWithEmptyFollowers = true
+			}
+		}
 	}
-	return emptyCount, len(legacyMessageBackfillBurst(messages, 3)) >= 3
+	return emptyCount, hasPollWithEmptyFollowers || len(legacyMessageBackfillBurst(messages, 3)) >= 3
 }
 
 func legacyMessageBackfillBurst(messages []models.Message, limit int) []models.Message {

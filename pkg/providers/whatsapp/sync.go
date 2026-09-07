@@ -172,6 +172,7 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 	type historyAnchor struct {
 		ProtocolConvID string
 		ProtocolMsgID  string
+		SenderID       string
 		Timestamp      time.Time
 		IsFromMe       bool
 	}
@@ -179,9 +180,9 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 	prefix := w.getInstanceId() + "::%"
 	cutoff := time.Now().Add(-30 * 24 * time.Hour)
 	err := db.DB.Raw(`
-		SELECT protocol_conv_id, protocol_msg_id, timestamp, is_from_me
+		SELECT protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me
 		FROM (
-			SELECT protocol_conv_id, protocol_msg_id, timestamp, is_from_me,
+			SELECT protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me,
 				ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num
 			FROM messages
 			WHERE protocol_conv_id LIKE ? AND protocol_conv_id != ?
@@ -203,10 +204,21 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 			failed++
 			continue
 		}
+		senderJID, _ := types.ParseJID(anchor.SenderID)
+		if senderJID.Server == types.DefaultUserServer && client.Store != nil && client.Store.LIDs != nil {
+			if lid, mapErr := client.Store.LIDs.GetLIDForPN(w.ctx, senderJID); mapErr == nil && !lid.IsEmpty() {
+				senderJID = lid
+			}
+		}
 		request := client.BuildHistorySyncRequest(&types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: anchor.IsFromMe},
-			ID:            types.MessageID(anchor.ProtocolMsgID),
-			Timestamp:     anchor.Timestamp,
+			MessageSource: types.MessageSource{
+				Chat:     chatJID,
+				Sender:   senderJID,
+				IsFromMe: anchor.IsFromMe,
+				IsGroup:  chatJID.Server == types.GroupServer,
+			},
+			ID:        types.MessageID(anchor.ProtocolMsgID),
+			Timestamp: anchor.Timestamp,
 		}, 50)
 		if _, sendErr := client.SendPeerMessage(w.ctx, request); sendErr != nil {
 			failed++
@@ -253,6 +265,9 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 			w.log("WhatsApp: Requested %d missing quoted message(s)\n", quotedRequested)
 		}
 	}
+
+
+
 	if requested == 0 && failed > 0 {
 		return fmt.Errorf("all %d history audit requests failed", failed)
 	}

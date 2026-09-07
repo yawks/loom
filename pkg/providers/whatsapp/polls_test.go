@@ -156,3 +156,50 @@ func TestLegacyHistoryAnchorSkipsEmptyPollVoteRows(t *testing.T) {
 		t.Fatalf("unexpected history anchor: ok=%v message=%+v", ok, anchor)
 	}
 }
+
+func TestWhatsAppPollEncKeyExtraction(t *testing.T) {
+	key := []byte("secret-key-32-bytes-long-1234567")
+	creation := &waE2E.PollCreationMessage{
+		Name:                   proto.String("Lunch?"),
+		Options:                []*waE2E.PollCreationMessage_Option{{OptionName: proto.String("Pizza")}},
+		SelectableOptionsCount: proto.Uint32(1),
+		EncKey:                 key,
+	}
+	msg := &waE2E.Message{PollCreationMessage: creation}
+	if encKey := whatsappPollEncKey(msg); string(encKey) != string(key) {
+		t.Fatalf("failed to extract encKey directly: %v", encKey)
+	}
+
+	futureProof := &waE2E.Message{PollCreationMessageV4: &waE2E.FutureProofMessage{Message: &waE2E.Message{PollCreationMessageV3: creation}}}
+	if encKey := whatsappPollEncKey(futureProof); string(encKey) != string(key) {
+		t.Fatalf("failed to extract encKey from future proof message: %v", encKey)
+	}
+
+	contextMsg := &waE2E.Message{
+		MessageContextInfo: &waE2E.MessageContextInfo{MessageSecret: key},
+	}
+	if encKey := whatsappPollEncKey(contextMsg); string(encKey) != string(key) {
+		t.Fatalf("failed to extract encKey from context info: %v", encKey)
+	}
+}
+
+func TestReconcileRetainsPollEncKey(t *testing.T) {
+	key := []byte("secret-key-bytes")
+	existing := &models.Message{ProtocolMsgID: "poll-1"}
+	incoming := &models.Message{
+		ProtocolMsgID: "poll-1",
+		Poll:          &models.Poll{Question: "Question"},
+		PollEncKey:    key,
+	}
+	reconcileDuplicateMessage(existing, incoming)
+	if string(existing.PollEncKey) != string(key) {
+		t.Fatalf("PollEncKey was not copied to existing message: %v", existing.PollEncKey)
+	}
+
+	incomingNoKey := &models.Message{ProtocolMsgID: "poll-1", Body: "Updated"}
+	reconcileDuplicateMessage(existing, incomingNoKey)
+	if string(existing.PollEncKey) != string(key) {
+		t.Fatalf("PollEncKey was overwritten: %v", existing.PollEncKey)
+	}
+}
+

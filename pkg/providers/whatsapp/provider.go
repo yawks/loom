@@ -62,7 +62,7 @@ func refreshWAVersion(ctx context.Context) error {
 type WhatsAppProvider struct {
 	client               *whatsmeow.Client
 	container            *sqlstore.Container
-	deviceStore          interface{} // Store the device store for later use (type is *store.Device)
+	deviceStore          *store.Device // Store the device store for later use
 	eventChan            chan core.ProviderEvent
 	stopChan             chan struct{}
 	config               core.ProviderConfig

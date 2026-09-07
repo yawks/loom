@@ -286,6 +286,7 @@ type Message struct {
 	CallLinkAction        string              `json:"callLinkAction,omitempty"`                          // Generic link action: "join" (default) or "open"
 	Poll                  *Poll               `gorm:"serializer:json" json:"poll,omitempty"`             // Canonical interactive poll data
 	PollTransportSenderID string              `json:"-"`                                                 // Opaque sender identity needed by encrypted poll transports
+	PollEncKey            []byte              `json:"-"`                                                 // Wire encryption key retained for historical poll vote decryption
 	PollVoteState         map[string][]string `gorm:"serializer:json" json:"-"`                          // Internal voter state for providers that hide participant details
 	DeletedAt             gorm.DeletedAt      `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
 }
