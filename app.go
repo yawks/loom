@@ -2463,6 +2463,14 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 
 	// Enrich messages with sender names from LinkedAccount
 	a.enrichMessagesWithSenderNames(messages)
+	if refresher, ok := a.getProviderForConversation(conversationID).(core.HistoricalMessageMetadataProvider); ok && len(messages) > 0 {
+		page := append([]models.Message(nil), messages...)
+		go func() {
+			if err := refresher.RefreshHistoricalMessageMetadata(conversationID, page); err != nil {
+				log.Printf("[App] Failed to refresh historical message metadata for %s: %v", conversationID, err)
+			}
+		}()
+	}
 
 	// Trigger avatar/metadata refresh for the conversation's provider when opening a conversation
 	if provider := a.getProviderForConversation(conversationID); provider != nil {

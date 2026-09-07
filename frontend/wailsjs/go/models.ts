@@ -646,6 +646,24 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class MessageMention {
+	    userId: string;
+	    displayName: string;
+	    start: number;
+	    length: number;
+
+	    static createFrom(source: any = {}) {
+	        return new MessageMention(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.userId = source["userId"];
+	        this.displayName = source["displayName"];
+	        this.start = source["start"];
+	        this.length = source["length"];
+	    }
+	}
 	export class Message {
 	    id: number;
 	    conversationId: number;
@@ -655,6 +673,7 @@ export namespace models {
 	    senderName?: string;
 	    senderAvatarUrl?: string;
 	    body: string;
+	    mentions?: MessageMention[];
 	    timestamp: time.Time;
 	    isFromMe: boolean;
 	    threadId?: string;
@@ -698,6 +717,7 @@ export namespace models {
 	        this.senderName = source["senderName"];
 	        this.senderAvatarUrl = source["senderAvatarUrl"];
 	        this.body = source["body"];
+	        this.mentions = this.convertValues(source["mentions"], MessageMention);
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
 	        this.isFromMe = source["isFromMe"];
 	        this.threadId = source["threadId"];
@@ -1046,6 +1066,7 @@ export namespace models {
 		    return a;
 		}
 	}
+
 	export class MessagePin {
 	    id: number;
 	    providerInstanceId: string;
@@ -1470,4 +1491,3 @@ export namespace time {
 	}
 
 }
-

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { GetCustomEmojis } from "../../wailsjs/go/main/App";
 import { cleanEmoji } from "@/lib/userDisplayNames";
 import { emojiNameToUnicode } from "../lib/emojiMap";
+import { useAppStore } from "@/lib/store";
 
 interface EmojiProps {
   emoji: string; // Emoji string (e.g., ":calendar:", "📅", or "calendar")
@@ -26,6 +27,11 @@ export function Emoji({
   const [emojiUrl, setEmojiUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const supportsCustomEmojis = useAppStore((state) =>
+    providerInstanceId
+      ? state.capabilities[providerInstanceId]?.supportsCustomEmojis
+      : false,
+  );
 
   const cleanedEmoji = cleanEmoji(emoji);
   const emojiName = cleanedEmoji.replace(/^:|:$/g, "");
@@ -41,6 +47,10 @@ export function Emoji({
       setLoading(false);
       return;
     }
+
+    setEmojiUrl(null);
+    setError(false);
+    setLoading(true);
 
     // Skip skin-tone modifiers
     if (/^skin-tone-[2-6]$/.test(emojiName)) {
@@ -61,6 +71,19 @@ export function Emoji({
 
     // Not in Unicode map, might be a custom provider emoji
     if (!providerInstanceId) {
+      setLoading(false);
+      setError(true);
+      return;
+    }
+
+    // Capabilities are the provider-neutral contract for optional features.
+    // Wait while they are being loaded, then avoid calling an operation that
+    // the active provider explicitly does not support.
+    if (supportsCustomEmojis === undefined) {
+      return;
+    }
+    if (!supportsCustomEmojis) {
+      setEmojiUrl(null);
       setLoading(false);
       setError(true);
       return;
@@ -97,7 +120,7 @@ export function Emoji({
         setError(true);
         setLoading(false);
       });
-  }, [emojiName, isUnicodeEmoji, mappedUnicodeEmoji, providerInstanceId]);
+  }, [emojiName, isUnicodeEmoji, mappedUnicodeEmoji, providerInstanceId, supportsCustomEmojis]);
 
   if (isUnicodeEmoji) {
     return (

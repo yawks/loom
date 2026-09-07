@@ -146,7 +146,7 @@ function ThreadParentMessage({
           </button>
         )}
         <div className={cn("rounded-lg p-2 text-left max-w-[80%]", message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground")}>
-          <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
+          <MessageText text={message.body} mentions={message.mentions} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
           {message.attachments && message.attachments.trim() !== "" && (
             <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="bubble" />
           )}
@@ -181,7 +181,7 @@ function ThreadParentMessage({
       </div>
       <div className="flex flex-col items-start ml-5 flex-1 min-w-0 text-left">
         <span className="font-semibold text-sm h-6 flex items-center mt-2.5" style={{ color: senderColor }}>{displayName}</span>
-        <MessageText text={message.body} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
+        <MessageText text={message.body} mentions={message.mentions} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
         {message.attachments && message.attachments.trim() !== "" && (
           <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="irc" />
         )}
@@ -953,6 +953,7 @@ export function ThreadView() {
                           )}
                           <MessageText
                             text={message.body}
+                            mentions={message.mentions}
                             providerInstanceId={providerInstanceId}
                             emojiSize={14}
                             isFromMe={message.isFromMe}
@@ -1131,6 +1132,7 @@ export function ThreadView() {
                             )}
                             <MessageText
                               text={message.body}
+                              mentions={message.mentions}
                               providerInstanceId={providerInstanceId}
                               emojiSize={14}
                               isFromMe={message.isFromMe}
@@ -1150,6 +1152,7 @@ export function ThreadView() {
                         <div className="text-left">
                           <MessageText
                             text={message.body}
+                            mentions={message.mentions}
                             providerInstanceId={providerInstanceId}
                             emojiSize={14}
                             isFromMe={message.isFromMe}

@@ -1,4 +1,5 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { OpenConversation } from "../../wailsjs/go/main/App";
 import React, { type CSSProperties, type ReactElement, type ReactNode, useMemo, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
@@ -13,6 +14,7 @@ import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import type { PluggableList } from "unified";
+import type { models } from "../../wailsjs/go/models";
 
 interface SerializedInlineQuote {
   sender: string;
@@ -113,6 +115,58 @@ function parseSerializedInlineQuote(text: string): SerializedInlineQuote | null 
 function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean, providerInstanceId?: string, emojiSize = 16): Components {
   return {
     a: ({ href, children, ...props }) => {
+      if (href?.startsWith("loom://mention")) {
+        return (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const userId = new URL(href).searchParams.get("userId");
+              if (!userId || !providerInstanceId) return;
+
+              const { metaContacts, setSelectedContact, setSelectedProviderFilter } = useAppStore.getState();
+              const contact = metaContacts.find((candidate) =>
+                candidate.linkedAccounts.some((account) =>
+                  account.providerInstanceId === providerInstanceId &&
+                  (account.userId === userId || account.conversationId === userId)
+                )
+              );
+              if (contact) {
+                const account = contact.linkedAccounts.find((candidate) =>
+                  candidate.providerInstanceId === providerInstanceId &&
+                  (candidate.userId === userId || candidate.conversationId === userId)
+                );
+                setSelectedProviderFilter(providerInstanceId);
+                setSelectedContact(account && contact.linkedAccounts[0] !== account
+                  ? { ...contact, linkedAccounts: [account, ...contact.linkedAccounts.filter((candidate) => candidate !== account)] } as models.MetaContact
+                  : contact);
+                return;
+              }
+
+              void OpenConversation({
+                providerInstanceId,
+                participantIds: [userId],
+                conversationType: "direct",
+                title: "",
+              }).then((resolution) => {
+                const resolved = resolution.created ?? resolution.matches?.[0];
+                if (!resolved) return;
+                setSelectedProviderFilter(providerInstanceId);
+                setSelectedContact(resolved);
+              }).catch((error) => console.error("Failed to open mentioned participant conversation:", error));
+            }}
+            className={cn(
+              "inline-flex cursor-pointer whitespace-nowrap rounded-md border px-1.5 py-0.5 font-medium leading-none transition-colors",
+              isFromMe
+                ? "border-white/35 bg-white/15 text-inherit hover:bg-white/25"
+                : "border-primary/25 bg-primary/10 text-primary hover:bg-primary/20"
+            )}
+          >
+            {children}
+          </button>
+        );
+      }
       if (preview) return <span {...props}>{children}</span>;
       return (
         <a
@@ -222,6 +276,24 @@ interface MessageTextProps {
   preview?: boolean; // If true, render as preview (no blue links, single line)
   isFromMe?: boolean; // If true, message is from current user
   highlightQuery?: string; // Literal text to emphasize in search previews
+  mentions?: models.MessageMention[];
+}
+
+function mergeMentionFragments(text: string, mentions: models.MessageMention[]): models.MessageMention[] {
+  const ordered = [...mentions].sort((left, right) => left.start - right.start);
+  return ordered.reduce<models.MessageMention[]>((merged, mention) => {
+    const previous = merged.at(-1);
+    if (!previous) return [{ ...mention }];
+    const previousEnd = previous.start + previous.length;
+    const gap = text.slice(previousEnd, mention.start);
+    if (previous.userId === mention.userId && mention.start >= previousEnd && /^\s*$/.test(gap)) {
+      previous.length = mention.start + mention.length - previous.start;
+      previous.displayName = `${previous.displayName} ${mention.displayName}`.trim();
+      return merged;
+    }
+    merged.push({ ...mention });
+    return merged;
+  }, []);
 }
 
 /**
@@ -236,6 +308,7 @@ export const MessageText = memo(function MessageText({
   preview = false,
   isFromMe = false,
   highlightQuery = "",
+  mentions = [],
 }: MessageTextProps) {
   useRenderCount("MessageText", { textLength: text?.length, preview });
   const serializedInlineQuote = useMemo(() => parseSerializedInlineQuote(text), [text]);
@@ -247,7 +320,20 @@ export const MessageText = memo(function MessageText({
     // Preserve Loom's explicit underline extension while stripping provider
     // HTML. Standard Markdown intentionally has no underline syntax.
     const richTags: string[] = [];
-    const richProtected = text.replace(/<\/?loom-style\b[^>]*>/gi, (tag) => {
+    let canonicalText = text;
+    if (!preview && mentions.length > 0) {
+      const ordered = mergeMentionFragments(text, mentions).sort((left, right) => right.start - left.start);
+      for (const mention of ordered) {
+        const end = mention.start + mention.length;
+        if (mention.start < 0 || mention.length <= 0 || end > canonicalText.length) continue;
+        const visible = canonicalText.slice(mention.start, end);
+        const markdownLabel = visible.replace(/([\\\[\]])/g, "\\$1");
+        canonicalText = canonicalText.slice(0, mention.start)
+          + `[${markdownLabel}](loom://mention?userId=${encodeURIComponent(mention.userId)})`
+          + canonicalText.slice(end);
+      }
+    }
+    const richProtected = canonicalText.replace(/<\/?loom-style\b[^>]*>/gi, (tag) => {
       const index = richTags.push(tag) - 1;
       return `LOOM_RICH_TAG_${index}_`;
     });
@@ -361,7 +447,7 @@ export const MessageText = memo(function MessageText({
     }
 
     return parts.length === 0 ? textWithoutSkinTones : parts;
-  }, [text, providerInstanceId, emojiSize, preview]);
+  }, [text, providerInstanceId, emojiSize, preview, mentions]);
 
   const blockComponents = useMemo(
     () => buildComponents(isFromMe, preview, false, providerInstanceId, emojiSize),

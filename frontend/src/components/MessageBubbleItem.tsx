@@ -317,7 +317,7 @@ export function MessageBubbleItem({
                     )}
 					{displayedBody?.trim() && !hasStructuredCard && !message.poll && (
                       <>
-                        <MessageText text={displayedBody} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
+                        <MessageText text={displayedBody} mentions={displayedBody === message.body ? message.mentions : undefined} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
 						{previewUrl && !hasStructuredCard && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                       </>
                     )}

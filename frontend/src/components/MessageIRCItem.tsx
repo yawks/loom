@@ -300,13 +300,13 @@ export function MessageIRCItem({
                         )}
 						{!showSender && displayedBody && !hasStructuredAdaptiveCard(message.attachments) && !message.poll && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
-                            <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
+                            <MessageText text={displayedBody} mentions={displayedBody === message.body ? message.mentions : undefined} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
 						{showSender && displayedBody?.trim() && !hasStructuredAdaptiveCard(message.attachments) && !message.poll && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
-                            <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
+                            <MessageText text={displayedBody} mentions={displayedBody === message.body ? message.mentions : undefined} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}

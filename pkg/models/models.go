@@ -247,6 +247,15 @@ type PollVoter struct {
 	DisplayName string `json:"displayName,omitempty"`
 }
 
+// MessageMention is a provider-neutral participant reference inside Body.
+// Start and Length use UTF-16 code units to match browser string offsets.
+type MessageMention struct {
+	UserID      string `json:"userId"`
+	DisplayName string `json:"displayName"`
+	Start       int    `json:"start"`
+	Length      int    `json:"length"`
+}
+
 // Message contains the content of a message.
 type Message struct {
 	ID                    uint                `gorm:"primarykey" json:"id"`
@@ -257,6 +266,7 @@ type Message struct {
 	SenderName            string              `json:"senderName,omitempty"`                                                                                                                                                             // Human-readable sender name
 	SenderAvatarURL       string              `json:"senderAvatarUrl,omitempty"`                                                                                                                                                        // Sender's avatar URL
 	Body                  string              `json:"body"`
+	Mentions              []MessageMention    `gorm:"serializer:json" json:"mentions,omitempty"`
 	Timestamp             time.Time           `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe              bool                `json:"isFromMe"`
 	ThreadID              *string             `gorm:"index" json:"threadId,omitempty"`                   // Nullable, for replies

@@ -55,6 +55,38 @@ func TestToModelMessage(t *testing.T) {
 	}
 }
 
+func TestToModelMessagePreservesCanonicalMentions(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "test-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := NewProvider()
+	message := provider.toModelMessage(client, msteams.Message{
+		ID: "message-mention", ThreadID: "thread-1", From: "8:orgid:sender",
+		ContentType: "html",
+		Content: `<p>Re <span itemtype="http://schema.skype.com/Mention" itemid="0">@Franck</span> ` +
+			`<span itemtype="http://schema.skype.com/Mention" itemid="0">Prugnot</span> et ` +
+			`<span itemtype="http://schema.skype.com/Mention" itemid="1">@Mathieu</span> ` +
+			`<span itemtype="http://schema.skype.com/Mention" itemid="1">Changeat</span> : bonjour</p>`,
+		Mentions: []msteams.Mention{{UserID: "8:orgid:franck"}, {UserID: "8:orgid:mathieu"}},
+	}, "teams-1::thread-1")
+	if message.Body != "Re Franck Prugnot et Mathieu Changeat : bonjour" {
+		t.Fatalf("body = %q", message.Body)
+	}
+	if len(message.Mentions) != 2 {
+		t.Fatalf("mentions = %#v", message.Mentions)
+	}
+	if got := message.Body[message.Mentions[0].Start : message.Mentions[0].Start+message.Mentions[0].Length]; got != "Franck Prugnot" {
+		t.Fatalf("first mention range = %q", got)
+	}
+	if got := message.Body[message.Mentions[1].Start : message.Mentions[1].Start+message.Mentions[1].Length]; got != "Mathieu Changeat" {
+		t.Fatalf("second mention range = %q", got)
+	}
+}
+
 func TestSplitTeamsRecoveredMessagesUsesConsumptionHorizon(t *testing.T) {
 	messages := []models.Message{
 		{ProtocolMsgID: "1700000000000"},

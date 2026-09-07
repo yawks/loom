@@ -410,6 +410,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         protocolMsgId: tempId,
         protocolConvId: conversationId,
         body: text,
+        mentions,
         timestamp: now.toISOString(),
         isFromMe: true,
         isPending: true,

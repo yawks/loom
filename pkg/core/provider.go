@@ -313,6 +313,13 @@ type MentionMessageProvider interface {
 	SendMessageWithMentions(conversationID, text string, mentions []Mention, threadID, quotedMessageID *string) (*models.Message, error)
 }
 
+// HistoricalMessageMetadataProvider can rehydrate canonical metadata that was
+// not persisted by older Loom versions. Implementations must bound network
+// work and emit historical update events for refreshed messages.
+type HistoricalMessageMetadataProvider interface {
+	RefreshHistoricalMessageMetadata(conversationID string, messages []models.Message) error
+}
+
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
 	SupportsThreads               bool   `json:"supportsThreads"`

@@ -56,6 +56,8 @@ type Provider struct {
 	sharedFiles    map[string]msteams.SharedFile
 	attachmentURLs map[string]struct{}
 	avatarFailures map[string]struct{}
+	metadataMu     sync.Mutex
+	metadataPages  map[string]struct{}
 }
 
 var _ core.Provider = (*Provider)(nil)
@@ -67,6 +69,7 @@ func NewProvider() *Provider {
 		sharedFiles:    make(map[string]msteams.SharedFile),
 		attachmentURLs: make(map[string]struct{}),
 		avatarFailures: make(map[string]struct{}),
+		metadataPages:  make(map[string]struct{}),
 	}
 }
 
@@ -903,6 +906,12 @@ func (p *Provider) sendMessageWithMentions(conversationID, text string, file *co
 		SenderID: client.UserMRI(), SenderName: p.displayName(),
 		Body: text, Timestamp: now, IsFromMe: true,
 	}
+	for _, mention := range mentions {
+		message.Mentions = append(message.Mentions, models.MessageMention{
+			UserID: mention.UserID, DisplayName: mention.DisplayName,
+			Start: mention.Start, Length: mention.Length,
+		})
+	}
 	if modelAttachment != nil {
 		if raw, err := json.Marshal([]models.Attachment{*modelAttachment}); err == nil {
 			message.Attachments = string(raw)
@@ -1401,6 +1410,10 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		return p.toCallModelMessage(client, remote, conversationID)
 	}
 	body := remote.Content
+	mentionContent, canonicalMentions := extractCanonicalTeamsMentions(remote.Content, remote.Mentions)
+	if len(canonicalMentions) > 0 {
+		body = mentionContent
+	}
 	embeddedAttachments := msteams.ExtractAMSAttachments(remote.Content)
 	if remote.ContentType == "html" ||
 		strings.Contains(strings.ToLower(remote.MessageType), "richtext") ||
@@ -1408,9 +1421,10 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		if remote.ParentID == "" {
 			remote.ParentID = msteams.ExtractReplyParent(remote.Content)
 		}
-		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(remote.Content))
+		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body))
 		body = teamsHTMLToMarkdown(cleanContent)
 	}
+	body, canonicalMentions = materializeCanonicalTeamsMentions(body, canonicalMentions)
 	cardBody := teamsCardsToMarkdown(remote.Properties)
 	if swiftBody := teamsSwiftCardsToMarkdown(remote.Content); swiftBody != "" {
 		if cardBody == "" {
@@ -1441,6 +1455,7 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		SenderID: remote.From, SenderName: senderName,
 		SenderAvatarURL: p.cachedAvatar(client, remote.From),
 		Body:            body, Timestamp: timestamp, IsFromMe: remote.From == client.UserMRI(),
+		Mentions: canonicalMentions,
 	}
 	if !message.IsFromMe {
 		for _, mention := range remote.Mentions {
