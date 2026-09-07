@@ -111,6 +111,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		default:
 		}
 	case *events.Message:
+		w.logLegacyMessageResponse(v)
 		// Convert WhatsApp message to our Message model
 		verboseLogf("WhatsApp: Received message event from %s in chat %s\n", v.Info.Sender.String(), v.Info.Chat.String())
 
@@ -178,6 +179,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: [MESSAGE] WARNING - Both Chat and Sender are LIDs! Cannot create mapping.\n")
 		}
 
+		if w.handlePollVote(v, true) {
+			break
+		}
+
 		// Check if this is a reaction message
 		if v.Message != nil && v.Message.GetReactionMessage() != nil {
 			reactionMsg := v.Message.GetReactionMessage()
@@ -232,6 +237,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if msg == nil {
 			fmt.Printf("WhatsApp: WARNING - convertMessage returned nil for message %s\n", msgID)
 			break
+		}
+		if msg.Poll != nil && v.SourceWebMsg != nil {
+			w.applyPollSnapshot(msg, v.SourceWebMsg)
 		}
 		msgID = msg.ProtocolMsgID
 
@@ -322,17 +330,36 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 			w.mu.Unlock()
 			if db.DB != nil {
+				var encodedPoll interface{}
+				var encodedPollVoteState interface{}
+				if existingMsg.Poll != nil {
+					if pollJSON, marshalErr := json.Marshal(existingMsg.Poll); marshalErr == nil {
+						encodedPoll = string(pollJSON)
+					} else {
+						fmt.Printf("WhatsApp: Failed to encode reconciled poll %s: %v\n", msgID, marshalErr)
+					}
+				}
+				if existingMsg.PollVoteState != nil {
+					if stateJSON, marshalErr := json.Marshal(existingMsg.PollVoteState); marshalErr == nil {
+						encodedPollVoteState = string(stateJSON)
+					} else {
+						fmt.Printf("WhatsApp: Failed to encode reconciled poll state %s: %v\n", msgID, marshalErr)
+					}
+				}
 				if err := db.DB.Model(&models.Message{}).
 					Where("protocol_msg_id = ?", msgID).
 					Updates(map[string]interface{}{
-						"body":        existingMsg.Body,
-						"attachments": existingMsg.Attachments,
+						"body":                     existingMsg.Body,
+						"attachments":              existingMsg.Attachments,
+						"poll":                     encodedPoll,
+						"poll_transport_sender_id": existingMsg.PollTransportSenderID,
+						"poll_vote_state":          encodedPollVoteState,
 					}).Error; err != nil {
 					fmt.Printf("WhatsApp: Failed to reconcile duplicate message %s: %v\n", msgID, err)
 				}
 			}
 			select {
-			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *existingMsg}:
+			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *existingMsg, IsUpdate: true}:
 			default:
 			}
 			break
@@ -653,6 +680,12 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// Build LID mappings from existing conversations
 			// This allows typing indicators to work immediately on existing chats
 			go w.buildLIDMappingsFromConversations()
+
+			// Older Loom versions persisted unsupported payloads as empty rows. Now
+			// that the linked device is connected, proactively ask WhatsApp for the
+			// affected recent history so the current converter can enrich those
+			// rows (notably poll creations and votes).
+			go w.requestRecentLegacyMessageBackfills()
 
 			// Note: Device name is set during initial pairing via QR code
 			// To change the name to "loom", you need to unpair and re-pair the device

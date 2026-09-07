@@ -409,3 +409,7 @@ export function UpdateMessageWatchRule(arg1, arg2, arg3) {
 export function UpdateSystemTrayBadge(arg1) {
   return window['go']['main']['App']['UpdateSystemTrayBadge'](arg1);
 }
+
+export function VotePoll(arg1, arg2, arg3) {
+  return window['go']['main']['App']['VotePoll'](arg1, arg2, arg3);
+}

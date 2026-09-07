@@ -10,6 +10,7 @@ import (
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
+	"gorm.io/gorm"
 )
 
 func (w *WhatsAppProvider) loadLastSyncTimestamp() {
@@ -161,6 +162,13 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 		return fmt.Errorf("client is not connected")
 	}
 
+	// Peer history requests are device-to-device control messages. Asking for
+	// history of the account's chat with itself can make WhatsApp echo those
+	// control envelopes back as empty, freshly timestamped messages. Repair rows
+	// created by older versions and never audit that synthetic conversation.
+	selfConversationID := core.BuildConvID(w.getInstanceId(), client.Store.ID.ToNonAD().String())
+	w.cleanupEmptySelfHistoryMessages(selfConversationID)
+
 	type historyAnchor struct {
 		ProtocolConvID string
 		ProtocolMsgID  string
@@ -176,10 +184,11 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 			SELECT protocol_conv_id, protocol_msg_id, timestamp, is_from_me,
 				ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num
 			FROM messages
-			WHERE protocol_conv_id LIKE ? AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'
+			WHERE protocol_conv_id LIKE ? AND protocol_conv_id != ?
+				AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'
 		)
 		WHERE row_num = 1
-		ORDER BY timestamp DESC`, prefix, cutoff).Scan(&anchors).Error
+		ORDER BY timestamp DESC`, prefix, selfConversationID, cutoff).Scan(&anchors).Error
 	if err != nil {
 		return fmt.Errorf("load history anchors: %w", err)
 	}
@@ -211,6 +220,62 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 		return fmt.Errorf("all %d history audit requests failed", failed)
 	}
 	return nil
+}
+
+func isEmptyWhatsAppSelfHistoryArtifact(message models.Message, selfConversationID string) bool {
+	return selfConversationID != "" &&
+		message.ProtocolConvID == selfConversationID &&
+		message.IsFromMe &&
+		message.Body == "" &&
+		message.Attachments == "" &&
+		message.CallType == "" &&
+		message.Poll == nil &&
+		!message.IsDeleted
+}
+
+func (w *WhatsAppProvider) cleanupEmptySelfHistoryMessages(selfConversationID string) {
+	if db.DB == nil || selfConversationID == "" {
+		return
+	}
+
+	var candidates []models.Message
+	if err := db.DB.Where("protocol_conv_id = ? AND is_from_me = ? AND body = '' AND attachments = '' AND call_type = '' AND (poll IS NULL OR poll = '') AND is_deleted = ?",
+		selfConversationID, true, false).Find(&candidates).Error; err != nil {
+		w.log("WhatsApp: Failed to inspect empty self-chat history rows: %v\n", err)
+		return
+	}
+	artifacts := make([]models.Message, 0, len(candidates))
+	ids := make([]uint, 0, len(candidates))
+	for _, message := range candidates {
+		if isEmptyWhatsAppSelfHistoryArtifact(message, selfConversationID) {
+			artifacts = append(artifacts, message)
+			ids = append(ids, message.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	// Clear any renderer-owned unread flags before removing the invisible rows.
+	select {
+	case w.eventChan <- core.MessageBatchEvent{
+		InstanceID:     w.getInstanceId(),
+		ConversationID: selfConversationID,
+		Messages:       artifacts,
+		IsHistorical:   true,
+		ForceRead:      true,
+	}:
+	case <-w.ctx.Done():
+		return
+	}
+
+	if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		return tx.Unscoped().Where("id IN ?", ids).Delete(&models.Message{}).Error
+	}); err != nil {
+		w.log("WhatsApp: Failed to remove empty self-chat history rows: %v\n", err)
+		return
+	}
+	w.log("WhatsApp: Removed %d empty self-chat history artifacts from %s\n", len(ids), selfConversationID)
 }
 
 // lookbackSync re-emits the most recent message per conversation for those that had

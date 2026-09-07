@@ -15,6 +15,7 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
+import { PollMessage } from "./PollMessage";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 import { models } from "../../wailsjs/go/models";
@@ -113,6 +114,7 @@ export function MessageBubbleItem({
 }: MessageBubbleItemProps) {
   const { t } = useTranslation();
   const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
+  const capabilities = useAppStore((state) => state.capabilities);
   // Older cache rows can contain Loom's serialized quote representation instead
   // of canonical reply fields. Normalize at the final render boundary.
   message = normalizeSerializedQuotedReply(message);
@@ -157,7 +159,7 @@ export function MessageBubbleItem({
     unreadThreadIds.has(message.protocolMsgId) ||
     threadMessages.some((msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false)
   );
-  const previewUrl = (!isDeleted && displayedBody) ? extractFirstUrl(displayedBody) : null;
+  const previewUrl = (!isDeleted && displayedBody && !message.poll) ? extractFirstUrl(displayedBody) : null;
 
   const baseBubbleColorClass = message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground";
   const deletedPlaceholderClass = message.isFromMe ? "bg-blue-950/80 text-blue-100" : "bg-muted/70 text-muted-foreground";
@@ -313,18 +315,28 @@ export function MessageBubbleItem({
                         </div>
                       </div>
                     )}
-					{displayedBody?.trim() && !hasStructuredCard && (
+					{displayedBody?.trim() && !hasStructuredCard && !message.poll && (
                       <>
                         <MessageText text={displayedBody} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
 						{previewUrl && !hasStructuredCard && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
                       </>
                     )}
+					{message.poll && (
+					  <PollMessage
+					    poll={message.poll}
+					    conversationId={conversationId}
+					    messageId={message.protocolMsgId}
+					    canVote={Boolean(providerInstanceId && capabilities[providerInstanceId]?.supportsPollVoting)}
+					    isFromMe={message.isFromMe}
+					    showToast={handlers.showToast}
+					  />
+					)}
                   </>
                 )}
                 {message.attachments?.trim() && (
                   <MessageAttachments attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments} isFromMe={message.isFromMe} layout="bubble" conversationID={conversationId} messageID={String(message.id)} showToast={handlers.showToast} galleryMessages={photoGroupMessages} messageHandlers={handlers} providerInstanceId={providerInstanceId} protocol={protocol} currentUserId={currentUserId} participantNames={participantNames} allMessages={mainMessages} isGroupConversation={isGroupConversation} />
                 )}
-                {!displayedBody?.trim() && !message.attachments?.trim() && (
+                {!displayedBody?.trim() && !message.attachments?.trim() && !message.poll && (
                   <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
                 )}
                 <div className="flex flex-col mt-1">

@@ -130,53 +130,59 @@ func (p *Provider) persistCanonicalMessages(rawConversationID, name string, isGr
 	var meta models.MetaContact
 	var account models.LinkedAccount
 	var conversation models.Conversation
-	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("provider_instance_id = ? AND user_id = ?", instanceID, rawConversationID).First(&account)
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		// Keep attempt-local values inside the retried closure. GORM populates IDs
+		// on Create even if a later statement makes the transaction roll back;
+		// reusing those structs would make the retry query or insert stale IDs.
+		var attemptMeta models.MetaContact
+		var attemptAccount models.LinkedAccount
+		var attemptConversation models.Conversation
+		result := tx.Where("provider_instance_id = ? AND user_id = ?", instanceID, rawConversationID).First(&attemptAccount)
 		if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 			return result.Error
 		}
 		if result.Error == gorm.ErrRecordNotFound {
-			meta = models.MetaContact{DisplayName: name}
-			if err := tx.Create(&meta).Error; err != nil {
+			attemptMeta = models.MetaContact{DisplayName: name}
+			if err := tx.Create(&attemptMeta).Error; err != nil {
 				return err
 			}
-			account = models.LinkedAccount{
-				MetaContactID: meta.ID, Protocol: "signal", ProviderInstanceID: instanceID,
+			attemptAccount = models.LinkedAccount{
+				MetaContactID: attemptMeta.ID, Protocol: "signal", ProviderInstanceID: instanceID,
 				UserID: rawConversationID, Username: name, IsGroup: isGroup, Status: "offline",
 			}
-			if err := tx.Create(&account).Error; err != nil {
+			if err := tx.Create(&attemptAccount).Error; err != nil {
 				return err
 			}
 		} else {
-			account.Protocol = "signal"
-			account.IsGroup = isGroup
-			if account.Username == "" || account.Username == account.UserID {
-				account.Username = name
+			attemptAccount.Protocol = "signal"
+			attemptAccount.IsGroup = isGroup
+			if attemptAccount.Username == "" || attemptAccount.Username == attemptAccount.UserID {
+				attemptAccount.Username = name
 			}
-			if err := tx.Save(&account).Error; err != nil {
+			if err := tx.Save(&attemptAccount).Error; err != nil {
 				return err
 			}
-			if account.MetaContactID != 0 {
-				_ = tx.First(&meta, account.MetaContactID).Error
+			if attemptAccount.MetaContactID != 0 {
+				_ = tx.First(&attemptMeta, attemptAccount.MetaContactID).Error
 			}
 		}
 
-		result = tx.Where("protocol_conv_id = ?", protocolConversationID).First(&conversation)
+		result = tx.Where("protocol_conv_id = ?", protocolConversationID).First(&attemptConversation)
 		if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 			return result.Error
 		}
 		if result.Error == gorm.ErrRecordNotFound {
-			conversation = models.Conversation{
-				LinkedAccountID: account.ID, ProtocolConvID: protocolConversationID,
+			attemptConversation = models.Conversation{
+				LinkedAccountID: attemptAccount.ID, ProtocolConvID: protocolConversationID,
 				IsGroup: isGroup, GroupName: map[bool]string{true: name}[isGroup],
 			}
-			if err := tx.Create(&conversation).Error; err != nil {
+			if err := tx.Create(&attemptConversation).Error; err != nil {
 				return err
 			}
 		}
 
 		for index := range messages {
-			messages[index].ConversationID = conversation.ID
+			messages[index].ConversationID = attemptConversation.ID
 			messages[index].ProtocolConvID = protocolConversationID
 			var existing models.Message
 			result = tx.Where("protocol_msg_id = ?", messages[index].ProtocolMsgID).First(&existing)
@@ -194,6 +200,9 @@ func (p *Provider) persistCanonicalMessages(rawConversationID, name string, isGr
 				}
 			}
 		}
+		meta = attemptMeta
+		account = attemptAccount
+		conversation = attemptConversation
 		return nil
 	})
 	if err != nil {

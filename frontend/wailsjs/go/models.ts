@@ -21,6 +21,7 @@ export namespace core {
 	    supportsListMessagePins: boolean;
 	    supportsScheduledMessages: boolean;
 	    supportsListScheduledMessages: boolean;
+	    supportsPollVoting: boolean;
 	    messagePinScope: string;
 	    supportsMuteConversation: boolean;
 	    supportsQRCodeAuth: boolean;
@@ -61,6 +62,7 @@ export namespace core {
 	        this.supportsListMessagePins = source["supportsListMessagePins"];
 	        this.supportsScheduledMessages = source["supportsScheduledMessages"];
 	        this.supportsListScheduledMessages = source["supportsListScheduledMessages"];
+	        this.supportsPollVoting = source["supportsPollVoting"];
 	        this.messagePinScope = source["messagePinScope"];
 	        this.supportsMuteConversation = source["supportsMuteConversation"];
 	        this.supportsQRCodeAuth = source["supportsQRCodeAuth"];
@@ -466,6 +468,98 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class PollVoter {
+	    userId: string;
+	    displayName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PollVoter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.userId = source["userId"];
+	        this.displayName = source["displayName"];
+	    }
+	}
+	export class PollOption {
+	    id: string;
+	    text: string;
+	    votes: number;
+	    selected: boolean;
+	    voters?: PollVoter[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PollOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.text = source["text"];
+	        this.votes = source["votes"];
+	        this.selected = source["selected"];
+	        this.voters = this.convertValues(source["voters"], PollVoter);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Poll {
+	    question: string;
+	    options: PollOption[];
+	    maxSelections: number;
+	    closed: boolean;
+	    totalVoters: number;
+	    voterDetailsAvailable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Poll(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.question = source["question"];
+	        this.options = this.convertValues(source["options"], PollOption);
+	        this.maxSelections = source["maxSelections"];
+	        this.closed = source["closed"];
+	        this.totalVoters = source["totalVoters"];
+	        this.voterDetailsAvailable = source["voterDetailsAvailable"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class MessageReceipt {
 	    id: number;
 	    messageId: number;
@@ -584,6 +678,7 @@ export namespace models {
 	    callIsVideo: boolean;
 	    callUrl?: string;
 	    callLinkAction?: string;
+	    poll?: Poll;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -626,6 +721,7 @@ export namespace models {
 	        this.callIsVideo = source["callIsVideo"];
 	        this.callUrl = source["callUrl"];
 	        this.callLinkAction = source["callLinkAction"];
+	        this.poll = this.convertValues(source["poll"], Poll);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1152,7 +1248,7 @@ export namespace models {
 		    return a;
 		}
 	}
-
+	
 	export class NotificationSettings {
 	    id: number;
 	    providerInstanceId: string;
@@ -1164,11 +1260,11 @@ export namespace models {
 	    trigger: string;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NotificationSettings(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1219,6 +1315,9 @@ export namespace models {
 	        this.title = source["title"];
 	    }
 	}
+	
+	
+	
 	
 	export class ScheduledMessage {
 	    id: string;
@@ -1367,3 +1466,4 @@ export namespace time {
 	}
 
 }
+

@@ -335,6 +335,7 @@ type Capabilities struct {
 	SupportsListMessagePins       bool   `json:"supportsListMessagePins"`
 	SupportsScheduledMessages     bool   `json:"supportsScheduledMessages"`
 	SupportsListScheduledMessages bool   `json:"supportsListScheduledMessages"`
+	SupportsPollVoting            bool   `json:"supportsPollVoting"`
 	MessagePinScope               string `json:"messagePinScope"`
 	SupportsMuteConversation      bool   `json:"supportsMuteConversation"`
 	SupportsQRCodeAuth            bool   `json:"supportsQRCodeAuth"`
@@ -358,6 +359,13 @@ type Capabilities struct {
 	// GroupConversationTypes is a comma-separated list so Capabilities remains
 	// comparable (several provider contract tests compare it as a value).
 	GroupConversationTypes string `json:"groupConversationTypes"`
+}
+
+// PollVotingProvider is implemented by providers that can submit or replace
+// the current user's selections on a remote poll. An empty selection withdraws
+// the vote.
+type PollVotingProvider interface {
+	VotePoll(conversationID, messageID string, optionIDs []string) error
 }
 
 // ScheduledMessageProvider is implemented by providers whose remote API can

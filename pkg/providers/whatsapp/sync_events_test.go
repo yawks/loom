@@ -98,6 +98,36 @@ func TestReclassifyOnDemandWhatsAppHistoryKeepsExistingMessagesRead(t *testing.T
 	}
 }
 
+func TestEmptyWhatsAppSelfHistoryArtifact(t *testing.T) {
+	selfConversationID := "whatsapp-2::33677815440@s.whatsapp.net"
+	artifact := models.Message{
+		ProtocolConvID: selfConversationID,
+		ProtocolMsgID:  "AC8A66142FC9881F8E60BB0A21211499",
+		IsFromMe:       true,
+	}
+	if !isEmptyWhatsAppSelfHistoryArtifact(artifact, selfConversationID) {
+		t.Fatal("empty outgoing self-chat history envelope should be classified as an artifact")
+	}
+
+	visible := artifact
+	visible.Body = "note to self"
+	if isEmptyWhatsAppSelfHistoryArtifact(visible, selfConversationID) {
+		t.Fatal("visible self-chat message must be preserved")
+	}
+
+	remoteConversation := artifact
+	remoteConversation.ProtocolConvID = "whatsapp-2::33600000000@s.whatsapp.net"
+	if isEmptyWhatsAppSelfHistoryArtifact(remoteConversation, selfConversationID) {
+		t.Fatal("empty rows in another conversation must not be classified as self-chat artifacts")
+	}
+
+	incoming := artifact
+	incoming.IsFromMe = false
+	if isEmptyWhatsAppSelfHistoryArtifact(incoming, selfConversationID) {
+		t.Fatal("incoming self-chat row must be preserved")
+	}
+}
+
 func TestCacheJoinedGroupMakesGroupImmediatelyDiscoverable(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"

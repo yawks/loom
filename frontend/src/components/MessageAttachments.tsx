@@ -1082,14 +1082,14 @@ export function MessageAttachments({
             return (
               <div
                 key={`${attachment.url}-${index}`}
-                className="w-[300px] max-w-full overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-sm"
+                className="w-fit min-w-[300px] max-w-full overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-sm"
               >
                 <div className="flex items-center gap-3 p-4">
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
                     {initials || <UserRound className="h-6 w-6" />}
                   </div>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-foreground">{name}</p>
+                  <div className="min-w-0 max-w-[360px]">
+                    <p className="break-words text-sm font-semibold text-foreground">{name}</p>
                     <p className="mt-0.5 text-xs text-muted-foreground">{t("shared_contact")}</p>
                   </div>
                 </div>
@@ -1104,7 +1104,7 @@ export function MessageAttachments({
                       >
                         <Phone className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                         <span className="min-w-0 flex-1 truncate font-medium">{phone}</span>
-                        <span className="text-xs text-muted-foreground">{t("call")}</span>
+                        <span className="text-xs text-muted-foreground">{t("contact_call")}</span>
                       </button>
                     ))}
                   </div>

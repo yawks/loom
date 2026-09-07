@@ -6315,6 +6315,7 @@ const PREFERRED_EMOJI_NAMES: Record<string, string> = {
   "👀": "eyes",
   "✅": "white_check_mark",
   "❌": "x",
+  "🤷": "shrug",
 };
 
 const PREFERRED_UNICODE_BY_NAME: Record<string, string> = Object.fromEntries(

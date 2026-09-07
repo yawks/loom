@@ -20,9 +20,11 @@ import (
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
+	waWeb "go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, mediaType string) *models.Attachment {
@@ -452,6 +454,17 @@ func (w *WhatsAppProvider) tryHandleProtocolMessage(evt *events.Message, emitEve
 	case waProto.ProtocolMessage_MESSAGE_EDIT:
 		w.handleEditedProtocolMessage(evt, protocolMsg, emitEvent)
 		return true
+	case waProto.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE:
+		response := protocolMsg.GetPeerDataOperationRequestResponseMessage()
+		if response.GetPeerDataOperationRequestType() == waE2E.PeerDataOperationRequestType_FULL_HISTORY_SYNC_ON_DEMAND {
+			for _, result := range response.GetPeerDataOperationResult() {
+				if full := result.GetFullHistorySyncOnDemandRequestResponse(); full != nil {
+					w.log("WhatsApp: Full history response for request %s: %s\n",
+						full.GetRequestMetadata().GetRequestID(), full.GetResponseCode().String())
+				}
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -992,6 +1005,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 
 	// Get message text
 	body := ""
+	poll := canonicalWhatsAppPoll(msg)
 	if msg.GetConversation() != "" {
 		body = msg.GetConversation()
 	} else if msg.GetExtendedTextMessage() != nil {
@@ -1003,6 +1017,9 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		body = msg.GetImageMessage().GetCaption()
 	} else if len(contactMessages(msg)) == 0 {
 		body = formatContactCards(msg)
+	}
+	if body == "" && poll != nil {
+		body = poll.Question
 	}
 	if location := msg.GetLocationMessage(); location != nil && body == "" {
 		body = location.GetComment()
@@ -1236,7 +1253,7 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 	w.pendingEditsMu.Unlock()
 
-	return &models.Message{
+	result := &models.Message{
 		// Frontend message caches and persisted conversations are keyed by the
 		// namespaced ID. Emitting the raw JID here updates the sidebar preview,
 		// but misses the cache of an already-open conversation.
@@ -1261,7 +1278,98 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		CallParticipants: callParticipants,
 		CallOutcome:      callOutcome,
 		CallIsVideo:      callIsVideo,
+		Poll:             poll,
 	}
+	if poll != nil {
+		result.PollTransportSenderID = evt.Info.Sender.String()
+	}
+	return result
+}
+
+func whatsappPollCreation(msg *waE2E.Message) *waE2E.PollCreationMessage {
+	if msg == nil {
+		return nil
+	}
+	for _, poll := range []*waE2E.PollCreationMessage{
+		msg.GetPollCreationMessage(), msg.GetPollCreationMessageV2(),
+		msg.GetPollCreationMessageV3(), msg.GetPollCreationMessageV5(),
+		msg.GetPollCreationMessageV6(),
+	} {
+		if poll != nil {
+			return poll
+		}
+	}
+	// V4 is the only poll version wrapped in FutureProofMessage. whatsmeow's
+	// generic event unwrapping intentionally leaves this field in place, so
+	// inspect its nested message explicitly.
+	if nested := msg.GetPollCreationMessageV4().GetMessage(); nested != nil && nested != msg {
+		return whatsappPollCreation(nested)
+	}
+	return nil
+}
+
+func canonicalWhatsAppPoll(msg *waE2E.Message) *models.Poll {
+	creation := whatsappPollCreation(msg)
+	if creation == nil {
+		return canonicalWhatsAppPollSnapshot(msg)
+	}
+	options := make([]models.PollOption, 0, len(creation.GetOptions()))
+	for _, option := range creation.GetOptions() {
+		if option == nil {
+			continue
+		}
+		text := option.GetOptionName()
+		hash := sha256.Sum256([]byte(text))
+		options = append(options, models.PollOption{ID: hex.EncodeToString(hash[:]), Text: text})
+	}
+	maxSelections := int(creation.GetSelectableOptionsCount())
+	if maxSelections <= 0 {
+		maxSelections = len(options)
+	}
+	endTime := creation.GetEndTime()
+	closed := false
+	if endTime > 0 {
+		if endTime < 1_000_000_000_000 {
+			closed = endTime <= time.Now().Unix()
+		} else {
+			closed = endTime <= time.Now().UnixMilli()
+		}
+	}
+	return &models.Poll{
+		Question: creation.GetName(), Options: options, MaxSelections: maxSelections,
+		Closed:                closed,
+		VoterDetailsAvailable: !creation.GetHideParticipantName(),
+	}
+}
+
+func canonicalWhatsAppPollSnapshot(msg *waE2E.Message) *models.Poll {
+	if msg == nil {
+		return nil
+	}
+	snapshot := msg.GetPollResultSnapshotMessage()
+	if snapshot == nil {
+		snapshot = msg.GetPollResultSnapshotMessageV3()
+	}
+	if snapshot == nil {
+		return nil
+	}
+	options := make([]models.PollOption, 0, len(snapshot.GetPollVotes()))
+	totalVoters := 0
+	for _, vote := range snapshot.GetPollVotes() {
+		if vote == nil {
+			continue
+		}
+		text := vote.GetOptionName()
+		hash := sha256.Sum256([]byte(text))
+		count := int(vote.GetOptionVoteCount())
+		if count > totalVoters {
+			totalVoters = count
+		}
+		options = append(options, models.PollOption{ID: hex.EncodeToString(hash[:]), Text: text, Votes: count})
+	}
+	// Snapshots expose aggregates but not the encrypted creation key required to
+	// submit a vote, so represent them honestly as a read-only result.
+	return &models.Poll{Question: snapshot.GetName(), Options: options, MaxSelections: 1, Closed: true, TotalVoters: totalVoters}
 }
 
 func (w *WhatsAppProvider) isDirectlyMentioned(mentionedJIDs []string) bool {
@@ -1499,6 +1607,278 @@ func reconcileDuplicateMessage(existing, incoming *models.Message) {
 	if incoming.Attachments != "" {
 		existing.Attachments = incoming.Attachments
 	}
+	if existing.Poll == nil && incoming.Poll != nil {
+		existing.Poll = incoming.Poll
+		existing.PollTransportSenderID = incoming.PollTransportSenderID
+	}
+}
+
+// VotePoll replaces the current user's complete selection, matching WhatsApp's
+// poll semantics (including an empty selection to withdraw a vote).
+func (w *WhatsAppProvider) VotePoll(conversationID, messageID string, optionIDs []string) error {
+	if err := w.ensureConnectedForPollVote(); err != nil {
+		return err
+	}
+	var pollMessage models.Message
+	if db.DB == nil || db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, core.BuildConvID(w.getInstanceId(), core.StripConvID(conversationID))).First(&pollMessage).Error != nil {
+		return fmt.Errorf("poll message %s was not found", messageID)
+	}
+	if pollMessage.Poll == nil || pollMessage.Poll.Closed {
+		return fmt.Errorf("poll is unavailable or closed")
+	}
+	wanted := make(map[string]struct{}, len(optionIDs))
+	for _, id := range optionIDs {
+		wanted[id] = struct{}{}
+	}
+	if len(wanted) > pollMessage.Poll.MaxSelections {
+		return fmt.Errorf("poll allows at most %d selections", pollMessage.Poll.MaxSelections)
+	}
+	optionNames := make([]string, 0, len(wanted))
+	for _, option := range pollMessage.Poll.Options {
+		if _, ok := wanted[option.ID]; ok {
+			optionNames = append(optionNames, option.Text)
+			delete(wanted, option.ID)
+		}
+	}
+	if len(wanted) > 0 {
+		return fmt.Errorf("unknown poll option")
+	}
+	chat, err := types.ParseJID(core.StripConvID(conversationID))
+	if err != nil {
+		return fmt.Errorf("invalid poll conversation: %w", err)
+	}
+	pollSenderID := pollMessage.PollTransportSenderID
+	if pollSenderID == "" {
+		pollSenderID = pollMessage.SenderID
+	}
+	sender, err := types.ParseJID(pollSenderID)
+	if err != nil {
+		return fmt.Errorf("invalid poll sender: %w", err)
+	}
+	info := &types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: chat, Sender: sender, IsFromMe: pollMessage.IsFromMe, IsGroup: chat.Server == types.GroupServer},
+		ID:            types.MessageID(messageID), Timestamp: pollMessage.Timestamp,
+	}
+	vote, err := w.client.BuildPollVote(w.ctx, info, optionNames)
+	if err != nil {
+		return fmt.Errorf("build poll vote: %w", err)
+	}
+	if _, err = w.client.SendMessage(w.ctx, chat, vote); err != nil {
+		return fmt.Errorf("send poll vote: %w", err)
+	}
+	return nil
+}
+
+func (w *WhatsAppProvider) ensureConnectedForPollVote() error {
+	w.mu.RLock()
+	client := w.client
+	ctx := w.ctx
+	w.mu.RUnlock()
+	if client == nil || ctx == nil {
+		return fmt.Errorf("WhatsApp client is not initialized")
+	}
+	if client.IsConnected() && client.IsLoggedIn() {
+		return nil
+	}
+	w.log("WhatsApp: Poll vote requested while websocket is disconnected; reconnecting\n")
+	if err := w.Connect(); err != nil {
+		return fmt.Errorf("reconnect WhatsApp before poll vote: %w", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if client.IsConnected() && client.IsLoggedIn() {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("WhatsApp websocket did not reconnect in time")
+}
+
+func (w *WhatsAppProvider) handlePollVote(evt *events.Message, emit bool) bool {
+	update := evt.Message.GetPollUpdateMessage()
+	if update == nil {
+		return false
+	}
+	key := update.GetPollCreationMessageKey()
+	if key == nil || key.GetID() == "" {
+		return true
+	}
+	decrypted, err := w.client.DecryptPollVote(w.ctx, evt)
+	if err != nil {
+		w.log("WhatsApp: Failed to decrypt live poll vote for %s: %v\n", key.GetID(), err)
+		return true
+	}
+	if db.DB != nil && evt.Info.ID != "" {
+		db.DB.Model(&models.Message{}).
+			Where("protocol_msg_id = ? AND protocol_conv_id = ?", evt.Info.ID, core.BuildConvID(w.getInstanceId(), w.normalizeChatJID(evt.Info.Chat).String())).
+			Updates(map[string]interface{}{"is_deleted": true, "deleted_reason": "poll_vote_applied"})
+	}
+	convID := core.BuildConvID(w.getInstanceId(), w.normalizeChatJID(evt.Info.Chat).String())
+	var message models.Message
+	if db.DB == nil || db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", key.GetID(), convID).First(&message).Error != nil || message.Poll == nil {
+		w.log("WhatsApp: Poll %s not found for live vote update in %s\n", key.GetID(), convID)
+		return true
+	}
+	selected := make(map[string]struct{}, len(decrypted.GetSelectedOptions()))
+	for _, hash := range decrypted.GetSelectedOptions() {
+		selected[hex.EncodeToString(hash)] = struct{}{}
+	}
+	voterID := w.NormalizeParticipantID(evt.Info.Sender.String())
+	voterName := evt.Info.PushName
+	if evt.Info.IsFromMe && w.client.Store != nil && w.client.Store.ID != nil {
+		voterID = w.NormalizeParticipantID(w.client.Store.ID.ToNonAD().String())
+	}
+	if message.PollVoteState == nil {
+		message.PollVoteState = make(map[string][]string)
+		for _, option := range message.Poll.Options {
+			for _, voter := range option.Voters {
+				message.PollVoteState[option.ID] = append(message.PollVoteState[option.ID], voter.UserID)
+			}
+		}
+	}
+	for index := range message.Poll.Options {
+		option := &message.Poll.Options[index]
+		keptIDs := message.PollVoteState[option.ID][:0]
+		for _, existingID := range message.PollVoteState[option.ID] {
+			if existingID != voterID {
+				keptIDs = append(keptIDs, existingID)
+			}
+		}
+		message.PollVoteState[option.ID] = keptIDs
+		if _, ok := selected[option.ID]; ok {
+			message.PollVoteState[option.ID] = append(message.PollVoteState[option.ID], voterID)
+		}
+		option.Votes = len(message.PollVoteState[option.ID])
+		if message.Poll.VoterDetailsAvailable {
+			keptVoters := option.Voters[:0]
+			for _, voter := range option.Voters {
+				if voter.UserID != voterID {
+					keptVoters = append(keptVoters, voter)
+				}
+			}
+			option.Voters = keptVoters
+			if _, ok := selected[option.ID]; ok {
+				option.Voters = append(option.Voters, models.PollVoter{UserID: voterID, DisplayName: voterName})
+			}
+		} else {
+			option.Voters = nil
+		}
+		if evt.Info.IsFromMe {
+			option.Selected = selectedContains(selected, option.ID)
+		}
+	}
+	uniqueVoters := make(map[string]struct{})
+	for _, voterIDs := range message.PollVoteState {
+		for _, id := range voterIDs {
+			uniqueVoters[id] = struct{}{}
+		}
+	}
+	message.Poll.TotalVoters = len(uniqueVoters)
+	if err := db.DB.Model(&message).Select("Poll", "PollVoteState").Updates(&message).Error; err != nil {
+		w.log("WhatsApp: Failed to persist live poll update %s: %v\n", key.GetID(), err)
+		return true
+	}
+	w.log("WhatsApp: Applied live poll vote to %s (voters=%d)\n", key.GetID(), message.Poll.TotalVoters)
+	w.mu.Lock()
+	if cached := w.conversationMessages[convID]; cached != nil {
+		for index := range cached {
+			if cached[index].ProtocolMsgID == message.ProtocolMsgID {
+				cached[index].Poll = message.Poll
+			}
+		}
+	}
+	w.mu.Unlock()
+	if emit {
+		select {
+		case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: message, IsUpdate: true}:
+		default:
+		}
+	}
+	return true
+}
+
+func (w *WhatsAppProvider) applyHistoricalPollUpdates(message *models.Message, updates []*waWeb.PollUpdate) {
+	if message == nil || message.Poll == nil || len(updates) == 0 {
+		return
+	}
+	if message.PollVoteState == nil {
+		message.PollVoteState = make(map[string][]string)
+	}
+	selfID := ""
+	if w.client != nil && w.client.Store != nil && w.client.Store.ID != nil {
+		selfID = w.NormalizeParticipantID(w.client.Store.ID.ToNonAD().String())
+	}
+	voterNames := make(map[string]string)
+	for _, update := range updates {
+		if update == nil || update.GetVote() == nil || update.GetPollUpdateMessageKey() == nil {
+			continue
+		}
+		key := update.GetPollUpdateMessageKey()
+		voterID := ""
+		if key.GetFromMe() {
+			voterID = selfID
+		} else {
+			voterID = w.NormalizeParticipantID(key.GetParticipant())
+		}
+		if voterID == "" {
+			continue
+		}
+		selected := make(map[string]struct{}, len(update.GetVote().GetSelectedOptions()))
+		for _, hash := range update.GetVote().GetSelectedOptions() {
+			selected[hex.EncodeToString(hash)] = struct{}{}
+		}
+		for optionIndex := range message.Poll.Options {
+			option := &message.Poll.Options[optionIndex]
+			kept := message.PollVoteState[option.ID][:0]
+			for _, existingVoter := range message.PollVoteState[option.ID] {
+				if existingVoter != voterID {
+					kept = append(kept, existingVoter)
+				}
+			}
+			message.PollVoteState[option.ID] = kept
+			if _, chosen := selected[option.ID]; chosen {
+				message.PollVoteState[option.ID] = append(message.PollVoteState[option.ID], voterID)
+			}
+		}
+	}
+
+	allVoters := make(map[string]struct{})
+	for optionIndex := range message.Poll.Options {
+		option := &message.Poll.Options[optionIndex]
+		option.Voters = option.Voters[:0]
+		option.Selected = false
+		for _, voterID := range message.PollVoteState[option.ID] {
+			allVoters[voterID] = struct{}{}
+			if voterID == selfID {
+				option.Selected = true
+			}
+			name := voterNames[voterID]
+			if name == "" {
+				if jid, err := types.ParseJID(voterID); err == nil {
+					name = w.lookupDisplayName(jid, "")
+				}
+				voterNames[voterID] = name
+			}
+			option.Voters = append(option.Voters, models.PollVoter{UserID: voterID, DisplayName: name})
+		}
+		option.Votes = len(message.PollVoteState[option.ID])
+	}
+	message.Poll.TotalVoters = len(allVoters)
+	message.Poll.VoterDetailsAvailable = len(allVoters) > 0
+}
+
+func (w *WhatsAppProvider) applyPollSnapshot(message *models.Message, webMsgInfo *waWeb.WebMessageInfo) int {
+	if message == nil || message.Poll == nil || webMsgInfo == nil {
+		return 0
+	}
+	updates := webMsgInfo.GetPollUpdates()
+	w.applyHistoricalPollUpdates(message, updates)
+	return len(updates)
+}
+
+func selectedContains(selected map[string]struct{}, id string) bool {
+	_, ok := selected[id]
+	return ok
 }
 
 func (w *WhatsAppProvider) hasConversationHistory(convID string) bool {
@@ -1575,6 +1955,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 
 		converted := make([]models.Message, 0, len(historyMsgs))
 		historyReactions := make([]core.ReactionEvent, 0)
+		historyPollVotes := make([]*events.Message, 0)
 		for _, hMsg := range historyMsgs {
 			if hMsg == nil || hMsg.GetMessage() == nil {
 				continue
@@ -1586,6 +1967,10 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			evt, err := w.client.ParseWebMessage(chatJID, webMsgInfo)
 			if err != nil {
 				fmt.Printf("WhatsApp: Failed to parse history message for %s: %v\n", convID, err)
+				continue
+			}
+			if evt.Message.GetPollUpdateMessage() != nil {
+				historyPollVotes = append(historyPollVotes, evt)
 				continue
 			}
 			// Reactions received while Loom was offline are represented as standalone
@@ -1632,6 +2017,20 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				continue
 			}
 			if msg := w.convertMessage(evt); msg != nil {
+				// WhatsApp stores the latest decrypted poll result snapshot on the poll
+				// creation WebMessageInfo. This is separate from standalone encrypted
+				// PollUpdateMessage rows and is the only historical result source some
+				// companion devices return during an on-demand HistorySync.
+				if msg.Poll != nil {
+					if pollUpdateCount := w.applyPollSnapshot(msg, webMsgInfo); pollUpdateCount > 0 {
+						w.log("WhatsApp: Applied %d historical poll updates to %s (voters=%d)\n",
+							pollUpdateCount, msg.ProtocolMsgID, msg.Poll.TotalVoters)
+					}
+				}
+				if msg.Body == "" && msg.Attachments == "" && msg.Poll == nil && evt.Message != nil {
+					w.log("WhatsApp: Unsupported empty history message %s in %s; protobuf fields=%s\n",
+						msg.ProtocolMsgID, convID, whatsappMessageFieldNames(evt.Message))
+				}
 				// Extract reactions from WebMessageInfo
 				reactions := webMsgInfo.GetReactions()
 				if len(reactions) > 0 {
@@ -1721,6 +2120,17 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 
 			total := w.storeMessagesForConversation(convID, converted)
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
+			for _, vote := range historyPollVotes {
+				w.handlePollVote(vote, false)
+			}
+			if len(historyPollVotes) > 0 && db.DB != nil {
+				for index := range converted {
+					var refreshed models.Message
+					if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", converted[index].ProtocolMsgID, converted[index].ProtocolConvID).First(&refreshed).Error; err == nil {
+						converted[index].Poll = refreshed.Poll
+					}
+				}
+			}
 
 			// HistorySync messages must not masquerade as real-time MessageEvents:
 			// registerIncomingMessage treats those as unread. WhatsApp provides an
@@ -1741,6 +2151,16 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				readMessages, unreadMessages = reclassifyNewIncomingWhatsAppMessages(
 					readMessages, unreadMessages, newMessageIDs, forcedReadIDs, isOnDemand,
 				)
+			}
+			// A targeted legacy backfill repairs rows that were already part of the
+			// user's history. It must never manufacture unread activity, including
+			// when the repaired response contains IDs Loom had previously skipped.
+			w.historyBackfillMu.Lock()
+			isLegacyBackfill := w.historyBackfills[core.BuildConvID(w.getInstanceId(), convID)]
+			w.historyBackfillMu.Unlock()
+			if isLegacyBackfill {
+				readMessages = converted
+				unreadMessages = nil
 			}
 			// WhatsApp may retain a stale unread count when another linked client
 			// read the conversation while Loom was offline. Sending a message is a
@@ -1768,6 +2188,11 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: unreadMessages, ForceUnread: true}:
 				default:
 				}
+			}
+		}
+		if len(converted) == 0 {
+			for _, vote := range historyPollVotes {
+				w.handlePollVote(vote, false)
 			}
 		}
 
@@ -1814,6 +2239,22 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			}
 		}
 	}
+}
+
+func whatsappMessageFieldNames(message *waE2E.Message) string {
+	if message == nil {
+		return "<nil>"
+	}
+	names := make([]string, 0)
+	message.ProtoReflect().Range(func(field protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		names = append(names, field.JSONName())
+		return true
+	})
+	if len(names) == 0 {
+		return "<none>"
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 func whatsappUnstoredMessageIDs(messages []models.Message) map[string]struct{} {
@@ -2091,6 +2532,9 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 
 			// Enrich messages with sender names and avatars
 			w.enrichMessagesWithSenderInfo(dbMessages, chatJID, isGroup)
+			if beforeTimestamp == nil {
+				w.maybeRequestLegacyMessageBackfill(nsConvID, chatJID, dbMessages)
+			}
 
 			// If beforeTimestamp is nil (initial load), update cache
 			if beforeTimestamp == nil {
@@ -2151,6 +2595,269 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 	}
 
 	return []models.Message{}, nil
+}
+
+// maybeRequestLegacyMessageBackfill detects messages persisted before Loom had
+// a canonical representation for their payload. A targeted on-demand history
+// request lets the current converter enrich those existing rows. The detector
+// is deliberately provider-format agnostic: it only recognizes locally empty
+// messages, and each conversation is requested at most once per process.
+func (w *WhatsAppProvider) maybeRequestLegacyMessageBackfill(convID string, chatJID types.JID, messages []models.Message) {
+	if len(messages) == 0 || w.client == nil || !w.client.IsConnected() || !w.client.IsLoggedIn() {
+		return
+	}
+	emptyCount, needsBackfill := legacyMessageBackfillState(messages)
+	if !needsBackfill {
+		return
+	}
+	w.historyBackfillMu.Lock()
+	if w.historyBackfills[convID] {
+		w.historyBackfillMu.Unlock()
+		return
+	}
+	w.historyBackfills[convID] = true
+	w.historyBackfillMu.Unlock()
+
+	anchor, hasAnchor := legacyHistoryAnchor(messages)
+	if !hasAnchor {
+		w.historyBackfillMu.Lock()
+		delete(w.historyBackfills, convID)
+		w.historyBackfillMu.Unlock()
+		w.log("WhatsApp: Cannot request targeted legacy-message history for %s: no usable anchor\n", convID)
+		return
+	}
+	request := w.client.BuildHistorySyncRequest(&types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: anchor.IsFromMe, IsGroup: chatJID.Server == types.GroupServer},
+		ID:            types.MessageID(anchor.ProtocolMsgID), Timestamp: anchor.Timestamp,
+	}, 50)
+	missingMessages := legacyMessageBackfillBurst(messages, 10)
+	for _, existing := range messages {
+		if existing.Poll != nil {
+			// First request the creation snapshot, then every empty row after it.
+			// Older Loom versions persisted encrypted PollUpdateMessage payloads as
+			// empty messages, and some primary devices don't attach those updates to
+			// the creation snapshot returned by an unavailable-message request.
+			missingMessages = []models.Message{existing}
+			for _, candidate := range messages {
+				if candidate.Timestamp.After(existing.Timestamp) && isLegacyEmptyMessage(candidate) {
+					missingMessages = append(missingMessages, candidate)
+				}
+			}
+			if len(missingMessages) <= 1 {
+				missingMessages = nil
+				continue
+			}
+			break
+		}
+	}
+	go func() {
+		w.log("WhatsApp: Requesting targeted legacy-message history for %s (%d empty rows, anchor=%s)\n", convID, emptyCount, anchor.ProtocolMsgID)
+		if _, err := w.client.SendPeerMessage(w.ctx, request); err != nil {
+			w.log("WhatsApp: Targeted legacy-message history request failed for %s: %v\n", convID, err)
+			w.historyBackfillMu.Lock()
+			delete(w.historyBackfills, convID)
+			w.historyBackfillMu.Unlock()
+			return
+		}
+
+		// Some primary devices accept an on-demand history request but return no
+		// HistorySync for the conversation. Ask for the known unavailable rows as
+		// individual placeholders too. This is the whatsmeow recovery path for a
+		// message whose key is known but whose payload was not retained by Loom.
+		for _, missing := range missingMessages {
+			time.Sleep(1200 * time.Millisecond)
+			senderJID, parseErr := types.ParseJID(missing.SenderID)
+			if parseErr != nil {
+				continue
+			}
+			// Group messages are increasingly addressed by LID on the wire. Loom's
+			// canonical sender is a PN, so restore its LID before constructing the
+			// unavailable-message key or the primary phone silently ignores it.
+			requestSenderJID := senderJID
+			if senderJID.Server == types.DefaultUserServer && w.client.Store != nil && w.client.Store.LIDs != nil {
+				if lid, mapErr := w.client.Store.LIDs.GetLIDForPN(w.ctx, senderJID); mapErr == nil && !lid.IsEmpty() {
+					requestSenderJID = lid
+				}
+			}
+			w.log("WhatsApp: Requesting unavailable legacy message %s in %s (sender=%s)\n", missing.ProtocolMsgID, convID, requestSenderJID.String())
+			w.trackLegacyMessageRequest(missing.ProtocolMsgID, convID)
+			unavailableRequest := w.client.BuildUnavailableMessageRequest(chatJID, requestSenderJID, missing.ProtocolMsgID)
+			if _, sendErr := w.client.SendPeerMessage(w.ctx, unavailableRequest); sendErr != nil {
+				w.log("WhatsApp: Unavailable legacy message request failed for %s in %s: %v\n", missing.ProtocolMsgID, convID, sendErr)
+				w.clearLegacyMessageRequest(missing.ProtocolMsgID)
+			}
+		}
+	}()
+}
+
+func (w *WhatsAppProvider) trackLegacyMessageRequest(messageID, convID string) {
+	w.legacyRequestMu.Lock()
+	w.legacyRequests[messageID] = convID
+	w.legacyRequestMu.Unlock()
+	time.AfterFunc(20*time.Second, func() {
+		w.legacyRequestMu.Lock()
+		trackedConvID, pending := w.legacyRequests[messageID]
+		if pending {
+			delete(w.legacyRequests, messageID)
+		}
+		w.legacyRequestMu.Unlock()
+		if pending {
+			w.log("WhatsApp: No response received for unavailable legacy message %s in %s after 20s\n", messageID, trackedConvID)
+		}
+	})
+}
+
+func (w *WhatsAppProvider) clearLegacyMessageRequest(messageID string) {
+	w.legacyRequestMu.Lock()
+	delete(w.legacyRequests, messageID)
+	w.legacyRequestMu.Unlock()
+}
+
+func (w *WhatsAppProvider) logLegacyMessageResponse(evt *events.Message) {
+	if evt == nil {
+		return
+	}
+	w.legacyRequestMu.Lock()
+	convID, requested := w.legacyRequests[evt.Info.ID]
+	if requested {
+		delete(w.legacyRequests, evt.Info.ID)
+	}
+	w.legacyRequestMu.Unlock()
+	if !requested {
+		return
+	}
+	fields := whatsappMessageFieldNames(evt.Message)
+	pollUpdateCount := 0
+	if evt.SourceWebMsg != nil {
+		pollUpdateCount = len(evt.SourceWebMsg.GetPollUpdates())
+	}
+	w.log("WhatsApp: Received unavailable legacy message response %s in %s (chat=%s sender=%s fields=%s poll_updates=%d)\n",
+		evt.Info.ID, convID, evt.Info.Chat.String(), evt.Info.Sender.String(), fields, pollUpdateCount)
+	poll := canonicalWhatsAppPoll(evt.Message)
+	w.log("WhatsApp: Legacy message response %s canonical poll=%t\n", evt.Info.ID, poll != nil)
+}
+
+// requestRecentLegacyMessageBackfills makes legacy recovery independent from
+// whether the frontend happens to ask the provider for a conversation's first
+// page. It deliberately uses only canonical persisted fields to identify
+// candidates; provider wire-format recognition remains in the converter.
+func (w *WhatsAppProvider) requestRecentLegacyMessageBackfills() {
+	if db.DB == nil || w.client == nil || !w.client.IsConnected() || !w.client.IsLoggedIn() {
+		return
+	}
+
+	type legacyConversation struct {
+		ProtocolConvID string
+		EmptyCount     int
+	}
+	var candidates []legacyConversation
+	instancePrefix := w.getInstanceId() + "::%"
+	cutoff := time.Now().AddDate(0, 0, -14)
+	err := db.DB.Model(&models.Message{}).
+		Select("protocol_conv_id, COUNT(*) AS empty_count").
+		Where("protocol_conv_id LIKE ? AND timestamp >= ? AND body = '' AND attachments = '' AND call_type = '' AND poll IS NULL AND is_deleted = ?", instancePrefix, cutoff, false).
+		Group("protocol_conv_id").
+		Having("COUNT(*) >= ?", 3).
+		Order("empty_count DESC").
+		Limit(25).
+		Scan(&candidates).Error
+	if err != nil {
+		w.log("WhatsApp: Failed to find recent legacy-message backfill candidates: %v\n", err)
+		return
+	}
+
+	for _, candidate := range candidates {
+		rawConvID := core.StripConvID(candidate.ProtocolConvID)
+		chatJID, parseErr := types.ParseJID(rawConvID)
+		if parseErr != nil {
+			continue
+		}
+		var messages []models.Message
+		if queryErr := db.DB.Where("protocol_conv_id = ?", candidate.ProtocolConvID).
+			Order("timestamp DESC").Limit(100).Find(&messages).Error; queryErr != nil {
+			continue
+		}
+		for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+			messages[left], messages[right] = messages[right], messages[left]
+		}
+		burst := legacyMessageBackfillBurst(messages, 10)
+		if len(burst) < 3 || legacyBurstSenderCount(burst) < 3 {
+			continue
+		}
+		w.maybeRequestLegacyMessageBackfill(candidate.ProtocolConvID, chatJID, messages)
+		// The primary phone commonly drops concurrent on-demand history
+		// requests. Keep the recovery queue serialized and leave enough time for
+		// the HistorySync response before asking for another conversation.
+		time.Sleep(8 * time.Second)
+	}
+}
+
+func legacyMessageBackfillState(messages []models.Message) (int, bool) {
+	emptyCount := 0
+	for _, message := range messages {
+		if isLegacyEmptyMessage(message) {
+			emptyCount++
+		}
+	}
+	return emptyCount, len(legacyMessageBackfillBurst(messages, 3)) >= 3
+}
+
+func legacyMessageBackfillBurst(messages []models.Message, limit int) []models.Message {
+	emptyMessages := make([]models.Message, 0)
+	for _, message := range messages {
+		if isLegacyEmptyMessage(message) {
+			emptyMessages = append(emptyMessages, message)
+		}
+	}
+	if len(emptyMessages) < 3 {
+		return nil
+	}
+	sort.Slice(emptyMessages, func(i, j int) bool { return emptyMessages[i].Timestamp.Before(emptyMessages[j].Timestamp) })
+	windowStart := 0
+	for windowEnd := range emptyMessages {
+		for emptyMessages[windowEnd].Timestamp.Sub(emptyMessages[windowStart].Timestamp) > 5*time.Minute {
+			windowStart++
+		}
+		if windowEnd-windowStart+1 >= 3 {
+			burstEnd := windowEnd + 1
+			for burstEnd < len(emptyMessages) && emptyMessages[burstEnd].Timestamp.Sub(emptyMessages[burstEnd-1].Timestamp) <= 5*time.Minute {
+				burstEnd++
+			}
+			if limit > 0 && burstEnd-windowStart > limit {
+				burstEnd = windowStart + limit
+			}
+			return emptyMessages[windowStart:burstEnd]
+		}
+	}
+	return nil
+}
+
+func isLegacyEmptyMessage(message models.Message) bool {
+	return message.Body == "" && message.Attachments == "" && message.CallType == "" && message.Poll == nil && !message.IsDeleted
+}
+
+// legacyHistoryAnchor skips empty legacy rows. Those rows commonly represent
+// encrypted poll votes that older Loom versions persisted without their wire
+// payload, and WhatsApp doesn't answer an on-demand HistorySync when one is
+// used as the last-known-message anchor.
+func legacyHistoryAnchor(messages []models.Message) (models.Message, bool) {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.ProtocolMsgID != "" && (message.Body != "" || message.Attachments != "" || message.CallType != "" || message.Poll != nil) {
+			return message, true
+		}
+	}
+	return models.Message{}, false
+}
+
+func legacyBurstSenderCount(messages []models.Message) int {
+	senders := make(map[string]struct{})
+	for _, message := range messages {
+		if message.SenderID != "" {
+			senders[message.SenderID] = struct{}{}
+		}
+	}
+	return len(senders)
 }
 
 // updateLinkedAccountName updates the Username field of a LinkedAccount in the database

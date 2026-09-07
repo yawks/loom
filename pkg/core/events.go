@@ -43,6 +43,7 @@ type ProviderEvent interface {
 type MessageEvent struct {
 	InstanceID string         `json:"instanceId"`
 	Message    models.Message `json:"message"`
+	IsUpdate   bool           `json:"isUpdate,omitempty"`
 }
 
 // Type returns the event type for MessageEvent.

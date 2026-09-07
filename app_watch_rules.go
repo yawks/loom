@@ -35,11 +35,16 @@ func (a *App) CreateMessageWatchRule(conversationID, pattern string, isRegex boo
 		return models.MessageWatchRule{}, err
 	}
 	rule := models.MessageWatchRule{ConversationID: conversation.ID, Pattern: pattern, IsRegex: isRegex}
-	err = db.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&rule).Error; err != nil {
+	err = db.Transaction(db.DB, func(tx *gorm.DB) error {
+		attemptRule := models.MessageWatchRule{ConversationID: conversation.ID, Pattern: pattern, IsRegex: isRegex}
+		if err := tx.Create(&attemptRule).Error; err != nil {
 			return err
 		}
-		return reconcileWatchRule(tx, rule)
+		if err := reconcileWatchRule(tx, attemptRule); err != nil {
+			return err
+		}
+		rule = attemptRule
+		return nil
 	})
 	return rule, err
 }
@@ -51,22 +56,27 @@ func (a *App) UpdateMessageWatchRule(ruleID uint, pattern string, isRegex bool) 
 		return models.MessageWatchRule{}, err
 	}
 	var rule models.MessageWatchRule
-	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&rule, ruleID).Error; err != nil {
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		var attemptRule models.MessageWatchRule
+		if err := tx.First(&attemptRule, ruleID).Error; err != nil {
 			return err
 		}
-		rule.Pattern, rule.IsRegex = pattern, isRegex
-		if err := tx.Save(&rule).Error; err != nil {
+		attemptRule.Pattern, attemptRule.IsRegex = pattern, isRegex
+		if err := tx.Save(&attemptRule).Error; err != nil {
 			return err
 		}
-		return reconcileWatchRule(tx, rule)
+		if err := reconcileWatchRule(tx, attemptRule); err != nil {
+			return err
+		}
+		rule = attemptRule
+		return nil
 	})
 	return rule, err
 }
 
 // DeleteMessageWatchRule removes a rule and its materialized matches.
 func (a *App) DeleteMessageWatchRule(ruleID uint) error {
-	return db.DB.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		if err := tx.Where("rule_id = ?", ruleID).Delete(&models.MessageWatchMatch{}).Error; err != nil {
 			return err
 		}
@@ -192,7 +202,7 @@ func reconcileAllWatchRules(database *gorm.DB) error {
 	if err := database.Find(&rules).Error; err != nil {
 		return err
 	}
-	return database.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(database, func(tx *gorm.DB) error {
 		for _, rule := range rules {
 			if err := reconcileWatchRule(tx, rule); err != nil {
 				return err
@@ -223,7 +233,7 @@ func deleteConversationWatchData(database *gorm.DB, conversationID string) error
 	if err := database.Model(&models.MessageWatchRule{}).Where("conversation_id = ?", conversation.ID).Pluck("id", &ruleIDs).Error; err != nil {
 		return err
 	}
-	return database.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(database, func(tx *gorm.DB) error {
 		if len(ruleIDs) > 0 {
 			if err := tx.Where("rule_id IN ?", ruleIDs).Delete(&models.MessageWatchMatch{}).Error; err != nil {
 				return err

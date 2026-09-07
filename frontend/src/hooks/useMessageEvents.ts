@@ -93,7 +93,7 @@ export function useMessageEvents() {
       if (!isMounted) return;
       
       try {
-        const event: { instanceId: string; message: models.Message } = JSON.parse(eventJSON);
+        const event: { instanceId: string; message: models.Message; isUpdate?: boolean } = JSON.parse(eventJSON);
         const message = event.message;
 
         if (!message) {
@@ -110,7 +110,7 @@ export function useMessageEvents() {
           setNotTyping(conversationId, message.senderId);
         }
 
-        registerIncomingMessage(message);
+        if (!event.isUpdate) registerIncomingMessage(message);
 
         // Update last message in cache directly for immediate UI update
         // Note: ContactList.tsx handles allLastMessages/Timestamps/activeCalls/allMessageCounts
@@ -145,7 +145,7 @@ export function useMessageEvents() {
         if (conversationId) {
           // Register in pending store so any concurrent background refetch also
           // includes this message even if the DB write hasn't committed yet.
-          addPendingMessage(conversationId, message);
+          if (!event.isUpdate) addPendingMessage(conversationId, message);
           queryClient.setQueryData<InfiniteData<models.Message[]>>(
             ["messages", conversationId],
             (oldData) => {

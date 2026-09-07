@@ -464,7 +464,7 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 		// Batch all updates in a single transaction, then sync the store.
 		updateCount := len(laToUpdate) + len(metaToUpdate)
 		if updateCount > 0 {
-			if err := db.DB.Transaction(func(tx *gorm.DB) error {
+			if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
 				for i := range metaToUpdate {
 					if err := tx.Save(&metaToUpdate[i]).Error; err != nil {
 						return err

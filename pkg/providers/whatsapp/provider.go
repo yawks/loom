@@ -100,7 +100,11 @@ type WhatsAppProvider struct {
 	callLogFullSyncOnce  sync.Once                       // Recover call logs missed while Loom was offline once per startup
 	syncFallbackMu       sync.Mutex                      // Protects the reconnect completion fallback
 	syncFallbackTimer    *time.Timer                     // Cancelled when OfflineSyncCompleted arrives
-	logger               *logging.ProviderLogger         // Logger for this provider instance
+	historyBackfillMu    sync.Mutex
+	historyBackfills     map[string]bool // Per-process targeted legacy-history requests
+	legacyRequestMu      sync.Mutex
+	legacyRequests       map[string]string       // Requested message ID -> namespaced conversation ID
+	logger               *logging.ProviderLogger // Logger for this provider instance
 }
 
 type pendingEditInfo struct {
@@ -189,6 +193,8 @@ func NewWhatsAppProvider() *WhatsAppProvider {
 		lastAvatarRefresh:    make(map[string]time.Time),
 		pendingEdits:         make(map[string]pendingEditInfo),
 		activeCalls:          make(map[string]*activeCallInfo),
+		historyBackfills:     make(map[string]bool),
+		legacyRequests:       make(map[string]string),
 	}
 }
 
@@ -752,6 +758,7 @@ func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
 		SupportsPinConversation:               true,
 		SupportsPinMessage:                    true,
 		SupportsListMessagePins:               true,
+		SupportsPollVoting:                    true,
 		MessagePinScope:                       string(models.MessagePinScopePersonal),
 		SupportsMuteConversation:              true,
 		SupportsQRCodeAuth:                    true,

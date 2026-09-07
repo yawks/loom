@@ -24,6 +24,9 @@ interface FileUploadModalProps {
   onUploadComplete?: () => void;
 }
 
+const isImageFile = (file: File): boolean =>
+  file.type?.startsWith("image/") || /\.(?:jpe?g|png|gif|webp|heic|heif)$/i.test(file.name);
+
 export function FileUploadModal({
   open,
   onOpenChange,
@@ -56,7 +59,7 @@ export function FileUploadModal({
   useEffect(() => {
     const previews: Record<string, string> = {};
     selectedFiles.forEach((file) => {
-      if (file.type?.startsWith("image/")) {
+      if (isImageFile(file)) {
         const key = `${file.name}-${file.size}-${file.lastModified}`;
         previews[key] = URL.createObjectURL(file);
       }
@@ -189,11 +192,11 @@ export function FileUploadModal({
                 {selectedFiles.map((file, index) => (
                   <div
                     key={`file-${file.name}-${index}`}
-                    className={file.type?.startsWith("image/")
+                    className={isImageFile(file)
                       ? "relative overflow-hidden border rounded-lg min-w-0 bg-muted/20"
                       : "flex items-center gap-3 p-3 border rounded-lg min-w-0"}
                   >
-                    {file.type?.startsWith("image/") ? (
+                    {isImageFile(file) ? (
                       <>
                         <img
                           src={imagePreviews[`${file.name}-${file.size}-${file.lastModified}`]}
@@ -207,7 +210,7 @@ export function FileUploadModal({
                     ) : (
                       <File className="h-5 w-5 text-muted-foreground shrink-0" />
                     )}
-                    {!file.type?.startsWith("image/") && (
+                    {!isImageFile(file) && (
                       <div className="flex-1 min-w-0 max-w-full overflow-hidden">
                         <p className="text-sm font-medium truncate" title={file.name}>{file.name}</p>
                         <p className="text-xs text-muted-foreground">
@@ -218,7 +221,7 @@ export function FileUploadModal({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className={file.type?.startsWith("image/")
+                      className={isImageFile(file)
                         ? "absolute right-2 top-2 h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background"
                         : "h-8 w-8 shrink-0"}
                       disabled={isUploading}

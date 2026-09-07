@@ -1,6 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, ChevronDown, Code, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
-import { GetCustomEmojis, GetGroupDetails, GetGroupParticipants, GetParticipantNames, ScheduleMessage, SendMessage, SendMessageWithMentions, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
+import { GetAttachmentData, GetCustomEmojis, GetGroupDetails, GetGroupParticipants, GetParticipantNames, ScheduleMessage, SendMessage, SendMessageWithMentions, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastContainer, useToast } from "@/components/ui/toast";
@@ -82,6 +82,53 @@ const extractPathsFromText = (text: string | null): string[] => {
           normalizedPath.match(/\.[a-zA-Z0-9]+$/)
         )
     );
+};
+
+const clipboardImageSource = (html: string): string | null => {
+  if (!html) return null;
+  const document = new DOMParser().parseFromString(html, "text/html");
+  return document.querySelector("img[src]")?.getAttribute("src") || null;
+};
+
+const imageMimeTypeFromName = (fileName: string): string | null => {
+  const extension = fileName.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "png") return "image/png";
+  if (extension === "gif") return "image/gif";
+  if (extension === "webp") return "image/webp";
+  if (extension === "heic" || extension === "heif") return `image/${extension}`;
+  return null;
+};
+
+// WebKit clipboard File objects can be backed by a temporary pasteboard item.
+// Copy the blob while handling the paste so reopening the modal never reuses a
+// released object, and repair missing/generic MIME metadata from the filename.
+const detachClipboardFile = (file: File): File => new File(
+  [file],
+  file.name || "clipboard-image.png",
+  {
+    type: (!file.type || file.type === "application/octet-stream")
+      ? imageMimeTypeFromName(file.name) || file.type
+      : file.type,
+    lastModified: file.lastModified || Date.now(),
+  }
+);
+
+const fileFromDataURL = (dataURL: string, source: string): File => {
+  const match = /^data:([^;,]+)?(?:;base64)?,(.*)$/s.exec(dataURL);
+  if (!match) throw new Error("Invalid clipboard image data");
+
+  const mimeType = match[1] || "image/png";
+  const encoded = dataURL.slice(0, dataURL.indexOf(",")).includes(";base64");
+  const contents = encoded ? atob(match[2]) : decodeURIComponent(match[2]);
+  const bytes = Uint8Array.from(contents, (character) => character.charCodeAt(0));
+  const extension = mimeType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  let fileName = `clipboard-image.${extension}`;
+  try {
+    const candidate = new URL(source).pathname.split("/").pop();
+    if (candidate && /\.[a-zA-Z0-9]+$/.test(candidate)) fileName = decodeURIComponent(candidate);
+  } catch { /* data URLs and local paths use the fallback name */ }
+  return new File([bytes], fileName, { type: mimeType });
 };
 
 // Matches the internal CustomEmoji type expected by emoji-picker-react
@@ -964,7 +1011,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     const clipboardData = e.clipboardData;
     const files: File[] = [];
     const filePaths: string[] = [];
-    const asyncPathPromises: Promise<void>[] = [];
+    const imageSource = clipboardImageSource(clipboardData.getData("text/html"));
 
     // First, check the text that would be pasted (synchronous access)
     // In Wails, the pasted text might contain the file path
@@ -986,7 +1033,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
     // Check clipboardData.files (most direct access)
     if (clipboardData.files && clipboardData.files.length > 0) {
-      const fileList = Array.from(clipboardData.files);
+      const fileList = Array.from(clipboardData.files, detachClipboardFile);
       files.push(...fileList);
     }
 
@@ -999,47 +1046,44 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         if (item.kind === "file") {
           const file = item.getAsFile();
           if (file) {
+            const detachedFile = detachClipboardFile(file);
             // Avoid duplicates
-            if (!files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) {
-              files.push(file);
+            if (!files.some(f => f.name === detachedFile.name && f.size === detachedFile.size && f.lastModified === detachedFile.lastModified)) {
+              files.push(detachedFile);
             }
           }
-        }
-        // Check for text that might be a file path (async, but we already checked synchronously above)
-        else if (item.kind === "string") {
-          asyncPathPromises.push(
-            new Promise<void>((resolve) => {
-              item.getAsString((text) => {
-                const paths = extractPathsFromText(text);
-                paths.forEach((path) => {
-                  if (!filePaths.includes(path)) {
-                    filePaths.push(path);
-                  }
-                });
-
-                resolve();
-              });
-            })
-          );
         }
       }
     }
 
-    const finalizeUpload = () => {
+    const finalizeUpload = async () => {
+      if (files.length === 0 && filePaths.length === 0 && imageSource) {
+        try {
+          const dataURL = imageSource.startsWith("data:")
+            ? imageSource
+            : await GetAttachmentData(imageSource);
+          files.push(fileFromDataURL(dataURL, imageSource));
+        } catch (error) {
+          console.error("Failed to read pasted image:", error);
+          showToast(t("upload_failed"), "error");
+        }
+      }
       if (files.length > 0 || filePaths.length > 0) {
-        e.preventDefault();
         if (onFileUploadRequest) {
           onFileUploadRequest(files, filePaths.length > 0 ? filePaths : undefined);
         }
       }
     };
 
-    if (asyncPathPromises.length > 0) {
-      Promise.all(asyncPathPromises).then(finalizeUpload);
-    } else {
-      finalizeUpload();
+    // preventDefault must happen during the paste event. Waiting for
+    // DataTransferItem.getAsString would let WebKit insert fallback text such
+    // as "obj" before Loom can open the upload dialog.
+    if (files.length > 0 || filePaths.length > 0 || imageSource) {
+      e.preventDefault();
     }
-  }, [onFileUploadRequest]);
+
+    void finalizeUpload();
+  }, [onFileUploadRequest, showToast, t]);
 
   // Handle drag and drop
   const handleDragEnter = useCallback((e: React.DragEvent) => {

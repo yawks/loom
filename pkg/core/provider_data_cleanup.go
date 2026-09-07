@@ -1,6 +1,7 @@
 package core
 
 import (
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,8 @@ import (
 // instance and returns its local media paths for post-commit cleanup.
 func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) {
 	var mediaPaths []string
-	err := database.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(database, func(tx *gorm.DB) error {
+		attemptMediaPaths := make([]string, 0)
 		var accounts []models.LinkedAccount
 		if err := tx.Unscoped().Where("provider_instance_id = ?", instanceID).Find(&accounts).Error; err != nil {
 			return err
@@ -53,7 +55,7 @@ func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) 
 		messageIDs := make([]uint, 0, len(messages))
 		for _, message := range messages {
 			messageIDs = append(messageIDs, message.ID)
-			mediaPaths = append(mediaPaths, attachmentLocalPaths(message.Attachments)...)
+			attemptMediaPaths = append(attemptMediaPaths, attachmentLocalPaths(message.Attachments)...)
 		}
 
 		if len(messageIDs) > 0 {
@@ -130,7 +132,11 @@ func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) 
 				}
 			}
 		}
-		return tx.Unscoped().Where("instance_id = ?", instanceID).Delete(&models.ProviderConfiguration{}).Error
+		if err := tx.Unscoped().Where("instance_id = ?", instanceID).Delete(&models.ProviderConfiguration{}).Error; err != nil {
+			return err
+		}
+		mediaPaths = attemptMediaPaths
+		return nil
 	})
 	return mediaPaths, err
 }

@@ -709,7 +709,7 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 
 		// Batch all updates in a single transaction, then sync the store.
 		if len(toUpdate) > 0 {
-			if err := db.DB.Transaction(func(tx *gorm.DB) error {
+			if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
 				for i := range toUpdate {
 					if err := tx.Save(&toUpdate[i]).Error; err != nil {
 						return err

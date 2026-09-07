@@ -16,6 +16,7 @@ import { MessageStatus } from "./MessageStatus";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
+import { PollMessage } from "./PollMessage";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 import { models } from "../../wailsjs/go/models";
@@ -90,6 +91,7 @@ export function MessageIRCItem({
 }: MessageIRCItemProps) {
   const { t } = useTranslation();
   const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
+  const capabilities = useAppStore((state) => state.capabilities);
   message = normalizeSerializedQuotedReply(message);
   const messageId = getMessageDomId(message);
   const prevMessage = index > 0 ? mainMessages[index - 1] : null;
@@ -140,7 +142,7 @@ export function MessageIRCItem({
     unreadThreadIds.has(message.protocolMsgId) ||
     threadMessages.some((msg) => !msg.isFromMe && conversationReadState[getMessageDomId(msg)] === false)
   );
-  const previewUrl = (!isDeleted && displayedBody) ? extractFirstUrl(displayedBody) : null;
+  const previewUrl = (!isDeleted && displayedBody && !message.poll) ? extractFirstUrl(displayedBody) : null;
 
   const deletedListWrapperClass = cn(
     "w-full flex flex-col gap-1 message",
@@ -296,19 +298,31 @@ export function MessageIRCItem({
                             </div>
                           </div>
                         )}
-						{!showSender && displayedBody && !hasStructuredAdaptiveCard(message.attachments) && (
+						{!showSender && displayedBody && !hasStructuredAdaptiveCard(message.attachments) && !message.poll && (
                           <div className="text-foreground text-left m-0 break-words min-w-0" style={{ marginTop: message.quotedMessageId ? "0" : "10px" }}>
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
-						{showSender && displayedBody?.trim() && !hasStructuredAdaptiveCard(message.attachments) && (
+						{showSender && displayedBody?.trim() && !hasStructuredAdaptiveCard(message.attachments) && !message.poll && (
                           <div className="text-foreground text-left m-0 break-words min-w-0">
                             <MessageText text={displayedBody} providerInstanceId={providerInstanceId} emojiSize={16} isFromMe={message.isFromMe} />
                             {message.isEdited && <span className="ml-1 text-xs italic opacity-40">({t("edited")})</span>}
                           </div>
                         )}
 						{previewUrl && !hasStructuredAdaptiveCard(message.attachments) && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}
+                        {message.poll && (
+                          <div className="mt-2">
+                            <PollMessage
+                              poll={message.poll}
+                              conversationId={conversationId}
+                              messageId={message.protocolMsgId}
+                              canVote={Boolean(providerInstanceId && capabilities[providerInstanceId]?.supportsPollVoting)}
+                              isFromMe={false}
+                              showToast={handlers.showToast}
+                            />
+                          </div>
+                        )}
                         {message.attachments?.trim() && (
                           <MessageAttachments
                             attachments={photoGroupMessages && photoGroupMessages.length > 1 ? mergePhotoGroupAttachments(photoGroupMessages) : message.attachments}
@@ -327,7 +341,7 @@ export function MessageIRCItem({
                             isGroupConversation={isGroupConversation}
                           />
                         )}
-                        {!displayedBody?.trim() && !message.attachments?.trim() && (
+                        {!displayedBody?.trim() && !message.attachments?.trim() && !message.poll && (
                           <p className="text-sm opacity-70 italic">{t("empty_message")}</p>
                         )}
                       </>

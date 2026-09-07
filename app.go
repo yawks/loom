@@ -1047,9 +1047,11 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				switch e := event.(type) {
 				case core.MessageEvent:
 					a.invalidateMessageCaches()
-					if notification := a.prepareSystemNotification(e); notification != nil && a.ctx != nil {
-						notificationJSON, _ := json.Marshal(notification)
-						runtime.EventsEmit(a.ctx, "system-notification", string(notificationJSON))
+					if !e.IsUpdate {
+						if notification := a.prepareSystemNotification(e); notification != nil && a.ctx != nil {
+							notificationJSON, _ := json.Marshal(notification)
+							runtime.EventsEmit(a.ctx, "system-notification", string(notificationJSON))
+						}
 					}
 					msgJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
@@ -1901,69 +1903,78 @@ func (a *App) persistCreatedConversation(instanceID, protocol, conversationType,
 	var account models.LinkedAccount
 	userID := core.StripConvID(conversation.ProtocolConvID)
 	persist := func() error {
-		return db.DB.Transaction(func(tx *gorm.DB) error {
-			account = models.LinkedAccount{}
-			result := tx.Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).First(&account)
+		return db.Transaction(db.DB, func(tx *gorm.DB) error {
+			var attemptMeta models.MetaContact
+			var attemptAccount models.LinkedAccount
+			attemptConversation := *conversation
+			attemptConversation.ID = 0
+			result := tx.Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).First(&attemptAccount)
 			if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 				return result.Error
 			}
 			if result.Error == gorm.ErrRecordNotFound {
-				meta = models.MetaContact{DisplayName: conversation.GroupName}
-				if err := tx.Create(&meta).Error; err != nil {
+				attemptMeta = models.MetaContact{DisplayName: attemptConversation.GroupName}
+				if err := tx.Create(&attemptMeta).Error; err != nil {
 					return err
 				}
-				account = models.LinkedAccount{
-					MetaContactID: meta.ID, Protocol: protocol, ProviderInstanceID: instanceID,
-					UserID: userID, Username: conversation.GroupName, IsGroup: true, Status: "offline",
+				attemptAccount = models.LinkedAccount{
+					MetaContactID: attemptMeta.ID, Protocol: protocol, ProviderInstanceID: instanceID,
+					UserID: userID, Username: attemptConversation.GroupName, IsGroup: true, Status: "offline",
 				}
-				if err := tx.Create(&account).Error; err != nil {
+				if err := tx.Create(&attemptAccount).Error; err != nil {
 					return err
 				}
 			} else {
-				account.IsGroup = true
+				attemptAccount.IsGroup = true
 				if protocol != "" {
-					account.Protocol = protocol
+					attemptAccount.Protocol = protocol
 				}
-				if conversation.GroupName != "" {
-					account.Username = conversation.GroupName
+				if attemptConversation.GroupName != "" {
+					attemptAccount.Username = attemptConversation.GroupName
 				}
-				if account.MetaContactID == 0 {
-					meta = models.MetaContact{DisplayName: account.Username}
-					if err := tx.Create(&meta).Error; err != nil {
+				if attemptAccount.MetaContactID == 0 {
+					attemptMeta = models.MetaContact{DisplayName: attemptAccount.Username}
+					if err := tx.Create(&attemptMeta).Error; err != nil {
 						return err
 					}
-					account.MetaContactID = meta.ID
-				} else if err := tx.First(&meta, account.MetaContactID).Error; err != nil {
+					attemptAccount.MetaContactID = attemptMeta.ID
+				} else if err := tx.First(&attemptMeta, attemptAccount.MetaContactID).Error; err != nil {
 					return err
 				}
-				if conversation.GroupName != "" {
-					meta.DisplayName = conversation.GroupName
+				if attemptConversation.GroupName != "" {
+					attemptMeta.DisplayName = attemptConversation.GroupName
 				}
-				if err := tx.Save(&meta).Error; err != nil {
+				if err := tx.Save(&attemptMeta).Error; err != nil {
 					return err
 				}
-				if err := tx.Save(&account).Error; err != nil {
+				if err := tx.Save(&attemptAccount).Error; err != nil {
 					return err
 				}
 			}
 
 			var storedConversation models.Conversation
-			result = tx.Where("protocol_conv_id = ?", conversation.ProtocolConvID).First(&storedConversation)
+			result = tx.Where("protocol_conv_id = ?", attemptConversation.ProtocolConvID).First(&storedConversation)
 			if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 				return result.Error
 			}
 			if result.Error == gorm.ErrRecordNotFound {
-				conversation.LinkedAccountID = account.ID
-				return tx.Create(conversation).Error
+				attemptConversation.LinkedAccountID = attemptAccount.ID
+				if err := tx.Create(&attemptConversation).Error; err != nil {
+					return err
+				}
+			} else {
+				storedConversation.LinkedAccountID = attemptAccount.ID
+				storedConversation.IsGroup = attemptConversation.IsGroup
+				storedConversation.ConversationType = attemptConversation.ConversationType
+				storedConversation.GroupName = attemptConversation.GroupName
+				if err := tx.Save(&storedConversation).Error; err != nil {
+					return err
+				}
+				attemptConversation = storedConversation
 			}
-			storedConversation.LinkedAccountID = account.ID
-			storedConversation.IsGroup = conversation.IsGroup
-			storedConversation.ConversationType = conversation.ConversationType
-			storedConversation.GroupName = conversation.GroupName
-			if err := tx.Save(&storedConversation).Error; err != nil {
-				return err
-			}
-			*conversation = storedConversation
+			meta = attemptMeta
+			account = attemptAccount
+			*conversation = attemptConversation
 			return nil
 		})
 	}
@@ -2096,15 +2107,13 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 	for _, msg := range messages {
 		instID := convToInstance[msg.ConversationID]
 		if instID == "" {
-			// Fallback: If we can't find the instance from the conversation (e.g. new message not yet stored),
-			// check if we have an active provider as a last resort fallback.
-			if a.getActiveProvider() != nil {
-				if config := a.getActiveProvider().GetConfig(); config != nil {
-					if id, ok := config["_instance_id"].(string); ok {
-						instID = id
-						convToInstance[msg.ConversationID] = instID
-					}
-				}
+			// Realtime/provider-fetched messages may not have their local numeric
+			// conversation ID yet. Their canonical namespaced conversation ID is
+			// authoritative; never route participant lookup through the active
+			// provider, which could hand (for example) a WhatsApp JID to Slack.
+			if idx := strings.Index(msg.ProtocolConvID, "::"); idx > 0 {
+				instID = msg.ProtocolConvID[:idx]
+				convToInstance[msg.ConversationID] = instID
 			}
 		}
 
@@ -2709,9 +2718,9 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 		fmt.Printf("[GetMessagesForConversationBefore] No DB connection, checking provider\n")
 	}
 
-	if a.getActiveProvider() != nil {
+	if provider := a.getProviderForConversation(conversationID); provider != nil {
 		before := beforeTimestamp
-		providerMessages, providerErr := a.getActiveProvider().GetConversationHistory(conversationID, limit, &before, nil)
+		providerMessages, providerErr := provider.GetConversationHistory(conversationID, limit, &before, nil)
 		if providerErr != nil {
 			fmt.Printf("[GetMessagesForConversationBefore] Provider fetch failed: %v\n", providerErr)
 			if err == nil {
@@ -2739,6 +2748,19 @@ func (a *App) SendMessage(conversationID string, content string) (*models.Messag
 		a.invalidateMessageCaches()
 	}
 	return message, err
+}
+
+// VotePoll replaces the current user's selected options on an existing poll.
+func (a *App) VotePoll(conversationID, messageID string, optionIDs []string) error {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	pollProvider, ok := provider.(core.PollVotingProvider)
+	if !ok || !provider.GetCapabilities().SupportsPollVoting {
+		return fmt.Errorf("poll voting is not supported")
+	}
+	return pollProvider.VotePoll(conversationID, messageID, optionIDs)
 }
 
 // SendMessageWithMentions sends canonical participant references. Protocol
@@ -3052,19 +3074,14 @@ func (a *App) SendThreadFileFromPath(conversationID string, filePath string, thr
 	return provider.SendFile(conversationID, attachment, &threadID)
 }
 
-// ForwardAttachment lets a provider preserve a remote attachment when it has
-// a more appropriate native representation (for example a SharePoint link).
-// Providers without such support use the regular download-and-upload path.
+// ForwardAttachment resolves the attachment through its source provider (or
+// local cache) before handing the bytes to the destination provider. The
+// destination must not try to authenticate against a URL owned by a different
+// provider.
 func (a *App) ForwardAttachment(conversationID, sourceURL, filename, mimeType string) error {
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)
-	}
-	type attachmentForwarder interface {
-		ForwardAttachment(string, string, string, string) error
-	}
-	if forwarder, ok := provider.(attachmentForwarder); ok {
-		return forwarder.ForwardAttachment(conversationID, sourceURL, filename, mimeType)
 	}
 	data, err := a.GetAttachmentData(sourceURL)
 	if err != nil {
@@ -3756,7 +3773,7 @@ func (a *App) setContactAlias(userID, conversationID, alias string) error {
 		// If alias is empty, delete the alias
 		return db.DB.Where("user_id IN ?", targetIDs).Delete(&models.ContactAlias{}).Error
 	}
-	return db.DB.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		for _, targetID := range targetIDs {
 			var existing models.ContactAlias
 			result := tx.Where("user_id = ?", targetID).First(&existing)

@@ -764,7 +764,7 @@ func (p *GoogleChatProvider) storeMessagesForConversation(convID string, message
 		if db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, nsConvID).First(&stored).Error != nil {
 			continue
 		}
-		err := db.DB.Transaction(func(tx *gorm.DB) error {
+		err := db.Transaction(db.DB, func(tx *gorm.DB) error {
 			// Google Chat reaction resources may omit createTime. Preserve the
 			// timestamp of a reaction we already know; otherwise use the message
 			// timestamp as a conservative lower bound. Letting GORM fill a missing

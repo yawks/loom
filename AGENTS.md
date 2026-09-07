@@ -20,3 +20,16 @@ Except for provider configuration and bundled brand assets/icons, code under
 
 When touching frontend code, search for provider names and explain any remaining
 occurrence outside those exceptions.
+
+## SQLite transactions
+
+- All provider and backend transactions must use `db.Transaction(database, fn)`
+  instead of calling `database.Transaction(fn)` or `db.DB.Transaction(fn)`
+  directly.
+- The wrapper retries the complete transaction on `SQLITE_BUSY` and
+  `SQLITE_BUSY_SNAPSHOT`, which commonly occur during concurrent synchronization
+  and after system wake.
+- Initialize values mutated by GORM inside the transaction callback, especially
+  models passed to `Create`, so every retry starts without IDs or other state
+  left by a rolled-back attempt.
+- Do not add provider-specific SQLite retry loops.

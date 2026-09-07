@@ -31,12 +31,14 @@ export function normalizeReaction(
   // prevents the provider shortcode from being found and sends invalid Unicode
   // value as the reaction name.
   const canonicalName = unicodeToEmojiName(originalUnicode) || unicodeToEmojiName(unicode) || unicode;
-  const namedApiEmoji = hasNamedForm || resolvedUnicode ? clean : canonicalName;
+  // Named reaction APIs need the canonical name from the shared emoji map,
+  // regardless of whether the picker supplied Unicode or one of its own
+  // aliases. Custom emoji have no Unicode mapping and keep their exact name.
+  const namedApiEmoji = resolvedUnicode || !hasNamedForm ? canonicalName : clean;
 
   return {
-    // A provider picker may already know the exact API shortcode. Preserve it:
-    // converting it to Unicode and back through the generated alias map can
-    // turn a canonical "grinning" shortcode into a loose textual alias such as ":d".
+    // Standard emoji always go through the shared name converter. Unknown
+    // names are custom emoji and are deliberately preserved verbatim.
     apiEmoji: nativeEmojiReactions ? unicode : namedApiEmoji,
     canonicalName,
     storedEmoji: `:${canonicalName}:`,

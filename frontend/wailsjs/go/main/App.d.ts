@@ -208,3 +208,5 @@ export function UpdateGroupPhoto(arg1:string,arg2:string):Promise<void>;
 export function UpdateMessageWatchRule(arg1:number,arg2:string,arg3:boolean):Promise<models.MessageWatchRule>;
 
 export function UpdateSystemTrayBadge(arg1:number):Promise<void>;
+
+export function VotePoll(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
