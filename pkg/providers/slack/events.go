@@ -25,6 +25,20 @@ func slackSearchPollSince(lastPoll time.Time) time.Time {
 	return lastPoll.Add(-slackSearchPollingOverlap)
 }
 
+func slackNewlyStoredMessages(stored []models.Message, existingIDs []string) []models.Message {
+	existing := make(map[string]struct{}, len(existingIDs))
+	for _, id := range existingIDs {
+		existing[id] = struct{}{}
+	}
+	newMessages := make([]models.Message, 0, len(stored))
+	for _, message := range stored {
+		if _, found := existing[message.ProtocolMsgID]; !found {
+			newMessages = append(newMessages, message)
+		}
+	}
+	return newMessages
+}
+
 // StreamEvents returns a channel that emits provider events (messages, reactions, etc.).
 // This uses polling to periodically check for new messages since RTM is deprecated.
 func (p *SlackProvider) StreamEvents() (<-chan core.ProviderEvent, error) {
@@ -277,7 +291,17 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			continue
 		}
 		lastTimestamp := time.UnixMilli(lastTimestampMillis)
-		messages, err := p.GetConversationHistory(
+		// GetConversationHistory persists both main messages and thread replies,
+		// but intentionally returns only main messages. Snapshot the known IDs so
+		// replies discovered by that call are included in the incremental event.
+		var existingIDs []string
+		if err := db.DB.Model(&models.Message{}).
+			Where("protocol_conv_id = ? AND timestamp > ?", conversation.ProtocolConvID, lastTimestamp).
+			Pluck("protocol_msg_id", &existingIDs).Error; err != nil {
+			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed reading existing IDs for %s: %v\n", conversation.ProtocolConvID, err)
+			continue
+		}
+		_, err := p.GetConversationHistory(
 			conversation.ProtocolConvID,
 			100,
 			nil,
@@ -287,11 +311,21 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		if len(messages) == 0 {
+		var stored []models.Message
+		if err := db.DB.Where(
+			"protocol_conv_id = ? AND timestamp > ? AND deleted_at IS NULL",
+			conversation.ProtocolConvID,
+			lastTimestamp,
+		).Order("timestamp ASC").Find(&stored).Error; err != nil {
+			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed loading recovered messages for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, messages, "")
-		p.log("SlackProvider.pollKnownConversationHistoryFallback: recovered %d message(s) for %s\n", len(messages), conversation.ProtocolConvID)
+		newMessages := slackNewlyStoredMessages(stored, existingIDs)
+		if len(newMessages) == 0 {
+			continue
+		}
+		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, newMessages, "")
+		p.log("SlackProvider.pollKnownConversationHistoryFallback: recovered %d message(s) for %s\n", len(newMessages), conversation.ProtocolConvID)
 	}
 
 	if end == len(conversations) {
