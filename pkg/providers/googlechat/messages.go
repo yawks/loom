@@ -219,7 +219,11 @@ func (p *GoogleChatProvider) SendMessageWithMentions(convID, text string, mentio
 	var message *models.Message
 	var err error
 	if quotedMessageID != nil {
-		message, err = p.SendReply(convID, providerText, *quotedMessageID)
+		if threadID != nil && *threadID != "" {
+			message, err = p.SendThreadReply(convID, providerText, *threadID, *quotedMessageID)
+		} else {
+			message, err = p.SendReply(convID, providerText, *quotedMessageID)
+		}
 	} else {
 		message, err = p.SendMessage(convID, providerText, nil, threadID)
 	}
@@ -230,27 +234,66 @@ func (p *GoogleChatProvider) SendMessageWithMentions(convID, text string, mentio
 }
 
 func (p *GoogleChatProvider) SendReply(convID, text, quotedMessageID string) (*models.Message, error) {
-	threadName := p.getMessageThreadName(quotedMessageID)
-	if threadName == "" {
-		return nil, fmt.Errorf("googlechat: could not resolve thread for message %s", quotedMessageID)
+	var quoted models.Message
+	if db.DB == nil {
+		return nil, fmt.Errorf("googlechat: quoted message storage is unavailable")
 	}
-	msg, err := p.SendMessage(convID, text, nil, &threadName)
+	namespacedConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
+	if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", quotedMessageID, namespacedConvID).
+		First(&quoted).Error; err != nil {
+		return nil, fmt.Errorf("googlechat: quoted message %s not found: %w", quotedMessageID, err)
+	}
+
+	quotedBody := quoted.Body
+	if quotedBody == "" && quoted.Attachments != "" {
+		quotedBody = "📎 Attachment"
+	}
+	quotedSenderName := quoted.SenderName
+	if quotedSenderName == "" {
+		quotedSenderName = quoted.SenderID
+	}
+	quoteLines := strings.Split(quotedBody, "\n")
+	for i := range quoteLines {
+		quoteLines[i] = "> " + quoteLines[i]
+	}
+	providerText := fmt.Sprintf("> **%s**\n%s\n\n%s", quotedSenderName, strings.Join(quoteLines, "\n"), text)
+
+	// Google Chat's REST API only models replies as threads. Keep Loom's Reply
+	// action in the main conversation and encode the quote in the message body.
+	msg, err := p.SendMessage(convID, providerText, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	// Set ThreadID to the parent's ProtocolMsgID (not the Google Chat thread name)
-	// so the frontend can correctly group this reply under the parent.
-	msg.ThreadID = &quotedMessageID
-	if db.DB != nil && msg.ProtocolMsgID != "" {
+	msg.Body = text
+	msg.ThreadID = nil
+	msg.QuotedMessageID = &quotedMessageID
+	msg.QuotedSenderID = &quoted.SenderID
+	msg.QuotedSenderName = quotedSenderName
+	msg.QuotedBody = &quotedBody
+	if msg.ProtocolMsgID != "" {
 		db.DB.Model(&models.Message{}).
 			Where("protocol_msg_id = ?", msg.ProtocolMsgID).
-			Update("thread_id", quotedMessageID)
+			Updates(map[string]interface{}{
+				"body":               text,
+				"thread_id":          nil,
+				"quoted_message_id":  quotedMessageID,
+				"quoted_sender_id":   quoted.SenderID,
+				"quoted_sender_name": quotedSenderName,
+				"quoted_body":        quotedBody,
+			})
 	}
 	return msg, nil
 }
 
 func (p *GoogleChatProvider) SendThreadReply(convID, text, threadID, quotedMessageID string) (*models.Message, error) {
-	msg, err := p.SendReply(convID, text, quotedMessageID)
+	threadName := p.getMessageThreadName(threadID)
+	if threadName == "" {
+		threadName = p.getMessageThreadName(quotedMessageID)
+	}
+	if threadName == "" {
+		return nil, fmt.Errorf("googlechat: could not resolve thread for message %s", quotedMessageID)
+	}
+	msg, err := p.SendMessage(convID, text, nil, &threadName)
 	if err != nil {
 		return nil, err
 	}

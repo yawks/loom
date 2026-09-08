@@ -1040,8 +1040,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       files.push(...fileList);
     }
 
-    // Also check clipboardData.items for file items and paths
-    if (clipboardData.items && clipboardData.items.length > 0) {
+    // `files` and file-kind `items` are two views over the same clipboard
+    // payload in browsers/WebKit. Only use items as a fallback, otherwise a
+    // detached clipboard file can receive a different synthetic lastModified
+    // value and the same image is added twice to the upload dialog.
+    if (files.length === 0 && clipboardData.items && clipboardData.items.length > 0) {
       for (let i = 0; i < clipboardData.items.length; i++) {
         const item = clipboardData.items[i];
 

@@ -415,6 +415,80 @@ func jsonResponse(body string) *http.Response {
 	}
 }
 
+func TestSendReplyKeepsQuotedReplyInMainConversation(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatalf("InitMockDatabase: %v", err)
+	}
+	defer func() {
+		sqlDB, err := db.DB.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+
+	provider := NewGoogleChatProvider()
+	provider.config = core.ProviderConfig{"_instance_id": "googlechat-reply-test"}
+	provider.selfID = "self"
+	provider.selfName = "Me"
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/spaces/reply-test/messages" || req.URL.RawQuery != "" {
+			t.Fatalf("reply was sent to a thread: %s", req.URL.String())
+		}
+		var payload struct {
+			Text   string      `json:"text"`
+			Thread interface{} `json:"thread"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode reply payload: %v", err)
+		}
+		if payload.Thread != nil {
+			t.Fatalf("reply payload contains a thread: %#v", payload.Thread)
+		}
+		if payload.Text != "> *Alice*\n> Original message\n\nMy reply" {
+			t.Fatalf("reply payload text = %q", payload.Text)
+		}
+		return jsonResponse(`{"name":"spaces/reply-test/messages/reply-1","sender":{"name":"users/self"}}`), nil
+	})}
+
+	meta := models.MetaContact{DisplayName: "Reply test"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-reply-test", UserID: "spaces/reply-test"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	convID := "googlechat-reply-test::spaces/reply-test"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: convID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	quoted := models.Message{
+		ConversationID: conversation.ID,
+		ProtocolConvID: convID,
+		ProtocolMsgID:  "spaces/reply-test/messages/original",
+		SenderID:       "alice",
+		SenderName:     "Alice",
+		Body:           "Original message",
+		Timestamp:      time.Now(),
+	}
+	if err := db.DB.Create(&quoted).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	reply, err := provider.SendReply(convID, "My reply", quoted.ProtocolMsgID)
+	if err != nil {
+		t.Fatalf("SendReply: %v", err)
+	}
+	if reply.ThreadID != nil || reply.QuotedMessageID == nil || *reply.QuotedMessageID != quoted.ProtocolMsgID {
+		t.Fatalf("reply relation = thread %v, quote %v", reply.ThreadID, reply.QuotedMessageID)
+	}
+	if reply.Body != "My reply" || reply.QuotedBody == nil || *reply.QuotedBody != quoted.Body || reply.QuotedSenderName != "Alice" {
+		t.Fatalf("unexpected canonical reply: %#v", reply)
+	}
+}
+
 func TestSendFileUploadsAndAttachesFile(t *testing.T) {
 	const uploadToken = "opaque-upload-token"
 	imageData := []byte("\x89PNG\r\n\x1a\nimage-data")
