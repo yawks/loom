@@ -21,6 +21,13 @@ const slackSearchPollingOverlap = 10 * time.Minute
 
 const slackHistoryFallbackBatchSize = 4
 
+type slackFallbackConversation struct {
+	ProtocolConvID string
+	// SQLite returns aggregate date values such as MAX(timestamp) as text,
+	// even though individual timestamp columns scan into time.Time.
+	LastTimestamp string
+}
+
 func slackSearchPollSince(lastPoll time.Time) time.Time {
 	return lastPoll.Add(-slackSearchPollingOverlap)
 }
@@ -37,6 +44,23 @@ func slackNewlyStoredMessages(stored []models.Message, existingIDs []string) []m
 		}
 	}
 	return newMessages
+}
+
+func slackFallbackConversations(database *gorm.DB, instanceID string) ([]slackFallbackConversation, error) {
+	var conversations []slackFallbackConversation
+	// BuildConvID intentionally returns an empty string for an empty raw ID, so
+	// construct the namespace prefix explicitly. An empty prefix would match all
+	// providers and waste Slack API calls on WhatsApp/Teams conversation IDs.
+	prefix := instanceID + "::"
+	err := database.Model(&models.Message{}).
+		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
+		Where("substr(protocol_conv_id, 1, ?) = ?", len(prefix), prefix).
+		Where("deleted_at IS NULL").
+		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
+		Group("protocol_conv_id").
+		Order("last_timestamp DESC").
+		Scan(&conversations).Error
+	return conversations, err
 }
 
 // StreamEvents returns a channel that emits provider events (messages, reactions, etc.).
@@ -257,22 +281,8 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		return cursor
 	}
 
-	type conversationCursor struct {
-		ProtocolConvID string
-		// SQLite returns aggregate date values such as MAX(timestamp) as text,
-		// even though individual timestamp columns scan into time.Time.
-		LastTimestamp string
-	}
-	var conversations []conversationCursor
-	prefix := core.BuildConvID(p.getInstanceId(), "")
-	if err := db.DB.Model(&models.Message{}).
-		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
-		Where("substr(protocol_conv_id, 1, ?) = ?", len(prefix), prefix).
-		Where("deleted_at IS NULL").
-		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
-		Group("protocol_conv_id").
-		Order("last_timestamp DESC").
-		Scan(&conversations).Error; err != nil {
+	conversations, err := slackFallbackConversations(db.DB, p.getInstanceId())
+	if err != nil {
 		p.log("SlackProvider.pollKnownConversationHistoryFallback: failed listing local conversations: %v\n", err)
 		return cursor
 	}

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // huddleURLRegex extracts a huddle join URL from a raw Slack message text.
@@ -141,37 +143,20 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 		sentMessage.ThreadID = threadID
 	}
 
-	// Store message in database first (so we can create receipts)
+	// Store the message before confirming the optimistic frontend row. History
+	// synchronization writes concurrently, so this must use the retrying SQLite
+	// transaction wrapper rather than silently losing the local copy on BUSY.
 	if db.DB != nil {
 		// Ensure Conversation exists and get ConversationID (using normalized ID)
 		convID, err := p.ensureConversation(normalizedConversationID)
 		if err != nil {
-			p.log("SlackProvider.SendMessage: Failed to ensure conversation: %v\n", err)
-		} else {
-			sentMessage.ConversationID = convID
+			return nil, fmt.Errorf("message sent to Slack but local conversation could not be persisted: %w", err)
 		}
-
-		// Check if message already exists (shouldn't, but just in case)
-		var existingMsg models.Message
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", timestamp, nsConvID).First(&existingMsg).Error; err != nil {
-			// Message doesn't exist, create it
-			if err := db.DB.Create(sentMessage).Error; err != nil {
-				p.log("SlackProvider.SendMessage: Failed to store message in database: %v\n", err)
-			} else {
-				p.log("SlackProvider.SendMessage: Stored sent message %s in database\n", timestamp)
-				// Create a "delivery" receipt for the message (since it was successfully sent)
-				// For DMs, we can create a receipt for the other participant
-				// For now, we'll skip receipts for Slack as it doesn't have native delivery receipts
-			}
-		} else {
-			// Message exists, update it
-			sentMessage.ID = existingMsg.ID
-			if err := db.DB.Save(sentMessage).Error; err != nil {
-				p.log("SlackProvider.SendMessage: Failed to update message in database: %v\n", err)
-			} else {
-				p.log("SlackProvider.SendMessage: Updated sent message %s in database\n", timestamp)
-			}
+		sentMessage.ConversationID = convID
+		if err := persistSlackSentMessage(db.DB, sentMessage); err != nil {
+			return nil, fmt.Errorf("message sent to Slack but could not be stored locally: %w", err)
 		}
+		p.log("SlackProvider.SendMessage: Stored sent message %s in database\n", timestamp)
 	}
 
 	// Emit MessageEvent to notify frontend
@@ -185,6 +170,31 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	}
 
 	return sentMessage, nil
+}
+
+func persistSlackSentMessage(database *gorm.DB, message *models.Message) error {
+	return db.Transaction(database, func(tx *gorm.DB) error {
+		// GORM mutates primary keys during Create. Start every SQLITE_BUSY retry
+		// from a clean value so a rolled-back attempt cannot turn into an update.
+		candidate := *message
+		candidate.ID = 0
+		if err := tx.Omit("Reactions", "Receipts").Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "protocol_msg_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"conversation_id", "protocol_conv_id", "sender_id", "sender_name",
+				"sender_avatar_url", "body", "mentions", "timestamp", "is_from_me",
+				"thread_id", "quoted_message_id", "quoted_sender_id",
+				"quoted_sender_name", "quoted_body",
+			}),
+		}).Create(&candidate).Error; err != nil {
+			return err
+		}
+		if err := tx.Select("id").Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&candidate).Error; err != nil {
+			return err
+		}
+		message.ID = candidate.ID
+		return nil
+	})
 }
 
 func (p *SlackProvider) SendMessageWithMentions(conversationID, text string, mentions []core.Mention, threadID, quotedMessageID *string) (*models.Message, error) {

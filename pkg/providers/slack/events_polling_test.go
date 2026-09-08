@@ -5,6 +5,9 @@ import (
 	"Loom/pkg/models"
 	"testing"
 	"time"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestSlackSearchPollSinceKeepsIndexingOverlap(t *testing.T) {
@@ -23,6 +26,32 @@ func TestSlackFallbackParsesSQLiteAggregateTimestamp(t *testing.T) {
 	got := time.UnixMilli(db.ParseTimeMillis(raw))
 	if !got.Equal(want) {
 		t.Fatalf("parsed fallback timestamp = %s, want %s", got, want)
+	}
+}
+
+func TestSlackFallbackListsOnlyCurrentProviderConversations(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	messages := []models.Message{
+		{ProtocolConvID: "slack-1::U1", ProtocolMsgID: "slack-message", Timestamp: time.Now()},
+		{ProtocolConvID: "teams-1::19:chat", ProtocolMsgID: "teams-message", Timestamp: time.Now()},
+		{ProtocolConvID: "whatsapp-1::123@s.whatsapp.net", ProtocolMsgID: "whatsapp-message", Timestamp: time.Now()},
+	}
+	if err := database.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	conversations, err := slackFallbackConversations(database, "slack-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversations) != 1 || conversations[0].ProtocolConvID != "slack-1::U1" {
+		t.Fatalf("fallback conversations = %#v, want only slack-1::U1", conversations)
 	}
 }
 
