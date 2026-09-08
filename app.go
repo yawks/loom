@@ -2661,6 +2661,26 @@ func (a *App) GetMessagesForConversation(conversationID string) ([]models.Messag
 	return messages, err
 }
 
+// GetAttachmentMessages returns every persisted message containing attachments
+// for a conversation. Attachment browsing is provider-neutral and includes
+// thread replies, which are otherwise loaded separately from the main timeline.
+func (a *App) GetAttachmentMessages(conversationID string) ([]models.Message, error) {
+	if db.DB == nil {
+		return []models.Message{}, nil
+	}
+
+	var messages []models.Message
+	if err := db.DB.Where("protocol_conv_id = ?", conversationID).
+		Where("attachments IS NOT NULL AND TRIM(attachments) NOT IN ('', '[]', 'null')").
+		Order("timestamp desc").
+		Find(&messages).Error; err != nil {
+		return []models.Message{}, err
+	}
+
+	a.enrichMessagesWithSenderNames(messages)
+	return messages, nil
+}
+
 // SearchMessages searches persisted message bodies, newest first. Offset-based
 // pagination is sufficient here because search pages are deliberately small.
 func (a *App) SearchMessages(query string, offset int) (models.MessageSearchPage, error) {

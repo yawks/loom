@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -325,17 +324,10 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 		return
 	}
 
-	// Emit start status
-	total := len(accountsToLoad)
-	w.emitSyncStatus(core.SyncStatusFetchingAvatars, fmt.Sprintf("Loading profile pictures (%d contacts)...", total), 0)
-
 	// Limit concurrent requests to avoid rate limiting
 	// Reduced from 5 to 3 to avoid overwhelming WhatsApp servers
 	const maxConcurrent = 3
 	sem := make(chan struct{}, maxConcurrent)
-	var loaded int
-	var progressMu sync.Mutex
-	done := make(chan struct{}, 1) // Channel to signal when all are done
 
 	for i, acc := range accountsToLoad {
 		jid, _ := types.ParseJID(acc.UserID) // We already validated above
@@ -446,34 +438,6 @@ func (w *WhatsAppProvider) loadAvatarsAsync(accounts []models.LinkedAccount, lim
 			} else {
 				// fmt.Printf("WhatsApp: No avatar available for %s\n", account.UserID)
 			}
-
-			// Update progress
-			progressMu.Lock()
-			loaded++
-			currentLoaded := loaded
-			isComplete := currentLoaded >= total
-			progressMu.Unlock()
-
-			progress := int((float64(currentLoaded) / float64(total)) * 100)
-			w.emitSyncStatus(core.SyncStatusFetchingAvatars, fmt.Sprintf("Loading profile pictures (%d/%d)...", currentLoaded, total), progress)
-
-			// If all avatars are loaded, signal completion (only once)
-			if isComplete {
-				select {
-				case done <- struct{}{}:
-				default:
-				}
-			}
 		}(acc, jid)
 	}
-
-	// Wait for all avatars to be loaded, then emit final completed status
-	go func() {
-		// Wait for all goroutines to complete
-		for i := 0; i < total; i++ {
-			<-sem // Wait for each goroutine to release semaphore
-		}
-		// Emit final completed status
-		w.emitSyncStatus(core.SyncStatusCompleted, fmt.Sprintf("Profile pictures loaded (%d contacts)", total), 100)
-	}()
 }

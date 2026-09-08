@@ -349,9 +349,7 @@ func (p *GoogleChatProvider) GetThreads(parentMessageID string) ([]models.Messag
 }
 
 func (p *GoogleChatProvider) AddReaction(convID, messageID, emoji string) error {
-	p.log("GoogleChatProvider.AddReaction: requested conversation=%s message=%s emoji=%q\n", convID, messageID, emoji)
 	if p.getHTTPClient() == nil {
-		p.log("GoogleChatProvider.AddReaction: rejected because provider is not connected\n")
 		return fmt.Errorf("not connected")
 	}
 
@@ -394,7 +392,6 @@ func (p *GoogleChatProvider) AddReaction(convID, messageID, emoji string) error 
 			Timestamp:      time.Now().Unix(),
 		})
 	}
-	p.log("GoogleChatProvider.AddReaction: completed message=%s emoji=%q\n", messageID, emoji)
 	return nil
 }
 

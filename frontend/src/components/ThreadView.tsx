@@ -576,12 +576,6 @@ export function ThreadView() {
   const handleReaction = useCallback(
     async (message: models.Message, emoji: string) => {
       const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
-      console.info("[ThreadView] reaction requested", {
-        conversationId,
-        selectedThreadId,
-        protocolMsgId,
-        emoji,
-      });
       const messageReactions = message.reactions || [];
       const nativeEmojiReactions = providerInstanceId
         ? capabilities[providerInstanceId]?.nativeEmojiReactions ?? false
@@ -828,7 +822,11 @@ export function ThreadView() {
           setHasThreadFocus(false);
         }
       }}
-      onPointerDownCapture={() => {
+      onPointerDownCapture={(event) => {
+        // React events from Radix portals still propagate through the React
+        // tree even though their DOM node is outside ThreadView. Do not steal
+        // focus from a portalled reaction picker before its click can fire.
+        if (!event.currentTarget.contains(event.target as Node)) return;
         if (!threadViewRef.current?.contains(document.activeElement)) {
           scrollContainerRef.current?.focus({ preventScroll: true });
         }

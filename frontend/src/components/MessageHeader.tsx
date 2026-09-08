@@ -1,5 +1,5 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bell, BellOff, Calendar, Info, MessageSquare, Pin, Search } from "lucide-react";
+import { Bell, BellOff, Calendar, Info, MessageSquare, Paperclip, Pin, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { GetConfiguredProviders, GetConversationState, SetConversationMuted } from "../../wailsjs/go/main/App";
@@ -26,6 +26,7 @@ export function MessageHeader({
   onToggleThreads,
   onToggleDetails,
   onTogglePins,
+  onToggleAttachments,
   pinCount,
   metaContactId,
 }: {
@@ -38,6 +39,7 @@ export function MessageHeader({
   onToggleThreads: () => void;
   onToggleDetails: () => void;
   onTogglePins: () => void;
+  onToggleAttachments: () => void;
   pinCount: number;
   metaContactId: number;
 }) {
@@ -147,7 +149,7 @@ export function MessageHeader({
             status === "meeting" ? (
               <div
                 className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded bg-blue-500 border-2 border-background flex items-center justify-center"
-                title={t("meeting") || "En réunion"}
+                title={t("meeting")}
               >
                 <Calendar className="h-2 w-2 text-white" />
               </div>
@@ -222,8 +224,18 @@ export function MessageHeader({
         <Button
           variant="ghost"
           size="icon"
+          onClick={onToggleAttachments}
+          title={t("attachments")}
+          aria-label={t("attachments")}
+        >
+          <Paperclip className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={onToggleDetails}
-          title="Conversation Details"
+          title={t("conversation_details")}
+          aria-label={t("conversation_details")}
         >
           <Info className="h-4 w-4" />
         </Button>

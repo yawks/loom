@@ -70,12 +70,6 @@ export function ReactionPicker({
   };
 
   const handleEmojiClick = (emojiData: EmojiClickData) => {
-    console.info("[ReactionPicker] emoji selected", {
-      emoji: emojiData.emoji,
-      unified: emojiData.unified,
-      isCustom: emojiData.isCustom,
-      instanceId,
-    });
     if (emojiData.isCustom) {
       if (instanceId) {
         recordCustomEmojiUsage(instanceId, emojiData.unified);

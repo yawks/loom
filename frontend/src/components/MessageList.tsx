@@ -3,6 +3,7 @@ import {
   CancelScheduledMessage,
   DeleteMessage,
   GetCapabilities,
+  GetAttachmentMessages,
   GetHighlightedMessageRefs,
   GetPinnedMessageContext,
   GetPinnedMessages,
@@ -36,6 +37,7 @@ import type { MessageHandlers } from "./MessageBubbleItem";
 import { MessageBubbleItem } from "./MessageBubbleItem";
 import { MessageHeader } from "./MessageHeader";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
+import { AttachmentsPanel } from "./AttachmentsPanel";
 import { MessageIRCItem } from "./MessageIRCItem";
 import { CalendarClock, ChevronDown, ChevronUp, Trash2, UploadCloud } from "lucide-react";
 import { cn, timeToDate } from "@/lib/utils";
@@ -157,11 +159,13 @@ export function MessageList({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<{ conversationID: string; messageID: string } | null>(null);
   const [showPins, setShowPins] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
   const [historicalContext, setHistoricalContext] = useState(false);
 
   useEffect(() => {
     setHistoricalContext(false);
     setShowPins(false);
+    setShowAttachments(false);
   }, [conversationId]);
 
   const readPolicy = useMemo(() => {
@@ -195,6 +199,11 @@ export function MessageList({
     enabled: Boolean(conversationId && providerInstanceId && capabilities[providerInstanceId]?.supportsListMessagePins),
   });
   const pinnedMessageIds = useMemo(() => new Set(pinnedMessages.map((pin) => pin.protocolMsgId)), [pinnedMessages]);
+  const { data: attachmentMessages = [], isFetching: attachmentsLoading, refetch: refetchAttachments } = useQuery({
+    queryKey: ["attachment-messages", conversationId],
+    queryFn: () => GetAttachmentMessages(conversationId).catch(() => []),
+    enabled: Boolean(conversationId && showAttachments),
+  });
 
   const prevScheduledCountRef = useRef<number>(0);
   const { data: rawScheduledMessages } = useQuery({
@@ -870,6 +879,9 @@ export function MessageList({
   }, [handleStartReached, saveVisibleAnchor]);
 
   const handleToggleThreads = () => {
+    setShowPins(false);
+    setShowAttachments(false);
+    setShowConversationDetails(false);
     if (showThreads) {
       setSelectedThreadId(null);
       setShowThreads(false);
@@ -878,7 +890,23 @@ export function MessageList({
     }
   };
 
-  const handleToggleDetails = () => setShowConversationDetails(!showConversationDetails);
+  const handleToggleDetails = () => {
+    setShowPins(false);
+    setShowAttachments(false);
+    setSelectedThreadId(null);
+    setShowThreads(false);
+    setShowConversationDetails(!showConversationDetails);
+  };
+
+  const handleToggleAttachments = () => {
+    const next = !showAttachments;
+    setShowPins(false);
+    setSelectedThreadId(null);
+    setShowThreads(false);
+    setShowConversationDetails(false);
+    setShowAttachments(next);
+    if (next) void refetchAttachments();
+  };
 
   const handleAvatarClick = useCallback((avatarUrl: string | undefined, displayName?: string) => {
     const urlToShow = avatarUrl || (displayName ? `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(displayName)}` : null);
@@ -1104,7 +1132,15 @@ export function MessageList({
           activeAccount={activeAccount}
           onToggleThreads={handleToggleThreads}
           onToggleDetails={handleToggleDetails}
-          onTogglePins={() => { void refetchPins(); setShowPins((value) => !value); }}
+          onTogglePins={() => {
+            setShowAttachments(false);
+            setSelectedThreadId(null);
+            setShowThreads(false);
+            setShowConversationDetails(false);
+            void refetchPins();
+            setShowPins((value) => !value);
+          }}
+          onToggleAttachments={handleToggleAttachments}
           pinCount={pinnedMessages.length}
         />
         {historicalContext && (
@@ -1129,7 +1165,7 @@ export function MessageList({
                 </svg>
               </div>
               <p className="text-muted-foreground text-sm" style={{ animation: "shimmer 2s ease-in-out infinite" }}>
-                {t("fetching_messages") || "Récupération des messages"}
+                {t("fetching_messages")}
               </p>
             </div>
           </div>
@@ -1309,6 +1345,13 @@ export function MessageList({
               try { await UnpinMessage(conversationId, pin.protocolMsgId); await refetchPins(); showToast(t("message_unpinned"), "success"); }
               catch (error) { showToast(String(error), "error"); }
             }}
+          />
+        )}
+        {showAttachments && (
+          <AttachmentsPanel
+            messages={attachmentMessages}
+            loading={attachmentsLoading}
+            onClose={() => setShowAttachments(false)}
           />
         )}
       </div>

@@ -59,6 +59,8 @@ export function GetAllMessageCounts():Promise<Record<string, number>>;
 
 export function GetAttachmentData(arg1:string):Promise<string>;
 
+export function GetAttachmentMessages(arg1:string):Promise<Array<models.Message>>;
+
 export function GetAvailableProviders():Promise<Array<core.ProviderInfo>>;
 
 export function GetAvatar(arg1:string):Promise<string>;

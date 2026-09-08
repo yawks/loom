@@ -110,6 +110,10 @@ export function GetAttachmentData(arg1) {
   return window['go']['main']['App']['GetAttachmentData'](arg1);
 }
 
+export function GetAttachmentMessages(arg1) {
+  return window['go']['main']['App']['GetAttachmentMessages'](arg1);
+}
+
 export function GetAvailableProviders() {
   return window['go']['main']['App']['GetAvailableProviders']();
 }
