@@ -164,11 +164,9 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 	if db.DB == nil {
 		return
 	}
-	instancePrefix := p.getInstanceId() + "::%"
 	var active []models.Message
-	if err := db.DB.Where(
-		"protocol_conv_id LIKE ? AND call_type IN ? AND timestamp >= ?",
-		instancePrefix,
+	if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().Where(
+		"call_type IN ? AND timestamp >= ?",
 		[]string{"incoming_call", "incoming_group_call"},
 		time.Now().Add(-24*time.Hour),
 	).Find(&active).Error; err != nil {

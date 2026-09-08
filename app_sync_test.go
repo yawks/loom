@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestGetSyncingProviderIDsReturnsSortedSnapshot(t *testing.T) {
@@ -33,5 +34,19 @@ func TestForceSyncCompletionCancelsRegisteredSync(t *testing.T) {
 
 	if syncCtx.Err() != context.Canceled {
 		t.Fatalf("sync context error = %v, want context.Canceled", syncCtx.Err())
+	}
+}
+
+func TestClaimWakeResyncCoalescesDuplicateSignals(t *testing.T) {
+	app := NewApp()
+	now := time.Unix(1000, 0)
+	if !app.claimWakeResync(now) {
+		t.Fatal("first wake signal was unexpectedly rejected")
+	}
+	if app.claimWakeResync(now.Add(5 * time.Second)) {
+		t.Fatal("duplicate wake signal was unexpectedly accepted")
+	}
+	if !app.claimWakeResync(now.Add(wakeResyncCoalesceWindow)) {
+		t.Fatal("wake signal after coalescing window was unexpectedly rejected")
 	}
 }

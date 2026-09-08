@@ -122,6 +122,8 @@ type App struct {
 	syncInProgress   map[string]bool
 	syncCancels      map[string]context.CancelFunc
 	syncInProgressMu sync.Mutex
+	wakeResyncMu     sync.Mutex
+	lastWakeResyncAt time.Time
 
 	// providerErrors holds the last startup error per provider instance (instanceID → message).
 	// Populated after domReady when a provider fails IsAuthenticated or Connect.
@@ -812,8 +814,7 @@ func (a *App) startWakeDetector() {
 	for {
 		select {
 		case <-unlockEvents:
-			log.Printf("[WakeDetector] Session unlock detected. Triggering resync...")
-			go a.resyncAllProviders()
+			a.triggerWakeResync("session unlock")
 		case <-ticker.C:
 			// Do not use the timestamp carried by ticker.C here. After system
 			// sleep, that value may be a stale tick which was buffered before
@@ -826,10 +827,7 @@ func (a *App) startWakeDetector() {
 				resumeReason = fmt.Sprintf("system wake (gap: %v)", now.Sub(lastTick))
 			}
 			if resumeReason != "" {
-				log.Printf("[WakeDetector] %s detected. Triggering resync...", resumeReason)
-				// Do not block the detector: the catch-up routine waits for the
-				// network and retries transient failures in the background.
-				go a.resyncAllProviders()
+				a.triggerWakeResync(resumeReason)
 			}
 			lastTick = now
 		case <-a.ctx.Done():
@@ -838,22 +836,54 @@ func (a *App) startWakeDetector() {
 	}
 }
 
+const wakeResyncCoalesceWindow = 30 * time.Second
+
+func (a *App) claimWakeResync(now time.Time) bool {
+	a.wakeResyncMu.Lock()
+	defer a.wakeResyncMu.Unlock()
+	if !a.lastWakeResyncAt.IsZero() && now.Sub(a.lastWakeResyncAt) < wakeResyncCoalesceWindow {
+		return false
+	}
+	a.lastWakeResyncAt = now
+	return true
+}
+
+func (a *App) triggerWakeResync(reason string) {
+	if !a.claimWakeResync(time.Now()) {
+		log.Printf("[WakeDetector] Coalescing duplicate wake signal: %s", reason)
+		return
+	}
+	log.Printf("[WakeDetector] %s detected. Triggering resync...", reason)
+	// Do not block the detector: the catch-up routine waits for the network and
+	// retries transient failures in the background.
+	go a.resyncAllProviders()
+}
+
 func (a *App) resyncAllProviders() {
 	if a.providerManager == nil {
 		return
 	}
 
 	providers := a.providerManager.GetConfiguredProviders()
-	instanceIDs := make([]string, 0, len(providers))
+	a.syncInProgressMu.Lock()
+	eligible := make([]core.ProviderInfo, 0, len(providers))
 	for _, provider := range providers {
+		if !a.syncInProgress[provider.InstanceID] {
+			eligible = append(eligible, provider)
+		}
+	}
+	a.syncInProgressMu.Unlock()
+
+	instanceIDs := make([]string, 0, len(eligible))
+	for _, provider := range eligible {
 		if _, err := a.providerManager.GetProvider(provider.InstanceID); err == nil {
 			instanceIDs = append(instanceIDs, provider.InstanceID)
 		}
 	}
 	a.emitSyncCycleStart(instanceIDs)
-	log.Printf("[App] Resyncing %d configured providers after system wake", len(providers))
+	log.Printf("[App] Resyncing %d providers after system wake (%d already active or unavailable)", len(instanceIDs), len(providers)-len(instanceIDs))
 
-	for _, pInfo := range providers {
+	for _, pInfo := range eligible {
 		if _, err := a.providerManager.GetProvider(pInfo.InstanceID); err != nil {
 			continue
 		}
@@ -1227,6 +1257,10 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 			case event, ok := <-eventChan:
 				if !ok {
 					return
+				}
+				if err := core.ValidateProviderEventOwnership(instanceID, event); err != nil {
+					log.Printf("[%s] Dropping provider event that crossed an instance boundary: %v", instanceID, err)
+					continue
 				}
 				if isFunctionalLiveEvent(event) {
 					a.recordProviderLiveEvent(instanceID)

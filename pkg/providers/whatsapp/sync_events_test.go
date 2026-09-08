@@ -1,12 +1,34 @@
 package whatsapp
 
 import (
+	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"testing"
 	"time"
 
 	"go.mau.fi/whatsmeow/types"
 )
+
+func TestFinishHistoryLookbackEmitsTerminalStatus(t *testing.T) {
+	previousDB := db.DB
+	db.DB = nil
+	t.Cleanup(func() { db.DB = previousDB })
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-2"
+	provider.finishHistoryLookback()
+
+	select {
+	case raw := <-provider.eventChan:
+		event, ok := raw.(core.SyncStatusEvent)
+		if !ok || event.InstanceID != "whatsapp-2" || event.Status != core.SyncStatusCompleted || event.Progress != 100 {
+			t.Fatalf("unexpected terminal event: %#v", raw)
+		}
+	default:
+		t.Fatal("history lookback did not emit a terminal status")
+	}
+}
 
 func TestSplitHistoryMessagesByUnreadCount(t *testing.T) {
 	messages := []models.Message{{ProtocolMsgID: "read-1"}, {ProtocolMsgID: "read-2"}, {ProtocolMsgID: "unread"}}

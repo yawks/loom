@@ -128,18 +128,26 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 	// WhatsApp syncs history automatically via HistorySync events delivered by whatsmeow.
 	// OfflineSyncCompleted (or the 30s fallback in the Connected handler) calls GetContacts
-	// and emits SyncStatusCompleted once whatsmeow has finished delivering all events.
-	// No extra goroutine is needed here — it would only cause a redundant GetContacts call.
+	// and emits its own SyncStatusCompleted once whatsmeow has finished delivering those events.
 
 	// On subsequent syncs, re-scan the lookback window so the contact list reflects any
 	// messages that were stored in a prior HistorySync but never individually emitted.
 	// WhatsApp does not expose a per-conversation history API, so we can only surface what
 	// is already in the local database — we cannot fetch truly missing messages from the server.
 	if lastSync != nil {
-		go w.lookbackSync()
+		go w.finishHistoryLookback()
 	}
 
 	return nil
+}
+
+// finishHistoryLookback closes the status transition opened by SyncHistory.
+// Connection/offline-sync events have their own terminal transition, but a
+// startup catch-up can begin after that completion and must not leave the last
+// visible provider state at fetching_history forever.
+func (w *WhatsAppProvider) finishHistoryLookback() {
+	w.lookbackSync()
+	w.emitSyncStatus(core.SyncStatusCompleted, "WhatsApp history is up to date", 100)
 }
 
 // SyncAllHistory performs the expensive, user-requested audit of the whole
@@ -266,8 +274,6 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 		}
 	}
 
-
-
 	if requested == 0 && failed > 0 {
 		return fmt.Errorf("all %d history audit requests failed", failed)
 	}
@@ -344,7 +350,8 @@ func (w *WhatsAppProvider) lookbackSync() {
 		ProtocolConvID string
 	}
 	var rows []convRow
-	db.DB.Model(&models.Message{}).
+	scope := db.ForProvider(db.DB, w.getInstanceId())
+	scope.Messages().
 		Select("DISTINCT protocol_conv_id").
 		Where("protocol_conv_id != '' AND timestamp > ?", lookbackSince).
 		Scan(&rows)
@@ -352,7 +359,7 @@ func (w *WhatsAppProvider) lookbackSync() {
 	// conversations so an own reaction on an older message can repair the local
 	// read boundary after restart as well.
 	var reactionRows []convRow
-	db.DB.Model(&models.Message{}).
+	scope.Messages().
 		Select("DISTINCT messages.protocol_conv_id").
 		Joins("JOIN reactions ON reactions.message_id = messages.id").
 		Where("messages.protocol_conv_id != '' AND reactions.created_at > ?", lookbackSince).

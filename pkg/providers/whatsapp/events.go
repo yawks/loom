@@ -486,7 +486,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 							// Get the most recent message from ANY conversation to see active chats
 							// We're looking for 1-on-1 conversations (not groups)
 							var recentMessages []models.Message
-							if err := db.DB.Where("is_from_me = ? AND protocol_conv_id LIKE ?", false, "%@s.whatsapp.net").
+							if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("is_from_me = ? AND protocol_conv_id LIKE ?", false, "%@s.whatsapp.net").
 								Order("timestamp DESC").
 								Limit(10).
 								Find(&recentMessages).Error; err == nil && len(recentMessages) > 0 {
@@ -1184,7 +1184,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			} else {
 				// Fallback: search by call ID only — handles LID→JID conv ID mismatch
 				allTypes := []string{"incoming_call", "incoming_group_call", "outgoing_voice", "outgoing_group_voice"}
-				if err2 := db.DB.Where("protocol_msg_id LIKE ? AND call_type IN ?",
+				if err2 := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("protocol_msg_id LIKE ? AND call_type IN ?",
 					fmt.Sprintf("call_%s%%", callID), allTypes).First(&dbMsg).Error; err2 == nil {
 					existingCallMessage = &dbMsg
 					fmt.Printf("WhatsApp: Found existing call message for call %s via fallback (conv mismatch: stored=%s resolved=%s)\n", callID, dbMsg.ProtocolConvID, convID)

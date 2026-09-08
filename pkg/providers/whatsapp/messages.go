@@ -2158,7 +2158,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 		}
 
 		if len(converted) > 0 {
-			newMessageIDs := whatsappUnstoredMessageIDs(converted)
+			newMessageIDs := whatsappUnstoredMessageIDs(w.getInstanceId(), converted)
 			// Infer receipts for group messages based on participant activity
 			// This must be done BEFORE storing to ensure receipts are persisted
 			if len(convID) > 5 && convID[len(convID)-5:] == "@g.us" {
@@ -2323,7 +2323,7 @@ func whatsappMessageFieldNames(message *waE2E.Message) string {
 	return strings.Join(names, ",")
 }
 
-func whatsappUnstoredMessageIDs(messages []models.Message) map[string]struct{} {
+func whatsappUnstoredMessageIDs(instanceID string, messages []models.Message) map[string]struct{} {
 	result := make(map[string]struct{})
 	if len(messages) == 0 || db.DB == nil {
 		return result
@@ -2338,7 +2338,7 @@ func whatsappUnstoredMessageIDs(messages []models.Message) map[string]struct{} {
 		return result
 	}
 	var storedIDs []string
-	if err := db.DB.Model(&models.Message{}).Where("protocol_msg_id IN ?", ids).Pluck("protocol_msg_id", &storedIDs).Error; err != nil {
+	if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_msg_id IN ?", ids).Pluck("protocol_msg_id", &storedIDs).Error; err != nil {
 		return result
 	}
 	stored := make(map[string]struct{}, len(storedIDs))
@@ -2532,7 +2532,7 @@ func (w *WhatsAppProvider) GetConversationHistory(conversationID string, limit i
 
 		// Also search for any call messages that might have this phone number in sender_id
 		var senderCallMsgCount int64
-		if err := db.DB.Model(&models.Message{}).Where("sender_id = ? AND call_type != ''", rawConvID).Count(&senderCallMsgCount).Error; err == nil {
+		if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("sender_id = ? AND call_type != ''", rawConvID).Count(&senderCallMsgCount).Error; err == nil {
 			if senderCallMsgCount > 0 {
 				fmt.Printf("WhatsApp: [HISTORY] Found %d call messages with sender_id = %s\n", senderCallMsgCount, rawConvID)
 			}

@@ -48,13 +48,8 @@ func slackNewlyStoredMessages(stored []models.Message, existingIDs []string) []m
 
 func slackFallbackConversations(database *gorm.DB, instanceID string) ([]slackFallbackConversation, error) {
 	var conversations []slackFallbackConversation
-	// BuildConvID intentionally returns an empty string for an empty raw ID, so
-	// construct the namespace prefix explicitly. An empty prefix would match all
-	// providers and waste Slack API calls on WhatsApp/Teams conversation IDs.
-	prefix := instanceID + "::"
-	err := database.Model(&models.Message{}).
+	err := db.ForProvider(database, instanceID).Messages().
 		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
-		Where("substr(protocol_conv_id, 1, ?) = ?", len(prefix), prefix).
 		Where("deleted_at IS NULL").
 		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
 		Group("protocol_conv_id").
@@ -467,7 +462,7 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			// cheap even in an active workspace.
 			if db.DB != nil {
 				var exists int64
-				if err := db.DB.Model(&models.Message{}).
+				if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().
 					Where("protocol_msg_id = ?", match.Timestamp).
 					Count(&exists).Error; err == nil && exists > 0 {
 					continue
@@ -478,7 +473,8 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			// We can check if it exists in DB, or just assume if we don't have it locally we might need to refresh
 			if db.DB != nil {
 				var count int64
-				db.DB.Model(&models.LinkedAccount{}).Where("user_id = ?", conversationID).Count(&count)
+				db.ForProvider(db.DB, p.getInstanceId()).LinkedAccounts().
+					Where("user_id = ?", core.StripConvID(conversationID)).Count(&count)
 				if count == 0 {
 					newConversationsFound = true
 					p.log("SlackProvider.pollGlobalUpdates: Discovering new conversation: %s\n", conversationID)
@@ -532,7 +528,8 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 			// Deduplicate: Check if message exists in DB
 			if db.DB != nil {
 				var exists int64
-				db.DB.Model(&models.Message{}).Where("protocol_msg_id = ?", msg.ProtocolMsgID).Count(&exists)
+				db.ForProvider(db.DB, p.getInstanceId()).Messages().
+					Where("protocol_msg_id = ?", msg.ProtocolMsgID).Count(&exists)
 				if exists > 0 {
 					continue // Already have it
 				}
@@ -581,9 +578,9 @@ func (p *SlackProvider) pollNewReactions() {
 	// Check reactions on messages from last 1 hour (more recent = more likely to have new reactions)
 	since := time.Now().Add(-1 * time.Hour)
 
-	// Get recent messages with reactions from all conversations
+	// Get recent messages with reactions from this provider instance only.
 	var recentMessages []models.Message
-	if err := db.DB.Where("timestamp >= ?", since).
+	if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().Where("timestamp >= ?", since).
 		Preload("Reactions").
 		Order("timestamp DESC").
 		Limit(50). // Check last 50 messages across all conversations

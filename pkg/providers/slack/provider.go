@@ -507,7 +507,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context
 	orphanSet := make(map[string]bool)
 	if db.DB != nil {
 		var orphanIDs []string
-		db.DB.Model(&models.Message{}).
+		db.ForProvider(db.DB, p.getInstanceId()).Messages().
 			Where("conversation_id = 0").
 			Distinct("protocol_conv_id").
 			Pluck("protocol_conv_id", &orphanIDs)

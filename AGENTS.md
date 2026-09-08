@@ -34,6 +34,21 @@ occurrence outside those exceptions.
   left by a rolled-back attempt.
 - Do not add provider-specific SQLite retry loops.
 
+## Provider data isolation
+
+- Background work owned by one provider instance must start shared-table queries
+  from `db.ForProvider(database, instanceID)`. Do not enumerate `messages`,
+  `conversations`, or `linked_accounts` through an unscoped `db.DB` query and
+  filter the results later.
+- Provider events must carry the emitting instance ID and canonical namespaced
+  conversation IDs. Keep the central `core.ValidateProviderEventOwnership`
+  check in the application event listener; never bypass it for a provider.
+- Treat an empty provider instance ID as an error for provider-owned background
+  work. Provider scopes deliberately fail closed when the instance is empty.
+- Tests for provider-wide polling, reconciliation, cleanup, and lookback work
+  must include rows belonging to at least one other provider and assert that
+  those rows are neither read as work nor mutated/emitted.
+
 ## Synchronization hot paths
 
 - Do not start one goroutine or one database transaction per message, contact,

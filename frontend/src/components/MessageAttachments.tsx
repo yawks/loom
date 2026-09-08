@@ -1213,7 +1213,7 @@ export function MessageAttachments({
               />
             )
           }
-          
+
           // Also check for small audio files that are likely voice messages
           if (attachment.type === "audio" && attachment.fileSize < 5 * 1024 * 1024) {
             return (
@@ -1367,7 +1367,7 @@ export function MessageAttachments({
 
       <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); resetView(); }}>
         <DialogContent
-          className="max-w-4xl max-h-[90vh] p-0 overflow-hidden"
+          className="h-[85vh] w-[85vw] max-w-[85vw] max-h-[85vh] p-0 overflow-hidden"
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft") {
               if (selectedImageIndex === null) return;
@@ -1416,11 +1416,11 @@ export function MessageAttachments({
               >
                 <X className="h-5 w-5" />
               </button>
-              <div className="flex items-center justify-center" style={{ maxHeight: "85vh", overflow: "hidden" }}>
+              <div className="flex h-full items-center justify-center overflow-hidden">
                 <img
                   src={selectedImage}
                   alt="Preview"
-                  className="w-full h-auto max-h-[85vh] object-contain select-none"
+                  className="h-full w-full object-contain select-none"
                   style={{
                     transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
                     transformOrigin: "center center",

@@ -1,7 +1,11 @@
 // Package core provides the core interfaces and types for chat providers.
 package core
 
-import "Loom/pkg/models"
+import (
+	"Loom/pkg/models"
+	"fmt"
+	"strings"
+)
 
 // EventType represents the type of event that can be emitted by a provider.
 type EventType string
@@ -37,6 +41,62 @@ const (
 // ProviderEvent is the base interface for all provider events.
 type ProviderEvent interface {
 	Type() EventType
+}
+
+// ValidateProviderEventOwnership rejects events that claim another provider
+// instance or contain a namespaced conversation owned by another instance.
+// Raw conversation IDs remain supported for providers that normalize them in
+// their event handlers.
+func ValidateProviderEventOwnership(sourceInstanceID string, event ProviderEvent) error {
+	if sourceInstanceID == "" {
+		return fmt.Errorf("provider event source instance is empty")
+	}
+	validate := func(eventInstanceID, conversationID string) error {
+		if eventInstanceID != "" && eventInstanceID != sourceInstanceID {
+			return fmt.Errorf("event instance %q does not match source %q", eventInstanceID, sourceInstanceID)
+		}
+		if idx := strings.Index(conversationID, "::"); idx >= 0 && conversationID[:idx] != sourceInstanceID {
+			return fmt.Errorf("conversation %q does not belong to source %q", conversationID, sourceInstanceID)
+		}
+		return nil
+	}
+
+	switch e := event.(type) {
+	case MessageEvent:
+		return validate(e.InstanceID, e.Message.ProtocolConvID)
+	case MessageBatchEvent:
+		if err := validate(e.InstanceID, e.ConversationID); err != nil {
+			return err
+		}
+		for _, message := range e.Messages {
+			if err := validate(e.InstanceID, message.ProtocolConvID); err != nil {
+				return err
+			}
+		}
+	case ReactionEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case TypingEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case ContactStatusEvent:
+		return validate(e.InstanceID, "")
+	case PresenceEvent:
+		return validate(e.InstanceID, "")
+	case GroupChangeEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case ReceiptEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case RetryReceiptEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case SyncStatusEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case ConversationReadStatusEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	case ConversationMuteStatusEvent:
+		return validate(e.InstanceID, e.ConversationID)
+	default:
+		return fmt.Errorf("unsupported provider event type %T", event)
+	}
+	return nil
 }
 
 // MessageEvent represents a new message event (text or file).
