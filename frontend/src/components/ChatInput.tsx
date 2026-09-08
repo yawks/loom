@@ -551,7 +551,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         }
       );
     },
-    onError: (_error, variables, context) => {
+    onError: (error, variables, context) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      showToast(`${t("send_failed")}: ${detail}`, "error");
       const conversationId = variables.conversationId;
       const tempId = context?.tempId;
       if (context?.isThreadMessage) {

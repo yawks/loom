@@ -101,6 +101,31 @@ export interface ReadPolicy {
   ownActivityAdvancesBoundary: boolean;
 }
 
+// A reaction is an activity at the time it was created, not at the timestamp
+// of the message it targets. Older persisted reactions may not have their own
+// timestamp; only those use the target message as a compatibility fallback.
+export const latestOwnActivityTimestamp = (
+  messages: models.Message[],
+  currentUserId?: string
+): number | undefined => {
+  let latest: number | undefined;
+  const include = (value: unknown) => {
+    if (!value) return;
+    const timestamp = timeToDate(value as string).getTime();
+    if (Number.isFinite(timestamp)) latest = Math.max(latest ?? timestamp, timestamp);
+  };
+
+  messages.forEach((message) => {
+    if (message.isFromMe) include(message.timestamp);
+    if (!currentUserId) return;
+    (message.reactions ?? []).forEach((reaction) => {
+      if (!sameUserId(reaction.userId, currentUserId)) return;
+      include(reaction.createdAt || message.timestamp);
+    });
+  });
+  return latest;
+};
+
 const STORAGE_KEY = "loom-message-read-state";
 
 const canUseStorage = typeof window !== "undefined";
@@ -271,7 +296,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         return { readByConversation: updatedMap };
       });
     },
-    syncConversation: (conversationId, messages, currentUserId, policy) => {
+    syncConversation: (conversationId, messages, currentUserId, _policy) => {
       if (!conversationId) {
         return;
       }
@@ -287,23 +312,10 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           ? ((existingState as any)["_lastReadTS"] as string | undefined)
           : undefined;
 
-        // Some services expose own activity as an authoritative read-through
-        // signal. The provider declares this behavior through its capabilities.
-        let ownActivityReadThrough: number | undefined;
-        if (policy?.ownActivityAdvancesBoundary) {
-          messages.forEach((message) => {
-            const hasOwnReaction = Boolean(currentUserId) &&
-              (message.reactions ?? []).some((reaction) =>
-                sameUserId(reaction.userId, currentUserId)
-              );
-            if (message.isFromMe || hasOwnReaction) {
-              const timestamp = timeToDate(message.timestamp).getTime();
-              if (Number.isFinite(timestamp)) {
-                ownActivityReadThrough = Math.max(ownActivityReadThrough ?? timestamp, timestamp);
-              }
-            }
-          });
-        }
+        // Sending or reacting proves the user has visited this conversation up
+        // to that activity. This is a canonical UI invariant, independent of
+        // provider receipt semantics.
+        const ownActivityReadThrough = latestOwnActivityTimestamp(messages, currentUserId);
 
         console.log(`messageReadStore: syncConversation - conversationId: ${conversationId}, hasExisting: ${hasExisting} (${existingMessageCount} messages), lastReadTS: ${lastReadTS || 'none'}, messages to sync: ${messages.length}`);
 
@@ -707,6 +719,13 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         ...existingState,
         [messageId]: isRead,
       };
+      if (message.isFromMe) {
+        Object.keys(updatedConversation).forEach((id) => {
+          if (!id.startsWith("_") && updatedConversation[id] === false) {
+            updatedConversation[id] = true;
+          }
+        });
+      }
       if (isThreadReply(message)) {
         updatedConversation[marker] = true;
       }
@@ -787,6 +806,13 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           updatedReadByConversation[conversationId] = updatedConversation;
         }
         updatedConversation[messageId] = isRead;
+        if (message.isFromMe) {
+          Object.keys(updatedConversation).forEach((id) => {
+            if (!id.startsWith("_") && updatedConversation![id] === false) {
+              updatedConversation![id] = true;
+            }
+          });
+        }
         if (isThreadReply(message)) {
           updatedConversation[marker] = true;
         }

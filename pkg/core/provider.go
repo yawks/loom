@@ -298,6 +298,13 @@ type Provider interface {
 	RefreshContact(contactID string) error
 }
 
+// ConnectionStateProvider allows send paths to reconnect before issuing a
+// remote request. It deliberately reports only local connection state: an
+// already-issued request is never retried, avoiding duplicate messages.
+type ConnectionStateProvider interface {
+	IsConnected() bool
+}
+
 // Mention identifies a canonical participant reference in a message body.
 // Start and Length are UTF-16 offsets so browser clients can pass textarea
 // selections without knowing anything about a provider's wire format.

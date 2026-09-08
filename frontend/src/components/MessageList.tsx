@@ -38,7 +38,7 @@ import { MessageHeader } from "./MessageHeader";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { MessageIRCItem } from "./MessageIRCItem";
 import { CalendarClock, ChevronDown, ChevronUp, Trash2, UploadCloud } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, timeToDate } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
@@ -51,7 +51,7 @@ import { usePresenceStore } from "@/lib/presenceStore";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import { useMessageData } from "@/hooks/useMessageData";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
-import { useMessageReadStore } from "@/lib/messageReadStore";
+import { latestOwnActivityTimestamp, useMessageReadStore } from "@/lib/messageReadStore";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useTranslation } from "react-i18next";
 
@@ -544,8 +544,12 @@ export function MessageList({
   // boundary to incoming messages: a provider echo can briefly be classified
   // as incoming before its ownership metadata is enriched.
   useLayoutEffect(() => {
+    const ownActivityAt = latestOwnActivityTimestamp(mainMessages, currentUserId);
     const unreadIds = mainMessages
-      .filter((message) => !message.isFromMe)
+      .filter((message) =>
+        !message.isFromMe &&
+        (ownActivityAt === undefined || timeToDate(message.timestamp).getTime() > ownActivityAt)
+      )
       .map((message) => getMessageDomId(message))
       .filter((messageId) => conversationReadState[messageId] === false);
 
@@ -553,7 +557,14 @@ export function MessageList({
       const currentBoundaryMessage = current?.conversationId === conversationId
         ? mainMessages.find((message) => getMessageDomId(message) === current.firstMessageId)
         : undefined;
-      const validCurrent = currentBoundaryMessage?.isFromMe ? null : current;
+      const currentBoundaryAt = currentBoundaryMessage
+        ? timeToDate(currentBoundaryMessage.timestamp).getTime()
+        : undefined;
+      const currentWasConsumedByOwnActivity = ownActivityAt !== undefined &&
+        currentBoundaryAt !== undefined && currentBoundaryAt <= ownActivityAt;
+      const validCurrent = currentBoundaryMessage?.isFromMe || currentWasConsumedByOwnActivity
+        ? null
+        : current;
       if (unreadIds.length === 0) {
         if (validCurrent?.conversationId !== conversationId) return validCurrent;
         // Keep a genuine incoming boundary after its read state is consumed,
@@ -575,7 +586,7 @@ export function MessageList({
         count: unreadIds.length,
       };
     });
-  }, [conversationId, mainMessages, conversationReadState]);
+  }, [conversationId, currentUserId, mainMessages, conversationReadState]);
 
   const firstUnreadMessageId = unreadBoundary?.conversationId === conversationId
     ? unreadBoundary.firstMessageId

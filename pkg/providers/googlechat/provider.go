@@ -139,6 +139,10 @@ func (p *GoogleChatProvider) IsAuthenticated() bool {
 	return err == nil
 }
 
+func (p *GoogleChatProvider) IsConnected() bool {
+	return p.getHTTPClient() != nil
+}
+
 func (p *GoogleChatProvider) Connect() error {
 	p.log("GoogleChatProvider.Connect: connecting...\n")
 	p.mu.Lock()

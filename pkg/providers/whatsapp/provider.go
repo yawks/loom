@@ -398,6 +398,12 @@ func (w *WhatsAppProvider) IsAuthenticated() bool {
 	return false
 }
 
+func (w *WhatsAppProvider) IsConnected() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.client != nil && w.client.IsConnected() && w.client.IsLoggedIn()
+}
+
 func (w *WhatsAppProvider) Connect() error {
 	w.mu.Lock()
 

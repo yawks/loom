@@ -2418,26 +2418,39 @@ func (w *WhatsAppProvider) historyMessagesReadThroughOwnActivity(messages []mode
 }
 
 func historyMessagesReadThroughOwnActivity(messages []models.Message, selfID string) []models.Message {
-	lastOwnActivity := -1
+	var latestOwnActivity time.Time
 	for index := range messages {
 		if messages[index].IsFromMe {
-			lastOwnActivity = index
-			continue
+			if messages[index].Timestamp.After(latestOwnActivity) {
+				latestOwnActivity = messages[index].Timestamp
+			}
 		}
 		if selfID == "" {
 			continue
 		}
 		for _, reaction := range messages[index].Reactions {
 			if reaction.UserID == selfID {
-				lastOwnActivity = index
-				break
+				reactedAt := reaction.CreatedAt
+				if reactedAt.IsZero() {
+					reactedAt = messages[index].Timestamp
+				}
+				if reactedAt.After(latestOwnActivity) {
+					latestOwnActivity = reactedAt
+				}
 			}
 		}
 	}
-	if lastOwnActivity < 0 {
+	if latestOwnActivity.IsZero() {
 		return nil
 	}
-	return messages[:lastOwnActivity+1]
+	readThrough := make([]models.Message, 0, len(messages))
+	for index := range messages {
+		if messages[index].Timestamp.After(latestOwnActivity) {
+			break
+		}
+		readThrough = append(readThrough, messages[index])
+	}
+	return readThrough
 }
 
 func splitHistoryMessagesByUnreadCount(messages []models.Message, unreadCount uint32, isOnDemand, hasPreviousSync bool) ([]models.Message, []models.Message) {
@@ -2863,8 +2876,6 @@ func (w *WhatsAppProvider) logLegacyMessageResponse(evt *events.Message) {
 	poll := canonicalWhatsAppPoll(evt.Message)
 	w.log("WhatsApp: Legacy message response %s canonical poll=%t\n", evt.Info.ID, poll != nil)
 }
-
-
 
 // requestRecentLegacyMessageBackfills makes legacy recovery independent from
 // whether the frontend happens to ask the provider for a conversation's first

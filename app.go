@@ -90,6 +90,9 @@ type App struct {
 	pendingProviderStartups []pendingProviderStartup // network work deferred until domReady
 	metaContactsCache       metaContactsCache
 	mu                      sync.RWMutex
+	providerRestoreReady    chan struct{}
+	providerRestoreStarted  bool
+	providerRestoreComplete bool
 
 	// Short-lived server-side caches for expensive full-table-scan queries.
 	// The frontend has 30s staleTime but mounts multiple components simultaneously
@@ -123,8 +126,9 @@ type App struct {
 	// Populated after domReady when a provider fails IsAuthenticated or Connect.
 	// Exposed via GetConfiguredProviders so the sidebar can show a warning badge without
 	// relying on a one-shot event that might fire before the listener is registered.
-	providerErrors   map[string]string
-	providerErrorsMu sync.RWMutex
+	providerErrors      map[string]string
+	providerErrorsMu    sync.RWMutex
+	providerReconnectMu sync.Mutex
 
 	// linkPreviewCache caches fetched Open Graph previews (1-hour TTL).
 	linkPreviewCache   map[string]linkPreviewEntry
@@ -132,6 +136,35 @@ type App struct {
 
 	providerActivityMu       sync.Mutex
 	lastPersistedLiveEventAt map[string]time.Time
+}
+
+func (a *App) getConnectedProviderForConversation(conversationID string) (core.Provider, error) {
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	}
+	connection, ok := provider.(core.ConnectionStateProvider)
+	if !ok || connection.IsConnected() {
+		return provider, nil
+	}
+
+	a.providerReconnectMu.Lock()
+	defer a.providerReconnectMu.Unlock()
+	if connection.IsConnected() {
+		return provider, nil
+	}
+	if err := provider.Connect(); err != nil {
+		return nil, fmt.Errorf("provider disconnected; automatic reconnection failed: %w", err)
+	}
+	instanceID := conversationID
+	if separator := strings.Index(instanceID, "::"); separator >= 0 {
+		instanceID = instanceID[:separator]
+	}
+	if a.ctx != nil {
+		a.startEventListenerForProvider(a.ctx, instanceID, provider)
+	}
+	a.clearProviderError(instanceID)
+	return provider, nil
 }
 
 // NewApp creates a new App application struct
@@ -142,6 +175,7 @@ func NewApp() *App {
 		syncCancels:               make(map[string]context.CancelFunc),
 		suppressedSyncCompletions: make(map[string]int),
 		lastPersistedLiveEventAt:  make(map[string]time.Time),
+		providerRestoreReady:      make(chan struct{}),
 	}
 }
 
@@ -540,6 +574,15 @@ func (a *App) getProviderForConversation(conversationID string) core.Provider {
 }
 
 func (a *App) startup(ctx context.Context) {
+	a.mu.Lock()
+	a.providerRestoreStarted = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.providerRestoreComplete = true
+		close(a.providerRestoreReady)
+		a.mu.Unlock()
+	}()
 	a.ctx = ctx
 
 	// Initialize the database
@@ -736,10 +779,9 @@ func (a *App) startup(ctx context.Context) {
 		// Collect pending syncs for all connected providers
 		var syncSince time.Time
 		if providerConfig.LastSyncAt != nil {
-			if time.Since(*providerConfig.LastSyncAt) > time.Minute {
-				syncSince = *providerConfig.LastSyncAt
-			}
-			// If < 1 minute ago, no sync needed
+			// A recent watermark does not prove the live stream stayed complete up
+			// to shutdown. Always audit a small overlap on startup.
+			syncSince = providerConfig.LastSyncAt.Add(-5 * time.Minute)
 		} else {
 			// First time: sync last 365 days
 			syncSince = time.Now().Add(-365 * 24 * time.Hour)
@@ -754,6 +796,7 @@ func (a *App) startup(ctx context.Context) {
 			isActive:   providerConfig.IsActive,
 		})
 	}
+	log.Printf("App.startup: queued %d provider startup synchronizations", len(a.pendingProviderStartups))
 	a.setupSystemTray(ctx)
 	go a.startWakeDetector()
 }
@@ -1012,48 +1055,66 @@ func (a *App) clearProviderError(instanceID string) {
 }
 
 func (a *App) domReady(ctx context.Context) {
-	startups := a.pendingProviderStartups
-	a.pendingProviderStartups = nil
-
-	for _, startup := range startups {
-		go func(providerStartup pendingProviderStartup) {
-			// Small delay to let React mount and register EventsOn("sync-status") listener.
-			time.Sleep(500 * time.Millisecond)
-
-			if !providerStartup.provider.IsAuthenticated() {
-				if providerStartup.isActive && db.DB != nil {
-					db.DB.Model(&models.ProviderConfiguration{}).
-						Where("instance_id = ?", providerStartup.instanceID).
-						Update("is_active", false)
-				}
-				a.setProviderError(providerStartup.instanceID, "Session expired — please re-authenticate")
+	// Wails may signal DOM readiness while startup is still restoring local
+	// provider instances. Consume the queue only after startup has finished
+	// populating it; otherwise the empty early snapshot is lost forever and only
+	// a later manual synchronization recovers messages.
+	go func() {
+		a.mu.RLock()
+		restoreReady := a.providerRestoreReady
+		a.mu.RUnlock()
+		if restoreReady != nil {
+			select {
+			case <-restoreReady:
+			case <-ctx.Done():
 				return
 			}
-			if !providerStartup.since.IsZero() {
-				// Connection itself may perform discovery work. Announce the cycle
-				// before it starts so the sidebar never looks idle during that phase.
-				a.emitSyncCycleStart([]string{providerStartup.instanceID})
-			}
+		}
 
-			if err := providerStartup.provider.Connect(); err != nil {
-				log.Printf("Warning: Failed to connect provider %s: %v", providerStartup.instanceID, err)
-				message := fmt.Sprintf("Connection failed: %v", err)
-				a.setProviderError(providerStartup.instanceID, message)
+		startups := a.pendingProviderStartups
+		a.pendingProviderStartups = nil
+		log.Printf("App.domReady: launching %d provider startup synchronizations", len(startups))
+
+		for _, startup := range startups {
+			go func(providerStartup pendingProviderStartup) {
+				// Small delay to let React mount and register EventsOn("sync-status") listener.
+				time.Sleep(500 * time.Millisecond)
+
+				if !providerStartup.provider.IsAuthenticated() {
+					if providerStartup.isActive && db.DB != nil {
+						db.DB.Model(&models.ProviderConfiguration{}).
+							Where("instance_id = ?", providerStartup.instanceID).
+							Update("is_active", false)
+					}
+					a.setProviderError(providerStartup.instanceID, "Session expired — please re-authenticate")
+					return
+				}
 				if !providerStartup.since.IsZero() {
-					a.emitSyncStatusCoordinated(core.SyncStatusEvent{InstanceID: providerStartup.instanceID, Status: core.SyncStatusError, Message: message, Progress: -1})
+					// Connection itself may perform discovery work. Announce the cycle
+					// before it starts so the sidebar never looks idle during that phase.
+					a.emitSyncCycleStart([]string{providerStartup.instanceID})
 				}
-				return
-			}
-			a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
 
-			if providerStartup.since.IsZero() {
-				a.clearProviderError(providerStartup.instanceID)
-				return
-			}
-			fmt.Printf("App.domReady: starting sync for %s since %s\n", providerStartup.instanceID, providerStartup.since.Format(time.RFC3339))
-			a.syncProviderHistory(providerStartup.instanceID, providerStartup.since, "startup")
-		}(startup)
-	}
+				if err := providerStartup.provider.Connect(); err != nil {
+					log.Printf("Warning: Failed to connect provider %s: %v", providerStartup.instanceID, err)
+					message := fmt.Sprintf("Connection failed: %v", err)
+					a.setProviderError(providerStartup.instanceID, message)
+					if !providerStartup.since.IsZero() {
+						a.emitSyncStatusCoordinated(core.SyncStatusEvent{InstanceID: providerStartup.instanceID, Status: core.SyncStatusError, Message: message, Progress: -1})
+					}
+					return
+				}
+				a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
+
+				if providerStartup.since.IsZero() {
+					a.clearProviderError(providerStartup.instanceID)
+					return
+				}
+				fmt.Printf("App.domReady: starting sync for %s since %s\n", providerStartup.instanceID, providerStartup.since.Format(time.RFC3339))
+				a.syncProviderHistory(providerStartup.instanceID, providerStartup.since, "startup")
+			}(startup)
+		}
+	}()
 }
 
 func (a *App) shutdown(ctx context.Context) {}
@@ -1476,6 +1537,17 @@ func (a *App) SaveConfig(config map[string]interface{}) error { return nil }
 func (a *App) GetConfiguredProviders() ([]core.ProviderInfo, error) {
 	if a.mockMode {
 		return mockProviderInfos(), nil
+	}
+	// A first renderer call can race Wails' startup callback in development
+	// mode. An empty list is meaningful only after local configurations have
+	// been loaded and restored; wait for that one-shot readiness signal instead
+	// of making the frontend poll the database.
+	a.mu.RLock()
+	restorePending := a.providerRestoreStarted && !a.providerRestoreComplete
+	restoreReady := a.providerRestoreReady
+	a.mu.RUnlock()
+	if restorePending && restoreReady != nil {
+		<-restoreReady
 	}
 	if a.providerManager == nil {
 		return []core.ProviderInfo{}, nil
@@ -2908,9 +2980,9 @@ func (a *App) GetMessagesForConversationBefore(conversationID string, beforeTime
 	return messages, err
 }
 func (a *App) SendMessage(conversationID string, content string) (*models.Message, error) {
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	message, err := provider.SendMessage(conversationID, content, nil, nil)
 	if err == nil {
@@ -2935,9 +3007,9 @@ func (a *App) VotePoll(conversationID, messageID string, optionIDs []string) err
 // SendMessageWithMentions sends canonical participant references. Protocol
 // encoding deliberately stays behind the provider interface.
 func (a *App) SendMessageWithMentions(conversationID, content string, mentions []core.Mention, threadID, quotedMessageID string) (*models.Message, error) {
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	var thread, quoted *string
 	if threadID != "" {
@@ -3127,27 +3199,27 @@ func (a *App) GetPinnedMessageContext(conversationID, messageID string) (*models
 
 // SendReply sends a quoted reply to a message in the main conversation thread
 func (a *App) SendReply(conversationID string, content string, quotedMessageID string) (*models.Message, error) {
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	return provider.SendReply(conversationID, content, quotedMessageID)
 }
 
 // SendThreadMessage sends a reply inside a thread
 func (a *App) SendThreadMessage(conversationID string, content string, threadID string) (*models.Message, error) {
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	return provider.SendMessage(conversationID, content, nil, &threadID)
 }
 
 // SendThreadReply sends a quoted reply to a specific message inside a thread
 func (a *App) SendThreadReply(conversationID string, content string, threadID string, quotedMessageID string) (*models.Message, error) {
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	return provider.SendThreadReply(conversationID, content, threadID, quotedMessageID)
 }
@@ -3181,9 +3253,9 @@ func (a *App) SendFile(conversationID string, base64Data string, filename string
 		MimeType: mimeType,
 	}
 
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return err
 	}
 	_, err = provider.SendFile(conversationID, attachment, nil)
 	return err
@@ -3214,9 +3286,9 @@ func (a *App) SendThreadFile(conversationID string, base64Data string, filename 
 		FileSize: len(data),
 		MimeType: mimeType,
 	}
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	return provider.SendFile(conversationID, attachment, &threadID)
 }
@@ -3236,9 +3308,9 @@ func (a *App) SendThreadFileFromPath(conversationID string, filePath string, thr
 		FileSize: len(data),
 		MimeType: mimeType,
 	}
-	provider := a.getProviderForConversation(conversationID)
-	if provider == nil {
-		return nil, fmt.Errorf("no provider for conversation %s", conversationID)
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
 	}
 	return provider.SendFile(conversationID, attachment, &threadID)
 }

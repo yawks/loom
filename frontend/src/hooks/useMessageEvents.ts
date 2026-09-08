@@ -242,7 +242,30 @@ export function useMessageEvents() {
 
     let isMounted = true;
     let batchTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const pendingBatches: string[] = [];
+    const conversationsToRefresh = new Set<string>();
+    let refreshAttentionInbox = false;
+
+    const scheduleBatchRefresh = () => {
+      if (refreshTimer !== null) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!isMounted) return;
+        const conversationIds = Array.from(conversationsToRefresh);
+        conversationsToRefresh.clear();
+        for (const conversationId of conversationIds) {
+          queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", conversationId] });
+          queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
+          queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
+        }
+        if (refreshAttentionInbox) {
+          refreshAttentionInbox = false;
+          queryClient.invalidateQueries({ queryKey: ["highlightedMessages"] });
+          queryClient.invalidateQueries({ queryKey: ["highlightedMessageRefs"] });
+        }
+      }, 250);
+    };
 
     const processBatch = (batchJSON: string) => {
       if (!isMounted) return;
@@ -267,8 +290,7 @@ export function useMessageEvents() {
         // Incremental synchronization arrives through new-messages-batch, not
         // new-message. Keep both attention-inbox queries in sync so newly
         // highlighted unread messages update the tab badge as well as the list.
-        queryClient.invalidateQueries({ queryKey: ["highlightedMessages"] });
-        queryClient.invalidateQueries({ queryKey: ["highlightedMessageRefs"] });
+        refreshAttentionInbox = true;
 
         // Update last-message and timestamp caches in one pass per conversation
         const lastMessageByConv: Record<string, models.Message> = {};
@@ -281,13 +303,13 @@ export function useMessageEvents() {
           }
         }
         for (const convId of Object.keys(lastMessageByConv)) {
-          queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", convId] });
           // Batch events are used by incremental-sync fallbacks when streaming
-          // did not deliver an event. Refresh an already-open conversation so
-          // calls and messages recovered this way become visible immediately.
-          queryClient.invalidateQueries({ queryKey: ["messages", convId] });
-          queryClient.invalidateQueries({ queryKey: ["thread-summaries", convId] });
+          // did not deliver an event. Coalesce refreshes so a large sync does
+          // not repeatedly refetch the same open conversation while SQLite is
+          // persisting adjacent batches.
+          conversationsToRefresh.add(convId);
         }
+        scheduleBatchRefresh();
         for (const message of batch.messages) {
           if (!message.protocolConvId || !message.threadId || message.threadId === message.protocolMsgId) continue;
           queryClient.setQueryData<models.Message[]>(
@@ -346,6 +368,8 @@ export function useMessageEvents() {
       isMounted = false;
       pendingBatches.length = 0;
       if (batchTimer !== null) clearTimeout(batchTimer);
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      conversationsToRefresh.clear();
       if (unsubscribeBatch) unsubscribeBatch();
     };
   }, [queryClient, registerBatchMessages]);

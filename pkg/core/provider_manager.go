@@ -6,6 +6,7 @@ import (
 	"Loom/pkg/models"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -118,73 +119,83 @@ func splitProviderInstanceID(instanceID string) (string, int, bool) {
 	return instanceID[:separator], number, true
 }
 
-// GetConfiguredProviders returns a list of configured (initialized) providers.
+// GetConfiguredProviders returns persisted provider configurations, enriched
+// with runtime state when their instances have already been restored. Persisted
+// configuration is authoritative so startup or one failed provider Init cannot
+// make the UI look like a fresh installation.
 func (pm *ProviderManager) GetConfiguredProviders() []ProviderInfo {
 	pm.mu.RLock()
 	type configuredProvider struct {
 		instanceID string
 		provider   Provider
-		info       ProviderInfo
 	}
-	snapshot := make([]configuredProvider, 0, len(pm.providers))
+	runtimeProviders := make([]configuredProvider, 0, len(pm.providers))
+	infos := make(map[string]ProviderInfo, len(pm.infos))
+	for id, info := range pm.infos {
+		infos[id] = info
+	}
 	activeInstanceID := pm.activeInstanceID
-
 	for instanceID, provider := range pm.providers {
-		// Extract providerID from instanceID (e.g., "whatsapp-1" -> "whatsapp")
-		parts := strings.Split(instanceID, "-")
-		if len(parts) < 2 {
-			// Only log warnings, not every call
-			continue
-		}
-		providerID := strings.Join(parts[:len(parts)-1], "-")
-
-		info, exists := pm.infos[providerID]
-		if !exists {
-			// If info doesn't exist, create a basic one
-			info = ProviderInfo{
-				ID:   providerID,
-				Name: providerID,
-			}
-		}
-		snapshot = append(snapshot, configuredProvider{instanceID: instanceID, provider: provider, info: info})
+		runtimeProviders = append(runtimeProviders, configuredProvider{instanceID: instanceID, provider: provider})
 	}
 	pm.mu.RUnlock()
 
-	// Provider.GetConfig and database reads are external work. Keeping the
-	// manager lock around them lets one provider stall every list/read and also
-	// blocks unrelated provider lifecycle operations.
-	providers := make([]ProviderInfo, 0, len(snapshot))
-	for _, configured := range snapshot {
-		instanceID := configured.instanceID
-		info := configured.info
-		// Read the persisted configuration instead of calling Provider.GetConfig.
-		// Providers synchronize their live state independently; waiting for one of
-		// their locks here could make the entire accounts screen hang during sync.
-		var config models.ProviderConfiguration
-		if db.DB != nil {
-			if result := db.DB.Where("instance_id = ?", instanceID).First(&config); result.Error == nil {
+	providers := make([]ProviderInfo, 0, len(runtimeProviders))
+	seen := make(map[string]struct{}, len(runtimeProviders))
+	if db.DB != nil {
+		var configs []models.ProviderConfiguration
+		if err := db.DB.Order("id ASC").Find(&configs).Error; err == nil {
+			providers = make([]ProviderInfo, 0, len(configs))
+			for _, config := range configs {
+				info, exists := infos[config.ProviderID]
+				if !exists {
+					info = ProviderInfo{ID: config.ProviderID, Name: config.ProviderID}
+				}
 				var persistedConfig ProviderConfig
 				if err := json.Unmarshal([]byte(config.ConfigJSON), &persistedConfig); err == nil {
 					info.Config = persistedConfig
 				}
+				info.InstanceID = config.InstanceID
+				info.InstanceName = config.InstanceName
+				if info.InstanceName == "" {
+					info.InstanceName = config.InstanceID
+				}
+				if config.LastCompletedSyncAt != nil {
+					info.LastCompletedSyncAt = config.LastCompletedSyncAt.Format(time.RFC3339)
+				}
+				if config.LastLiveEventAt != nil {
+					info.LastLiveEventAt = config.LastLiveEventAt.Format(time.RFC3339)
+				}
+				info.IsActive = config.IsActive || config.InstanceID == activeInstanceID
+				providers = append(providers, info)
+				seen[config.InstanceID] = struct{}{}
 			}
 		} else {
-			// Primarily useful for in-memory/test managers without an application DB.
-			info.Config = configured.provider.GetConfig()
+			log.Printf("ProviderManager.GetConfiguredProviders: failed to load persisted configurations: %v", err)
 		}
+	}
 
-		info.InstanceID = instanceID
-		info.InstanceName = config.InstanceName
-		if config.LastCompletedSyncAt != nil {
-			info.LastCompletedSyncAt = config.LastCompletedSyncAt.Format(time.RFC3339)
+	// Include a just-created runtime instance even if its configuration commit is
+	// not visible yet. Provider.GetConfig stays outside the manager lock.
+	for _, configured := range runtimeProviders {
+		if _, exists := seen[configured.instanceID]; exists {
+			continue
 		}
-		if config.LastLiveEventAt != nil {
-			info.LastLiveEventAt = config.LastLiveEventAt.Format(time.RFC3339)
+		providerID, _, ok := splitProviderInstanceID(configured.instanceID)
+		if !ok {
+			providerID = configured.instanceID
 		}
+		info, exists := infos[providerID]
+		if !exists {
+			info = ProviderInfo{ID: providerID, Name: providerID}
+		}
+		info.Config = configured.provider.GetConfig()
+		info.InstanceID = configured.instanceID
+		info.InstanceName = configured.instanceID
 		if info.InstanceName == "" {
-			info.InstanceName = instanceID
+			info.InstanceName = configured.instanceID
 		}
-		info.IsActive = (instanceID == activeInstanceID)
+		info.IsActive = configured.instanceID == activeInstanceID
 		providers = append(providers, info)
 	}
 

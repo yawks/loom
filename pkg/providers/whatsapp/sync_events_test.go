@@ -48,14 +48,15 @@ func TestHistoryMessagesReadThroughOwnMessage(t *testing.T) {
 }
 
 func TestHistoryMessagesReadThroughOwnReaction(t *testing.T) {
+	base := time.Unix(100, 0).UTC()
 	messages := []models.Message{
-		{ProtocolMsgID: "incoming-before"},
-		{ProtocolMsgID: "reacted", Reactions: []models.Reaction{{UserID: "33600000000@s.whatsapp.net", Emoji: "👍"}}},
-		{ProtocolMsgID: "incoming-after"},
+		{ProtocolMsgID: "reacted", Timestamp: base, Reactions: []models.Reaction{{UserID: "33600000000@s.whatsapp.net", Emoji: "👍", CreatedAt: base.Add(2 * time.Minute)}}},
+		{ProtocolMsgID: "incoming-before-reaction", Timestamp: base.Add(time.Minute)},
+		{ProtocolMsgID: "incoming-after-reaction", Timestamp: base.Add(3 * time.Minute)},
 	}
 
 	read := historyMessagesReadThroughOwnActivity(messages, "33600000000@s.whatsapp.net")
-	if len(read) != 2 || read[1].ProtocolMsgID != "reacted" {
+	if len(read) != 2 || read[1].ProtocolMsgID != "incoming-before-reaction" {
 		t.Fatalf("read-through reaction prefix = %#v", read)
 	}
 }

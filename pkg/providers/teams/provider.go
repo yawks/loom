@@ -113,6 +113,12 @@ func (p *Provider) IsAuthenticated() bool {
 	return p.session != nil && p.session.TenantID != "" && p.session.UserMRI != "" && p.session.RefreshToken != ""
 }
 
+func (p *Provider) IsConnected() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.client != nil && p.client.IsLoggedIn()
+}
+
 func (p *Provider) Connect() error {
 	p.mu.Lock()
 	if p.session == nil {

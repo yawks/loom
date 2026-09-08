@@ -59,7 +59,7 @@ func InitDatabase() error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return fmt.Errorf("could not create db directory: %w", err)
 	}
-	return initDatabase(dbPath + "?_busy_timeout=30000&_journal_mode=WAL&cache=shared")
+	return initDatabase(dbPath + "?_busy_timeout=30000&_journal_mode=WAL")
 }
 
 // InitMockDatabase initializes an isolated, process-local database. It is used by
@@ -69,8 +69,11 @@ func InitMockDatabase() error {
 }
 
 func initDatabase(dsn string) error {
-	// Configure SQLite with WAL mode and a long busy timeout.
-	// cache=shared keeps a single shared page cache across the connection pool.
+	// Configure SQLite with WAL mode and a long busy timeout. Do not enable
+	// SQLite shared-cache for the file database: its table-level locks make
+	// renderer reads wait behind synchronization writes and negate WAL's main
+	// concurrency benefit. The in-memory mock still needs cache=shared so its
+	// connections address the same transient database.
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
 			SlowThreshold: 350 * time.Millisecond,
