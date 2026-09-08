@@ -3,6 +3,7 @@ package googlechat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,20 @@ import (
 	"strings"
 	"time"
 )
+
+type googleChatHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *googleChatHTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+func isGoogleChatHTTPStatus(err error, statusCode int) bool {
+	var httpErr *googleChatHTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == statusCode
+}
 
 const chatAPIBase = "https://chat.googleapis.com/v1"
 const chatUploadBase = "https://chat.googleapis.com/upload/v1"
@@ -268,7 +283,7 @@ func (p *GoogleChatProvider) apiDelete(path string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return &googleChatHTTPError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 	return nil
 }

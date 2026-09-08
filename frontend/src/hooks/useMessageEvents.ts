@@ -486,6 +486,40 @@ export function useMessageEvents() {
             return { ...oldData, pages: updatedPages };
           }
         );
+        queryClient.setQueriesData<models.Message[]>(
+          { queryKey: ["threads"] },
+          (oldData) => {
+            if (!Array.isArray(oldData)) return oldData;
+            return oldData.map((msg) => {
+              if (msg.protocolMsgId !== reaction.messageId) return msg;
+              const currentReactions = msg.reactions || [];
+              if (reaction.added) {
+                const exists = currentReactions.some(
+                  (r) => r.userId === reaction.userId && normalizeEmoji(r.emoji) === normalizedReactionEmoji
+                );
+                if (exists) return msg;
+                const reactionTimestamp = new Date(reaction.timestamp * 1000);
+                return models.Message.createFrom({
+                  ...msg,
+                  reactions: [...currentReactions, models.Reaction.createFrom({
+                    id: 0,
+                    messageId: msg.id,
+                    userId: reaction.userId,
+                    emoji: reaction.emoji,
+                    createdAt: reactionTimestamp.toISOString(),
+                    updatedAt: reactionTimestamp.toISOString(),
+                  })],
+                });
+              }
+              return models.Message.createFrom({
+                ...msg,
+                reactions: currentReactions.filter(
+                  (r) => !(r.userId === reaction.userId && normalizeEmoji(r.emoji) === normalizedReactionEmoji)
+                ),
+              });
+            });
+          }
+        );
         if (reaction.added && reaction.conversationId) {
           const reactionTime = reaction.timestamp * 1000;
           queryClient.setQueryData<Record<string, unknown>>(

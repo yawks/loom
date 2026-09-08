@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/socketmode"
 )
@@ -61,6 +59,7 @@ type SlackProvider struct {
 	eventStreamCtx     context.Context         // Context for event stream
 	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
 	eventStreamStarted bool                    // Whether event stream has been started
+	searchUnavailable  bool                    // search.messages lacks scope; use bounded history polling
 	connectionCancel   context.CancelFunc      // Stops Socket Mode across reconnects
 	dmChannelCache     map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
 	dmChannelCacheMu   sync.RWMutex            // Mutex for DM channel cache
@@ -258,7 +257,7 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 			slack.OptionLog(p.logger),
 		}
 
-		apiHTTPClient := http.DefaultClient
+		apiHTTPClient := &http.Client{Timeout: 30 * time.Second}
 		if dCookie != "" {
 			fmt.Printf("SlackProvider.SetConfig: setting up cookie transport with d cookie\n")
 			// Create custom HTTP client that sends the d cookie
@@ -272,6 +271,7 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 			fmt.Printf("SlackProvider.SetConfig: cookie header format: d=... (length=%d)\n", len(cookieValue))
 
 			client := &http.Client{
+				Timeout: 30 * time.Second,
 				Transport: &cookieTransport{
 					Transport: http.DefaultTransport,
 					Cookie:    cookieHeader,
@@ -369,11 +369,11 @@ func (p *SlackProvider) slackConversationSyncRows() ([]slackConversationSyncRow,
 			MAX(timestamp) AS last_timestamp,
 			COUNT(*) AS message_count
 		FROM messages
-		WHERE protocol_conv_id LIKE ?
+		WHERE substr(protocol_conv_id, 1, ?) = ?
 			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)
 		GROUP BY protocol_conv_id
 		ORDER BY MAX(timestamp) DESC
-	`, instanceID+"::%").Scan(&rows).Error
+	`, len(instanceID+"::"), instanceID+"::").Scan(&rows).Error
 	return rows, err
 }
 
@@ -429,10 +429,19 @@ func (p *SlackProvider) emitIncrementalMessageBatches(conversationID string, mes
 	}
 }
 
-func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, contactLastRead map[string]string) {
+func waitForSlackSync(ctx context.Context, delay time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(delay):
+		return true
+	}
+}
+
+func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context, contactLatestTS, contactLastRead map[string]string) error {
 	if db.DB == nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
-		return
+		return nil
 	}
 
 	p.log("SlackProvider.incrementalSyncExistingConversations: Starting incremental sync\n")
@@ -440,7 +449,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 	results, err := p.slackConversationSyncRows()
 	if err != nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: Failed to query conversations: %v\n", err)
-		return
+		return err
 	}
 
 	// Convert string timestamps to time.Time
@@ -488,7 +497,7 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 	if len(conversations) == 0 {
 		// No conversations with messages yet (e.g. fresh setup). Emit completed so the footer closes.
 		p.emitSyncStatus(core.SyncStatusCompleted, "All conversations are up to date", 100)
-		return
+		return nil
 	}
 
 	// Emit sync status
@@ -513,6 +522,9 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 
 	// Sync each conversation
 	for i, conv := range conversations {
+		if ctx.Err() != nil {
+			return context.Canceled
+		}
 		// Skip conversations where Slack confirms no new messages since our last stored one.
 		// contactLatestTS holds the timestamp of the most recent message in the channel
 		// as returned by GetConversations — no API call needed to know there's nothing new.
@@ -589,7 +601,10 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 			// GetConversationHistory only returns main messages, not thread replies.
 			// When Slack says a conversation has newer activity but no new main messages exist,
 			// the gap must be new thread replies. Sync them so ordering stays accurate.
-			newReplies := p.refreshThreadReplies(conv.ProtocolConvID)
+			newReplies := p.refreshThreadReplies(ctx, conv.ProtocolConvID)
+			if ctx.Err() != nil {
+				return context.Canceled
+			}
 			if newReplies > 0 {
 				totalNewMessages += newReplies
 				successCount++
@@ -615,7 +630,9 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 		}
 
 		// Small delay to avoid overwhelming the API
-		time.Sleep(100 * time.Millisecond)
+		if !waitForSlackSync(ctx, 100*time.Millisecond) {
+			return context.Canceled
+		}
 	}
 
 	p.log("SlackProvider.incrementalSyncExistingConversations: Completed - synced %d conversations, found %d new messages, fixed %d newly discovered conversations\n",
@@ -644,13 +661,14 @@ func (p *SlackProvider) incrementalSyncExistingConversations(contactLatestTS, co
 
 	// Clear status
 	p.emitSyncStatus(core.SyncStatusCompleted, "", -1)
+	return nil
 }
 
 // refreshThreadReplies fetches new replies for the most recent parent messages in a
 // conversation and stores them. Called when the incremental sync found no new main
 // messages but Slack reports newer channel activity (i.e. the gap is thread replies).
 // Returns the number of new reply messages stored.
-func (p *SlackProvider) refreshThreadReplies(convID string) int {
+func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string) int {
 	if db.DB == nil {
 		return 0
 	}
@@ -704,6 +722,9 @@ func (p *SlackProvider) refreshThreadReplies(convID string) int {
 
 	var allReplies []models.Message
 	for _, row := range parentRows {
+		if ctx.Err() != nil {
+			return 0
+		}
 		var oldest time.Time
 		if row.MaxReplyTS != nil {
 			oldest = *row.MaxReplyTS
@@ -787,38 +808,18 @@ func (p *SlackProvider) Connect() error {
 	// Determine connection mode based on token type
 	token, _ := p.config.GetString("token")
 
-	if strings.HasPrefix(token, "xoxc") || strings.HasPrefix(token, "xoxp") {
-		// Web-client (xoxc) and OAuth user (xoxp) tokens both use RTM.
-		// xoxc requires the d cookie in the WebSocket dialer; xoxp authenticates
-		// via the token alone and does not need a cookie.
+	if strings.HasPrefix(token, "xoxp") {
+		// OAuth user tokens may use RTM when the workspace grants rtm:stream.
 		p.log("SlackProvider.Connect: Detected user token (%s...), initializing RTM client\n", token[:5])
 
 		rtmOptions := []slack.RTMOption{}
 
-		if strings.HasPrefix(token, "xoxc") {
-			dCookie, _ := p.config.GetString("d_cookie")
-			if dCookie != "" {
-				p.log("SlackProvider.Connect: injecting d cookie into RTM dialer\n")
-
-				jar, _ := cookiejar.New(nil)
-				urlObj, _ := url.Parse("https://slack.com")
-				cookies := []*http.Cookie{{Name: "d", Value: dCookie}}
-				if strings.HasPrefix(dCookie, "d=") {
-					cookies[0].Value = dCookie[2:]
-				}
-				jar.SetCookies(urlObj, cookies)
-				urlObj2, _ := url.Parse("https://wss-primary.slack.com")
-				jar.SetCookies(urlObj2, cookies)
-
-				dialer := *websocket.DefaultDialer
-				dialer.Jar = jar
-				rtmOptions = append(rtmOptions, slack.RTMOptionDialer(&dialer))
-				p.log("SlackProvider.Connect: Set cookie jar on RTM dialer\n")
-			}
-		}
-
 		p.rtmClient = p.client.NewRTM(rtmOptions...)
 		go p.startRTM(connectionCtx)
+	} else if strings.HasPrefix(token, "xoxc") {
+		// Browser sessions do not have rtm:stream. Polling is their live transport;
+		// starting RTM here would retry missing_scope forever.
+		p.log("SlackProvider.Connect: Browser session detected, using polling event stream\n")
 	} else {
 		// Bot Token (xoxb) -> Use Socket Mode (Modern)
 		p.log("SlackProvider.Connect: Detected Bot Token (xoxb), initializing Socket Mode client\n")

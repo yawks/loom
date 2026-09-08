@@ -25,7 +25,7 @@ import { ArrowLeft, Loader2, X } from "lucide-react";
 import { FileUploadModal } from "./FileUploadModal";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import type { InfiniteData } from "@tanstack/react-query";
-import type { models } from "../../wailsjs/go/models";
+import { models } from "../../wailsjs/go/models";
 // InfiniteData is used to type the cache seed read via queryClient.getQueryData
 import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, normalizeSerializedQuotedReply } from "@/lib/messageUtils";
 import { cn, timeToDate } from "@/lib/utils";
@@ -64,6 +64,16 @@ interface ThreadListItemProps {
   unreadCount: number;
 }
 
+function deduplicateMessages(messages: models.Message[]): models.Message[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const key = message.protocolMsgId || (message.id ? `local-${message.id}` : "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarClick, onContactAvatarClick, unreadCount }: ThreadListItemProps) {
   const { t } = useTranslation();
   const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
@@ -75,8 +85,16 @@ function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarC
     : timestamp.toLocaleDateString([], { month: "short", day: "numeric" });
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       className={cn("thread-list-item w-full p-4 text-left hover:bg-muted/50 transition-colors flex flex-col gap-2 border-b last:border-b-0", unreadCount > 0 && "bg-primary/10 border-l-2 border-l-primary")}
     >
       <div className="flex items-center gap-2 min-w-0">
@@ -114,7 +132,7 @@ function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarC
           onAvatarClick={onAvatarClick}
         />
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -293,7 +311,7 @@ export function ThreadView() {
   useEffect(() => {
     const cached = queryClient.getQueryData<InfiniteData<models.Message[]>>(["messages", conversationId]);
     const flat = cached ? cached.pages.flat() : [];
-    setThreadListMessages(flat);
+    setThreadListMessages(deduplicateMessages(flat));
     const lastPage = cached?.pages[cached.pages.length - 1];
     setThreadListHasMore(!!lastPage && lastPage.length >= 50);
   }, [conversationId, queryClient]);
@@ -311,9 +329,7 @@ export function ThreadView() {
         conversationId,
         oldest ? timeToDate(oldest.timestamp) : undefined
       );
-      const seenIds = new Set(threadListMessages.map((m) => m.protocolMsgId).filter(Boolean));
-      const deduped = newMsgs.filter((m) => !seenIds.has(m.protocolMsgId));
-      setThreadListMessages((prev) => [...deduped, ...prev]);
+      setThreadListMessages((prev) => deduplicateMessages([...newMsgs, ...prev]));
       setThreadListHasMore(newMsgs.length >= 50);
     } catch (e) {
       console.error("Failed to load more messages for thread list", e);
@@ -323,14 +339,14 @@ export function ThreadView() {
   }, [conversationId, threadListMessages, threadListIsFetching, threadListHasMore]);
 
   const threadListItems = useMemo(() => {
-    return threadListMessages
+    return deduplicateMessages(threadListMessages)
       .filter((message) => message.protocolMsgId && message.threadReplyCount > 0)
       .map((parentMessage) => ({
         parentMessage,
         replies: [],
         replyCount: parentMessage.threadReplyCount,
       }))
-      .sort((a, b) => timeToDate(b.parentMessage.timestamp).getTime() - timeToDate(a.parentMessage.timestamp).getTime());
+      .sort((a, b) => timeToDate(a.parentMessage.timestamp).getTime() - timeToDate(b.parentMessage.timestamp).getTime());
   }, [threadListMessages]);
 
   // Scroll-position preservation when older messages are prepended to the list
@@ -375,10 +391,10 @@ export function ThreadView() {
     const el = threadListScrollRef.current;
     if (!el || selectedThreadId !== null) return;
 
-    const keepLatestThreadVisible = () => {
+    const keepOldestThreadVisible = () => {
       if (shouldStickToThreadListTopRef.current) el.scrollTop = 0;
     };
-    const resizeObserver = new ResizeObserver(keepLatestThreadVisible);
+    const resizeObserver = new ResizeObserver(keepOldestThreadVisible);
     resizeObserver.observe(el);
     const items = el.querySelector<HTMLElement>(".thread-view__list-items");
     if (items) resizeObserver.observe(items);
@@ -473,7 +489,7 @@ export function ThreadView() {
 
   const sortedThreadMessages = useMemo(() => {
     if (!threadMessages || threadMessages.length === 0) return [];
-    const filtered = threadMessages.map(normalizeSerializedQuotedReply).filter((msg) => {
+    const filtered = deduplicateMessages(threadMessages.map(normalizeSerializedQuotedReply)).filter((msg) => {
       const hasBody = msg.body && msg.body.trim() !== "";
       const hasAttachments = msg.attachments && msg.attachments.trim() !== "";
       if (!hasBody && !hasAttachments) return false;
@@ -564,11 +580,33 @@ export function ThreadView() {
       const nativeEmojiReactions = providerInstanceId
         ? capabilities[providerInstanceId]?.nativeEmojiReactions ?? false
         : false;
-      const { apiEmoji, canonicalName } = normalizeReaction(emoji, nativeEmojiReactions);
+      const { apiEmoji, canonicalName, storedEmoji } = normalizeReaction(emoji, nativeEmojiReactions);
 
       const hasReaction = messageReactions.some((r) => {
         return reactionMatches(r.emoji, canonicalName) && sameUserId(r.userId, currentUserId);
       });
+
+      const threadQueryKey = ["threads", conversationId, selectedThreadId || ""];
+      const previousThreadMessages = queryClient.getQueryData<models.Message[]>(threadQueryKey);
+      if (currentUserId) {
+        queryClient.setQueryData<models.Message[]>(threadQueryKey, (oldData) =>
+          oldData?.map((msg) => {
+            if (msg.protocolMsgId !== protocolMsgId && getMessageDomId(msg) !== protocolMsgId) return msg;
+            const updatedReactions = hasReaction
+              ? (msg.reactions || []).filter((reaction) =>
+                  !(reactionMatches(reaction.emoji, canonicalName) && sameUserId(reaction.userId, currentUserId)))
+              : [...(msg.reactions || []), models.Reaction.createFrom({
+                  id: 0,
+                  messageId: msg.id,
+                  userId: currentUserId,
+                  emoji: storedEmoji,
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                })];
+            return models.Message.createFrom({ ...msg, reactions: updatedReactions });
+          })
+        );
+      }
 
       try {
         if (hasReaction) {
@@ -580,9 +618,11 @@ export function ThreadView() {
         queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
       } catch (error) {
         console.error("Failed to update reaction:", error);
+        queryClient.setQueryData(threadQueryKey, previousThreadMessages);
+        showToast(String(error), "error");
       }
     },
-    [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient]
+    [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient, showToast]
   );
 
   const correctThreadBottomImmediately = useCallback(() => {

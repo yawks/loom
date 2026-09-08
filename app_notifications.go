@@ -6,6 +6,7 @@ import (
 	"Loom/pkg/models"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -18,11 +19,13 @@ const (
 )
 
 type SystemNotification struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Body           string `json:"body,omitempty"`
-	ConversationID string `json:"conversationId"`
-	MessageID      string `json:"messageId"`
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	Subtitle       string    `json:"subtitle,omitempty"`
+	Body           string    `json:"body,omitempty"`
+	ConversationID string    `json:"conversationId"`
+	MessageID      string    `json:"messageId"`
+	Timestamp      time.Time `json:"timestamp"`
 }
 
 func defaultNotificationSettings(instanceID string) models.NotificationSettings {
@@ -64,15 +67,19 @@ func (a *App) SaveNotificationSettings(settings models.NotificationSettings) (mo
 	if !settings.ShowConversationName {
 		settings.ShowMessageDetail = false
 	}
-	var existing models.NotificationSettings
-	err := db.DB.Where("provider_instance_id = ?", settings.ProviderInstanceID).First(&existing).Error
-	if err == nil {
-		settings.ID = existing.ID
-		settings.CreatedAt = existing.CreatedAt
-	} else if err != gorm.ErrRecordNotFound {
-		return settings, err
-	}
-	err = db.DB.Save(&settings).Error
+	input := settings
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		settings = input
+		var existing models.NotificationSettings
+		err := tx.Where("provider_instance_id = ?", settings.ProviderInstanceID).First(&existing).Error
+		if err == nil {
+			settings.ID = existing.ID
+			settings.CreatedAt = existing.CreatedAt
+		} else if err != gorm.ErrRecordNotFound {
+			return err
+		}
+		return tx.Save(&settings).Error
+	})
 	return settings, err
 }
 
@@ -122,13 +129,14 @@ func (a *App) prepareSystemNotification(event core.MessageEvent) *SystemNotifica
 	if db.DB == nil {
 		return nil
 	}
-	query := db.DB
+	var lookupErr error
 	if message.ConversationID != 0 {
-		query = query.Where("id = ?", message.ConversationID)
-	} else {
-		query = query.Where("protocol_conv_id = ?", message.ProtocolConvID)
+		lookupErr = db.DB.Where("id = ?", message.ConversationID).First(&conversation).Error
 	}
-	if query.First(&conversation).Error != nil {
+	if message.ConversationID == 0 || lookupErr != nil {
+		lookupErr = db.DB.Where("protocol_conv_id = ?", message.ProtocolConvID).First(&conversation).Error
+	}
+	if lookupErr != nil {
 		return nil
 	}
 	message.ConversationID = conversation.ID
@@ -140,6 +148,7 @@ func (a *App) prepareSystemNotification(event core.MessageEvent) *SystemNotifica
 	}
 
 	title := "New message"
+	subtitle := ""
 	body := ""
 	if settings.ShowConversationName {
 		title = strings.TrimSpace(conversation.GroupName)
@@ -153,11 +162,14 @@ func (a *App) prepareSystemNotification(event core.MessageEvent) *SystemNotifica
 			title = "New message"
 		}
 		if settings.ShowMessageDetail {
+			if conversation.IsGroup {
+				subtitle = strings.TrimSpace(message.SenderName)
+			}
 			body = strings.TrimSpace(message.Body)
 			if body == "" && strings.TrimSpace(message.Attachments) != "" && message.Attachments != "[]" {
 				body = "Attachment"
 			}
 		}
 	}
-	return &SystemNotification{ID: event.InstanceID + ":" + message.ProtocolMsgID, Title: title, Body: body, ConversationID: message.ProtocolConvID, MessageID: message.ProtocolMsgID}
+	return &SystemNotification{ID: event.InstanceID + ":" + message.ProtocolMsgID, Title: title, Subtitle: subtitle, Body: body, ConversationID: message.ProtocolConvID, MessageID: message.ProtocolMsgID, Timestamp: message.Timestamp}
 }

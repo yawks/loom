@@ -81,3 +81,54 @@ func TestPrepareSystemNotificationAttentionUsesWatchRules(t *testing.T) {
 		t.Fatalf("routine message should not notify: %+v", got)
 	}
 }
+
+func TestPrepareSystemNotificationFallsBackToCanonicalConversationID(t *testing.T) {
+	conversation := seedNotificationConversation(t, false)
+	app := NewApp()
+	settings := defaultNotificationSettings("")
+	settings.Enabled = true
+	if _, err := app.SaveNotificationSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	event := core.MessageEvent{InstanceID: "account-1", Message: models.Message{
+		ConversationID: 999999, ProtocolConvID: conversation.ProtocolConvID,
+		ProtocolMsgID: "fallback", Body: "Hello",
+	}}
+	if got := app.prepareSystemNotification(event); got == nil {
+		t.Fatal("canonical conversation ID should recover a stale local ID")
+	}
+}
+
+func TestPrepareSystemNotificationIncludesSenderWithMessageDetail(t *testing.T) {
+	conversation := seedNotificationConversation(t, true)
+	app := NewApp()
+	settings := defaultNotificationSettings("")
+	settings.Enabled = true
+	if _, err := app.SaveNotificationSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	got := app.prepareSystemNotification(core.MessageEvent{InstanceID: "account-1", Message: models.Message{
+		ConversationID: conversation.ID, ProtocolConvID: conversation.ProtocolConvID,
+		ProtocolMsgID: "sender", SenderName: "Bob", Body: "Hello",
+	}})
+	if got == nil || got.Subtitle != "Bob" || got.Body != "Hello" {
+		t.Fatalf("expected sender subtitle and message body, got %+v", got)
+	}
+}
+
+func TestPrepareSystemNotificationOmitsSenderForDirectMessage(t *testing.T) {
+	conversation := seedNotificationConversation(t, false)
+	app := NewApp()
+	settings := defaultNotificationSettings("")
+	settings.Enabled = true
+	if _, err := app.SaveNotificationSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	got := app.prepareSystemNotification(core.MessageEvent{InstanceID: "account-1", Message: models.Message{
+		ConversationID: conversation.ID, ProtocolConvID: conversation.ProtocolConvID,
+		ProtocolMsgID: "dm-sender", SenderName: "Bob", Body: "Hello",
+	}})
+	if got == nil || got.Subtitle != "" || got.Body != "Hello" {
+		t.Fatalf("expected no sender subtitle for a direct message, got %+v", got)
+	}
+}

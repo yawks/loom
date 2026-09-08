@@ -119,6 +119,8 @@ export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 
 export function GetScheduledMessages(arg1:string):Promise<Array<models.ScheduledMessage>>;
 
+export function GetSyncingProviderIDs():Promise<Array<string>>;
+
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
 
 export function GetThreadSummaries(arg1:string,arg2:Array<string>):Promise<Array<models.ThreadSummary>>;

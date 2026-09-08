@@ -462,6 +462,15 @@ export function MessageList({
   // A deliberate conversation change while Loom is focused consumes visible
   // unread messages quickly. The long grace period is reserved for returning
   // focus to a conversation that was already open in the background.
+  // Key the timer by the unread IDs, rather than the message/read-state object
+  // identities. Background query refreshes may replace those objects without
+  // changing what the user still has to read; restarting the timer on every
+  // such refresh can otherwise postpone the receipt indefinitely.
+  const unreadMainMessageIdsJSON = JSON.stringify(
+    mainMessages
+      .map((message) => getMessageDomId(message))
+      .filter((msgId) => conversationReadState[msgId] === false)
+  );
   useEffect(() => {
     if (!conversationId) return;
     if (!hasWindowFocus) return;
@@ -472,9 +481,7 @@ export function MessageList({
     // Only messages already classified as main messages may be consumed here.
     // A new thread reply reaches the read store just before threadsByParent is
     // recomputed; scanning every store entry would mark it read in that gap.
-    const unreadMessages = mainMessages
-      .map((message) => getMessageDomId(message))
-      .filter((msgId) => conversationReadState[msgId] === false);
+    const unreadMessages = JSON.parse(unreadMainMessageIdsJSON) as string[];
     if (unreadMessages.length === 0) return;
 
     const markConversationAsReadOnServer = async (convId: string): Promise<void> => {
@@ -493,9 +500,14 @@ export function MessageList({
 
     readMarkTimerRef.current = setTimeout(() => {
       readMarkTimerRef.current = null;
-      markConversationAsReadOnServer(conversationId)
-        .then(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)))
-        .catch(() => unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId)));
+      // Reading in Loom is a local viewport action and must not remain blocked
+      // behind a provider request. Each local update also sends its individual
+      // receipt; the conversation-level call is a best-effort remote cursor
+      // update for providers that support one.
+      unreadMessages.forEach((msgId) => markMessageAsRead(conversationId, msgId));
+      void markConversationAsReadOnServer(conversationId).catch((error) => {
+        console.error(`Failed to mark conversation ${conversationId} as read:`, error);
+      });
     }, readDelay);
 
     return () => {
@@ -504,7 +516,7 @@ export function MessageList({
         readMarkTimerRef.current = null;
       }
     };
-  }, [conversationId, mainMessages, markMessageAsRead, conversationReadState, hasWindowFocus, focusReturnReadDeadline, atBottom]);
+  }, [conversationId, unreadMainMessageIdsJSON, markMessageAsRead, hasWindowFocus, focusReturnReadDeadline, atBottom]);
 
   // Older provider versions could persist unsupported wrappers as empty
   // messages. Such a message is deliberately absent from mainMessages, so

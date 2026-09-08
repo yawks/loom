@@ -108,18 +108,24 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			// Search indexing is asynchronous. Keep an overlap so a message that
 			// appears in the index after newer activity is not lost forever behind
 			// the forward-only cursor. SQLite deduplication keeps this idempotent.
-			newLastPollTime, err := p.pollGlobalUpdates(ctx, slackSearchPollSince(lastPollTime))
-			if err != nil {
-				p.log("SlackProvider.startPolling: Error polling global updates: %v\n", err)
-				if strings.Contains(err.Error(), "missing_scope") {
-					historyFallbackCursor = p.pollKnownConversationHistoryFallback(
-						ctx,
-						historyFallbackCursor,
-						slackHistoryFallbackBatchSize,
-					)
+			p.mu.RLock()
+			searchUnavailable := p.searchUnavailable
+			p.mu.RUnlock()
+			if searchUnavailable {
+				historyFallbackCursor = p.pollKnownConversationHistoryFallback(ctx, historyFallbackCursor, slackHistoryFallbackBatchSize)
+			} else {
+				newLastPollTime, err := p.pollGlobalUpdates(ctx, slackSearchPollSince(lastPollTime))
+				if err != nil {
+					p.log("SlackProvider.startPolling: Error polling global updates: %v\n", err)
+					if strings.Contains(err.Error(), "missing_scope") {
+						p.mu.Lock()
+						p.searchUnavailable = true
+						p.mu.Unlock()
+						historyFallbackCursor = p.pollKnownConversationHistoryFallback(ctx, historyFallbackCursor, slackHistoryFallbackBatchSize)
+					}
+				} else if newLastPollTime.After(lastPollTime) {
+					lastPollTime = newLastPollTime
 				}
-			} else if newLastPollTime.After(lastPollTime) {
-				lastPollTime = newLastPollTime
 			}
 			newSelfDMPollTime, err := p.pollSelfDMUpdates(lastSelfDMPollTime)
 			if err != nil {
@@ -258,10 +264,10 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		LastTimestamp string
 	}
 	var conversations []conversationCursor
-	prefix := core.BuildConvID(p.getInstanceId(), "") + "%"
+	prefix := core.BuildConvID(p.getInstanceId(), "")
 	if err := db.DB.Model(&models.Message{}).
 		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
-		Where("protocol_conv_id LIKE ?", prefix).
+		Where("substr(protocol_conv_id, 1, ?) = ?", len(prefix), prefix).
 		Where("deleted_at IS NULL").
 		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
 		Group("protocol_conv_id").
@@ -671,6 +677,12 @@ func (p *SlackProvider) pollNewReactions() {
 // SyncHistory synchronizes contacts and missing messages from Slack.
 // Uses Search API to efficiently catch up on all messages since the last sync.
 func (p *SlackProvider) SyncHistory(since time.Time) error {
+	return p.SyncHistoryContext(context.Background(), since)
+}
+
+// SyncHistoryContext performs the startup catch-up while allowing Loom to stop
+// it independently from Slack's live event connection.
+func (p *SlackProvider) SyncHistoryContext(ctx context.Context, since time.Time) error {
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
@@ -687,7 +699,9 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	p.emitSyncStatus(core.SyncStatusFetchingHistory, "Syncing recent messages via Search...", 10)
 
 	// Add a small delay to ensure footer is visible before starting the actual work
-	time.Sleep(200 * time.Millisecond)
+	if !waitForSlackSync(ctx, 200*time.Millisecond) {
+		return context.Canceled
+	}
 
 	// 1. Refresh Contacts (in case of new channels/users)
 	// We do this first so we have read markers (LastRead) before catch-up messages arrive
@@ -698,6 +712,9 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	if err != nil {
 		p.emitSyncStatus(core.SyncStatusError, fmt.Sprintf("Failed to get contacts: %v", err), -1)
 		return fmt.Errorf("failed to get contacts: %w", err)
+	}
+	if ctx.Err() != nil {
+		return context.Canceled
 	}
 
 	p.log("SlackProvider.SyncHistory: Found %d conversations\n", len(contacts))
@@ -886,15 +903,19 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// This acts like a "catch-up" poll. Since we emitted LastRead markers above,
 	// incoming catch-up messages will be correctly categorized as read/unread by the frontend.
 	p.emitSyncStatus(core.SyncStatusFetchingHistory, "Syncing recent messages via Search...", 50)
-	ctx := context.Background()
 	p.log("SlackProvider.SyncHistory: Calling pollGlobalUpdates...\n")
 	_, err = p.pollGlobalUpdates(ctx, since)
+	if ctx.Err() != nil {
+		return context.Canceled
+	}
 	p.log("SlackProvider.SyncHistory: pollGlobalUpdates returned (err=%v)\n", err)
 	if err != nil {
 		p.log("SlackProvider.SyncHistory: Warning: Search sync failed: %v.\n", err)
 	} else {
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, "Recent messages synced.", 70)
-		time.Sleep(500 * time.Millisecond)
+		if !waitForSlackSync(ctx, 500*time.Millisecond) {
+			return context.Canceled
+		}
 	}
 
 	// Wait for MPIM processing to complete (with timeout)
@@ -921,11 +942,15 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 			p.log("SlackProvider.SyncHistory: All MPIMs processed\n")
 		case <-time.After(timeout):
 			p.log("SlackProvider.SyncHistory: Timeout waiting for MPIMs, continuing anyway\n")
+		case <-ctx.Done():
+			return context.Canceled
 		}
 	}
 
 	// Add a small delay to ensure footer is visible
-	time.Sleep(500 * time.Millisecond)
+	if !waitForSlackSync(ctx, 500*time.Millisecond) {
+		return context.Canceled
+	}
 
 	if len(contacts) == 0 {
 		p.emitSyncStatus(core.SyncStatusCompleted, "Sync completed - no conversations", 100)
@@ -936,7 +961,9 @@ func (p *SlackProvider) SyncHistory(since time.Time) error {
 	// Run incremental sync to catch any messages missed in conversations already in the DB.
 	// incrementalSyncExistingConversations emits its own final "completed" status.
 	p.log("SlackProvider.SyncHistory: Starting incremental sync for existing conversations\n")
-	p.incrementalSyncExistingConversations(contactLatestTS, contactLastRead)
+	if err := p.incrementalSyncExistingConversations(ctx, contactLatestTS, contactLastRead); err != nil {
+		return err
+	}
 
 	p.log("SlackProvider.SyncHistory: Sync fully completed\n")
 	return nil

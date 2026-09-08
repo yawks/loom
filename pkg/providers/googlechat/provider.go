@@ -72,6 +72,10 @@ type GoogleChatProvider struct {
 
 	lastSeen   map[string]time.Time
 	lastSeenMu sync.Mutex
+	// reactionPageTokens advances a bounded, one-page-at-a-time scan through
+	// each space. Message summaries are cheap to compare locally; the provider
+	// only lists individual reactions when a summary differs from SQLite.
+	reactionPageTokens map[string]string
 
 	eventChan chan core.ProviderEvent
 	ctx       context.Context
@@ -83,12 +87,13 @@ var _ core.ScheduledMessageProvider = (*GoogleChatProvider)(nil)
 
 func NewGoogleChatProvider() *GoogleChatProvider {
 	p := &GoogleChatProvider{
-		eventChan:         make(chan core.ProviderEvent, 500),
-		userCache:         make(map[string]cachedUser),
-		threadNameByMsgID: make(map[string]string),
-		lastSeen:          make(map[string]time.Time),
-		spaceWebIDCache:   make(map[string]string),
-		spaceIsDMCache:    make(map[string]bool),
+		eventChan:          make(chan core.ProviderEvent, 500),
+		userCache:          make(map[string]cachedUser),
+		threadNameByMsgID:  make(map[string]string),
+		lastSeen:           make(map[string]time.Time),
+		reactionPageTokens: make(map[string]string),
+		spaceWebIDCache:    make(map[string]string),
+		spaceIsDMCache:     make(map[string]bool),
 	}
 	p.webClient = newGoogleChatWebClient(p.getInstanceID(), nil, p.handleWebAuthExpired)
 	return p

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GetConfiguredProviders, GetNotificationSettings, SaveNotificationSettings } from "../../wailsjs/go/main/App";
 import type { core, models } from "../../wailsjs/go/models";
-import { RequestNotificationAuthorization } from "../../wailsjs/runtime/runtime";
 import { cn } from "@/lib/utils";
 import { ProtocolIcon } from "@/components/ProtocolIcon";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { AtSign, Bell, BellRing, ChevronDown, MessageCircle, Users } from "lucide-react";
 import type { ReactNode } from "react";
+import { authorizeSystemNotifications } from "@/lib/systemNotifications";
 
 type NotificationRule = Omit<models.NotificationSettings, "convertValues">;
 
@@ -126,7 +126,9 @@ export function NotificationSettings() {
     try {
       const saved = await SaveNotificationSettings(rule as models.NotificationSettings);
       setRules((current) => ({ ...current, [id]: saved })); setError("");
-      if (saved.enabled && !saved.useGlobal) void RequestNotificationAuthorization().catch(() => undefined);
+      if (saved.enabled && !saved.useGlobal && !await authorizeSystemNotifications()) {
+        setError(t("notifications_permission_denied"));
+      }
     } catch { setError(t("notifications_save_error")); }
   };
   return <div className="flex-1 space-y-6 overflow-y-auto scroll-area p-6">

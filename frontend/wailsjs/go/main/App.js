@@ -230,6 +230,10 @@ export function GetScheduledMessages(arg1) {
   return window['go']['main']['App']['GetScheduledMessages'](arg1);
 }
 
+export function GetSyncingProviderIDs() {
+  return window['go']['main']['App']['GetSyncingProviderIDs']();
+}
+
 export function GetThreadMessages(arg1, arg2) {
   return window['go']['main']['App']['GetThreadMessages'](arg1, arg2);
 }

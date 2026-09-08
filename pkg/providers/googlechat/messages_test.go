@@ -41,6 +41,42 @@ func TestConvertMessageMarksDirectMentionOfSelf(t *testing.T) {
 	}
 }
 
+func TestDeleteMessageTreatsPermissionDeniedAsAlreadyDeleted(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodDelete {
+			t.Fatalf("unexpected method: %s", req.Method)
+		}
+		if req.URL.Path != "/v1/spaces/space-1/messages/message-1" {
+			t.Fatalf("unexpected delete path: %s", req.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":403,"message":"Permission denied to perform the requested action on the specified resource, or the resource doesn't exist.","status":"PERMISSION_DENIED"}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	if err := provider.DeleteMessage("googlechat-1::spaces/space-1", "spaces/space-1/messages/message-1"); err != nil {
+		t.Fatalf("DeleteMessage returned an error for an already deleted message: %v", err)
+	}
+}
+
+func TestDeleteMessageStillReturnsOtherHTTPErrors(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":500}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	if err := provider.DeleteMessage("googlechat-1::spaces/space-1", "spaces/space-1/messages/message-1"); err == nil {
+		t.Fatal("DeleteMessage unexpectedly ignored an HTTP 500 error")
+	}
+}
+
 func TestConvertMessagePreservesCachedSenderIdentityWhenMessageOmitsIt(t *testing.T) {
 	provider := NewGoogleChatProvider()
 	provider.userCache["115390581687754305172"] = cachedUser{
@@ -298,6 +334,65 @@ func TestEmitReactionDiffReportsAddedAndRemovedReactions(t *testing.T) {
 	}
 	if first.ConversationID != convID || second.ConversationID != convID {
 		t.Fatalf("events use wrong conversation: %#v %#v", first, second)
+	}
+}
+
+func TestPollReactionChangesFetchesOnlyMismatchedMessage(t *testing.T) {
+	if err := db.InitMockDatabase(); err != nil {
+		t.Fatalf("InitMockDatabase: %v", err)
+	}
+	defer func() {
+		sqlDB, err := db.DB.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+		db.DB = nil
+	}()
+
+	provider := NewGoogleChatProvider()
+	provider.config = core.ProviderConfig{"_instance_id": "googlechat-reaction-scan-test"}
+	requests := make([]string, 0, 2)
+	provider.apiClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests = append(requests, req.URL.Path)
+		switch req.URL.Path {
+		case "/v1/spaces/scan-test/messages":
+			return jsonResponse(`{"messages":[{"name":"spaces/scan-test/messages/old-reply","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]}],"nextPageToken":"page-2"}`), nil
+		case "/v1/spaces/scan-test/messages/old-reply/reactions":
+			return jsonResponse(`{"reactions":[{"user":{"name":"users/self"},"emoji":{"unicode":"🙃"}}]}`), nil
+		default:
+			t.Fatalf("unexpected API path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	meta := models.MetaContact{DisplayName: "Reaction scan test"}
+	if err := db.DB.Create(&meta).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-reaction-scan-test", UserID: "spaces/scan-test"}
+	if err := db.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	convID := "googlechat-reaction-scan-test::spaces/scan-test"
+	conversation := models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: convID}
+	if err := db.DB.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/scan-test/messages/old-reply", Timestamp: time.Now().Add(-time.Hour)}
+	if err := db.DB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	provider.pollReactionChanges("spaces/scan-test")
+	event := (<-provider.eventChan).(core.ReactionEvent)
+	if !event.Added || event.MessageID != message.ProtocolMsgID || event.UserID != "self" || event.Emoji != "🙃" {
+		t.Fatalf("unexpected reaction event: %#v", event)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("API request count = %d, want 2: %v", len(requests), requests)
+	}
+	if provider.reactionPageTokens["spaces/scan-test"] != "page-2" {
+		t.Fatalf("reaction scan did not retain the next page token")
 	}
 }
 

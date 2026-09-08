@@ -218,6 +218,18 @@ func ensureIndices(db *gorm.DB) error {
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_latest_jd ON messages(protocol_conv_id, julianday(timestamp) DESC, id DESC) WHERE deleted_at IS NULL`).Error; err != nil {
 		fmt.Printf("Error creating index idx_messages_conv_latest_jd: %v\n", err)
 	}
+	// An interrupted desktop process can leave this expression index out of sync
+	// even though the message table itself is readable. Rebuild only when SQLite's
+	// table-scoped integrity check reports a problem, preventing sync queries from
+	// hanging on a corrupt conversation-latest index.
+	var integrityRows []string
+	if err := db.Raw(`PRAGMA integrity_check('messages')`).Scan(&integrityRows).Error; err == nil &&
+		(len(integrityRows) != 1 || integrityRows[0] != "ok") {
+		fmt.Printf("Message index integrity check failed; rebuilding message indexes\n")
+		if err := db.Exec(`REINDEX idx_messages_conv_latest_jd`).Error; err != nil {
+			fmt.Printf("Error rebuilding index idx_messages_conv_latest_jd: %v\n", err)
+		}
+	}
 	// Active-call polling first narrows messages by call type and a recent time
 	// range. The conversation prefix is checked after that small index scan.
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_active_calls ON messages(call_type, timestamp, protocol_conv_id) WHERE deleted_at IS NULL`).Error; err != nil {

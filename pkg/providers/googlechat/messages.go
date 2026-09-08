@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -308,19 +309,30 @@ func (p *GoogleChatProvider) DeleteMessage(convID, messageID string) error {
 		return fmt.Errorf("not connected")
 	}
 
-	msgPath := ensureMessagePath(convID, messageID)
+	msgPath := ensureMessagePath(core.StripConvID(convID), messageID)
 	if err := p.apiDelete("/" + msgPath); err != nil {
-		return err
+		// Google Chat deliberately uses PERMISSION_DENIED both when deletion is
+		// forbidden and when the resource no longer exists. The delete action is
+		// only exposed for outgoing messages, so treating that documented,
+		// ambiguous response as an idempotent success lets Loom discard a stale
+		// local copy after the message was deleted in another client.
+		if !isGoogleChatHTTPStatus(err, http.StatusForbidden) {
+			return err
+		}
 	}
 
 	if db.DB != nil {
 		now := time.Now()
-		db.DB.Model(&models.Message{}).
-			Where("protocol_msg_id = ?", messageID).
-			Updates(map[string]interface{}{
-				"is_deleted":        true,
-				"deleted_timestamp": now,
-			})
+		if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+			return tx.Model(&models.Message{}).
+				Where("protocol_msg_id = ?", messageID).
+				Updates(map[string]interface{}{
+					"is_deleted":        true,
+					"deleted_timestamp": now,
+				}).Error
+		}); err != nil {
+			return fmt.Errorf("mark deleted message locally: %w", err)
+		}
 	}
 	return nil
 }
@@ -350,6 +362,7 @@ func (p *GoogleChatProvider) AddReaction(convID, messageID, emoji string) error 
 
 	msgPath := ensureMessagePath(convID, messageID)
 	if err := p.apiPost("/"+msgPath+"/reactions", reactionBody{Emoji: emojiRef{Unicode: stripVariationSelectors(emoji)}}, nil); err != nil {
+		p.log("GoogleChatProvider.AddReaction: add %q to %s: %v\n", emoji, msgPath, err)
 		return err
 	}
 

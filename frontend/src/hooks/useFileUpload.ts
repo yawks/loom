@@ -240,7 +240,9 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
       try {
         const maxSize = 64 * 1024 * 1024;
         if (file.size > maxSize) {
-          console.error(`File ${file.name} is too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum size is 64MB.`);
+          const errorMsg = `File ${file.name} is too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum size is 64MB.`;
+          console.error(errorMsg);
+          showToast?.(errorMsg, "error");
           continue;
         }
 
@@ -426,7 +428,7 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
     }, 500);
 
     refreshMessages();
-  }, [addSentThreadMessage, conversationId, threadId, refreshMessages]);
+  }, [addSentThreadMessage, conversationId, threadId, refreshMessages, showToast]);
 
   // Optimistic message state helpers (used for retry/delete local)
   const markMessageState = useCallback(

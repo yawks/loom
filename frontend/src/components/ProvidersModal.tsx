@@ -10,12 +10,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  ForceSyncCompletion,
   GetAvailableProviders,
   GetConfiguredProviders,
+  GetSyncingProviderIDs,
   RemoveProvider,
   SyncProvider,
 } from "../../wailsjs/go/main/App";
-import { AlertTriangle, RefreshCw, Settings, Trash2 } from "lucide-react";
+import { AlertTriangle, RefreshCw, Settings, StopCircle, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -100,7 +102,18 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
         console.error("Failed to load configured providers:", reason);
       });
 
-    await Promise.allSettled([availableRequest, configuredRequest]);
+    const syncingRequest = GetSyncingProviderIDs()
+      .then((instanceIds) => {
+        if (refreshGenerationRef.current === generation) {
+          setSyncingInstances(new Set(instanceIds));
+        }
+      })
+      .catch((reason) => {
+        failed = true;
+        console.error("Failed to load synchronizing providers:", reason);
+      });
+
+    await Promise.allSettled([availableRequest, configuredRequest, syncingRequest]);
     if (refreshGenerationRef.current === generation) {
       setError(failed ? t("providers_modal_load_error") : null);
       setLoading(false);
@@ -281,6 +294,21 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
     }
   };
 
+  const handleStopSync = async (provider: core.ProviderInfo) => {
+    const instanceId = provider.instanceId || provider.id;
+    try {
+      await ForceSyncCompletion(instanceId);
+      setSyncingInstances((previous) => {
+        const next = new Set(previous);
+        next.delete(instanceId);
+        return next;
+      });
+    } catch (err) {
+      console.error("Failed to stop provider synchronization:", err);
+      setError(t("providers_modal_stop_sync_error"));
+    }
+  };
+
   const configuredIds = useMemo(() => new Set(configuredProviders.map((p) => p.id)), [configuredProviders]);
 
   // Keep all provider branding in one component so official colors stay
@@ -402,15 +430,25 @@ export function ProviderSettings({ open, onOpenChange }: ProviderSettingsProps) 
                           <Settings className="h-4 w-4" />
                           {t("providers_modal_edit")}
                         </Button>
-                        <Button
-                          variant="outline"
-                          className="flex items-center gap-2"
-                          onClick={() => handleSync(provider)}
-                          disabled={syncingInstances.has(provider.instanceId || provider.id)}
-                        >
-                          <RefreshCw className={`h-4 w-4 ${syncingInstances.has(provider.instanceId || provider.id) ? "animate-spin" : ""}`} />
-                          {syncingInstances.has(provider.instanceId || provider.id) ? t("providers_modal_syncing") : t("providers_modal_sync")}
-                        </Button>
+                        {syncingInstances.has(provider.instanceId || provider.id) ? (
+                          <Button
+                            variant="destructive"
+                            className="flex items-center gap-2"
+                            onClick={() => handleStopSync(provider)}
+                          >
+                            <StopCircle className="h-4 w-4" />
+                            {t("providers_modal_stop_sync")}
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            className="flex items-center gap-2"
+                            onClick={() => handleSync(provider)}
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                            {t("providers_modal_sync")}
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           className="text-destructive flex items-center gap-2"

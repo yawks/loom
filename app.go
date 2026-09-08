@@ -116,6 +116,7 @@ type App struct {
 	// syncInProgress prevents a wake-up, a manual refresh, and a startup catch-up
 	// from running the same provider sync concurrently.
 	syncInProgress   map[string]bool
+	syncCancels      map[string]context.CancelFunc
 	syncInProgressMu sync.Mutex
 
 	// providerErrors holds the last startup error per provider instance (instanceID → message).
@@ -138,6 +139,7 @@ func NewApp() *App {
 	return &App{
 		eventCancels:              make(map[string]context.CancelFunc),
 		syncInProgress:            make(map[string]bool),
+		syncCancels:               make(map[string]context.CancelFunc),
 		suppressedSyncCompletions: make(map[string]int),
 		lastPersistedLiveEventAt:  make(map[string]time.Time),
 	}
@@ -864,17 +866,26 @@ func (a *App) syncSince(instanceID string, fallback time.Duration) time.Time {
 // reconnecting. A laptop often resumes before its network is usable; treating that
 // first error as final used to leave the provider permanently stale or in error.
 func (a *App) syncProviderHistory(instanceID string, since time.Time, reason string) {
+	baseCtx := a.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	syncCtx, cancelSync := context.WithCancel(baseCtx)
 	a.syncInProgressMu.Lock()
 	if a.syncInProgress[instanceID] {
 		a.syncInProgressMu.Unlock()
+		cancelSync()
 		log.Printf("[App] Ignoring %s sync for %s: one is already running", reason, instanceID)
 		return
 	}
 	a.syncInProgress[instanceID] = true
+	a.syncCancels[instanceID] = cancelSync
 	a.syncInProgressMu.Unlock()
 	defer func() {
+		cancelSync()
 		a.syncInProgressMu.Lock()
 		delete(a.syncInProgress, instanceID)
+		delete(a.syncCancels, instanceID)
 		a.syncInProgressMu.Unlock()
 	}()
 
@@ -882,7 +893,7 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 	if reason == "system wake" {
 		select {
 		case <-time.After(5 * time.Second):
-		case <-a.ctx.Done():
+		case <-syncCtx.Done():
 			return
 		}
 	}
@@ -911,7 +922,7 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 		if delay > 0 {
 			select {
 			case <-time.After(delay):
-			case <-a.ctx.Done():
+			case <-syncCtx.Done():
 				return
 			}
 			// Reset stale network sessions before retrying. Providers own their
@@ -926,6 +937,14 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 			a.startEventListenerForProvider(a.ctx, instanceID, provider)
 		}
 
+		if syncCtx.Err() != nil {
+			if _, supportsContext := provider.(core.ContextHistorySyncer); !supportsContext {
+				if err := provider.Connect(); err == nil {
+					a.startEventListenerForProvider(a.ctx, instanceID, provider)
+				}
+			}
+			return
+		}
 		var syncErr error
 		if reason == "manual" {
 			if globalSyncer, ok := provider.(core.GlobalHistorySyncer); ok {
@@ -937,11 +956,23 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 					auditSince = floor
 				}
 				syncErr = globalSyncer.SyncAllHistory(auditSince)
+			} else if contextSyncer, ok := provider.(core.ContextHistorySyncer); ok {
+				syncErr = contextSyncer.SyncHistoryContext(syncCtx, since)
 			} else {
 				syncErr = provider.SyncHistory(since)
 			}
+		} else if contextSyncer, ok := provider.(core.ContextHistorySyncer); ok {
+			syncErr = contextSyncer.SyncHistoryContext(syncCtx, since)
 		} else {
 			syncErr = provider.SyncHistory(since)
+		}
+		if syncCtx.Err() != nil {
+			if _, supportsContext := provider.(core.ContextHistorySyncer); !supportsContext {
+				if err := provider.Connect(); err == nil {
+					a.startEventListenerForProvider(a.ctx, instanceID, provider)
+				}
+			}
+			return
 		}
 		if syncErr == nil {
 			if db.DB != nil {
@@ -1027,20 +1058,61 @@ func (a *App) domReady(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {}
 
-// ForceSyncCompletion emits a "completed" sync-status event to dismiss the sync footer.
-// Called by the frontend when the user clicks the Stop button.
+// ForceSyncCompletion cancels the in-flight sync for one provider instance and
+// emits a terminal status. The historical name is kept for Wails API compatibility.
 func (a *App) ForceSyncCompletion(instanceID string) {
+	if instanceID == "" {
+		return
+	}
+	a.syncInProgressMu.Lock()
+	cancel := a.syncCancels[instanceID]
+	a.syncInProgressMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if cancel != nil && a.providerManager != nil {
+		provider, err := a.providerManager.GetProvider(instanceID)
+		if err != nil {
+			provider = nil
+		}
+		if provider != nil {
+			if _, supportsContext := provider.(core.ContextHistorySyncer); !supportsContext {
+				// Legacy providers use Disconnect as their interrupt primitive. The
+				// orchestration goroutine reconnects the live stream after SyncHistory
+				// unwinds and observes its cancelled context.
+				_ = provider.Disconnect()
+			}
+		}
+	}
+	a.syncingProvidersMu.Lock()
+	delete(a.suppressedSyncCompletions, instanceID)
+	a.syncingProvidersMu.Unlock()
 	if a.ctx == nil {
 		return
 	}
+
 	syncStatus := core.SyncStatusEvent{
 		InstanceID: instanceID,
 		Status:     core.SyncStatusCompleted,
 		Message:    "Sync stopped by user",
 		Progress:   100,
 	}
-	syncStatusJSON, _ := json.Marshal(syncStatus)
-	runtime.EventsEmit(a.ctx, "sync-status", string(syncStatusJSON))
+	a.emitSyncStatusCoordinated(syncStatus)
+}
+
+// GetSyncingProviderIDs returns a snapshot for views opened after synchronization
+// has already begun.
+func (a *App) GetSyncingProviderIDs() []string {
+	a.syncInProgressMu.Lock()
+	defer a.syncInProgressMu.Unlock()
+	ids := make([]string, 0, len(a.syncInProgress))
+	for instanceID, syncing := range a.syncInProgress {
+		if syncing {
+			ids = append(ids, instanceID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (a *App) startEventListenerForProvider(ctx context.Context, instanceID string, provider core.Provider) {
@@ -1076,6 +1148,9 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				case core.MessageEvent:
 					a.invalidateMessageCaches()
 					if !e.IsUpdate {
+						if e.InstanceID == "" {
+							e.InstanceID = instanceID
+						}
 						if notification := a.prepareSystemNotification(e); notification != nil && a.ctx != nil {
 							notificationJSON, _ := json.Marshal(notification)
 							runtime.EventsEmit(a.ctx, "system-notification", string(notificationJSON))
@@ -1091,7 +1166,10 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						e.Messages = e.Messages[len(e.Messages)-maxFrontendSyncBatchMessages:]
 					}
 					batchNotifications := make([]SystemNotification, 0)
-					if !e.IsHistorical {
+					// Providers split recovered messages into authoritative read and
+					// unread batches. Only the latter may produce a sync summary; this
+					// avoids relying on frontend event ordering to infer read state.
+					if !e.IsHistorical && e.ForceUnread {
 						for _, message := range e.Messages {
 							if notification := a.prepareSystemNotification(core.MessageEvent{InstanceID: e.InstanceID, Message: message}); notification != nil {
 								batchNotifications = append(batchNotifications, *notification)
@@ -1286,7 +1364,7 @@ func (a *App) emitSyncStatusCoordinated(e core.SyncStatusEvent) {
 		}
 		a.syncingProvidersMu.Unlock()
 		a.clearProviderError(e.InstanceID)
-		if db.DB != nil {
+		if db.DB != nil && e.Message != "Sync stopped by user" {
 			now := time.Now()
 			if err := db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", e.InstanceID).
 				Update("last_completed_sync_at", now).Error; err != nil {
@@ -3500,7 +3578,12 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 	}
 	// Remove from local DB
 	if db.DB != nil {
-		db.DB.Where("protocol_msg_id = ? OR (protocol_msg_id = ? AND protocol_conv_id = ?)", messageID, messageID, conversationID).Delete(&models.Message{})
+		if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+			return tx.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, conversationID).
+				Delete(&models.Message{}).Error
+		}); err != nil {
+			return fmt.Errorf("delete local message: %w", err)
+		}
 	}
 	a.invalidateMessageCaches()
 	// Notify frontend

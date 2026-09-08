@@ -161,7 +161,7 @@ export function ConversationDetailsView({
     handleDragOver,
     handleDrop,
     handleFileUpload,
-  } = useFileUpload(conversationId);
+  } = useFileUpload(conversationId, showToast);
 
   // Use a different query key to avoid conflicts with MessageList's useInfiniteQuery
   const { data: messagesData } = useSuspenseQuery<models.Message[], Error>({

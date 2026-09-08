@@ -3,6 +3,7 @@ package core
 
 import (
 	"Loom/pkg/models"
+	"context"
 	"strings"
 	"time"
 )
@@ -446,4 +447,11 @@ type ContactStatusRefresher interface {
 // It is reserved for user-triggered full resyncs because it can be expensive.
 type GlobalHistorySyncer interface {
 	SyncAllHistory(since time.Time) error
+}
+
+// ContextHistorySyncer lets a provider stop an in-flight history sync without
+// disconnecting its live event stream. Providers that do not implement it keep
+// using SyncHistory and can still be stopped at the orchestration boundaries.
+type ContextHistorySyncer interface {
+	SyncHistoryContext(ctx context.Context, since time.Time) error
 }

@@ -148,6 +148,7 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 			}
 		}
 		p.storeMessagesForConversation(space.Name, newMessages, reactionSnapshots)
+		p.pollReactionChanges(space.Name)
 
 		if !latest.IsZero() {
 			p.lastSeenMu.Lock()
@@ -158,6 +159,102 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 			p.lastSeenMu.Lock()
 			p.lastSeen[space.Name] = time.Now()
 			p.lastSeenMu.Unlock()
+		}
+	}
+}
+
+const maxReactionReconciliationsPerPoll = 2
+
+type storedReactionCount struct {
+	ProtocolMsgID string
+	Emoji         string
+	Count         int
+}
+
+func reactionSummaryCounts(summaries []EmojiReactionSummary) map[string]int {
+	counts := make(map[string]int, len(summaries))
+	for _, summary := range summaries {
+		if summary.Emoji != nil && summary.Emoji.Unicode != "" && summary.ReactionCount > 0 {
+			counts[summary.Emoji.Unicode] += summary.ReactionCount
+		}
+	}
+	return counts
+}
+
+func equalReactionCounts(left, right map[string]int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for emoji, count := range left {
+		if right[emoji] != count {
+			return false
+		}
+	}
+	return true
+}
+
+// pollReactionChanges scans one message-summary page per polling cycle. Unlike
+// createTime, emojiReactionSummaries reflect reactions added to old messages.
+// Individual reaction resources are fetched only for mismatches, with a small
+// cap so legacy gaps cannot exhaust the Google Chat quota.
+func (p *GoogleChatProvider) pollReactionChanges(spaceName string) {
+	if db.DB == nil {
+		return
+	}
+	params := url.Values{"pageSize": {"100"}, "orderBy": {"createTime desc"}}
+	if pageToken := p.reactionPageTokens[spaceName]; pageToken != "" {
+		params.Set("pageToken", pageToken)
+	}
+	var response MessageListResponse
+	if err := p.apiGet("/"+spaceName+"/messages", params, &response); err != nil {
+		p.log("GoogleChatProvider.pollReactionChanges: list messages for %s: %v\n", spaceName, err)
+		return
+	}
+	// An empty next token wraps the next cycle back to the newest page.
+	p.reactionPageTokens[spaceName] = response.NextPageToken
+
+	messageIDs := make([]string, 0, len(response.Messages))
+	for _, message := range response.Messages {
+		if message.Name != "" {
+			messageIDs = append(messageIDs, message.Name)
+		}
+	}
+	if len(messageIDs) == 0 {
+		return
+	}
+	var rows []storedReactionCount
+	if err := db.DB.Table("reactions AS r").
+		Select("m.protocol_msg_id, r.emoji, COUNT(*) AS count").
+		Joins("JOIN messages AS m ON m.id = r.message_id").
+		Where("m.protocol_msg_id IN ?", messageIDs).
+		Group("m.protocol_msg_id, r.emoji").
+		Scan(&rows).Error; err != nil {
+		p.log("GoogleChatProvider.pollReactionChanges: load stored counts for %s: %v\n", spaceName, err)
+		return
+	}
+	stored := make(map[string]map[string]int)
+	for _, row := range rows {
+		if stored[row.ProtocolMsgID] == nil {
+			stored[row.ProtocolMsgID] = make(map[string]int)
+		}
+		stored[row.ProtocolMsgID][row.Emoji] = row.Count
+	}
+
+	reconciled := 0
+	for _, message := range response.Messages {
+		remoteCounts := reactionSummaryCounts(message.EmojiReactionSummaries)
+		if equalReactionCounts(remoteCounts, stored[message.Name]) {
+			continue
+		}
+		reactions, err := p.listMessageReactions(message.Name)
+		if err != nil {
+			p.log("GoogleChatProvider.pollReactionChanges: list reactions for %s: %v\n", message.Name, err)
+			continue
+		}
+		p.emitReactionDiff(spaceName, message.Name, reactions)
+		reconciled++
+		if reconciled >= maxReactionReconciliationsPerPoll {
+			break
 		}
 	}
 }
