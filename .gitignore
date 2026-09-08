@@ -1,4 +1,5 @@
 # Binaries and executables
+Loom
 *.exe
 *.exe~
 *.dll
