@@ -576,6 +576,12 @@ export function ThreadView() {
   const handleReaction = useCallback(
     async (message: models.Message, emoji: string) => {
       const protocolMsgId = message.protocolMsgId || getMessageDomId(message);
+      console.info("[ThreadView] reaction requested", {
+        conversationId,
+        selectedThreadId,
+        protocolMsgId,
+        emoji,
+      });
       const messageReactions = message.reactions || [];
       const nativeEmojiReactions = providerInstanceId
         ? capabilities[providerInstanceId]?.nativeEmojiReactions ?? false

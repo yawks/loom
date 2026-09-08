@@ -23,6 +23,7 @@ import { useTypingStore } from "@/lib/typingStore";
 import { TypingIndicator } from "./TypingIndicator";
 import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount } from "@/lib/unreadBadgeCounts";
 import { getFirstAttachmentFileName } from "@/lib/messageUtils";
+import { Virtuoso } from "react-virtuoso";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -550,11 +551,11 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
           </button>
         </div>
       </div>
-      <div className="contact-list__scroll flex-1 overflow-y-auto scroll-area">
+      <div className="contact-list__scroll flex-1 min-h-0 overflow-hidden scroll-area">
         {sortBy === "highlighted" ? (
           <HighlightedMessagesInbox />
         ) : (
-        <div className="space-y-0.5 py-2 px-1">
+        <div className="h-full">
           {sortBy === "unread" && filteredContacts.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center">
               <Inbox className="h-12 w-12 text-sidebar-muted-foreground/30 mb-4" />
@@ -570,7 +571,12 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
               </Button>
             </div>
           )}
-          {filteredContacts.map((contact) => {
+          {filteredContacts.length > 0 && <Virtuoso
+            className="h-full"
+            data={filteredContacts}
+            overscan={240}
+            computeItemKey={(_index, contact) => contact.id}
+            itemContent={(_index, contact) => {
             const providerAccount = selectedProviderFilter
               ? contact.linkedAccounts.find(
                   (account) => account.providerInstanceId === selectedProviderFilter
@@ -632,8 +638,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
 
             return (
               <div
-                key={contact.id}
-                style={{ contentVisibility: "auto", containIntrinsicSize: "0 56px" }}
+                style={{ containIntrinsicSize: "0 56px" }}
                 className={cn(
                   "contact-list__item flex items-center space-x-3 px-2 py-2 rounded-lg cursor-pointer transition-colors",
                   isSelected
@@ -831,7 +836,8 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                 </div>
               </div>
             );
-          })}
+            }}
+          />}
         </div>
         )}
       </div>

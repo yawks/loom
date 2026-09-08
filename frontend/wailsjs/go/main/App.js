@@ -298,6 +298,10 @@ export function ResetProviderAuthentication(arg1) {
   return window['go']['main']['App']['ResetProviderAuthentication'](arg1);
 }
 
+export function SaveAttachmentDimensions(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveAttachmentDimensions'](arg1, arg2, arg3, arg4);
+}
+
 export function SaveAttachmentToFile(arg1, arg2) {
   return window['go']['main']['App']['SaveAttachmentToFile'](arg1, arg2);
 }

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1074,6 +1075,10 @@ func (a *App) domReady(ctx context.Context) {
 		startups := a.pendingProviderStartups
 		a.pendingProviderStartups = nil
 		log.Printf("App.domReady: launching %d provider startup synchronizations", len(startups))
+		// Providers connect concurrently so live events become available quickly,
+		// but their history imports are CPU/SQLite-heavy. Bound those imports so
+		// several restored accounts cannot starve WebKit at application launch.
+		startupHistorySlots := make(chan struct{}, 2)
 
 		for _, startup := range startups {
 			go func(providerStartup pendingProviderStartup) {
@@ -1108,6 +1113,12 @@ func (a *App) domReady(ctx context.Context) {
 
 				if providerStartup.since.IsZero() {
 					a.clearProviderError(providerStartup.instanceID)
+					return
+				}
+				select {
+				case startupHistorySlots <- struct{}{}:
+					defer func() { <-startupHistorySlots }()
+				case <-ctx.Done():
 					return
 				}
 				fmt.Printf("App.domReady: starting sync for %s since %s\n", providerStartup.instanceID, providerStartup.since.Format(time.RFC3339))
@@ -1162,15 +1173,31 @@ func (a *App) ForceSyncCompletion(instanceID string) {
 }
 
 // GetSyncingProviderIDs returns a snapshot for views opened after synchronization
-// has already begun.
+// has already begun. Some providers, notably those whose native client delivers
+// history asynchronously, can keep emitting sync work after SyncHistory itself
+// has returned. Merge the orchestrator and provider-reported states so settings
+// can always offer the force-stop action while either layer is active.
 func (a *App) GetSyncingProviderIDs() []string {
 	a.syncInProgressMu.Lock()
-	defer a.syncInProgressMu.Unlock()
-	ids := make([]string, 0, len(a.syncInProgress))
+	resyncing := make(map[string]struct{}, len(a.syncInProgress))
 	for instanceID, syncing := range a.syncInProgress {
 		if syncing {
-			ids = append(ids, instanceID)
+			resyncing[instanceID] = struct{}{}
 		}
+	}
+	a.syncInProgressMu.Unlock()
+
+	a.syncingProvidersMu.Lock()
+	for instanceID, syncing := range a.syncingProviders {
+		if syncing {
+			resyncing[instanceID] = struct{}{}
+		}
+	}
+	a.syncingProvidersMu.Unlock()
+
+	ids := make([]string, 0, len(resyncing))
+	for instanceID := range resyncing {
+		ids = append(ids, instanceID)
 	}
 	sort.Strings(ids)
 	return ids
@@ -5090,6 +5117,63 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
+}
+
+// SaveAttachmentDimensions persists intrinsic media dimensions in the canonical
+// attachment JSON. Providers may populate these fields during synchronization;
+// this method fills them lazily for older messages after the first successful
+// browser decode.
+func (a *App) SaveAttachmentDimensions(messageID, attachmentURL string, width, height uint32) error {
+	if db.DB == nil || messageID == "" || attachmentURL == "" {
+		return nil
+	}
+	if width == 0 || height == 0 || width > 100000 || height > 100000 {
+		return fmt.Errorf("invalid attachment dimensions %dx%d", width, height)
+	}
+
+	return persistAttachmentDimensions(db.DB, messageID, attachmentURL, width, height)
+}
+
+func persistAttachmentDimensions(database *gorm.DB, messageID, attachmentURL string, width, height uint32) error {
+	return db.Transaction(database, func(tx *gorm.DB) error {
+		var message models.Message
+		query := tx
+		if id, err := strconv.ParseUint(messageID, 10, 64); err == nil {
+			query = query.Where("id = ? OR protocol_msg_id = ?", id, messageID)
+		} else {
+			query = query.Where("protocol_msg_id = ?", messageID)
+		}
+		if err := query.First(&message).Error; err != nil {
+			return err
+		}
+
+		var attachments []models.Attachment
+		if err := json.Unmarshal([]byte(message.Attachments), &attachments); err != nil {
+			return fmt.Errorf("decode message attachments: %w", err)
+		}
+
+		changed := false
+		for index := range attachments {
+			if attachments[index].URL != attachmentURL {
+				continue
+			}
+			if attachments[index].Width == 0 || attachments[index].Height == 0 {
+				attachments[index].Width = width
+				attachments[index].Height = height
+				changed = true
+			}
+			break
+		}
+		if !changed {
+			return nil
+		}
+
+		encoded, err := json.Marshal(attachments)
+		if err != nil {
+			return fmt.Errorf("encode message attachments: %w", err)
+		}
+		return tx.Model(&models.Message{}).Where("id = ?", message.ID).Update("attachments", string(encoded)).Error
+	})
 }
 
 // SaveAttachmentToFile fetches an attachment and saves it to a user-chosen location via native dialog.

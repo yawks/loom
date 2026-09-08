@@ -342,15 +342,14 @@ export function useMessageEvents() {
     };
 
     // History synchronization can emit hundreds of batches in a short burst.
-    // Processing all of them directly in the Wails event callback monopolizes
-    // WebKit's main thread, preventing paint and input for several seconds.
-    // Handle one batch per task so the browser gets a rendering/input
-    // opportunity between batches while the UI updates progressively.
+    // A separate task per batch makes React recompute global unread selectors
+    // after every item; draining a small bounded group lets React batch those
+    // updates while still yielding regularly to WebKit input and paint.
     const drainBatches = () => {
       batchTimer = null;
       if (!isMounted) return;
-      const nextBatch = pendingBatches.shift();
-      if (nextBatch !== undefined) processBatch(nextBatch);
+      const batchGroup = pendingBatches.splice(0, 8);
+      batchGroup.forEach(processBatch);
       if (pendingBatches.length > 0) {
         batchTimer = setTimeout(drainBatches, 0);
       }

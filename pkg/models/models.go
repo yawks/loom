@@ -453,6 +453,8 @@ type Attachment struct {
 	FileSize      int64      `json:"fileSize"`            // File size in bytes
 	MimeType      string     `json:"mimeType"`            // MIME type (e.g., "image/jpeg", "application/pdf")
 	Thumbnail     string     `json:"thumbnail,omitempty"` // Thumbnail URL for images/videos (optional)
+	Width         uint32     `json:"width,omitempty"`     // Intrinsic media width in pixels
+	Height        uint32     `json:"height,omitempty"`    // Intrinsic media height in pixels
 	Duration      uint32     `json:"duration,omitempty"`  // Duration in seconds (for audio/video)
 	Latitude      *float64   `json:"latitude,omitempty"`  // Latitude for location attachments
 	Longitude     *float64   `json:"longitude,omitempty"` // Longitude for location attachments

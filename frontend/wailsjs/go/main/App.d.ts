@@ -153,6 +153,8 @@ export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void
 
 export function ResetProviderAuthentication(arg1:string):Promise<void>;
 
+export function SaveAttachmentDimensions(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
+
 export function SaveAttachmentToFile(arg1:string,arg2:string):Promise<string>;
 
 export function SaveConfig(arg1:Record<string, any>):Promise<void>;

@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-import { GetAttachmentData, OpenFile, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
+import { GetAttachmentData, OpenFile, SaveAttachmentDimensions, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { VoiceMessage } from "./VoiceMessage";
 import { MessageActions } from "./MessageActions";
@@ -100,6 +100,8 @@ interface Attachment {
   fileSize: number;
   mimeType: string;
   thumbnail?: string;
+  width?: number;
+  height?: number;
   latitude?: number;
   longitude?: number;
   locationName?: string;
@@ -312,10 +314,12 @@ function PdfPreview({
 
 function VisibleImageAttachment({
   attachment,
+  messageID,
   onOpen,
   onDownload,
 }: {
   attachment: Attachment;
+  messageID: string;
   onOpen: (dataUrl: string) => void;
   onDownload: () => void;
 }) {
@@ -325,6 +329,22 @@ function VisibleImageAttachment({
   const [failed, setFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [hovered, setHovered] = useState(false);
+  const [loadedFromThumbnail, setLoadedFromThumbnail] = useState(false);
+  const dimensionsPersistedRef = useRef(Boolean(attachment.width && attachment.height));
+  const [dimensions, setDimensions] = useState(() =>
+    attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : null
+  );
+
+  const frameStyle = useMemo(() => {
+    if (!dimensions) return { width: "320px", height: "200px" };
+    const scale = Math.min(1, 200 / dimensions.height);
+    const displayWidth = Math.min(640, Math.round(dimensions.width * scale));
+    return {
+      width: `min(${displayWidth}px, 100%)`,
+      aspectRatio: `${dimensions.width} / ${dimensions.height}`,
+      maxHeight: "200px",
+    };
+  }, [dimensions]);
 
   useEffect(() => {
     const element = elementRef.current;
@@ -353,7 +373,10 @@ function VisibleImageAttachment({
     const load = async () => {
       try {
         const data = await GetAttachmentData(attachment.url);
-        if (active) setImageData(data);
+        if (active) {
+          setLoadedFromThumbnail(false);
+          setImageData(data);
+        }
       } catch (error) {
         console.warn(`[MessageAttachments] Failed to load image ${attachment.url}:`, error);
         // Preserve accessibility for old messages whose original media is no
@@ -364,7 +387,10 @@ function VisibleImageAttachment({
         }
         try {
           const fallback = await GetAttachmentData(attachment.thumbnail);
-          if (active) setImageData(fallback);
+          if (active) {
+            setLoadedFromThumbnail(true);
+            setImageData(fallback);
+          }
         } catch (fallbackError) {
           console.warn(`[MessageAttachments] Failed to load image fallback ${attachment.thumbnail}:`, fallbackError);
           if (active) setFailed(true);
@@ -379,7 +405,7 @@ function VisibleImageAttachment({
     <div
       ref={elementRef}
       className="message-attachment__image relative cursor-pointer rounded-lg overflow-hidden"
-      style={{ width: "320px", height: "200px", contain: "strict" }}
+      style={frameStyle}
       onClick={() => imageData && onOpen(imageData)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -388,6 +414,19 @@ function VisibleImageAttachment({
         <img
           src={imageData}
           alt={attachment.fileName}
+          onLoad={(event) => {
+            const width = event.currentTarget.naturalWidth;
+            const height = event.currentTarget.naturalHeight;
+            if (!width || !height) return;
+            setDimensions({ width, height });
+            if (!loadedFromThumbnail && !dimensionsPersistedRef.current && messageID) {
+              dimensionsPersistedRef.current = true;
+              void SaveAttachmentDimensions(messageID, attachment.url, width, height).catch((error) => {
+                dimensionsPersistedRef.current = false;
+                console.warn("[MessageAttachments] Failed to persist image dimensions:", error);
+              });
+            }
+          }}
           style={{ width: "100%", height: "100%", objectFit: "contain" }}
           className="bg-muted"
         />
@@ -1210,6 +1249,7 @@ export function MessageAttachments({
               {isImage ? (
                 <VisibleImageAttachment
                   attachment={attachment}
+                  messageID={messageID}
                   onOpen={(dataUrl) => {
                     setSelectedImage(dataUrl);
                     if (galleryMessages?.length) setSelectedImageIndex(0);
