@@ -706,15 +706,19 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 		return 0
 	}
 
-	// Resolve the actual Slack channel ID (U-prefix DMs need the D-prefix channel).
-	actualChannelID := convID
-	if len(convID) > 0 && convID[0] == 'U' {
+	// Resolve the actual Slack channel ID. Persisted conversation IDs are
+	// namespaced (for example slack-1::U123), while Slack's API only accepts the
+	// raw D/C/G channel ID. In particular, checking convID[0] before stripping
+	// the namespace makes every DM thread request fail with channel_not_found.
+	rawConvID := core.StripConvID(convID)
+	actualChannelID := rawConvID
+	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		ch, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
-			Users:    []string{convID},
+			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
 		if err != nil || ch == nil || ch.ID == "" {
-			p.log("SlackProvider.refreshThreadReplies: failed to open DM for %s: %v\n", convID, err)
+			p.log("SlackProvider.refreshThreadReplies: failed to open DM for %s: %v\n", rawConvID, err)
 			return 0
 		}
 		actualChannelID = ch.ID

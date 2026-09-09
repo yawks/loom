@@ -329,6 +329,9 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 			}
 
 			// Add LastRead and LatestTS if available from IM channel check
+			if activeUserIDs[user.ID] {
+				extraData["has_conversation"] = true
+			}
 			if lastRead, ok := userLastRead[user.ID]; ok && lastRead != "" {
 				extraData["last_read"] = lastRead
 			}
@@ -436,7 +439,7 @@ func (p *SlackProvider) GetContacts() ([]models.LinkedAccount, error) {
 		}
 
 		// Prepare extra data with LastRead and Latest timestamp
-		extraData := make(map[string]interface{})
+		extraData := map[string]interface{}{"has_conversation": true}
 		if channel.LastRead != "" {
 			extraData["last_read"] = channel.LastRead
 		}

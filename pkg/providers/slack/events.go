@@ -55,7 +55,84 @@ func slackFallbackConversations(database *gorm.DB, instanceID string) ([]slackFa
 		Group("protocol_conv_id").
 		Order("last_timestamp DESC").
 		Scan(&conversations).Error
-	return conversations, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Message-backed enumeration alone permanently misses a newly discovered
+	// conversation whose first message arrived while search/RTM was unavailable:
+	// there is no local message to make it enter this list. Include real Slack
+	// conversations with no local history as bootstrap candidates. All group
+	// accounts represent conversations; DMs opt in via has_conversation so the
+	// workspace's entire user directory is not polled as if every user had a DM.
+	known := make(map[string]struct{}, len(conversations))
+	for _, conversation := range conversations {
+		known[conversation.ProtocolConvID] = struct{}{}
+	}
+	var accounts []models.LinkedAccount
+	if err := db.ForProvider(database, instanceID).LinkedAccounts().
+		Where("is_group = ? OR extra LIKE ?", true, `%"has_conversation":true%`).
+		Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	for _, account := range accounts {
+		conversationID := core.BuildConvID(instanceID, account.UserID)
+		if account.UserID == "" {
+			continue
+		}
+		if _, exists := known[conversationID]; exists {
+			continue
+		}
+		conversations = append(conversations, slackFallbackConversation{ProtocolConvID: conversationID})
+	}
+	return conversations, nil
+}
+
+// slackConversationLastRead returns Slack's authoritative read boundary for a
+// first-time history import. Browser-session responses to conversations.list
+// may omit this field, so fall back to conversations.info for the one bootstrap
+// conversation being polled.
+func (p *SlackProvider) slackConversationLastRead(conversationID string) string {
+	rawConvID := core.StripConvID(conversationID)
+	if rawConvID == "" {
+		return ""
+	}
+	if db.DB != nil {
+		var account models.LinkedAccount
+		if err := db.ForProvider(db.DB, p.getInstanceId()).LinkedAccounts().
+			Where("user_id = ?", rawConvID).First(&account).Error; err == nil && account.Extra != "" {
+			var extra map[string]interface{}
+			if json.Unmarshal([]byte(account.Extra), &extra) == nil {
+				if lastRead, ok := extra["last_read"].(string); ok && lastRead != "" {
+					return lastRead
+				}
+			}
+		}
+	}
+
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
+		return ""
+	}
+	channelID := rawConvID
+	if rawConvID[0] == 'U' {
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
+			Users: []string{rawConvID}, ReturnIM: true,
+		})
+		if err != nil || channel == nil || channel.ID == "" {
+			p.log("SlackProvider.slackConversationLastRead: failed to open DM %s: %v\n", rawConvID, err)
+			return ""
+		}
+		channelID = channel.ID
+	}
+	channel, err := client.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: channelID})
+	if err != nil || channel == nil {
+		p.log("SlackProvider.slackConversationLastRead: failed to read %s: %v\n", channelID, err)
+		return ""
+	}
+	return channel.LastRead
 }
 
 // StreamEvents returns a channel that emits provider events (messages, reactions, etc.).
@@ -297,7 +374,8 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			return cursor
 		}
 		lastTimestampMillis := db.ParseTimeMillis(conversation.LastTimestamp)
-		if lastTimestampMillis == 0 {
+		bootstrap := lastTimestampMillis == 0 && conversation.LastTimestamp == ""
+		if lastTimestampMillis == 0 && !bootstrap {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: invalid local timestamp %q for %s\n", conversation.LastTimestamp, conversation.ProtocolConvID)
 			continue
 		}
@@ -312,22 +390,21 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed reading existing IDs for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		_, err := p.GetConversationHistory(
-			conversation.ProtocolConvID,
-			100,
-			nil,
-			&lastTimestamp,
-		)
+		var since *time.Time
+		if !bootstrap {
+			since = &lastTimestamp
+		}
+		_, err := p.GetConversationHistory(conversation.ProtocolConvID, 100, nil, since)
 		if err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
+		storedQuery := db.DB.Where("protocol_conv_id = ? AND deleted_at IS NULL", conversation.ProtocolConvID)
+		if !bootstrap {
+			storedQuery = storedQuery.Where("timestamp > ?", lastTimestamp)
+		}
 		var stored []models.Message
-		if err := db.DB.Where(
-			"protocol_conv_id = ? AND timestamp > ? AND deleted_at IS NULL",
-			conversation.ProtocolConvID,
-			lastTimestamp,
-		).Order("timestamp ASC").Find(&stored).Error; err != nil {
+		if err := storedQuery.Order("timestamp ASC").Find(&stored).Error; err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed loading recovered messages for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
@@ -335,7 +412,11 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		if len(newMessages) == 0 {
 			continue
 		}
-		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, newMessages, "")
+		lastRead := ""
+		if bootstrap {
+			lastRead = p.slackConversationLastRead(conversation.ProtocolConvID)
+		}
+		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, newMessages, lastRead)
 		p.log("SlackProvider.pollKnownConversationHistoryFallback: recovered %d message(s) for %s\n", len(newMessages), conversation.ProtocolConvID)
 	}
 

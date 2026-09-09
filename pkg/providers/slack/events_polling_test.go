@@ -34,7 +34,7 @@ func TestSlackFallbackListsOnlyCurrentProviderConversations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&models.Message{}); err != nil {
+	if err := database.AutoMigrate(&models.Message{}, &models.LinkedAccount{}); err != nil {
 		t.Fatal(err)
 	}
 	messages := []models.Message{
@@ -45,13 +45,36 @@ func TestSlackFallbackListsOnlyCurrentProviderConversations(t *testing.T) {
 	if err := database.Create(&messages).Error; err != nil {
 		t.Fatal(err)
 	}
+	accounts := []models.LinkedAccount{
+		{ProviderInstanceID: "slack-1", Protocol: "slack", UserID: "C-empty", IsGroup: true},
+		{ProviderInstanceID: "slack-1", Protocol: "slack", UserID: "U-active", Extra: `{"has_conversation":true}`},
+		{ProviderInstanceID: "slack-1", Protocol: "slack", UserID: "U-directory-only"},
+		{ProviderInstanceID: "teams-1", Protocol: "teams", UserID: "C-foreign", IsGroup: true},
+	}
+	if err := database.Create(&accounts).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	conversations, err := slackFallbackConversations(database, "slack-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(conversations) != 1 || conversations[0].ProtocolConvID != "slack-1::U1" {
-		t.Fatalf("fallback conversations = %#v, want only slack-1::U1", conversations)
+	if len(conversations) != 3 {
+		t.Fatalf("fallback conversations = %#v, want message-backed plus two empty Slack conversations", conversations)
+	}
+	got := make(map[string]bool, len(conversations))
+	for _, conversation := range conversations {
+		got[conversation.ProtocolConvID] = true
+	}
+	for _, want := range []string{"slack-1::U1", "slack-1::C-empty", "slack-1::U-active"} {
+		if !got[want] {
+			t.Errorf("fallback conversations missing %s: %#v", want, conversations)
+		}
+	}
+	for _, excluded := range []string{"slack-1::U-directory-only", "teams-1::C-foreign"} {
+		if got[excluded] {
+			t.Errorf("fallback conversations included %s", excluded)
+		}
 	}
 }
 

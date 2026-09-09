@@ -286,6 +286,11 @@ func (p *SlackProvider) pollLatestConversationUpdates(ctx context.Context) {
 			if len(newMessages) > 0 {
 				p.emitIncrementalMessageBatches(normalizedConvID, newMessages, channel.LastRead)
 				p.log("SlackProvider.pollLatestConversationUpdates: recovered %d message(s) for %s\n", len(newMessages), normalizedConvID)
+			} else {
+				// A reply to an existing thread advances conversation activity but is
+				// absent from conversations.history. Recover it explicitly so accounts
+				// without search:read or rtm:stream still receive replies live.
+				p.refreshThreadReplies(ctx, normalizedConvID)
 			}
 		}
 
