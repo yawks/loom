@@ -414,6 +414,14 @@ type ConversationCreator interface {
 	CreateConversation(conversationType, title string, participantIDs []string) (*models.Conversation, error)
 }
 
+// ConversationInvitationProvider is implemented by providers that expose
+// incoming conversation invitations. IDs must use Loom's canonical namespace.
+type ConversationInvitationProvider interface {
+	ListConversationInvitations() ([]models.ConversationInvitation, error)
+	AcceptConversationInvitation(conversationID string) error
+	DeclineConversationInvitation(conversationID string) error
+}
+
 // ContactSearcher is implemented by providers whose directory is a remote
 // people picker rather than a list that can be fully synchronized up front.
 type ContactSearcher interface {

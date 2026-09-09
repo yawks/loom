@@ -862,6 +862,28 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class ConversationInvitation {
+	    conversationId: string;
+	    providerInstanceId: string;
+	    name: string;
+	    avatarUrl?: string;
+	    invitedById?: string;
+	    invitedByName?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConversationInvitation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.conversationId = source["conversationId"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.name = source["name"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.invitedById = source["invitedById"];
+	        this.invitedByName = source["invitedByName"];
+	    }
+	}
 	export class LinkedAccount {
 	    id: number;
 	    metaContactId: number;

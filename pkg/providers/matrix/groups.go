@@ -1,13 +1,86 @@
 package matrix
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 
+	"Loom/pkg/core"
 	"Loom/pkg/models"
 )
+
+func (p *Provider) ListConversationInvitations() ([]models.ConversationInvitation, error) {
+	q := url.Values{"timeout": {"0"}, "filter": {`{"room":{"timeline":{"limit":0}}}`}}
+	var response struct {
+		Rooms struct {
+			Invite map[string]struct {
+				InviteState struct {
+					Events []matrixEvent `json:"events"`
+				} `json:"invite_state"`
+			} `json:"invite"`
+		} `json:"rooms"`
+	}
+	if err := p.do(context.Background(), http.MethodGet, "/sync", q, nil, &response); err != nil {
+		return nil, err
+	}
+	invitations := make([]models.ConversationInvitation, 0, len(response.Rooms.Invite))
+	for roomID, room := range response.Rooms.Invite {
+		summary := summarizeRoomEvents(p, room.InviteState.Events)
+		invitation := models.ConversationInvitation{ConversationID: p.namespacedRoom(roomID), ProviderInstanceID: p.getInstanceID(), Name: summary.Name, AvatarURL: summary.Avatar}
+		memberNames := make(map[string]string)
+		for _, event := range room.InviteState.Events {
+			if event.Type != "m.room.member" || event.StateKey == nil {
+				continue
+			}
+			var content struct {
+				Membership  string `json:"membership"`
+				DisplayName string `json:"displayname"`
+			}
+			if json.Unmarshal(event.Content, &content) != nil {
+				continue
+			}
+			if content.DisplayName != "" {
+				memberNames[*event.StateKey] = content.DisplayName
+			}
+			if *event.StateKey == p.CurrentUserID() && content.Membership == "invite" {
+				invitation.InvitedByID = event.Sender
+			}
+		}
+		invitation.InvitedByName = memberNames[invitation.InvitedByID]
+		if invitation.Name == "" {
+			invitation.Name = roomID
+		}
+		invitations = append(invitations, invitation)
+	}
+	sort.Slice(invitations, func(i, j int) bool { return invitations[i].ConversationID < invitations[j].ConversationID })
+	return invitations, nil
+}
+
+func (p *Provider) AcceptConversationInvitation(conversationID string) error {
+	roomID := core.StripConvID(conversationID)
+	if err := p.do(noCancel(), http.MethodPost, "/join/"+url.PathEscape(roomID), nil, map[string]any{}, nil); err != nil {
+		return fmt.Errorf("matrix: accept room invitation: %w", err)
+	}
+	// Persist this room directly. Some homeservers do not expose a freshly joined
+	// room through /joined_rooms immediately, which made a successful acceptance
+	// look like a no-op until the next full synchronization.
+	summary, err := p.roomState(roomID)
+	if err != nil {
+		return fmt.Errorf("matrix: load accepted room: %w", err)
+	}
+	p.persistRoom(p.accountForRoom(roomID, summary), roomID)
+	return nil
+}
+
+func (p *Provider) DeclineConversationInvitation(conversationID string) error {
+	if err := p.do(noCancel(), http.MethodPost, p.roomPath(conversationID)+"/leave", nil, map[string]any{}, nil); err != nil {
+		return fmt.Errorf("matrix: decline room invitation: %w", err)
+	}
+	return nil
+}
 
 func (p *Provider) UpdateGroupName(room, name string) error {
 	return p.do(noCancel(), http.MethodPut, p.roomPath(room)+"/state/m.room.name", nil, map[string]string{"name": name}, nil)

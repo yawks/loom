@@ -1812,6 +1812,62 @@ func (a *App) GetProviderContacts(instanceID string) ([]models.MetaContact, erro
 	return contacts, nil
 }
 
+func (a *App) ListConversationInvitations() ([]models.ConversationInvitation, error) {
+	if a.providerManager == nil {
+		return []models.ConversationInvitation{}, nil
+	}
+	invitations := make([]models.ConversationInvitation, 0)
+	for _, info := range a.providerManager.GetConfiguredProviders() {
+		provider, err := a.providerManager.GetProvider(info.InstanceID)
+		if err != nil {
+			continue
+		}
+		invitationProvider, ok := provider.(core.ConversationInvitationProvider)
+		if !ok {
+			continue
+		}
+		items, err := invitationProvider.ListConversationInvitations()
+		if err != nil {
+			return nil, fmt.Errorf("list invitations for %s: %w", info.InstanceID, err)
+		}
+		invitations = append(invitations, items...)
+	}
+	return invitations, nil
+}
+
+func (a *App) AcceptConversationInvitation(conversationID string) error {
+	provider := a.getProviderForConversation(conversationID)
+	invitationProvider, ok := provider.(core.ConversationInvitationProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support conversation invitations")
+	}
+	if err := invitationProvider.AcceptConversationInvitation(conversationID); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	// Joining creates a new remote conversation whose history was outside the
+	// preceding sync scope. Reconcile the owning provider asynchronously so the
+	// action can return immediately while messages and unread state are imported.
+	if separator := strings.Index(conversationID, "::"); separator > 0 {
+		instanceID := conversationID[:separator]
+		go a.syncProviderHistory(instanceID, a.syncSince(instanceID, 30*24*time.Hour), "invitation accepted")
+	}
+	return nil
+}
+
+func (a *App) DeclineConversationInvitation(conversationID string) error {
+	provider := a.getProviderForConversation(conversationID)
+	invitationProvider, ok := provider.(core.ConversationInvitationProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support conversation invitations")
+	}
+	if err := invitationProvider.DeclineConversationInvitation(conversationID); err != nil {
+		return err
+	}
+	a.emitContactsRefresh()
+	return nil
+}
+
 // SearchProviderContacts supports remote people pickers (Teams) while using
 // the already synchronized directory for providers such as WhatsApp and Slack.
 func (a *App) SearchProviderContacts(instanceID, query string) ([]models.MetaContact, error) {

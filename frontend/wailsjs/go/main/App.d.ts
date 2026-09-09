@@ -5,6 +5,8 @@ import {main} from '../models';
 import {core} from '../models';
 import {time} from '../models';
 
+export function AcceptConversationInvitation(arg1:string):Promise<void>;
+
 export function AddGroupParticipants(arg1:string,arg2:Array<string>):Promise<void>;
 
 export function AddReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -32,6 +34,8 @@ export function CreateMessageWatchRule(arg1:string,arg2:string,arg3:boolean):Pro
 export function CreateProvider(arg1:string,arg2:Record<string, any>,arg3:string,arg4:string):Promise<string>;
 
 export function CreateProviderWithOptions(arg1:string,arg2:Record<string, any>,arg3:string,arg4:string,arg5:boolean):Promise<string>;
+
+export function DeclineConversationInvitation(arg1:string):Promise<void>;
 
 export function DeleteMessage(arg1:string,arg2:string):Promise<void>;
 
@@ -132,6 +136,8 @@ export function GetThreads(arg1:string):Promise<Array<models.Message>>;
 export function GetUnreadMessageLocations(arg1:string,arg2:Array<string>):Promise<Array<models.UnreadMessageLocation>>;
 
 export function LeaveGroup(arg1:string):Promise<void>;
+
+export function ListConversationInvitations():Promise<Array<models.ConversationInvitation>>;
 
 export function MarkConversationAsRead(arg1:string):Promise<void>;
 

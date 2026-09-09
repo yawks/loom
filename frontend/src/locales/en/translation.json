@@ -406,6 +406,15 @@
     "join": "Join"
   },
   "new_conversation": "New Conversation",
+  "invitations": {
+    "title": "Invitations",
+    "invited_by": "Invited by {{name}}",
+    "accept": "Accept",
+    "decline": "Decline",
+    "accepted": "Invitation accepted",
+    "declined": "Invitation declined",
+    "action_error": "Unable to process the invitation"
+  },
   "conversation_title": "Conversation Title",
   "optional_group_title": "Optional group title",
   "search_contacts": "Search contacts...",

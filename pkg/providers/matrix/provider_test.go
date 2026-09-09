@@ -94,6 +94,48 @@ func jsonResponse(body string) *http.Response {
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
 
+func TestConversationInvitationsCanBeListedAcceptedAndDeclined(t *testing.T) {
+	p := NewProvider()
+	p.instanceID = "matrix-1"
+	p.userID = "@alice:example.org"
+	p.homeserver = "https://matrix.example.org"
+	p.accessToken = "token"
+	var posts []string
+	p.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/_matrix/client/v3/sync":
+			return jsonResponse(`{"rooms":{"invite":{"!room:example.org":{"invite_state":{"events":[{"type":"m.room.name","content":{"name":"Projet"}},{"type":"m.room.member","sender":"@bob:example.org","state_key":"@bob:example.org","content":{"membership":"join","displayname":"Bob"}},{"type":"m.room.member","sender":"@bob:example.org","state_key":"@alice:example.org","content":{"membership":"invite"}}]}}}}}`), nil
+		case request.Method == http.MethodGet && request.URL.Path == "/_matrix/client/v3/joined_rooms":
+			return jsonResponse(`{"joined_rooms":["!room:example.org"]}`), nil
+		case request.Method == http.MethodPost:
+			posts = append(posts, request.URL.Path)
+			return jsonResponse(`{}`), nil
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/state"):
+			return jsonResponse(`[{"type":"m.room.name","content":{"name":"Projet"}}]`), nil
+		default:
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	invitations, err := p.ListConversationInvitations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invitations) != 1 || invitations[0].ConversationID != "matrix-1::!room:example.org" || invitations[0].Name != "Projet" || invitations[0].InvitedByName != "Bob" {
+		t.Fatalf("unexpected invitations: %+v", invitations)
+	}
+	if err := p.AcceptConversationInvitation(invitations[0].ConversationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DeclineConversationInvitation(invitations[0].ConversationID); err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || !strings.Contains(posts[0], "/join/") || !strings.HasSuffix(posts[1], "/leave") {
+		t.Fatalf("unexpected invitation actions: %v", posts)
+	}
+}
+
 func TestSentMessageIsPersistedForRecentConversations(t *testing.T) {
 	if err := db.InitMockDatabase(); err != nil {
 		t.Fatal(err)

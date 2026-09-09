@@ -1,6 +1,6 @@
-import { ArrowDownAZ, BadgeAlert, BellOff, Calendar, ChartNoAxesCombined, Clock, Inbox, MessageSquarePlus, Phone, Search } from "lucide-react";
+import { ArrowDownAZ, BadgeAlert, BellOff, Calendar, ChartNoAxesCombined, Check, Clock, Inbox, MessageSquarePlus, Phone, Search, UserPlus, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetHighlightedMessageRefs, GetMetaContacts, GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
+import { AcceptConversationInvitation, DeclineConversationInvitation, GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetHighlightedMessageRefs, GetMetaContacts, GetUnreadMessageLocations, ListConversationInvitations } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -24,6 +24,7 @@ import { TypingIndicator } from "./TypingIndicator";
 import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount } from "@/lib/unreadBadgeCounts";
 import { getFirstAttachmentFileName } from "@/lib/messageUtils";
 import { Virtuoso } from "react-virtuoso";
+import { ToastContainer, useToast } from "@/components/ui/toast";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -33,6 +34,7 @@ const fetchMetaContacts = async () => {
 export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { toasts, showToast, closeToast } = useToast();
   const selectedContact = useAppStore((state) => state.selectedContact);
   const setSelectedContact = useAppStore((state) => state.setSelectedContact);
   const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
@@ -59,6 +61,35 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
       }
     },
   });
+  const { data: invitationData } = useQuery({
+    queryKey: ["conversationInvitations"],
+    queryFn: ListConversationInvitations,
+    refetchInterval: 30_000,
+  });
+  // Older/running backends can serialize a nil Go slice as null. Keep the UI
+  // safe during rolling upgrades as well as when there are no invitations.
+  const invitations = invitationData ?? [];
+  const [invitationAction, setInvitationAction] = useState<string | null>(null);
+  const handleInvitation = async (conversationId: string, accept: boolean) => {
+    setInvitationAction(conversationId);
+    try {
+      await (accept ? AcceptConversationInvitation(conversationId) : DeclineConversationInvitation(conversationId));
+      // The remote sync endpoint can briefly return its pre-action snapshot.
+      // Remove the completed invitation locally; periodic polling remains the
+      // authority and will reconcile any genuinely pending invitations.
+      queryClient.setQueryData<models.ConversationInvitation[]>(
+        ["conversationInvitations"],
+        (current) => (current ?? []).filter((invitation) => invitation.conversationId !== conversationId),
+      );
+      if (accept) await queryClient.invalidateQueries({ queryKey: ["metaContacts"] });
+      showToast(t(accept ? "invitations.accepted" : "invitations.declined"), "success");
+    } catch (error) {
+      console.error("Failed to handle conversation invitation:", error);
+      showToast(`${t("invitations.action_error")}: ${String(error)}`, "error");
+    } finally {
+      setInvitationAction(null);
+    }
+  };
 
   // Use object directly - Zustand handles object reactivity better than Map
   // Use a selector that returns a serialized version to ensure reactivity
@@ -440,6 +471,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
 
   return (
     <div className="contact-list flex flex-col h-full bg-sidebar text-sidebar-foreground">
+      <ToastContainer toasts={toasts} onClose={closeToast} />
       <div className="contact-list__header px-3 pt-3 pb-2 border-b border-sidebar-border space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-sidebar-foreground">{t("conversations")}</h2>
@@ -551,6 +583,30 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
           </button>
         </div>
       </div>
+      {invitations.length > 0 && (
+        <div className="border-b border-sidebar-border px-2 py-2 space-y-1" aria-label={t("invitations.title")}>
+          <div className="flex items-center gap-1.5 px-1 text-xs font-medium text-sidebar-muted-foreground">
+            <UserPlus className="h-3.5 w-3.5" />
+            {t("invitations.title")}
+          </div>
+          {invitations.map((invitation) => (
+            <div key={invitation.conversationId} className="flex items-center gap-2 rounded-md bg-sidebar-hover px-2 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium">{invitation.name}</div>
+                <div className="truncate text-[10px] text-sidebar-muted-foreground">
+                  {t("invitations.invited_by", { name: invitation.invitedByName || invitation.invitedById })}
+                </div>
+              </div>
+              <Button variant="ghost" size="icon" className="h-6 w-6" disabled={invitationAction === invitation.conversationId} onClick={() => void handleInvitation(invitation.conversationId, true)} title={t("invitations.accept")}>
+                <Check className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" disabled={invitationAction === invitation.conversationId} onClick={() => void handleInvitation(invitation.conversationId, false)} title={t("invitations.decline")}>
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="contact-list__scroll flex-1 min-h-0 overflow-hidden scroll-area">
         {sortBy === "highlighted" ? (
           <HighlightedMessagesInbox />

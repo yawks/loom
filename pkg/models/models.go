@@ -143,6 +143,17 @@ type Conversation struct {
 	UpdatedAt         time.Time          `json:"updatedAt"`
 }
 
+// ConversationInvitation is the provider-neutral representation of an
+// invitation to a conversation that the current user has not joined yet.
+type ConversationInvitation struct {
+	ConversationID     string `json:"conversationId"`
+	ProviderInstanceID string `json:"providerInstanceId"`
+	Name               string `json:"name"`
+	AvatarURL          string `json:"avatarUrl,omitempty"`
+	InvitedByID        string `json:"invitedById,omitempty"`
+	InvitedByName      string `json:"invitedByName,omitempty"`
+}
+
 // MessageWatchRule is a local, provider-neutral text matcher scoped to one
 // conversation. Patterns are interpreted either literally or with Go's RE2
 // regular-expression engine.

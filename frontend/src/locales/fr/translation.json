@@ -408,6 +408,15 @@
     "join": "Rejoindre"
   },
   "new_conversation": "Nouvelle Conversation",
+  "invitations": {
+    "title": "Invitations",
+    "invited_by": "Invitation de {{name}}",
+    "accept": "Accepter",
+    "decline": "Refuser",
+    "accepted": "Invitation acceptée",
+    "declined": "Invitation refusée",
+    "action_error": "Impossible de traiter l’invitation"
+  },
   "conversation_title": "Titre de la conversation",
   "optional_group_title": "Titre du groupe (optionnel)",
   "search_contacts": "Rechercher des contacts...",

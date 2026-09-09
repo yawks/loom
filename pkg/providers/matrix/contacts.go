@@ -19,24 +19,9 @@ type roomSummary struct {
 	IsDirect bool
 }
 
-func (p *Provider) joinedRooms() ([]string, error) {
-	var out struct {
-		JoinedRooms []string `json:"joined_rooms"`
-	}
-	if err := p.do(noCancel(), http.MethodGet, "/joined_rooms", nil, nil, &out); err != nil {
-		return nil, err
-	}
-	return out.JoinedRooms, nil
-}
-func (p *Provider) roomState(room string) (roomSummary, error) {
-	var events []matrixEvent
-	if err := p.do(noCancel(), http.MethodGet, p.roomPath(room)+"/state", nil, nil, &events); err != nil {
-		return roomSummary{}, err
-	}
+func summarizeRoomEvents(p *Provider, events []matrixEvent) roomSummary {
 	s := roomSummary{}
-	p.mu.RLock()
-	self := p.userID
-	p.mu.RUnlock()
+	self := p.CurrentUserID()
 	for _, e := range events {
 		switch e.Type {
 		case "m.room.name":
@@ -52,24 +37,42 @@ func (p *Provider) roomState(room string) (roomSummary, error) {
 			_ = json.Unmarshal(e.Content, &c)
 			s.Avatar = p.mediaURL(c.URL)
 		case "m.room.member":
-			if e.StateKey != nil {
-				var c struct {
-					Membership  string `json:"membership"`
-					DisplayName string `json:"displayname"`
-					AvatarURL   string `json:"avatar_url"`
-				}
-				_ = json.Unmarshal(e.Content, &c)
-				if c.Membership == "join" {
-					s.Members = append(s.Members, *e.StateKey)
-					if *e.StateKey != self && s.Name == "" {
-						s.Name = c.DisplayName
-						s.Avatar = p.mediaURL(c.AvatarURL)
-					}
+			if e.StateKey == nil {
+				continue
+			}
+			var c struct {
+				Membership  string `json:"membership"`
+				DisplayName string `json:"displayname"`
+				AvatarURL   string `json:"avatar_url"`
+			}
+			_ = json.Unmarshal(e.Content, &c)
+			if c.Membership == "join" {
+				s.Members = append(s.Members, *e.StateKey)
+				if *e.StateKey != self && s.Name == "" {
+					s.Name, s.Avatar = c.DisplayName, p.mediaURL(c.AvatarURL)
 				}
 			}
 		}
 	}
 	s.IsDirect = len(s.Members) == 2
+	return s
+}
+
+func (p *Provider) joinedRooms() ([]string, error) {
+	var out struct {
+		JoinedRooms []string `json:"joined_rooms"`
+	}
+	if err := p.do(noCancel(), http.MethodGet, "/joined_rooms", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.JoinedRooms, nil
+}
+func (p *Provider) roomState(room string) (roomSummary, error) {
+	var events []matrixEvent
+	if err := p.do(noCancel(), http.MethodGet, p.roomPath(room)+"/state", nil, nil, &events); err != nil {
+		return roomSummary{}, err
+	}
+	s := summarizeRoomEvents(p, events)
 	if s.Name == "" {
 		s.Name = room
 	}
@@ -104,20 +107,24 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 		if results[index].err != nil {
 			continue
 		}
-		userID := room
-		if s.IsDirect {
-			for _, member := range s.Members {
-				if member != p.CurrentUserID() {
-					userID = member
-					break
-				}
-			}
-		}
-		account := models.LinkedAccount{Protocol: "matrix", ProviderInstanceID: p.getInstanceID(), UserID: userID, Username: s.Name, AvatarURL: s.Avatar, IsGroup: !s.IsDirect, ConversationID: p.namespacedRoom(room)}
+		account := p.accountForRoom(room, s)
 		out = append(out, account)
 		p.persistRoom(account, room)
 	}
 	return out, nil
+}
+
+func (p *Provider) accountForRoom(room string, summary roomSummary) models.LinkedAccount {
+	userID := room
+	if summary.IsDirect {
+		for _, member := range summary.Members {
+			if member != p.CurrentUserID() {
+				userID = member
+				break
+			}
+		}
+	}
+	return models.LinkedAccount{Protocol: "matrix", ProviderInstanceID: p.getInstanceID(), UserID: userID, Username: summary.Name, AvatarURL: summary.Avatar, IsGroup: !summary.IsDirect, ConversationID: p.namespacedRoom(room)}
 }
 
 func (p *Provider) persistRoom(account models.LinkedAccount, roomID string) {
