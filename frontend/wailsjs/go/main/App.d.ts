@@ -83,6 +83,8 @@ export function GetContactExchangeStats(arg1:string,arg2:string):Promise<models.
 
 export function GetContactProfile(arg1:string,arg2:string):Promise<models.ContactProfile>;
 
+export function GetConversationApplications(arg1:string):Promise<Array<models.ConversationApplication>>;
+
 export function GetConversationState(arg1:string):Promise<models.Conversation>;
 
 export function GetConversationsWithMessages():Promise<Array<string>>;
@@ -116,6 +118,8 @@ export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, s
 export function GetPinnedMessageContext(arg1:string,arg2:string):Promise<models.MessageContext>;
 
 export function GetPinnedMessages(arg1:string):Promise<Array<models.MessagePin>>;
+
+export function GetProviderAttachmentData(arg1:string,arg2:string):Promise<string>;
 
 export function GetProviderContacts(arg1:string):Promise<Array<models.MetaContact>>;
 

@@ -39,6 +39,19 @@ type Attachment struct {
 	Data     []byte
 }
 
+// AttachmentDataProvider is implemented by providers whose remote attachment
+// references require provider-owned credentials. The reference is opaque to the
+// application and frontend; only the owning provider may interpret it.
+type AttachmentDataProvider interface {
+	GetAttachmentData(ctx context.Context, reference string) ([]byte, string, error)
+}
+
+// ConversationApplicationProvider exposes remote applications attached to a
+// conversation without leaking the provider's state event format to callers.
+type ConversationApplicationProvider interface {
+	GetConversationApplications(ctx context.Context, conversationID string) ([]models.ConversationApplication, error)
+}
+
 // Provider defines the interface that each protocol adapter must implement.
 // All providers (WhatsApp, Slack, Google Messages, etc.) must implement this interface.
 type Provider interface {

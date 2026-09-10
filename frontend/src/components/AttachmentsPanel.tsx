@@ -87,6 +87,7 @@ export function AttachmentsPanel({ messages, loading, onClose }: {
                   messageID={entry.message.protocolMsgId || String(entry.message.id)}
                   isFromMe={entry.message.isFromMe}
                   layout="bubble"
+                  providerInstanceId={entry.message.protocolConvId?.split("::", 1)[0]}
                 />
               </article>
             </div>

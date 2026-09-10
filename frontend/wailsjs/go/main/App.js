@@ -158,6 +158,10 @@ export function GetContactProfile(arg1, arg2) {
   return window['go']['main']['App']['GetContactProfile'](arg1, arg2);
 }
 
+export function GetConversationApplications(arg1) {
+  return window['go']['main']['App']['GetConversationApplications'](arg1);
+}
+
 export function GetConversationState(arg1) {
   return window['go']['main']['App']['GetConversationState'](arg1);
 }
@@ -224,6 +228,10 @@ export function GetPinnedMessageContext(arg1, arg2) {
 
 export function GetPinnedMessages(arg1) {
   return window['go']['main']['App']['GetPinnedMessages'](arg1);
+}
+
+export function GetProviderAttachmentData(arg1, arg2) {
+  return window['go']['main']['App']['GetProviderAttachmentData'](arg1, arg2);
 }
 
 export function GetProviderContacts(arg1) {

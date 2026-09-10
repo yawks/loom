@@ -364,7 +364,7 @@ export const MessageText = memo(function MessageText({
     // Emoji components without breaking emphasis or links.
     if (/(\*\*|__|~~|`|\[[^\]]+\]\()/.test(textWithoutSkinTones)) {
       return textWithoutSkinTones.replace(
-        /:([a-zA-Z0-9_+-]+):/g,
+        /(?<![a-zA-Z0-9]):([a-zA-Z0-9_+-]+):(?![a-zA-Z0-9])/g,
         (match, name, offset, source) => {
           const before = source.slice(0, offset);
           const currentLine = before.slice(before.lastIndexOf("\n") + 1);
@@ -384,7 +384,9 @@ export const MessageText = memo(function MessageText({
     // Passing each line independently makes react-markdown treat `>` as plain
     // text, so keep the complete document intact when no emoji replacement is
     // needed.
-    const emojiPattern = /:([a-zA-Z0-9_+-]+):/g;
+    // A shortcode must be independently delimited. This prevents clock-like
+    // text (12:42 and 12:42:05) from exposing :42: as an emoji shortcode.
+    const emojiPattern = /(?<![a-zA-Z0-9]):([a-zA-Z0-9_+-]+):(?![a-zA-Z0-9])/g;
     // SharePoint (among others) uses URL paths such as `/:p:/`. Do not turn
     // those path segments into custom emojis before Markdown sees the URL.
     const urlRanges = Array.from(textWithoutSkinTones.matchAll(/https?:\/\/[^\s<>"']+/g))

@@ -6,6 +6,7 @@ import {
 import { Suspense, useCallback, useEffect, useState } from "react";
 
 import { AvatarModal } from "./AvatarModal";
+import conversationIcon from "@/assets/conversation.svg";
 import { clearAttachmentCache } from "./MessageAttachments";
 import { Button } from "@/components/ui/button";
 import { ContactList } from "./ContactList";
@@ -252,7 +253,7 @@ export function ChatLayout() {
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
                         <img
-                          src="https://api.iconify.design/marketeq:conversation.svg"
+                          src={conversationIcon}
                           className="h-16 w-16 mb-4 opacity-50"
                           style={{
                             filter:

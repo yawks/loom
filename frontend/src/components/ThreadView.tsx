@@ -166,7 +166,7 @@ function ThreadParentMessage({
         <div className={cn("rounded-lg p-2 text-left max-w-[80%]", message.isFromMe ? "bg-blue-600 text-white" : "bg-muted text-foreground")}>
           <MessageText text={message.body} mentions={message.mentions} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
           {message.attachments && message.attachments.trim() !== "" && (
-            <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="bubble" />
+            <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="bubble" providerInstanceId={providerInstanceId} />
           )}
           <p className={cn("text-xs mt-1", message.isFromMe ? "text-blue-100" : "text-muted-foreground")}>
             {timestamp.toLocaleTimeString()}
@@ -201,7 +201,7 @@ function ThreadParentMessage({
         <span className="font-semibold text-sm h-6 flex items-center mt-2.5" style={{ color: senderColor }}>{displayName}</span>
         <MessageText text={message.body} mentions={message.mentions} providerInstanceId={providerInstanceId} emojiSize={14} isFromMe={message.isFromMe} />
         {message.attachments && message.attachments.trim() !== "" && (
-          <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="irc" />
+          <MessageAttachments attachments={message.attachments} conversationID="" messageID={message.protocolMsgId || String(message.id ?? "")} isFromMe={message.isFromMe} layout="irc" providerInstanceId={providerInstanceId} />
         )}
       </div>
     </div>
@@ -1009,6 +1009,7 @@ export function ThreadView() {
                               messageID={message.protocolMsgId || String(message.id ?? "")}
                               isFromMe={message.isFromMe}
                               layout="bubble"
+                              providerInstanceId={providerInstanceId}
                             />
                           )}
                           <p
@@ -1188,6 +1189,7 @@ export function ThreadView() {
                                 messageID={message.protocolMsgId || String(message.id ?? "")}
                                 isFromMe={message.isFromMe}
                                 layout="irc"
+                                providerInstanceId={providerInstanceId}
                               />
                             )}
                           </div>
@@ -1206,8 +1208,9 @@ export function ThreadView() {
                               attachments={message.attachments}
                               conversationID={conversationId}
                               messageID={message.protocolMsgId || String(message.id ?? "")}
-                              isFromMe={message.isFromMe}
-                              layout="irc"
+                            isFromMe={message.isFromMe}
+                            layout="irc"
+                            providerInstanceId={providerInstanceId}
                             />
                           )}
                         </div>

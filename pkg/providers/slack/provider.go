@@ -411,8 +411,33 @@ func partitionSlackIncrementalMessages(messages []models.Message, lastRead strin
 	return read, unread
 }
 
+// partitionSlackBootstrapMessages classifies the first bounded history import
+// for a conversation. Unlike the incremental path, the native last_read cursor
+// is allowed to cover thread replies here: otherwise every reply in years-old
+// bootstrap history is surfaced as a brand-new notification.
+func partitionSlackBootstrapMessages(messages []models.Message, lastRead string) (read, unread []models.Message) {
+	lastReadSeconds, lastReadErr := strconv.ParseFloat(lastRead, 64)
+	for _, message := range messages {
+		isCall := strings.TrimSpace(message.CallType) != ""
+		if message.IsFromMe || isCall {
+			read = append(read, message)
+			continue
+		}
+		if lastReadErr == nil && float64(message.Timestamp.UnixNano())/1e9 <= lastReadSeconds {
+			read = append(read, message)
+			continue
+		}
+		unread = append(unread, message)
+	}
+	return read, unread
+}
+
 func (p *SlackProvider) emitIncrementalMessageBatches(conversationID string, messages []models.Message, lastRead string) {
 	read, unread := partitionSlackIncrementalMessages(messages, lastRead)
+	p.emitClassifiedMessageBatches(conversationID, read, unread)
+}
+
+func (p *SlackProvider) emitClassifiedMessageBatches(conversationID string, read, unread []models.Message) {
 	batches := []core.MessageBatchEvent{
 		{InstanceID: p.getInstanceId(), ConversationID: conversationID, Messages: read, ForceRead: true},
 		{InstanceID: p.getInstanceId(), ConversationID: conversationID, Messages: unread, ForceUnread: true},

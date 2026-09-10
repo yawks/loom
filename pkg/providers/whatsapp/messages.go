@@ -3807,8 +3807,8 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	var attachmentType string
 	var uploadType whatsmeow.MediaType
 
-	mimeType := strings.ToLower(file.MimeType)
-	if strings.HasPrefix(mimeType, "image/") {
+	mimeType := strings.ToLower(strings.TrimSpace(file.MimeType))
+	if isWhatsAppImageMIME(mimeType) {
 		uploadType = whatsmeow.MediaImage
 		attachmentType = "image"
 	} else if strings.HasPrefix(mimeType, "video/") {
@@ -3998,6 +3998,20 @@ func (w *WhatsAppProvider) SendFile(conversationID string, file *core.Attachment
 	}
 
 	return sentMessage, nil
+}
+
+// isWhatsAppImageMIME only returns true for formats that WhatsApp clients can
+// render as an ImageMessage. In particular, Google Messages commonly exposes
+// iPhone photos as image/heic. The media upload endpoint accepts those bytes,
+// but recipients don't receive a usable image message, so SendFile must fall
+// back to a DocumentMessage for such formats.
+func isWhatsAppImageMIME(mimeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 // inferGroupReceipts infers delivery/read receipts for group messages based on participant activity.

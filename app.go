@@ -3877,6 +3877,29 @@ func (a *App) GetConversationState(conversationID string) (*models.Conversation,
 	return provider.GetConversationState(conversationID)
 }
 
+// GetConversationApplications returns provider-neutral applications attached
+// to exactly one namespaced conversation.
+func (a *App) GetConversationApplications(conversationID string) ([]models.ConversationApplication, error) {
+	instanceID := ""
+	if index := strings.Index(conversationID, "::"); index > 0 {
+		instanceID = conversationID[:index]
+	}
+	if instanceID == "" {
+		return nil, fmt.Errorf("conversation has no provider instance")
+	}
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	applicationsProvider, ok := provider.(core.ConversationApplicationProvider)
+	if !ok {
+		return []models.ConversationApplication{}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return applicationsProvider.GetConversationApplications(ctx, conversationID)
+}
+
 func (a *App) MarkMessageAsPlayed(conversationID, messageID string) error {
 	if a.getActiveProvider() == nil {
 		return fmt.Errorf("no active provider")
@@ -5227,6 +5250,32 @@ func (a *App) GetAttachmentData(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
+}
+
+// GetProviderAttachmentData resolves credentialed media through exactly one
+// provider instance. The source remains opaque to the frontend.
+func (a *App) GetProviderAttachmentData(instanceID, source string) (string, error) {
+	if instanceID == "" || source == "" {
+		return "", fmt.Errorf("provider instance and attachment source are required")
+	}
+	provider, err := a.providerManager.GetProvider(instanceID)
+	if err != nil {
+		return "", err
+	}
+	resolver, ok := provider.(core.AttachmentDataProvider)
+	if !ok {
+		return a.GetAttachmentData(source)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	data, mimeType, err := resolver.GetAttachmentData(ctx, source)
+	if err != nil {
+		return "", err
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data)), nil
 }
 
 // SaveAttachmentDimensions persists intrinsic media dimensions in the canonical

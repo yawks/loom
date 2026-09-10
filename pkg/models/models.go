@@ -409,6 +409,16 @@ type MessageSearchPage struct {
 	HasMore bool                  `json:"hasMore"`
 }
 
+// ConversationApplication is a provider-neutral remote application attached
+// to a conversation. LaunchURL may contain provider-managed secrets and must
+// never be logged.
+type ConversationApplication struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	LaunchURL string `json:"launchUrl"`
+	Origin    string `json:"origin"`
+}
+
 // HighlightedMessageRef is the lightweight identity used to count unread
 // attention-inbox messages without loading every paginated message body.
 type HighlightedMessageRef struct {

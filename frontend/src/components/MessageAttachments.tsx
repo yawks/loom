@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-import { GetAttachmentData, OpenFile, SaveAttachmentDimensions, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
+import { GetAttachmentData, GetProviderAttachmentData, OpenFile, SaveAttachmentDimensions, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { VoiceMessage } from "./VoiceMessage";
 import { MessageActions } from "./MessageActions";
@@ -32,6 +32,8 @@ import { sameUserId } from "@/lib/userIdentity";
 import { models } from "../../wailsjs/go/models";
 import { MessageReactions } from "./MessageReactions";
 import { isStructuredAdaptiveCardAttachment, StructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { StructuredEventCard } from "./StructuredEventCard";
+import { isStructuredEventCardAttachment } from "../lib/structuredEventCard";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -315,11 +317,13 @@ function PdfPreview({
 function VisibleImageAttachment({
   attachment,
   messageID,
+  providerInstanceId,
   onOpen,
   onDownload,
 }: {
   attachment: Attachment;
   messageID: string;
+  providerInstanceId?: string;
   onOpen: (dataUrl: string) => void;
   onDownload: () => void;
 }) {
@@ -372,13 +376,15 @@ function VisibleImageAttachment({
     setFailed(false);
     const load = async () => {
       try {
-        const data = await GetAttachmentData(attachment.url);
+        const data = providerInstanceId
+          ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
+          : await GetAttachmentData(attachment.url);
         if (active) {
           setLoadedFromThumbnail(false);
           setImageData(data);
         }
       } catch (error) {
-        console.warn(`[MessageAttachments] Failed to load image ${attachment.url}:`, error);
+        console.warn("[MessageAttachments] Failed to load image:", error);
         // Preserve accessibility for old messages whose original media is no
         // longer available, but never retain this fallback outside the viewport.
         if (!attachment.thumbnail) {
@@ -386,20 +392,22 @@ function VisibleImageAttachment({
           return;
         }
         try {
-          const fallback = await GetAttachmentData(attachment.thumbnail);
+          const fallback = providerInstanceId
+            ? await GetProviderAttachmentData(providerInstanceId, attachment.thumbnail)
+            : await GetAttachmentData(attachment.thumbnail);
           if (active) {
             setLoadedFromThumbnail(true);
             setImageData(fallback);
           }
         } catch (fallbackError) {
-          console.warn(`[MessageAttachments] Failed to load image fallback ${attachment.thumbnail}:`, fallbackError);
+          console.warn("[MessageAttachments] Failed to load image fallback:", fallbackError);
           if (active) setFailed(true);
         }
       }
     };
     void load();
     return () => { active = false; };
-  }, [attachment.thumbnail, attachment.url, isVisible, loadAttempt]);
+  }, [attachment.thumbnail, attachment.url, isVisible, loadAttempt, providerInstanceId]);
 
   return (
     <div
@@ -427,6 +435,10 @@ function VisibleImageAttachment({
               });
             }
           }}
+          onError={() => {
+            setImageData(null);
+            setFailed(true);
+          }}
           style={{ width: "100%", height: "100%", objectFit: "contain" }}
           className="bg-muted"
         />
@@ -435,7 +447,7 @@ function VisibleImageAttachment({
           <ImageIcon className="h-12 w-12 text-muted-foreground" />
           {failed && (
             <>
-              <span className="max-w-[90%] truncate text-xs text-muted-foreground">{attachment.fileName}</span>
+              <span className="max-w-[90%] truncate text-xs text-muted-foreground">Impossible de charger l’image</span>
               <button
                 type="button"
                 className="rounded bg-background/70 px-2 py-1 text-xs text-foreground hover:bg-background"
@@ -865,7 +877,7 @@ export function MessageAttachments({
     const uniqueAttachments: Attachment[] = [];
 	const seenAttachmentURLs = new Set<string>();
     for (const attachment of parsed) {
-	  const identity = isStructuredAdaptiveCardAttachment(attachment) ? `card:${attachment.cardJson}` : attachment.url;
+	  const identity = (isStructuredAdaptiveCardAttachment(attachment) || isStructuredEventCardAttachment(attachment)) ? `card:${attachment.cardJson}` : attachment.url;
 	  if (!seenAttachmentURLs.has(identity)) {
 		seenAttachmentURLs.add(identity);
         uniqueAttachments.push(attachment);
@@ -1110,6 +1122,9 @@ export function MessageAttachments({
 		  if (isStructuredAdaptiveCardAttachment(attachment) && attachment.cardJson) {
 			return <StructuredAdaptiveCard key={`adaptive-card-${index}`} cardJson={attachment.cardJson} />;
 		  }
+		  if (isStructuredEventCardAttachment(attachment) && attachment.cardJson) {
+			return <StructuredEventCard key={`event-card-${index}`} cardJson={attachment.cardJson} providerInstanceId={providerInstanceId} />;
+		  }
           if (attachment.type === "contact") {
             const name = attachment.contactName?.trim() || t("contact");
             const initials = name
@@ -1250,6 +1265,7 @@ export function MessageAttachments({
                 <VisibleImageAttachment
                   attachment={attachment}
                   messageID={messageID}
+                  providerInstanceId={providerInstanceId}
                   onOpen={(dataUrl) => {
                     setSelectedImage(dataUrl);
                     if (galleryMessages?.length) setSelectedImageIndex(0);

@@ -4909,6 +4909,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "secure": "🔐",
   "security": "🔒",
   "see": "👀",
+  "see_no_evil": "🙈",
   "see_no_evil_monkey": "🙈",
   "seed": "🌱",
   "seedling": "🌱",

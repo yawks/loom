@@ -21,6 +21,8 @@ const slackSearchPollingOverlap = 10 * time.Minute
 
 const slackHistoryFallbackBatchSize = 4
 
+const slackConversationBootstrapLookback = 30 * 24 * time.Hour
+
 type slackFallbackConversation struct {
 	ProtocolConvID string
 	// SQLite returns aggregate date values such as MAX(timestamp) as text,
@@ -380,6 +382,12 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			continue
 		}
 		lastTimestamp := time.UnixMilli(lastTimestampMillis)
+		if bootstrap {
+			// Bootstrap only recent activity. Fetching the last 100 messages without
+			// a lower bound resurrects years-old MPDM history and can create useless
+			// notifications for legacy thread replies.
+			lastTimestamp = time.Now().Add(-slackConversationBootstrapLookback)
+		}
 		// GetConversationHistory persists both main messages and thread replies,
 		// but intentionally returns only main messages. Snapshot the known IDs so
 		// replies discovered by that call are included in the incremental event.
@@ -390,19 +398,15 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed reading existing IDs for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		var since *time.Time
-		if !bootstrap {
-			since = &lastTimestamp
-		}
-		_, err := p.GetConversationHistory(conversation.ProtocolConvID, 100, nil, since)
+		_, err := p.GetConversationHistory(conversation.ProtocolConvID, 100, nil, &lastTimestamp)
 		if err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		storedQuery := db.DB.Where("protocol_conv_id = ? AND deleted_at IS NULL", conversation.ProtocolConvID)
-		if !bootstrap {
-			storedQuery = storedQuery.Where("timestamp > ?", lastTimestamp)
-		}
+		storedQuery := db.DB.Where(
+			"protocol_conv_id = ? AND timestamp > ? AND deleted_at IS NULL",
+			conversation.ProtocolConvID, lastTimestamp,
+		)
 		var stored []models.Message
 		if err := storedQuery.Order("timestamp ASC").Find(&stored).Error; err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed loading recovered messages for %s: %v\n", conversation.ProtocolConvID, err)
@@ -416,7 +420,12 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		if bootstrap {
 			lastRead = p.slackConversationLastRead(conversation.ProtocolConvID)
 		}
-		p.emitIncrementalMessageBatches(conversation.ProtocolConvID, newMessages, lastRead)
+		if bootstrap {
+			read, unread := partitionSlackBootstrapMessages(newMessages, lastRead)
+			p.emitClassifiedMessageBatches(conversation.ProtocolConvID, read, unread)
+		} else {
+			p.emitIncrementalMessageBatches(conversation.ProtocolConvID, newMessages, lastRead)
+		}
 		p.log("SlackProvider.pollKnownConversationHistoryFallback: recovered %d message(s) for %s\n", len(newMessages), conversation.ProtocolConvID)
 	}
 

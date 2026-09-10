@@ -27,11 +27,17 @@ type matrixEvent struct {
 }
 
 type messageContent struct {
-	MsgType  string `json:"msgtype"`
-	Body     string `json:"body"`
-	URL      string `json:"url,omitempty"`
-	FileName string `json:"filename,omitempty"`
-	Info     struct {
+	MsgType       string `json:"msgtype"`
+	Body          string `json:"body"`
+	URL           string `json:"url,omitempty"`
+	FileName      string `json:"filename,omitempty"`
+	Format        string `json:"format,omitempty"`
+	FormattedBody string `json:"formatted_body,omitempty"`
+	Litefeed      *struct {
+		EventID   string  `json:"event_id"`
+		SessionID *string `json:"session_id"`
+	} `json:"com.litefeed,omitempty"`
+	Info struct {
 		MimeType string `json:"mimetype"`
 		Size     int64  `json:"size"`
 		W        int    `json:"w"`
@@ -66,7 +72,18 @@ func (p *Provider) eventToMessage(roomID string, event matrixEvent) (models.Mess
 	p.mu.RLock()
 	self := p.userID
 	p.mu.RUnlock()
-	m := models.Message{ProtocolConvID: p.namespacedRoom(roomID), ProtocolMsgID: event.EventID, SenderID: event.Sender, SenderName: event.Sender, Body: content.Body, Timestamp: time.UnixMilli(event.OriginServerTS), IsFromMe: event.Sender == self}
+	body := canonicalMessageBody(content.Body, content.Format, content.FormattedBody, content.URL != "")
+	if content.URL != "" && content.FormattedBody == "" && strings.TrimSpace(content.Body) == strings.TrimSpace(content.FileName) {
+		body = ""
+	}
+	m := models.Message{ProtocolConvID: p.namespacedRoom(roomID), ProtocolMsgID: event.EventID, SenderID: event.Sender, SenderName: event.Sender, Body: body, Timestamp: time.UnixMilli(event.OriginServerTS), IsFromMe: event.Sender == self}
+	attachments := make([]models.Attachment, 0, 2)
+	if content.Litefeed != nil && content.Litefeed.EventID != "" {
+		if card, ok := matrixHTMLToEventCard(content.FormattedBody); ok {
+			attachments = append(attachments, card)
+			m.Body = ""
+		}
+	}
 	if !m.IsFromMe && content.Mentions != nil {
 		for _, mentionedUserID := range content.Mentions.UserIDs {
 			if mentionedUserID == self {
@@ -90,12 +107,14 @@ func (p *Provider) eventToMessage(roomID string, event matrixEvent) (models.Mess
 		if attachmentType == "" {
 			attachmentType = "document"
 		}
-		name := content.FileName
-		if name == "" {
-			name = content.Body
-		}
-		att, _ := json.Marshal([]models.Attachment{{Type: attachmentType, URL: p.mediaURL(content.URL), FileName: name, FileSize: content.Info.Size, MimeType: content.Info.MimeType, Duration: content.Info.Duration}})
-		m.Attachments = string(att)
+		name := canonicalAttachmentName(content.FileName, content.Body, content.Info.MimeType)
+		// Keep provider media references opaque. They are resolved by the owning
+		// provider through App.GetProviderAttachmentData, never by the WebView.
+		attachments = append(attachments, models.Attachment{Type: attachmentType, URL: content.URL, FileName: name, FileSize: content.Info.Size, MimeType: content.Info.MimeType, Width: uint32(max(content.Info.W, 0)), Height: uint32(max(content.Info.H, 0)), Duration: content.Info.Duration})
+	}
+	if len(attachments) > 0 {
+		encoded, _ := json.Marshal(attachments)
+		m.Attachments = string(encoded)
 	}
 	return m, true
 }

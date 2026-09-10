@@ -150,3 +150,34 @@ func TestRefreshThreadRepliesResolvesNamespacedDMToChannelID(t *testing.T) {
 		t.Fatalf("stored thread ID = %#v, want %s", stored.ThreadID, parentTS)
 	}
 }
+
+func TestPartitionSlackBootstrapMessagesUsesLastReadForThreadReplies(t *testing.T) {
+	threadID := "1643297619.008800"
+	readThreadReply := models.Message{
+		ProtocolMsgID: "1643300921.010000",
+		ThreadID:      &threadID,
+		Timestamp:     time.Unix(1643300921, 10_000_000),
+	}
+	unreadThreadReply := models.Message{
+		ProtocolMsgID: "1647877680.000001",
+		ThreadID:      &threadID,
+		Timestamp:     time.Unix(1647877680, 1_000),
+	}
+
+	read, unread := partitionSlackBootstrapMessages(
+		[]models.Message{readThreadReply, unreadThreadReply},
+		"1647877678.473649",
+	)
+	if len(read) != 1 || read[0].ProtocolMsgID != readThreadReply.ProtocolMsgID {
+		t.Fatalf("read bootstrap messages = %#v, want old thread reply", read)
+	}
+	if len(unread) != 1 || unread[0].ProtocolMsgID != unreadThreadReply.ProtocolMsgID {
+		t.Fatalf("unread bootstrap messages = %#v, want reply after last_read", unread)
+	}
+}
+
+func TestSlackConversationBootstrapLookbackIsBounded(t *testing.T) {
+	if slackConversationBootstrapLookback != 30*24*time.Hour {
+		t.Fatalf("bootstrap lookback = %s, want 30 days", slackConversationBootstrapLookback)
+	}
+}
