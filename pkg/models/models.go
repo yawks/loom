@@ -231,10 +231,11 @@ type ConversationResolution struct {
 type GroupParticipant struct {
 	ID             uint      `gorm:"primarykey" json:"id"`
 	ConversationID uint      `gorm:"index" json:"conversationId"`
-	UserID         string    `json:"userId"`          // User ID on the platform
-	IsAdmin        bool      `json:"isAdmin"`         // Whether the participant is an admin
-	IsSelf         bool      `gorm:"-" json:"isSelf"` // Whether this participant is the authenticated user
-	JoinedAt       time.Time `json:"joinedAt"`        // When the participant joined
+	UserID         string    `json:"userId"`                       // User ID on the platform
+	AvatarURL      string    `gorm:"-" json:"avatarUrl,omitempty"` // Canonical provider-resolved avatar
+	IsAdmin        bool      `json:"isAdmin"`                      // Whether the participant is an admin
+	IsSelf         bool      `gorm:"-" json:"isSelf"`              // Whether this participant is the authenticated user
+	JoinedAt       time.Time `json:"joinedAt"`                     // When the participant joined
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }

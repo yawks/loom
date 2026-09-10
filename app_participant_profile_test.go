@@ -32,6 +32,9 @@ func TestPersistParticipantProfileIsScopedAndKeepsRichFields(t *testing.T) {
 	if err := persistParticipantProfile(models.ContactProfile{ProviderInstanceID: "work", UserID: "same-id", DisplayName: "Alice Updated"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := persistParticipantProfile(models.ContactProfile{ProviderInstanceID: "work", UserID: "same-id", DisplayName: "Vous"}); err != nil {
+		t.Fatal(err)
+	}
 
 	var rows []models.ParticipantProfile
 	if err := database.Order("provider_instance_id").Find(&rows).Error; err != nil {

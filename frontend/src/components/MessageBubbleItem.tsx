@@ -112,6 +112,9 @@ export function MessageBubbleItem({
   photoGroupMessages,
   displayIndexByMessageId,
 }: MessageBubbleItemProps) {
+  const senderAvatarUrl = message.senderAvatarUrl || groupParticipants?.find(
+    (participant) => participant.userId === message.senderId
+  )?.avatarUrl;
   const { t } = useTranslation();
   const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const capabilities = useAppStore((state) => state.capabilities);
@@ -217,7 +220,7 @@ export function MessageBubbleItem({
             <div className="flex flex-col items-center shrink-0">
               <button onClick={() => handlers.onContactAvatarClick(message, displayName)} className="shrink-0">
                 <Avatar className="cursor-pointer hover:opacity-80 transition-opacity">
-                  <AvatarImage src={message.senderAvatarUrl} />
+                  <AvatarImage src={senderAvatarUrl} />
                   <AvatarFallback>{displayName.substring(0, 2).toUpperCase()}</AvatarFallback>
                 </Avatar>
               </button>

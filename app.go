@@ -2568,7 +2568,7 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 			if messageInstance != instID || message.SenderID == "" {
 				continue
 			}
-			if nameMap[instID][message.SenderID] == "" && message.SenderName != "" && message.SenderName != message.SenderID {
+			if nameMap[instID][message.SenderID] == "" && message.SenderName != "" && message.SenderName != message.SenderID && !isGenericSelfLabel(message.SenderName) {
 				nameMap[instID][message.SenderID] = message.SenderName
 			}
 			if avatarMap[instID][message.SenderID] == "" && message.SenderAvatarURL != "" {
@@ -4687,7 +4687,7 @@ func (a *App) GetParticipantNamesForConversation(conversationID string, userIDs 
 		return nil, err
 	}
 	for _, profile := range cached {
-		if profile.DisplayName != "" && profile.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
+		if profile.DisplayName != "" && !isGenericSelfLabel(profile.DisplayName) && profile.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
 			result[profile.UserID] = profile.DisplayName
 		}
 	}
@@ -4740,6 +4740,9 @@ func (a *App) GetParticipantNamesForConversation(conversationID string, userIDs 
 func persistParticipantProfile(profile models.ContactProfile) error {
 	if db.DB == nil || profile.ProviderInstanceID == "" || profile.UserID == "" {
 		return nil
+	}
+	if isGenericSelfLabel(profile.DisplayName) {
+		profile.DisplayName = ""
 	}
 	emails, _ := json.Marshal(profile.Emails)
 	phones, _ := json.Marshal(profile.PhoneNumbers)
@@ -4842,6 +4845,15 @@ func looksLikePhoneNumberLabel(value string) bool {
 	return digits >= 6
 }
 
+func isGenericSelfLabel(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "you", "vous", "me", "moi":
+		return true
+	default:
+		return false
+	}
+}
+
 // GetContactProfile returns the provider-neutral metadata currently persisted for
 // a participant. Missing provider fields are represented by empty values.
 func (a *App) GetContactProfile(conversationID, userID string) (models.ContactProfile, error) {
@@ -4865,7 +4877,7 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 	if conversationAccount.ProviderInstanceID != "" && userID != "" {
 		var cached models.ParticipantProfile
 		if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", conversationAccount.ProviderInstanceID, userID).
-			First(&cached).Error; err == nil && cached.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
+			First(&cached).Error; err == nil && !isGenericSelfLabel(cached.DisplayName) && cached.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
 			return contactProfileFromParticipantCache(cached), nil
 		}
 	}

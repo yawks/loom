@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"context"
 	"errors"
@@ -361,6 +362,27 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 
 	// Convert participants to models.GroupParticipant
 	participants := make([]models.GroupParticipant, 0, len(groupInfo.Participants))
+	avatarAccounts := make([]models.LinkedAccount, 0, len(groupInfo.Participants))
+	instanceID := w.getInstanceId()
+	avatarByUserID := make(map[string]string)
+	w.mu.RLock()
+	for userID, account := range w.conversations {
+		if account.AvatarURL != "" {
+			avatarByUserID[userID] = account.AvatarURL
+		}
+	}
+	w.mu.RUnlock()
+	if db.DB != nil && instanceID != "" {
+		var accounts []models.LinkedAccount
+		if err := db.ForProvider(db.DB, instanceID).LinkedAccounts().
+			Where("avatar_url != ?", "").Find(&accounts).Error; err == nil {
+			for _, account := range accounts {
+				if avatarByUserID[account.UserID] == "" {
+					avatarByUserID[account.UserID] = account.AvatarURL
+				}
+			}
+		}
+	}
 
 	// Also build a map of LID -> phone number for later conversion
 	lidToPhoneMap := make(map[types.JID]string)
@@ -407,18 +429,34 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 			w.storeContactMapping(participant.JID.String(), userID)
 		}
 
+		avatarURL := avatarByUserID[userID]
+
 		participants = append(participants, models.GroupParticipant{
-			UserID:   userID,
-			IsAdmin:  isAdmin,
-			IsSelf:   isSelf,
-			JoinedAt: joinedAt,
+			UserID:    userID,
+			AvatarURL: avatarURL,
+			IsAdmin:   isAdmin,
+			IsSelf:    isSelf,
+			JoinedAt:  joinedAt,
 		})
+		if avatarURL == "" {
+			avatarAccounts = append(avatarAccounts, models.LinkedAccount{
+				Protocol: "whatsapp", ProviderInstanceID: instanceID, UserID: userID,
+			})
+		}
 	}
 
 	// Cache the LID to phone number mapping
 	w.mu.Lock()
 	w.groupParticipants[groupJID.String()] = lidToPhoneMap
 	w.mu.Unlock()
+
+	// Participant pictures are optional enrichment. Load missing ones in the
+	// existing bounded background loader so opening group details never waits
+	// for one network request per member. The next participant refresh receives
+	// the canonical AvatarURL from the cache/database.
+	if len(avatarAccounts) > 0 {
+		go w.loadAvatarsAsync(avatarAccounts, 0)
+	}
 
 	return participants, nil
 }

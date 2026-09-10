@@ -49,6 +49,42 @@ func TestParseTimeMillisConvertsNumericUnixSeconds(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyZeroCallDurations(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	zero := int32(0)
+	positive := int32(12)
+	legacy := models.Message{ProtocolMsgID: "legacy-zero-call", CallType: "incoming_call", CallDurationSecs: &zero}
+	valid := models.Message{ProtocolMsgID: "valid-call", CallType: "incoming_call", CallDurationSecs: &positive}
+	if err := database.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&valid).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeLegacyZeroCallDurations(database); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.First(&legacy, legacy.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.First(&valid, valid.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.CallDurationSecs != nil {
+		t.Fatalf("legacy zero duration = %v, want nil", legacy.CallDurationSecs)
+	}
+	if valid.CallDurationSecs == nil || *valid.CallDurationSecs != 12 {
+		t.Fatalf("valid duration = %v, want 12", valid.CallDurationSecs)
+	}
+}
+
 func TestRepairWhatsAppConversationOwnershipUsesNamespacedInstance(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

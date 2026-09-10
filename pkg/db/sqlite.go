@@ -159,6 +159,9 @@ func initDatabase(dsn string) error {
 	if err := repairWhatsAppConversationOwnership(db); err != nil {
 		fmt.Printf("Warning: Failed to repair WhatsApp conversation ownership: %v\n", err)
 	}
+	if err := normalizeLegacyZeroCallDurations(db); err != nil {
+		fmt.Printf("Warning: Failed to normalize legacy zero call durations: %v\n", err)
+	}
 
 	// Performance optimization: ensure crucial indices exist
 	err = ensureIndices(db)
@@ -174,6 +177,18 @@ func initDatabase(dsn string) error {
 	}
 
 	return nil
+}
+
+// normalizeLegacyZeroCallDurations repairs old canonical rows where an unknown
+// duration was persisted as zero. Zero is not a useful call summary: it renders
+// as a real "0s" duration and prevents consumers from distinguishing missing
+// provider data. This is intentionally provider-neutral compatibility handling.
+func normalizeLegacyZeroCallDurations(database *gorm.DB) error {
+	return Transaction(database, func(tx *gorm.DB) error {
+		return tx.Model(&models.Message{}).
+			Where("call_type <> ? AND call_duration_secs = ?", "", 0).
+			Update("call_duration_secs", nil).Error
+	})
 }
 
 // ensureIndices adds crucial performance indices that might be missing

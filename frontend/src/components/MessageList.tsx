@@ -358,7 +358,12 @@ export function MessageList({
   const currentUserName = useMemo(() => {
     if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);
     for (const msg of messages) {
-      if (msg.isFromMe && msg.senderName) return msg.senderName;
+      if (
+        msg.isFromMe &&
+        msg.senderName &&
+        msg.senderName !== msg.senderId &&
+        !["you", "vous", "me", "moi"].includes(msg.senderName.trim().toLocaleLowerCase())
+      ) return msg.senderName;
     }
     return undefined;
   }, [currentUserId, participantNames, messages]);

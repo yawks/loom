@@ -175,16 +175,31 @@ func (p *Provider) persistRoom(account models.LinkedAccount, roomID string) {
 	db.ContactStore.SetConversation(linked.ID, namespaced)
 }
 func (p *Provider) GetContactName(id string) (string, error) {
-	var out struct {
-		DisplayName string `json:"displayname"`
-	}
-	if err := p.do(noCancel(), http.MethodGet, "/profile/"+url.PathEscape(id)+"/displayname", nil, nil, &out); err != nil {
+	profile, err := p.GetContactProfile(id)
+	if err != nil {
 		return id, err
 	}
-	if out.DisplayName == "" {
+	if profile.DisplayName == "" {
 		return id, nil
 	}
-	return out.DisplayName, nil
+	return profile.DisplayName, nil
+}
+
+// GetContactProfile exposes Matrix's standard profile fields through Loom's
+// provider-neutral participant profile contract.
+func (p *Provider) GetContactProfile(id string) (models.ContactProfile, error) {
+	var out struct {
+		DisplayName string `json:"displayname"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	if err := p.do(noCancel(), http.MethodGet, "/profile/"+url.PathEscape(id), nil, nil, &out); err != nil {
+		return models.ContactProfile{}, err
+	}
+	return models.ContactProfile{
+		UserID: id, DisplayName: out.DisplayName, AvatarURL: p.mediaURL(out.AvatarURL),
+		Protocol: "matrix", ProviderInstanceID: p.getInstanceID(),
+		PhoneNumbers: []string{}, Emails: []string{}, ProviderFields: map[string]string{},
+	}, nil
 }
 func (p *Provider) RefreshContact(string) error { return nil }
 func (p *Provider) SearchContacts(query string) ([]models.LinkedAccount, error) {

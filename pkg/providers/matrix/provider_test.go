@@ -163,6 +163,8 @@ func TestSentMessageIsPersistedForRecentConversations(t *testing.T) {
 	p.config = core.ProviderConfig{"_instance_id": "matrix-2"}
 	p.instanceID = "matrix-2"
 	p.userID = "@alice:matrix.org"
+	p.selfName = "Alice"
+	p.selfAvatarURL = "https://matrix.example.org/avatar.png"
 	p.homeserver = "https://matrix.example.org"
 	p.accessToken = "token"
 	p.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -181,6 +183,9 @@ func TestSentMessageIsPersistedForRecentConversations(t *testing.T) {
 	}
 	if stored.ProtocolConvID != conversationID || stored.ConversationID != conversation.ID || stored.Body != "hello" {
 		t.Fatalf("unexpected stored message: %+v", stored)
+	}
+	if message.SenderName != "Alice" || message.SenderAvatarURL != "https://matrix.example.org/avatar.png" {
+		t.Fatalf("outgoing self profile was not applied: %+v", message)
 	}
 	if time.Since(message.Timestamp) > time.Second {
 		t.Fatalf("unexpected message timestamp %v", message.Timestamp)

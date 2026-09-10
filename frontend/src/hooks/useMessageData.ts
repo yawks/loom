@@ -189,15 +189,26 @@ export function useMessageData(
       return;
     }
     if (isGroupFromProvider || isGroupConversation) {
-      GetGroupParticipants(conversationId)
-        .then((res) => {
-          if (Array.isArray(res)) {
-            setGroupParticipants(res);
-          }
-        })
-        .catch((err) => {
-          console.error("Failed to load group participants:", err);
-        });
+      let cancelled = false;
+      const loadParticipants = () => {
+        GetGroupParticipants(conversationId)
+          .then((res) => {
+            if (!cancelled && Array.isArray(res)) {
+              setGroupParticipants(res);
+            }
+          })
+          .catch((err) => {
+            console.error("Failed to load group participants:", err);
+          });
+      };
+      loadParticipants();
+      // Provider metadata such as participant avatars may arrive asynchronously.
+      // Refresh the canonical participant contract while the conversation is open.
+      const interval = window.setInterval(loadParticipants, 15000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(interval);
+      };
     } else {
       setGroupParticipants([]);
     }

@@ -770,6 +770,7 @@ export namespace models {
 	    id: number;
 	    conversationId: number;
 	    userId: string;
+	    avatarUrl?: string;
 	    isAdmin: boolean;
 	    isSelf: boolean;
 	    joinedAt: time.Time;
@@ -785,6 +786,7 @@ export namespace models {
 	        this.id = source["id"];
 	        this.conversationId = source["conversationId"];
 	        this.userId = source["userId"];
+	        this.avatarUrl = source["avatarUrl"];
 	        this.isAdmin = source["isAdmin"];
 	        this.isSelf = source["isSelf"];
 	        this.joinedAt = this.convertValues(source["joinedAt"], time.Time);

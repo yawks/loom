@@ -1078,6 +1078,15 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			fmt.Printf("WhatsApp: ContactStatusEvent emitted for call\n")
 		default:
 		}
+	case *events.CallPreAccept:
+		// On some companion devices this is the earliest reliable indication that
+		// media setup has begun. Preserve it so a late/replayed CallAccept cannot
+		// collapse a real call to zero seconds.
+		w.markCallAccepted(v.CallID, v.Timestamp, time.Now())
+	case *events.CallTransport:
+		// Transport may precede CallAccept, especially when the call is answered on
+		// another linked device. Keep the earliest connected timestamp observed.
+		w.markCallAccepted(v.CallID, v.Timestamp, time.Now())
 	case *events.CallAccept:
 		fmt.Printf("WhatsApp: Received CallAccept event - CallCreator: %s (server: %s), CallID: %s\n",
 			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
@@ -1089,13 +1098,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			acceptTime = v.Timestamp
 		}
 
-		w.activeCallsMu.Lock()
-		if info, exists := w.activeCalls[callID]; exists {
-			info.IsAccepted = true
-			info.AcceptTime = acceptTime
-			info.AcceptObservedTime = acceptObservedTime
-		}
-		w.activeCallsMu.Unlock()
+		w.markCallAccepted(callID, acceptTime, acceptObservedTime)
 
 		// Update call message in database if exists
 		callCreatorJIDStr := v.CallCreator.String()
@@ -1390,6 +1393,25 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 	default:
 		// Log other events for debugging
 		fmt.Printf("WhatsApp: Unhandled event type: %T\n", evt)
+	}
+}
+
+func (w *WhatsAppProvider) markCallAccepted(callID string, eventTime, observedTime time.Time) {
+	if eventTime.IsZero() {
+		eventTime = observedTime
+	}
+	w.activeCallsMu.Lock()
+	defer w.activeCallsMu.Unlock()
+	info, exists := w.activeCalls[callID]
+	if !exists {
+		return
+	}
+	info.IsAccepted = true
+	if info.AcceptTime.IsZero() || eventTime.Before(info.AcceptTime) {
+		info.AcceptTime = eventTime
+	}
+	if info.AcceptObservedTime.IsZero() || observedTime.Before(info.AcceptObservedTime) {
+		info.AcceptObservedTime = observedTime
 	}
 }
 

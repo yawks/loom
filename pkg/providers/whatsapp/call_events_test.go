@@ -140,6 +140,21 @@ func TestCompletedCallDurationDoesNotPersistFalseZero(t *testing.T) {
 	}
 }
 
+func TestMarkCallAcceptedKeepsEarliestSignal(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	callID := "EARLIEST_ACCEPT"
+	provider.activeCalls[callID] = &activeCallInfo{}
+	earlyServer := time.Date(2026, time.September, 10, 13, 7, 13, 0, time.UTC)
+	earlyObserved := earlyServer.Add(200 * time.Millisecond)
+	provider.markCallAccepted(callID, earlyServer, earlyObserved)
+	provider.markCallAccepted(callID, earlyServer.Add(8*time.Second), earlyObserved.Add(8*time.Second))
+
+	info := provider.activeCalls[callID]
+	if !info.AcceptTime.Equal(earlyServer) || !info.AcceptObservedTime.Equal(earlyObserved) {
+		t.Fatalf("accept signal was overwritten: server=%v observed=%v", info.AcceptTime, info.AcceptObservedTime)
+	}
+}
+
 func TestAppStateCallLogCreatesOfflineCallSummary(t *testing.T) {
 	previousDB := db.DB
 	t.Cleanup(func() { db.DB = previousDB })

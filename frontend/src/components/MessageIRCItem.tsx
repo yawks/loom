@@ -89,6 +89,9 @@ export function MessageIRCItem({
   photoGroupMessages,
   displayIndexByMessageId,
 }: MessageIRCItemProps) {
+  const senderAvatarUrl = message.senderAvatarUrl || groupParticipants?.find(
+    (participant) => participant.userId === message.senderId
+  )?.avatarUrl;
   const { t } = useTranslation();
   const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const capabilities = useAppStore((state) => state.capabilities);
@@ -196,7 +199,7 @@ export function MessageIRCItem({
             <>
               <button onClick={() => handlers.onContactAvatarClick(message, displayName)} className="shrink-0">
                 <Avatar className="h-6 w-6 mt-2.5 cursor-pointer hover:opacity-80 transition-opacity">
-                  <AvatarImage src={message.senderAvatarUrl} />
+                  <AvatarImage src={senderAvatarUrl} />
                   <AvatarFallback className="text-xs">
                     {message.isFromMe ? t("me") : displayName.substring(0, 2).toUpperCase()}
                   </AvatarFallback>

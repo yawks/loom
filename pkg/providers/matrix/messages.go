@@ -71,12 +71,20 @@ func (p *Provider) eventToMessage(roomID string, event matrixEvent) (models.Mess
 	}
 	p.mu.RLock()
 	self := p.userID
+	selfName := p.selfName
+	selfAvatarURL := p.selfAvatarURL
 	p.mu.RUnlock()
 	body := canonicalMessageBody(content.Body, content.Format, content.FormattedBody, content.URL != "")
 	if content.URL != "" && content.FormattedBody == "" && strings.TrimSpace(content.Body) == strings.TrimSpace(content.FileName) {
 		body = ""
 	}
 	m := models.Message{ProtocolConvID: p.namespacedRoom(roomID), ProtocolMsgID: event.EventID, SenderID: event.Sender, SenderName: event.Sender, Body: body, Timestamp: time.UnixMilli(event.OriginServerTS), IsFromMe: event.Sender == self}
+	if m.IsFromMe {
+		if selfName != "" {
+			m.SenderName = selfName
+		}
+		m.SenderAvatarURL = selfAvatarURL
+	}
 	attachments := make([]models.Attachment, 0, 2)
 	if content.Litefeed != nil && content.Litefeed.EventID != "" {
 		if card, ok := matrixHTMLToEventCard(content.FormattedBody); ok {
@@ -222,9 +230,14 @@ func (p *Provider) sendMessageWithMentions(roomID, text string, file *core.Attac
 	}
 	p.mu.RLock()
 	self := p.userID
+	selfName := p.selfName
+	selfAvatarURL := p.selfAvatarURL
 	p.mu.RUnlock()
+	if selfName == "" {
+		selfName = self
+	}
 	now := time.Now()
-	message := models.Message{ProtocolConvID: p.namespacedRoom(rawRoom), ProtocolMsgID: response.EventID, SenderID: self, SenderName: self, Body: text, Timestamp: now, IsFromMe: true, ThreadID: threadID, QuotedMessageID: quotedID}
+	message := models.Message{ProtocolConvID: p.namespacedRoom(rawRoom), ProtocolMsgID: response.EventID, SenderID: self, SenderName: selfName, SenderAvatarURL: selfAvatarURL, Body: text, Timestamp: now, IsFromMe: true, ThreadID: threadID, QuotedMessageID: quotedID}
 	if file != nil {
 		attachmentType := "document"
 		if strings.HasPrefix(file.MimeType, "image/") {

@@ -22,6 +22,8 @@ type Provider struct {
 	homeserver     string
 	accessToken    string
 	userID         string
+	selfName       string
+	selfAvatarURL  string
 	deviceID       string
 	instanceID     string
 	client         *http.Client
@@ -107,6 +109,12 @@ func (p *Provider) Connect() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.mu.Unlock()
+	selfID := p.CurrentUserID()
+	if profile, profileErr := p.GetContactProfile(selfID); profileErr == nil {
+		p.mu.Lock()
+		p.selfName, p.selfAvatarURL = profile.DisplayName, profile.AvatarURL
+		p.mu.Unlock()
+	}
 	go p.syncLoop(ctx)
 	return nil
 }

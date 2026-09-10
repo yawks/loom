@@ -396,8 +396,10 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             if (msg.isFromMe && msg.senderId) {
               currentUserInfo = {
                 senderId: msg.senderId,
-                senderName: msg.senderName || currentUserName,
-                senderAvatarUrl: msg.senderAvatarUrl || currentUserAvatarUrl,
+                // The provider-scoped self profile is canonical. Historical
+                // messages may still contain a translated "you" placeholder.
+                senderName: currentUserName || msg.senderName,
+                senderAvatarUrl: currentUserAvatarUrl || msg.senderAvatarUrl,
               };
               break;
             }

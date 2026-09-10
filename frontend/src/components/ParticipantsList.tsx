@@ -220,7 +220,7 @@ export function ParticipantsList({
           participantMap.set(participant.userId, {
             senderId: participant.userId,
             senderName: providerName || undefined, // Will be populated from messages or aliases if not found
-            senderAvatarUrl: undefined,
+            senderAvatarUrl: participant.avatarUrl || undefined,
             isFromMe: participant.isSelf || (currentUserId ? participant.userId === currentUserId : false),
             lastMessageTime: joinedAtDate,
             isAdmin: participant.isAdmin,
@@ -235,6 +235,9 @@ export function ParticipantsList({
             // Use provider name if not already set
             if (!existing.senderName) {
               existing.senderName = participantNames[participant.userId];
+            }
+            if (participant.avatarUrl) {
+              existing.senderAvatarUrl = participant.avatarUrl;
             }
             // Ensure isFromMe is correctly set based on currentUserId
             existing.isFromMe = participant.isSelf || (currentUserId ? participant.userId === currentUserId : false);
