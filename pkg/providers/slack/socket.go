@@ -55,7 +55,8 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 					p.log("SlackProvider.startSocketMode: callback inner event type=%T\n", innerEvent.Data)
 					switch ev := innerEvent.Data.(type) {
 					case *slackevents.MessageEvent:
-						p.log("SlackProvider.startSocketMode: received message event\n")
+						p.log("SlackProvider.startSocketMode: received message event channel=%s subtype=%s ts=%s thread_ts=%s bot_id=%s\n",
+							ev.Channel, ev.SubType, ev.TimeStamp, ev.ThreadTimeStamp, ev.BotID)
 						p.handleMessageEvent(ev)
 					case *slackevents.ReactionAddedEvent:
 						p.handleRTMReactionAddedEvent(&slack.ReactionAddedEvent{

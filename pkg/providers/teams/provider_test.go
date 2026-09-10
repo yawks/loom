@@ -633,6 +633,15 @@ func TestTeamsHTMLNormalizesLiteralMalformedInlineFormatting(t *testing.T) {
 	}
 }
 
+func TestTeamsHTMLMovesEdgeSpacesOutsideAllRichTextElements(t *testing.T) {
+	input := `<p>DELIGNIERES<u> underlined</u> then<em> italic</em>, ` +
+		`<s>struck </s>✅ and<strong>&nbsp;bold&nbsp;</strong>.</p>`
+	want := `DELIGNIERES <u>underlined</u> then *italic*, ~~struck~~ ✅ and **bold** .`
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("Teams rich-text formatting = %q, want %q", got, want)
+	}
+}
+
 func TestTeamsHTMLNormalizesEscapedMarkdownTable(t *testing.T) {
 	input := `<p>\| KPI | Cible \</p><p>\| --- | --- |\</p>` +
 		`<p>\| Disponibilité | ≥ 99,5 % \</p><p>% du temps accessible.</p>` +

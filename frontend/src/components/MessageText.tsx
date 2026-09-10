@@ -387,8 +387,8 @@ export const MessageText = memo(function MessageText({
     // A shortcode must be independently delimited. This prevents clock-like
     // text (12:42 and 12:42:05) from exposing :42: as an emoji shortcode.
     const emojiPattern = /(?<![a-zA-Z0-9]):([a-zA-Z0-9_+-]+):(?![a-zA-Z0-9])/g;
-    // SharePoint (among others) uses URL paths such as `/:p:/`. Do not turn
-    // those path segments into custom emojis before Markdown sees the URL.
+    // Document-sharing URLs may contain path segments such as `/:p:/`. Do not
+    // turn those path segments into custom emojis before Markdown sees the URL.
     const urlRanges = Array.from(textWithoutSkinTones.matchAll(/https?:\/\/[^\s<>"']+/g))
       .map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
     const isInsideUrl = (index: number) =>
@@ -519,7 +519,16 @@ export const MessageText = memo(function MessageText({
     const renderNodes = (nodes: NodeListOf<ChildNode> | ChildNode[], inline: boolean): ReactNode[] =>
       Array.from(nodes).map((node, index) => {
         if (node.nodeType === Node.TEXT_NODE) {
-          const value = node.textContent ?? "";
+          let value = node.textContent ?? "";
+          // HTML collapses boundary spaces inconsistently when React renders
+          // adjacent text and rich-text fragments as separate nodes. Preserve
+          // canonical spaces next to inline rich elements explicitly.
+          if (/[ \t]$/.test(value) && node.nextSibling?.nodeType === Node.ELEMENT_NODE) {
+            value = value.replace(/[ \t]$/, "\u00a0");
+          }
+          if (/^[ \t]/.test(value) && node.previousSibling?.nodeType === Node.ELEMENT_NODE) {
+            value = value.replace(/^[ \t]/, "\u00a0");
+          }
           // Plain fragments already contain the exact spacing supplied by the
           // canonical message. Sending each one through react-markdown creates
           // a paragraph AST and can add separator whitespace around adjacent
@@ -534,7 +543,7 @@ export const MessageText = memo(function MessageText({
         if (node.nodeType !== Node.ELEMENT_NODE) return null;
         const element = node as Element;
         const children = renderNodes(element.childNodes, true);
-        if (element.tagName.toLowerCase() === "u") return <u key={index}>{children}</u>;
+        if (element.tagName.toLowerCase() === "u") return <u className="underline" key={index}>{children}</u>;
         if (element.tagName.toLowerCase() === "loom-style") {
           return <span key={index} style={richTextStyle(element)}>{children}</span>;
         }

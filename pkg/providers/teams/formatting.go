@@ -60,10 +60,11 @@ func teamsHTMLToMarkdown(input string) string {
 			out.WriteString(style)
 		}
 		// Teams commonly includes the spaces surrounding formatted text inside
-		// the <strong>/<em> element. CommonMark requires emphasis delimiters to
-		// touch non-whitespace, so keep those spaces but move them outside the
-		// Markdown markers.
-		if tag == "strong" || tag == "b" || tag == "em" || tag == "i" {
+		// rich-text elements. CommonMark requires emphasis delimiters to touch
+		// non-whitespace; moving the spaces also keeps Loom's underline extension
+		// and strikethrough scoped to the intended text.
+		if tag == "strong" || tag == "b" || tag == "em" || tag == "i" ||
+			tag == "u" || tag == "s" || tag == "strike" || tag == "del" {
 			previousOut := out
 			formatted := &strings.Builder{}
 			out = formatted
@@ -72,7 +73,7 @@ func teamsHTMLToMarkdown(input string) string {
 			}
 			out = previousOut
 			body := formatted.String()
-			trimmed := strings.Trim(body, " \t")
+			trimmed := strings.Trim(body, " \t\u00a0")
 			if trimmed == "" {
 				out.WriteString(body)
 				if style != "" {
@@ -80,16 +81,24 @@ func teamsHTMLToMarkdown(input string) string {
 				}
 				return
 			}
-			leadingLength := len(body) - len(strings.TrimLeft(body, " \t"))
-			trailingLength := len(body) - len(strings.TrimRight(body, " \t"))
+			leadingLength := len(body) - len(strings.TrimLeft(body, " \t\u00a0"))
+			trailingLength := len(body) - len(strings.TrimRight(body, " \t\u00a0"))
 			out.WriteString(body[:leadingLength])
-			delimiter := "*"
+			openDelimiter := "*"
+			closeDelimiter := "*"
 			if tag == "strong" || tag == "b" {
-				delimiter = "**"
+				openDelimiter = "**"
+				closeDelimiter = "**"
+			} else if tag == "u" {
+				openDelimiter = "<u>"
+				closeDelimiter = "</u>"
+			} else if tag == "s" || tag == "strike" || tag == "del" {
+				openDelimiter = "~~"
+				closeDelimiter = "~~"
 			}
-			out.WriteString(delimiter)
+			out.WriteString(openDelimiter)
 			out.WriteString(trimmed)
-			out.WriteString(delimiter)
+			out.WriteString(closeDelimiter)
 			if trailingLength > 0 {
 				out.WriteString(body[len(body)-trailingLength:])
 			}
@@ -102,8 +111,6 @@ func teamsHTMLToMarkdown(input string) string {
 		case "br":
 			out.WriteByte('\n')
 			return
-		case "u":
-			out.WriteString("<u>")
 		case "code":
 			out.WriteByte('`')
 		case "li":
@@ -117,8 +124,6 @@ func teamsHTMLToMarkdown(input string) string {
 			render(child)
 		}
 		switch tag {
-		case "u":
-			out.WriteString("</u>")
 		case "code":
 			out.WriteByte('`')
 		case "p", "div", "li":
