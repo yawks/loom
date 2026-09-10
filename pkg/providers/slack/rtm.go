@@ -19,26 +19,41 @@ import (
 // This is used for "User" tokens (xoxc/xoxp) which don't support Socket Mode.
 func (p *SlackProvider) startRTM(ctx context.Context) {
 	p.log("SlackProvider.startRTM: starting RTM event loop\n")
+	p.mu.RLock()
+	rtmClient := p.rtmClient
+	p.mu.RUnlock()
+	if rtmClient == nil {
+		p.log("SlackProvider.startRTM: RTM client unavailable\n")
+		return
+	}
 
 	// ManageConnection is blocking, so we run it in a separate goroutine if needed,
 	// but here we are already inside a goroutine from Connect() usually.
 	// However, we need to process events from the IncomingEvents channel.
 
 	// Start RTM connection routines
-	go p.rtmClient.ManageConnection()
+	go rtmClient.ManageConnection()
 
 	for {
 		select {
 		case <-ctx.Done():
 			p.log("SlackProvider.startRTM: stopping RTM event loop\n")
 			return
-		case msg := <-p.rtmClient.IncomingEvents:
+		case msg := <-rtmClient.IncomingEvents:
 			switch ev := msg.Data.(type) {
 			case *slack.ConnectingEvent:
 				p.log("SlackProvider.startRTM: connecting (attempt %d, previous connections: %d)\n", ev.Attempt, ev.ConnectionCount)
 
 			case *slack.ConnectionErrorEvent:
 				p.log("SlackProvider.startRTM: connection failed on attempt %d: %v (retry in %s)\n", ev.Attempt, ev.ErrorObj, ev.Backoff)
+				// missing_scope cannot recover through retries. Leaving slack-go's
+				// exponential retry loop alive consumes the same Web API budget that
+				// the history fallback needs to deliver messages.
+				if ev.ErrorObj != nil && strings.Contains(ev.ErrorObj.Error(), "missing_scope") {
+					p.log("SlackProvider.startRTM: RTM scope unavailable; stopping retries and using history polling\n")
+					rtmClient.Disconnect()
+					return
+				}
 
 			case *slack.ConnectedEvent:
 				p.log("SlackProvider.startRTM: RTM Connected: %s (Connections: %d)\n", ev.Info.User.ID, ev.ConnectionCount)

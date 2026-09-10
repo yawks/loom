@@ -34,38 +34,39 @@ type slackSession struct {
 
 // SlackProvider implements the core.Provider interface for Slack.
 type SlackProvider struct {
-	config             core.ProviderConfig
-	session            *slackSession // set by browser auth; overrides config token/d_cookie
-	client             *slack.Client
-	apiHTTPClient      *http.Client // HTTP client matching Slack API cookie/auth configuration
-	authToken          string       // Token used for raw endpoints not modeled by slack-go v0.17
-	apiBaseURL         string       // Slack Web API base URL (overridden by tests)
-	apiClientMu        sync.RWMutex // Protects apiHTTPClient and authToken independently of p.mu
-	socketClient       *socketmode.Client
-	rtmClient          *slack.RTM
-	mu                 sync.RWMutex
-	logger             *logging.ProviderLogger
-	userCache          map[string]*slack.User // Cache for user info to avoid repeated API calls
-	userCacheMu        sync.RWMutex
-	emojiCache         map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
-	emojiCacheMu       sync.RWMutex
-	eventChan          chan core.ProviderEvent // Channel for emitting events
-	stopChan           chan struct{}           // Channel to signal polling goroutine to stop
-	statusCache        map[string]userStatus   // Cache of last known status for each user
-	statusCacheMu      sync.RWMutex            // Mutex for status cache
-	mpimProcessingChan chan struct{}           // Channel to track MPIM processing completion
-	mpimCount          int                     // Number of MPIMs being processed
-	mpimCountMu        sync.RWMutex            // Mutex for MPIM count
-	eventStreamCtx     context.Context         // Context for event stream
-	eventStreamCancel  context.CancelFunc      // Cancel function for event stream
-	eventStreamStarted bool                    // Whether event stream has been started
-	searchUnavailable  bool                    // search.messages lacks scope; use bounded history polling
-	connectionCancel   context.CancelFunc      // Stops Socket Mode across reconnects
-	dmChannelCache     map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
-	dmChannelCacheMu   sync.RWMutex            // Mutex for DM channel cache
-	selfUserID         string                  // Cached authenticated user ID (from AuthTest)
-	selfDMChannelID    string                  // Cached channel ID for Slack's DM with yourself
-	teamID             string                  // Cached workspace ID used to build Slack web conversation links
+	config                core.ProviderConfig
+	session               *slackSession // set by browser auth; overrides config token/d_cookie
+	client                *slack.Client
+	apiHTTPClient         *http.Client // HTTP client matching Slack API cookie/auth configuration
+	authToken             string       // Token used for raw endpoints not modeled by slack-go v0.17
+	apiBaseURL            string       // Slack Web API base URL (overridden by tests)
+	apiClientMu           sync.RWMutex // Protects apiHTTPClient and authToken independently of p.mu
+	socketClient          *socketmode.Client
+	rtmClient             *slack.RTM
+	mu                    sync.RWMutex
+	logger                *logging.ProviderLogger
+	userCache             map[string]*slack.User // Cache for user info to avoid repeated API calls
+	userCacheMu           sync.RWMutex
+	emojiCache            map[string]string // Cache for emoji names to URLs (e.g., "calendar" -> "https://...")
+	emojiCacheMu          sync.RWMutex
+	eventChan             chan core.ProviderEvent // Channel for emitting events
+	stopChan              chan struct{}           // Channel to signal polling goroutine to stop
+	statusCache           map[string]userStatus   // Cache of last known status for each user
+	statusCacheMu         sync.RWMutex            // Mutex for status cache
+	mpimProcessingChan    chan struct{}           // Channel to track MPIM processing completion
+	mpimCount             int                     // Number of MPIMs being processed
+	mpimCountMu           sync.RWMutex            // Mutex for MPIM count
+	eventStreamCtx        context.Context         // Context for event stream
+	eventStreamCancel     context.CancelFunc      // Cancel function for event stream
+	eventStreamStarted    bool                    // Whether event stream has been started
+	searchUnavailable     bool                    // search.messages lacks scope; use bounded history polling
+	historyFallbackCursor int                     // Rotating history cursor; survives event-stream reconnects
+	connectionCancel      context.CancelFunc      // Stops Socket Mode across reconnects
+	dmChannelCache        map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
+	dmChannelCacheMu      sync.RWMutex            // Mutex for DM channel cache
+	selfUserID            string                  // Cached authenticated user ID (from AuthTest)
+	selfDMChannelID       string                  // Cached channel ID for Slack's DM with yourself
+	teamID                string                  // Cached workspace ID used to build Slack web conversation links
 }
 
 // userStatus represents the cached status information for a user

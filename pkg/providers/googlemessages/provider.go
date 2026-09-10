@@ -642,6 +642,9 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				}
 				for index := range reactions {
 					reactions[index].MessageID = message.ID
+					if reactions[index].CreatedAt.IsZero() {
+						reactions[index].CreatedAt = message.Timestamp
+					}
 				}
 				if len(reactions) > 0 {
 					if err := tx.Create(&reactions).Error; err != nil {
@@ -665,6 +668,11 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				}
 				for index := range message.Reactions {
 					message.Reactions[index].MessageID = existing.ID
+					if message.Reactions[index].CreatedAt.IsZero() {
+						// History snapshots have no reaction timestamp. This stable
+						// fallback also repairs reactions incorrectly dated at sync time.
+						message.Reactions[index].CreatedAt = message.Timestamp
+					}
 				}
 				if len(message.Reactions) > 0 {
 					if err := tx.Create(&message.Reactions).Error; err != nil {
@@ -1284,6 +1292,11 @@ func (p *Provider) handleLibGMEvent(event any) {
 			return
 		}
 		message := p.toModelMessage(event.Message, event.GetConversationID(), p.dmSenderName(event.GetConversationID()))
+		// For a live update, receipt time is the best activity timestamp exposed
+		// by Google Messages; historical snapshots use the message time instead.
+		for index := range message.Reactions {
+			message.Reactions[index].CreatedAt = time.Now()
+		}
 		previous := p.reactionsForMessage(message.ProtocolMsgID)
 		if err := p.storeMessages([]models.Message{message}); err != nil {
 			p.emit(core.SyncStatusEvent{InstanceID: p.instance, Status: core.SyncStatusError, Message: "Google Messages message could not be stored", Progress: -1})

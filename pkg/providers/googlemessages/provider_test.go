@@ -163,7 +163,7 @@ func TestStoredConversationTipIsProviderScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&models.Message{}); err != nil {
+	if err := database.AutoMigrate(&models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := db.DB
@@ -193,6 +193,20 @@ func TestStoredConversationTipIsProviderScoped(t *testing.T) {
 	globalSince := time.Date(2026, 9, 10, 10, 32, 0, 0, time.UTC)
 	if got, want := provider.conversationSyncSince("21", globalSince), ownTimestamp.Add(-5*time.Minute); !got.Equal(want) {
 		t.Fatalf("conversation sync lower bound = %s, want %s", got, want)
+	}
+	// A historical reaction has no remote timestamp and must not make the
+	// conversation look active at synchronization time.
+	historical := own
+	historical.Reactions = []models.Reaction{{UserID: "alice", Emoji: "👍"}}
+	if err := provider.storeMessages([]models.Message{historical}); err != nil {
+		t.Fatal(err)
+	}
+	var reaction models.Reaction
+	if err := database.Where("message_id = ?", own.ID).First(&reaction).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reaction.CreatedAt.Equal(ownTimestamp) {
+		t.Fatalf("historical reaction timestamp = %s, want message timestamp %s", reaction.CreatedAt, ownTimestamp)
 	}
 }
 

@@ -191,8 +191,6 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 	// yourself. Keep an independent cursor for that conversation so messages
 	// sent from another Slack client still reach Loom without a manual sync.
 	lastSelfDMPollTime := lastPollTime.Add(-10 * time.Second)
-	historyFallbackCursor := 0
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -208,9 +206,13 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 			// the forward-only cursor. SQLite deduplication keeps this idempotent.
 			p.mu.RLock()
 			searchUnavailable := p.searchUnavailable
+			historyFallbackCursor := p.historyFallbackCursor
 			p.mu.RUnlock()
 			if searchUnavailable {
 				historyFallbackCursor = p.pollKnownConversationHistoryFallback(ctx, historyFallbackCursor, slackHistoryFallbackBatchSize)
+				p.mu.Lock()
+				p.historyFallbackCursor = historyFallbackCursor
+				p.mu.Unlock()
 			} else {
 				newLastPollTime, err := p.pollGlobalUpdates(ctx, slackSearchPollSince(lastPollTime))
 				if err != nil {
@@ -220,16 +222,24 @@ func (p *SlackProvider) startPolling(ctx context.Context) {
 						p.searchUnavailable = true
 						p.mu.Unlock()
 						historyFallbackCursor = p.pollKnownConversationHistoryFallback(ctx, historyFallbackCursor, slackHistoryFallbackBatchSize)
+						p.mu.Lock()
+						p.historyFallbackCursor = historyFallbackCursor
+						p.mu.Unlock()
+						searchUnavailable = true
 					}
 				} else if newLastPollTime.After(lastPollTime) {
 					lastPollTime = newLastPollTime
 				}
 			}
-			newSelfDMPollTime, err := p.pollSelfDMUpdates(lastSelfDMPollTime)
-			if err != nil {
-				p.log("SlackProvider.startPolling: Error polling self DM: %v\n", err)
-			} else if newSelfDMPollTime.After(lastSelfDMPollTime) {
-				lastSelfDMPollTime = newSelfDMPollTime
+			// The history fallback already includes the self conversation. Avoid a
+			// duplicate request on every tick when search is unavailable.
+			if !searchUnavailable {
+				newSelfDMPollTime, err := p.pollSelfDMUpdates(lastSelfDMPollTime)
+				if err != nil {
+					p.log("SlackProvider.startPolling: Error polling self DM: %v\n", err)
+				} else if newSelfDMPollTime.After(lastSelfDMPollTime) {
+					lastSelfDMPollTime = newSelfDMPollTime
+				}
 			}
 			// Huddle updates keep the original message timestamp and are therefore
 			// invisible to forward-only message polling. Check only locally active
@@ -392,7 +402,8 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		// but intentionally returns only main messages. Snapshot the known IDs so
 		// replies discovered by that call are included in the incremental event.
 		var existingIDs []string
-		if err := db.DB.Model(&models.Message{}).
+		messageScope := db.ForProvider(db.DB, p.getInstanceId()).Messages()
+		if err := messageScope.
 			Where("protocol_conv_id = ? AND timestamp > ?", conversation.ProtocolConvID, lastTimestamp).
 			Pluck("protocol_msg_id", &existingIDs).Error; err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed reading existing IDs for %s: %v\n", conversation.ProtocolConvID, err)
@@ -403,7 +414,7 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		storedQuery := db.DB.Where(
+		storedQuery := db.ForProvider(db.DB, p.getInstanceId()).Messages().Where(
 			"protocol_conv_id = ? AND timestamp > ? AND deleted_at IS NULL",
 			conversation.ProtocolConvID, lastTimestamp,
 		)
