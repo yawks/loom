@@ -115,6 +115,8 @@ export function GetNotificationSettings(arg1:string):Promise<models.Notification
 
 export function GetParticipantNames(arg1:Array<string>):Promise<Record<string, string>>;
 
+export function GetParticipantNamesForConversation(arg1:string,arg2:Array<string>):Promise<Record<string, string>>;
+
 export function GetPinnedMessageContext(arg1:string,arg2:string):Promise<models.MessageContext>;
 
 export function GetPinnedMessages(arg1:string):Promise<Array<models.MessagePin>>;

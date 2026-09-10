@@ -28,6 +28,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/net/html"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // pendingProviderStartup holds the work that may touch the network. Provider
@@ -4577,6 +4578,153 @@ func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
 	return result, nil
 }
 
+// GetParticipantNamesForConversation resolves participant identities within the
+// owning provider instance. Unlike the legacy cross-provider lookup, this is
+// safe when two accounts expose the same remote user ID and persists successful
+// resolutions for group guests that do not have a LinkedAccount.
+func (a *App) GetParticipantNamesForConversation(conversationID string, userIDs []string) (map[string]string, error) {
+	result := make(map[string]string)
+	if db.DB == nil || len(userIDs) == 0 {
+		return result, nil
+	}
+
+	instanceID := ""
+	if idx := strings.Index(conversationID, "::"); idx > 0 {
+		instanceID = conversationID[:idx]
+	}
+	if instanceID == "" {
+		var row struct{ ProviderInstanceID string }
+		_ = db.DB.Table("conversations").
+			Select("linked_accounts.provider_instance_id").
+			Joins("JOIN linked_accounts ON linked_accounts.id = conversations.linked_account_id").
+			Where("conversations.protocol_conv_id = ?", conversationID).
+			Scan(&row).Error
+		instanceID = row.ProviderInstanceID
+	}
+	if instanceID == "" {
+		return result, fmt.Errorf("participant profiles: conversation %s has no provider owner", conversationID)
+	}
+
+	var cached []models.ParticipantProfile
+	if err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instanceID, userIDs).Find(&cached).Error; err != nil {
+		return nil, err
+	}
+	for _, profile := range cached {
+		if profile.DisplayName != "" && profile.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
+			result[profile.UserID] = profile.DisplayName
+		}
+	}
+
+	var accounts []models.LinkedAccount
+	if err := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instanceID, userIDs).Find(&accounts).Error; err == nil {
+		for _, account := range accounts {
+			if account.Username == "" || account.Username == account.UserID || looksLikePhoneNumberLabel(account.Username) {
+				continue
+			}
+			if result[account.UserID] == "" {
+				result[account.UserID] = account.Username
+			}
+			_ = persistParticipantProfile(models.ContactProfile{
+				UserID: account.UserID, DisplayName: account.Username, AvatarURL: account.AvatarURL,
+				Protocol: account.Protocol, ProviderInstanceID: instanceID,
+			})
+		}
+	}
+
+	provider := a.getProviderForConversation(conversationID)
+	if provider == nil {
+		return result, nil
+	}
+	for _, userID := range userIDs {
+		if userID == "" || result[userID] != "" {
+			continue
+		}
+		profile := models.ContactProfile{UserID: userID, ProviderInstanceID: instanceID}
+		if richer, ok := provider.(interface {
+			GetContactProfile(string) (models.ContactProfile, error)
+		}); ok {
+			if remote, err := richer.GetContactProfile(userID); err == nil {
+				mergeContactProfile(&profile, remote)
+			}
+		}
+		if profile.DisplayName == "" {
+			if name, err := provider.GetContactName(userID); err == nil {
+				profile.DisplayName = name
+			}
+		}
+		if profile.DisplayName != "" && profile.DisplayName != userID {
+			result[userID] = profile.DisplayName
+			_ = persistParticipantProfile(profile)
+		}
+	}
+	return result, nil
+}
+
+func persistParticipantProfile(profile models.ContactProfile) error {
+	if db.DB == nil || profile.ProviderInstanceID == "" || profile.UserID == "" {
+		return nil
+	}
+	emails, _ := json.Marshal(profile.Emails)
+	phones, _ := json.Marshal(profile.PhoneNumbers)
+	extra, _ := json.Marshal(map[string]interface{}{
+		"protocol": profile.Protocol, "address": profile.Address, "company": profile.Company,
+		"jobTitle": profile.JobTitle, "department": profile.Department, "timezone": profile.Timezone,
+		"presence": profile.Presence, "statusText": profile.StatusText, "statusEmoji": profile.StatusEmoji,
+		"lastSeen": profile.LastSeen, "providerFields": profile.ProviderFields,
+	})
+	row := models.ParticipantProfile{
+		ProviderInstanceID: profile.ProviderInstanceID, UserID: profile.UserID,
+		DisplayName: profile.DisplayName, AvatarURL: profile.AvatarURL,
+		Emails: string(emails), PhoneNumbers: string(phones), Extra: string(extra), RefreshedAt: time.Now(),
+	}
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		row.ID = 0
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "provider_instance_id"}, {Name: "user_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"display_name", "avatar_url", "emails", "phone_numbers", "extra", "refreshed_at", "updated_at"}),
+		}).Create(&row).Error
+	})
+}
+
+func contactProfileFromParticipantCache(row models.ParticipantProfile) models.ContactProfile {
+	profile := models.ContactProfile{
+		UserID: row.UserID, DisplayName: row.DisplayName, AvatarURL: row.AvatarURL,
+		ProviderInstanceID: row.ProviderInstanceID, PhoneNumbers: []string{}, Emails: []string{},
+		ProviderFields: map[string]string{},
+	}
+	_ = json.Unmarshal([]byte(row.Emails), &profile.Emails)
+	_ = json.Unmarshal([]byte(row.PhoneNumbers), &profile.PhoneNumbers)
+	var extra struct {
+		Protocol       string            `json:"protocol"`
+		Address        string            `json:"address"`
+		Company        string            `json:"company"`
+		JobTitle       string            `json:"jobTitle"`
+		Department     string            `json:"department"`
+		Timezone       string            `json:"timezone"`
+		Presence       string            `json:"presence"`
+		StatusText     string            `json:"statusText"`
+		StatusEmoji    string            `json:"statusEmoji"`
+		LastSeen       *time.Time        `json:"lastSeen"`
+		ProviderFields map[string]string `json:"providerFields"`
+	}
+	if json.Unmarshal([]byte(row.Extra), &extra) == nil {
+		profile.Protocol = extra.Protocol
+		profile.Address = extra.Address
+		profile.Company = extra.Company
+		profile.JobTitle = extra.JobTitle
+		profile.Department = extra.Department
+		profile.Timezone = extra.Timezone
+		profile.Presence = extra.Presence
+		profile.StatusText = extra.StatusText
+		profile.StatusEmoji = extra.StatusEmoji
+		profile.LastSeen = extra.LastSeen
+		if extra.ProviderFields != nil {
+			profile.ProviderFields = extra.ProviderFields
+		}
+	}
+	return profile
+}
+
 // looksLikePhoneNumberLabel distinguishes an actual display name from a phone
 // number that was temporarily stored in the username field. Such placeholders
 // must not prevent providers from returning a later PushName/profile name.
@@ -4622,6 +4770,15 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 	if err := db.DB.Where("protocol_conv_id = ?", conversationID).First(&conversation).Error; err == nil {
 		_ = db.DB.First(&conversationAccount, conversation.LinkedAccountID).Error
 	}
+	profile.ProviderInstanceID = conversationAccount.ProviderInstanceID
+	profile.Protocol = conversationAccount.Protocol
+	if conversationAccount.ProviderInstanceID != "" && userID != "" {
+		var cached models.ParticipantProfile
+		if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", conversationAccount.ProviderInstanceID, userID).
+			First(&cached).Error; err == nil && cached.RefreshedAt.After(time.Now().Add(-7*24*time.Hour)) {
+			return contactProfileFromParticipantCache(cached), nil
+		}
+	}
 
 	var account models.LinkedAccount
 	query := db.DB.Where("user_id = ?", userID)
@@ -4641,6 +4798,7 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 				}); ok {
 					if remote, remoteErr := richer.GetContactProfile(userID); remoteErr == nil {
 						mergeContactProfile(&profile, remote)
+						_ = persistParticipantProfile(profile)
 					}
 				}
 				return profile, nil
@@ -4654,6 +4812,7 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 				}); ok {
 					if remote, remoteErr := richer.GetContactProfile(userID); remoteErr == nil {
 						mergeContactProfile(&profile, remote)
+						_ = persistParticipantProfile(profile)
 					}
 				}
 			}
@@ -4702,6 +4861,7 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 	}
 	if provider := a.getProviderForConversation(conversationID); provider != nil {
 		if cached, ok := provider.(core.PersistedContactProfileProvider); ok && cached.UsesPersistedContactProfiles() {
+			_ = persistParticipantProfile(profile)
 			return profile, nil
 		}
 		if richer, ok := provider.(interface {
@@ -4712,6 +4872,7 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 			}
 		}
 	}
+	_ = persistParticipantProfile(profile)
 	return profile, nil
 }
 

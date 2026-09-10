@@ -222,6 +222,10 @@ export function GetParticipantNames(arg1) {
   return window['go']['main']['App']['GetParticipantNames'](arg1);
 }
 
+export function GetParticipantNamesForConversation(arg1, arg2) {
+  return window['go']['main']['App']['GetParticipantNamesForConversation'](arg1, arg2);
+}
+
 export function GetPinnedMessageContext(arg1, arg2) {
   return window['go']['main']['App']['GetPinnedMessageContext'](arg1, arg2);
 }
