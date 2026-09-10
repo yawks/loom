@@ -1,11 +1,12 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Loader2, Plus, ShieldCheck, ShieldMinus, UserMinus, X } from "lucide-react";
-import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNames, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAliasForConversation } from "../../wailsjs/go/main/App";
+import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNamesForConversation, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAliasForConversation } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,37 +37,26 @@ interface ParticipantsListProps {
   canManageAdmins: boolean;
 }
 
-// Fetch function that loads both group participants and their names
-async function fetchParticipantsData(conversationId: string, isGroup: boolean): Promise<{
-  groupParticipants: models.GroupParticipant[];
-  participantNames: Record<string, string>;
-}> {
+// Load membership separately from display-name enrichment. Name resolution may
+// contact remote providers and must not keep the whole participant list behind
+// the Suspense fallback when one of those lookups is slow or unavailable.
+async function fetchGroupParticipants(
+  conversationId: string,
+  isGroup: boolean
+): Promise<models.GroupParticipant[]> {
   // Direct conversations derive their participants from messages. Calling the
   // provider's group endpoint for them is both unnecessary and an error for
   // providers that use separate conversation and participant identifiers.
   if (!isGroup) {
-    return { groupParticipants: [], participantNames: {} };
+    return [];
   }
 
-  let groupParticipants;
   try {
-    groupParticipants = await GetGroupParticipants(conversationId);
+    const groupParticipants = await GetGroupParticipants(conversationId);
+    return Array.isArray(groupParticipants) ? groupParticipants : [];
   } catch (err) {
     console.error("Failed to get group participants:", err);
-    return { groupParticipants: [], participantNames: {} };
-  }
-
-  if (!groupParticipants || groupParticipants.length === 0) {
-    return { groupParticipants: [], participantNames: {} };
-  }
-
-  const ids = groupParticipants.map((p) => p.userId);
-  try {
-    const participantNames = await GetParticipantNames(ids);
-    return { groupParticipants, participantNames: participantNames || {} };
-  } catch (err) {
-    console.error("Failed to get participant names:", err);
-    return { groupParticipants, participantNames: {} };
+    return [];
   }
 }
 
@@ -115,17 +105,28 @@ export function ParticipantsList({
   const [participantToRemove, setParticipantToRemove] = useState<{ id: string; name: string } | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
 
-  // Use Suspense query to load participants data
-  const { data: participantsData } = useSuspenseQuery<{
-    groupParticipants: models.GroupParticipant[];
-    participantNames: Record<string, string>;
-  }, Error>({
+  const { data: groupParticipantsData } = useSuspenseQuery<models.GroupParticipant[], Error>({
     queryKey: ["participantsData", conversationId, isGroup],
-    queryFn: () => fetchParticipantsData(conversationId, isGroup),
+    queryFn: () => fetchGroupParticipants(conversationId, isGroup),
     refetchInterval: 15000,
   });
 
-  const { groupParticipants: groupParticipantsData, participantNames } = participantsData;
+  const participantIDs = useMemo(
+    () => groupParticipantsData.map((participant) => participant.userId).filter(Boolean),
+    [groupParticipantsData]
+  );
+  const { data: participantNames = {}, isFetching: areParticipantNamesLoading } = useQuery<Record<string, string>, Error>({
+    queryKey: ["participantNames", participantIDs],
+    queryFn: async () => {
+      try {
+        return (await GetParticipantNamesForConversation(conversationId, participantIDs)) || {};
+      } catch (err) {
+        console.error("Failed to get participant names:", err);
+        return {};
+      }
+    },
+    enabled: participantIDs.length > 0,
+  });
 
   useEffect(() => {
     if (!adding || !providerInstanceId) return;
@@ -336,6 +337,11 @@ export function ParticipantsList({
       )}
       {mutationError && <p className="text-sm text-destructive">{t("group_member_update_error")}: {mutationError}</p>}
       {participants.map((participant) => {
+        const isNameLoading = Boolean(
+          areParticipantNamesLoading &&
+          !aliases[participant.senderId] &&
+          !participantNames[participant.senderId]
+        );
         const displayName = getDisplayNameWithAlias(
           participant.senderName,
           participant.senderId,
@@ -384,6 +390,7 @@ export function ParticipantsList({
               senderAvatarUrl: avatarUrl,
             }}
             displayName={displayName}
+            isNameLoading={isNameLoading}
             status={effectiveStatus}
             alias={aliases[participant.senderId]}
             onAvatarClick={onAvatarClick}
@@ -434,6 +441,7 @@ interface ParticipantItemProps {
     joinedAt?: Date;
   };
   displayName: string;
+  isNameLoading: boolean;
   status: string;
   alias?: string;
   onAvatarClick: (avatarUrl: string | undefined, displayName: string, userId: string, status: string) => void;
@@ -445,6 +453,7 @@ interface ParticipantItemProps {
 function ParticipantItem({
   participant,
   displayName,
+  isNameLoading,
   status,
   alias,
   onAvatarClick,
@@ -527,7 +536,11 @@ function ParticipantItem({
         </button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <p className="font-medium text-sm truncate">{displayName}</p>
+            {isNameLoading ? (
+              <Skeleton className="h-4 w-32" aria-label={t("loading")} />
+            ) : (
+              <p className="font-medium text-sm truncate">{displayName}</p>
+            )}
             <span className="text-xs text-muted-foreground">({t("you")})</span>
             {participant.isAdmin && (
               <span className="text-xs bg-blue-600/20 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
@@ -584,11 +597,15 @@ function ParticipantItem({
           </div>
         ) : (
           <div
-            className="flex items-center gap-2 cursor-pointer"
-            onClick={() => setIsEditing(true)}
-            title={t("click_to_edit_name")}
+            className={`flex items-center gap-2 ${isNameLoading ? "" : "cursor-pointer"}`}
+            onClick={() => { if (!isNameLoading) setIsEditing(true); }}
+            title={isNameLoading ? undefined : t("click_to_edit_name")}
           >
-            <p className="font-medium text-sm truncate">{displayName}</p>
+            {isNameLoading ? (
+              <Skeleton className="h-4 w-32" aria-label={t("loading")} />
+            ) : (
+              <p className="font-medium text-sm truncate">{displayName}</p>
+            )}
             {alias && (
               <span className="text-xs text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
                 ({t("custom")})

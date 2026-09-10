@@ -45,8 +45,6 @@ export function ChatLayout() {
   const showConversationDetails = useAppStore(
     (state) => state.showConversationDetails
   );
-  const theme = useAppStore((state) => state.theme);
-
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -255,12 +253,6 @@ export function ChatLayout() {
                         <img
                           src={conversationIcon}
                           className="h-16 w-16 mb-4 opacity-50"
-                          style={{
-                            filter:
-                              theme === "dark"
-                                ? "grayscale(1) invert(1) brightness(1.5)"
-                                : "none",
-                          }}
                           alt="Conversation icon"
                         />
                         <p className="text-xl font-medium">

@@ -39,6 +39,24 @@ type ContactProfile struct {
 	ProviderFields     map[string]string `json:"providerFields"`
 }
 
+// ParticipantProfile persists provider-owned identity metadata for people who
+// may not exist as first-class LinkedAccounts (for example group guests).
+// ProviderInstanceID is part of the identity boundary: remote user IDs are not
+// assumed to be globally unique across configured accounts.
+type ParticipantProfile struct {
+	ID                 uint      `gorm:"primarykey" json:"id"`
+	ProviderInstanceID string    `gorm:"not null;uniqueIndex:idx_participant_profile_identity" json:"providerInstanceId"`
+	UserID             string    `gorm:"not null;uniqueIndex:idx_participant_profile_identity" json:"userId"`
+	DisplayName        string    `json:"displayName"`
+	AvatarURL          string    `json:"avatarUrl"`
+	Emails             string    `gorm:"type:text" json:"-"`
+	PhoneNumbers       string    `gorm:"type:text" json:"-"`
+	Extra              string    `gorm:"type:text" json:"-"`
+	RefreshedAt        time.Time `gorm:"index" json:"refreshedAt"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
 // ContactExchangeStats contains aggregates calculated from Loom's persisted history.
 type ContactExchangeStats struct {
 	IsGroup                   bool       `json:"isGroup"`

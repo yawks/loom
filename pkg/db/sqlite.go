@@ -121,6 +121,7 @@ func initDatabase(dsn string) error {
 	err = db.AutoMigrate(
 		&models.MetaContact{},
 		&models.LinkedAccount{},
+		&models.ParticipantProfile{},
 		&models.Conversation{},
 		&models.GroupParticipant{},
 		&models.Message{},

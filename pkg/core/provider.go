@@ -477,6 +477,13 @@ type GlobalHistorySyncer interface {
 	SyncAllHistory(since time.Time) error
 }
 
+// PersistedContactProfileProvider reports that contact metadata returned by the
+// provider is persisted while conversations are synchronized. Callers can use
+// the local profile without putting a remote request on the UI's critical path.
+type PersistedContactProfileProvider interface {
+	UsesPersistedContactProfiles() bool
+}
+
 // ContextHistorySyncer lets a provider stop an in-flight history sync without
 // disconnecting its live event stream. Providers that do not implement it keep
 // using SyncHistory and can still be stopped at the orchestration boundaries.

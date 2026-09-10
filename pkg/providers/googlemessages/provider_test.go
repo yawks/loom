@@ -2,10 +2,15 @@ package googlemessages
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
+	"Loom/pkg/models"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"gorm.io/gorm"
 )
 
 func TestToModelMessageUsesDMSenderName(t *testing.T) {
@@ -127,6 +132,67 @@ func TestGoogleMessagesContactProfileFallsBackToRawPhoneNumber(t *testing.T) {
 	}
 	if profile.DisplayName != "+33612345678" {
 		t.Fatalf("display name = %q", profile.DisplayName)
+	}
+}
+
+func TestLinkedAccountPersistsDirectConversationPhoneNumber(t *testing.T) {
+	provider := NewProvider()
+	provider.instance = "googlemessages-1"
+	remote := &gmproto.Conversation{
+		ConversationID: "21",
+		Participants: []*gmproto.Participant{
+			{ID: &gmproto.SmallInfo{ParticipantID: "me"}, IsMe: true},
+			{ID: &gmproto.SmallInfo{ParticipantID: "alice", Number: "+33612345678"}, FormattedNumber: "06 12 34 56 78"},
+		},
+	}
+
+	account := provider.linkedAccount(remote)
+	var extra struct {
+		PhoneNumbers []string `json:"phoneNumbers"`
+	}
+	if err := json.Unmarshal([]byte(account.Extra), &extra); err != nil {
+		t.Fatalf("decode persisted profile: %v", err)
+	}
+	if len(extra.PhoneNumbers) != 1 || extra.PhoneNumbers[0] != "06 12 34 56 78" {
+		t.Fatalf("persisted phone numbers = %#v", extra.PhoneNumbers)
+	}
+}
+
+func TestStoredConversationTipIsProviderScoped(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	provider := NewProvider()
+	provider.instance = "googlemessages-1"
+	remote := &gmproto.Conversation{ConversationID: "21", LatestMessageID: "other-tip"}
+	other := models.Message{ProtocolConvID: "googlemessages-2::21", ProtocolMsgID: "other-tip", Timestamp: time.Now()}
+	if err := database.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if provider.hasStoredConversationTip(remote) {
+		t.Fatal("another provider instance's message satisfied the local tip")
+	}
+
+	remote.LatestMessageID = "own-tip"
+	ownTimestamp := time.Date(2026, 9, 3, 7, 45, 33, 0, time.UTC)
+	own := models.Message{ProtocolConvID: "googlemessages-1::21", ProtocolMsgID: "own-tip", Timestamp: ownTimestamp}
+	if err := database.Create(&own).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !provider.hasStoredConversationTip(remote) {
+		t.Fatal("own provider instance's stored tip was not found")
+	}
+	globalSince := time.Date(2026, 9, 10, 10, 32, 0, 0, time.UTC)
+	if got, want := provider.conversationSyncSince("21", globalSince), ownTimestamp.Add(-5*time.Minute); !got.Equal(want) {
+		t.Fatalf("conversation sync lower bound = %s, want %s", got, want)
 	}
 }
 

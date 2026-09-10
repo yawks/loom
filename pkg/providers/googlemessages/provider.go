@@ -23,6 +23,7 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/events"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"gorm.io/gorm"
 )
 
 const providerID = "googlemessages"
@@ -45,6 +46,10 @@ type Provider struct {
 
 var _ core.Provider = (*Provider)(nil)
 var _ core.PhoneConversationCreator = (*Provider)(nil)
+var _ core.GlobalHistorySyncer = (*Provider)(nil)
+var _ core.PersistedContactProfileProvider = (*Provider)(nil)
+
+func (p *Provider) UsesPersistedContactProfiles() bool { return true }
 
 func NewProvider() *Provider {
 	return &Provider{
@@ -136,6 +141,16 @@ func (p *Provider) Disconnect() error {
 }
 
 func (p *Provider) SyncHistory(since time.Time) error {
+	return p.syncHistory(since, false)
+}
+
+// SyncAllHistory audits every conversation in the requested repair window.
+// This is intentionally reserved for manual syncs by the application.
+func (p *Provider) SyncAllHistory(since time.Time) error {
+	return p.syncHistory(since, true)
+}
+
+func (p *Provider) syncHistory(since time.Time, auditAll bool) error {
 	p.mu.RLock()
 	client := p.client
 	instance := p.instance
@@ -151,7 +166,6 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	}
 	conversations := response.GetConversations()
 	initialSync := p.isInitialHistorySync()
-	remainingMessages := 100
 	for index, remote := range conversations {
 		if remote.GetConversationID() == "" {
 			continue
@@ -159,28 +173,26 @@ func (p *Provider) SyncHistory(since time.Time) error {
 		if err := p.storeConversation(remote); err != nil {
 			return err
 		}
-		// The initial sync keeps the existing broad backfill. Later syncs only
-		// inspect conversations that the phone marks unread, with one global
-		// 100-message budget for the whole provider instance.
-		if !initialSync && (!remote.GetUnread() || remainingMessages == 0) {
+		// Read state is not a synchronization cursor: a message may have been read
+		// on the phone before Loom sees it. Compare the authoritative remote tip
+		// with SQLite instead, and let manual sync audit older holes as well.
+		if !initialSync && !auditAll && p.hasStoredConversationTip(remote) {
 			continue
 		}
 		progress := (index * 100) / max(1, len(conversations))
 		p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingHistory, ConversationID: remote.GetConversationID(), Message: "Syncing Google Messages history", Progress: progress})
-		limit := 0
-		if !initialSync {
-			limit = remainingMessages
+		limit := 2000
+		conversationSince := since
+		if !auditAll {
+			conversationSince = p.conversationSyncSince(remote.GetConversationID(), since)
 		}
-		messages, err := p.GetConversationHistory(remote.GetConversationID(), limit, nil, &since)
+		messages, err := p.GetConversationHistory(remote.GetConversationID(), limit, nil, &conversationSince)
 		if err != nil {
 			return err
 		}
 		newMessages := messages
 		if !initialSync {
 			newMessages = googleMessagesNotYetStored(messages)
-		}
-		if !initialSync {
-			remainingMessages -= len(messages)
 		}
 		if err := p.storeMessages(messages); err != nil {
 			return err
@@ -198,6 +210,41 @@ func (p *Provider) SyncHistory(since time.Time) error {
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusCompleted, Message: "Google Messages sync completed", Progress: 100})
 	p.emit(core.ContactStatusEvent{InstanceID: instance, UserID: "refresh", Status: "new_conversations_discovered"})
 	return nil
+}
+
+func (p *Provider) hasStoredConversationTip(remote *gmproto.Conversation) bool {
+	if db.DB == nil || remote.GetLatestMessageID() == "" {
+		return false
+	}
+	instance := p.instance
+	var count int64
+	db.ForProvider(db.DB, instance).Messages().
+		Where("messages.protocol_conv_id = ? AND messages.protocol_msg_id = ?", core.BuildConvID(instance, remote.GetConversationID()), remote.GetLatestMessageID()).
+		Count(&count)
+	return count > 0
+}
+
+// conversationSyncSince prevents the provider-wide completion watermark from
+// skipping a conversation whose local tip is older. A small overlap also
+// repairs messages committed around the edge of an interrupted sync.
+func (p *Provider) conversationSyncSince(rawConversationID string, globalSince time.Time) time.Time {
+	if db.DB == nil || p.instance == "" {
+		return globalSince
+	}
+	var newest models.Message
+	err := db.ForProvider(db.DB, p.instance).Messages().
+		Where("messages.protocol_conv_id = ?", core.BuildConvID(p.instance, rawConversationID)).
+		Order("messages.timestamp DESC").
+		Limit(1).
+		Take(&newest).Error
+	if err != nil || newest.Timestamp.IsZero() {
+		return globalSince
+	}
+	localSince := newest.Timestamp.Add(-5 * time.Minute)
+	if globalSince.IsZero() || localSince.Before(globalSince) {
+		return localSince
+	}
+	return globalSince
 }
 
 func googleMessagesNotYetStored(messages []models.Message) []models.Message {
@@ -443,7 +490,21 @@ func (p *Provider) linkedAccount(remote *gmproto.Conversation) models.LinkedAcco
 	}
 	// Google Messages does not expose contact presence. "offline" is Loom's
 	// neutral/no-presence value and intentionally suppresses the status badge.
-	return models.LinkedAccount{Protocol: providerID, ProviderInstanceID: instance, UserID: remote.GetConversationID(), Username: name, AvatarURL: remote.GetGroupAvatarURL(), IsGroup: remote.GetIsGroupChat(), Status: "offline", ConversationID: remote.GetConversationID()}
+	extra := ""
+	if !remote.GetIsGroupChat() {
+		for _, participant := range remote.GetParticipants() {
+			if participant.GetIsMe() {
+				continue
+			}
+			profile := googleMessagesContactProfile(participant, instance)
+			if len(profile.PhoneNumbers) > 0 {
+				encoded, _ := json.Marshal(map[string]interface{}{"phoneNumbers": profile.PhoneNumbers})
+				extra = string(encoded)
+				break
+			}
+		}
+	}
+	return models.LinkedAccount{Protocol: providerID, ProviderInstanceID: instance, UserID: remote.GetConversationID(), Username: name, AvatarURL: remote.GetGroupAvatarURL(), IsGroup: remote.GetIsGroupChat(), Status: "offline", Extra: extra, ConversationID: remote.GetConversationID()}
 }
 
 func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
@@ -478,8 +539,12 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 		if storedAccount.Username != account.Username ||
 			storedAccount.AvatarURL != account.AvatarURL ||
 			storedAccount.IsGroup != account.IsGroup ||
-			storedAccount.Status != account.Status {
+			storedAccount.Status != account.Status ||
+			(account.Extra != "" && storedAccount.Extra != account.Extra) {
 			storedAccount.Username, storedAccount.AvatarURL, storedAccount.IsGroup, storedAccount.Status = account.Username, account.AvatarURL, account.IsGroup, account.Status
+			if account.Extra != "" {
+				storedAccount.Extra = account.Extra
+			}
 			accountChanged = true
 		}
 		if accountChanged {
@@ -542,66 +607,90 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 	if db.DB == nil {
 		return nil
 	}
+	ids := make([]string, 0, len(messages))
 	for _, message := range messages {
-		var existing models.Message
-		result := db.DB.Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&existing)
-		if result.Error != nil {
-			reactions := message.Reactions
-			receipts := message.Receipts
-			message.Reactions = nil
-			message.Receipts = nil
-			if err := db.DB.Create(&message).Error; err != nil {
-				return err
-			}
-			for index := range reactions {
-				reactions[index].MessageID = message.ID
-			}
-			if len(reactions) > 0 {
-				if err := db.DB.Create(&reactions).Error; err != nil {
-					return err
-				}
-			}
-			if err := storeGoogleMessagesReceipts(message.ID, receipts); err != nil {
-				return err
-			}
-		} else {
-			existing.Body, existing.Timestamp, existing.SenderID, existing.SenderName, existing.IsFromMe, existing.QuotedMessageID = message.Body, message.Timestamp, message.SenderID, message.SenderName, message.IsFromMe, message.QuotedMessageID
-			if message.Attachments != "" {
-				existing.Attachments = message.Attachments
-			}
-			if err := db.DB.Save(&existing).Error; err != nil {
-				return err
-			}
-			if err := db.DB.Where("message_id = ?", existing.ID).Delete(&models.Reaction{}).Error; err != nil {
-				return err
-			}
-			for index := range message.Reactions {
-				message.Reactions[index].MessageID = existing.ID
-			}
-			if len(message.Reactions) > 0 {
-				if err := db.DB.Create(&message.Reactions).Error; err != nil {
-					return err
-				}
-			}
-			if err := storeGoogleMessagesReceipts(existing.ID, message.Receipts); err != nil {
+		if message.ProtocolMsgID != "" {
+			ids = append(ids, message.ProtocolMsgID)
+		}
+	}
+	instance := p.instance
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		// Rebuild retry-local state inside the callback: db.Transaction may invoke
+		// it again after SQLITE_BUSY_SNAPSHOT.
+		var storedMessages []models.Message
+		if len(ids) > 0 {
+			if err := db.ForProvider(tx, instance).Messages().Where("messages.protocol_msg_id IN ?", ids).Find(&storedMessages).Error; err != nil {
 				return err
 			}
 		}
-	}
-	return nil
+		existingByID := make(map[string]models.Message, len(storedMessages))
+		for _, stored := range storedMessages {
+			existingByID[stored.ProtocolMsgID] = stored
+		}
+
+		for _, incoming := range messages {
+			message := incoming
+			existing, exists := existingByID[message.ProtocolMsgID]
+			if !exists {
+				reactions := message.Reactions
+				receipts := message.Receipts
+				message.ID = 0
+				message.Reactions = nil
+				message.Receipts = nil
+				if err := tx.Create(&message).Error; err != nil {
+					return err
+				}
+				for index := range reactions {
+					reactions[index].MessageID = message.ID
+				}
+				if len(reactions) > 0 {
+					if err := tx.Create(&reactions).Error; err != nil {
+						return err
+					}
+				}
+				if err := storeGoogleMessagesReceipts(tx, message.ID, receipts); err != nil {
+					return err
+				}
+				existingByID[message.ProtocolMsgID] = message
+			} else {
+				existing.Body, existing.Timestamp, existing.SenderID, existing.SenderName, existing.IsFromMe, existing.QuotedMessageID = message.Body, message.Timestamp, message.SenderID, message.SenderName, message.IsFromMe, message.QuotedMessageID
+				if message.Attachments != "" {
+					existing.Attachments = message.Attachments
+				}
+				if err := tx.Save(&existing).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("message_id = ?", existing.ID).Delete(&models.Reaction{}).Error; err != nil {
+					return err
+				}
+				for index := range message.Reactions {
+					message.Reactions[index].MessageID = existing.ID
+				}
+				if len(message.Reactions) > 0 {
+					if err := tx.Create(&message.Reactions).Error; err != nil {
+						return err
+					}
+				}
+				if err := storeGoogleMessagesReceipts(tx, existing.ID, message.Receipts); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
-func storeGoogleMessagesReceipts(messageID uint, receipts []models.MessageReceipt) error {
+func storeGoogleMessagesReceipts(database *gorm.DB, messageID uint, receipts []models.MessageReceipt) error {
 	for _, receipt := range receipts {
 		var existing models.MessageReceipt
-		result := db.DB.Where(
+		result := database.Where(
 			"message_id = ? AND user_id = ? AND receipt_type = ?",
 			messageID, receipt.UserID, receipt.ReceiptType,
 		).First(&existing)
 		if result.Error == nil {
 			if receipt.Timestamp.After(existing.Timestamp) {
 				existing.Timestamp = receipt.Timestamp
-				if err := db.DB.Save(&existing).Error; err != nil {
+				if err := database.Save(&existing).Error; err != nil {
 					return err
 				}
 			}
@@ -609,7 +698,7 @@ func storeGoogleMessagesReceipts(messageID uint, receipts []models.MessageReceip
 		}
 		receipt.ID = 0
 		receipt.MessageID = messageID
-		if err := db.DB.Create(&receipt).Error; err != nil {
+		if err := database.Create(&receipt).Error; err != nil {
 			return err
 		}
 	}

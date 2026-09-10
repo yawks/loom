@@ -867,11 +867,11 @@ export namespace models {
 	    name: string;
 	    launchUrl: string;
 	    origin: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationApplication(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -1531,3 +1531,4 @@ export namespace time {
 	}
 
 }
+

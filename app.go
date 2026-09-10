@@ -4629,8 +4629,25 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 		query = query.Where("provider_instance_id = ?", conversationAccount.ProviderInstanceID)
 	}
 	if err := query.Order("updated_at DESC").First(&account).Error; err != nil {
+		if provider := a.getProviderForConversation(conversationID); conversationAccount.ID != 0 && provider != nil {
+			if cached, ok := provider.(core.PersistedContactProfileProvider); ok && cached.UsesPersistedContactProfiles() {
+				// Some protocols persist a direct chat as the linked account while
+				// messages identify its participant separately. The provider has
+				// declared the conversation account to be the local profile cache.
+				account = conversationAccount
+			} else if userID != conversationAccount.UserID && userID != "" {
+				if richer, ok := provider.(interface {
+					GetContactProfile(string) (models.ContactProfile, error)
+				}); ok {
+					if remote, remoteErr := richer.GetContactProfile(userID); remoteErr == nil {
+						mergeContactProfile(&profile, remote)
+					}
+				}
+				return profile, nil
+			}
+		}
 		// Direct conversations often use the account itself as their participant.
-		if conversationAccount.ID == 0 || (userID != conversationAccount.UserID && userID != "") {
+		if account.ID == 0 && (conversationAccount.ID == 0 || (userID != conversationAccount.UserID && userID != "")) {
 			if provider := a.getProviderForConversation(conversationID); provider != nil {
 				if richer, ok := provider.(interface {
 					GetContactProfile(string) (models.ContactProfile, error)
@@ -4642,7 +4659,9 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 			}
 			return profile, nil
 		}
-		account = conversationAccount
+		if account.ID == 0 {
+			account = conversationAccount
+		}
 	}
 
 	profile.DisplayName = account.Username
@@ -4682,6 +4701,9 @@ func (a *App) GetContactProfile(conversationID, userID string) (models.ContactPr
 		}
 	}
 	if provider := a.getProviderForConversation(conversationID); provider != nil {
+		if cached, ok := provider.(core.PersistedContactProfileProvider); ok && cached.UsesPersistedContactProfiles() {
+			return profile, nil
+		}
 		if richer, ok := provider.(interface {
 			GetContactProfile(string) (models.ContactProfile, error)
 		}); ok {
