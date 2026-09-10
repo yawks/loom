@@ -428,10 +428,11 @@ func (p *SlackProvider) handleRTMMessageChanged(channel, msgTimestamp, newText s
 		return
 	}
 
-	normalizedConvID := p.normalizeDMConversationID(channel)
+	instanceID := p.getInstanceId()
+	normalizedConvID := core.BuildConvID(instanceID, p.normalizeDMConversationID(channel))
 
 	var existingMsg models.Message
-	if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", msgTimestamp, normalizedConvID).First(&existingMsg).Error; err != nil {
+	if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_msg_id = ? AND protocol_conv_id = ?", msgTimestamp, normalizedConvID).First(&existingMsg).Error; err != nil {
 		p.log("SlackProvider.handleRTMMessageChanged: message %s not found in DB, skipping\n", msgTimestamp)
 		return
 	}
@@ -716,10 +717,12 @@ func (p *SlackProvider) handleRTMReactionAddedEvent(ev *slack.ReactionAddedEvent
 
 	// Update reaction in database
 	if db.DB != nil {
+		instanceID := p.getInstanceId()
+		conversationID := core.BuildConvID(instanceID, p.normalizeDMConversationID(ev.Item.Channel))
 		// Find the message
 		var message models.Message
-		if err := db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?",
-			ev.Item.Channel, ev.Item.Timestamp).
+		if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_conv_id = ? AND protocol_msg_id = ?",
+			conversationID, ev.Item.Timestamp).
 			Preload("Reactions").
 			First(&message).Error; err == nil {
 
@@ -749,7 +752,7 @@ func (p *SlackProvider) handleRTMReactionAddedEvent(ev *slack.ReactionAddedEvent
 					// Emit event to update frontend
 					select {
 					case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
-						ConversationID: ev.Item.Channel,
+						ConversationID: conversationID,
 						MessageID:      ev.Item.Timestamp,
 						UserID:         ev.User,
 						Emoji:          ":" + ev.Reaction + ":",
@@ -776,10 +779,12 @@ func (p *SlackProvider) handleRTMReactionRemovedEvent(ev *slack.ReactionRemovedE
 
 	// Update reaction in database
 	if db.DB != nil {
+		instanceID := p.getInstanceId()
+		conversationID := core.BuildConvID(instanceID, p.normalizeDMConversationID(ev.Item.Channel))
 		// Find the message
 		var message models.Message
-		if err := db.DB.Where("protocol_conv_id = ? AND protocol_msg_id = ?",
-			ev.Item.Channel, ev.Item.Timestamp).
+		if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_conv_id = ? AND protocol_msg_id = ?",
+			conversationID, ev.Item.Timestamp).
 			Preload("Reactions").
 			First(&message).Error; err == nil {
 
@@ -795,7 +800,7 @@ func (p *SlackProvider) handleRTMReactionRemovedEvent(ev *slack.ReactionRemovedE
 						// Emit event to update frontend
 						select {
 						case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
-							ConversationID: ev.Item.Channel,
+							ConversationID: conversationID,
 							MessageID:      ev.Item.Timestamp,
 							UserID:         ev.User,
 							Emoji:          emojiWithColons,

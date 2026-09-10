@@ -82,6 +82,47 @@ type slackConversationSyncRow struct {
 	MessageCount   int64
 }
 
+const (
+	slackModeCompatible = "compatible"
+	slackModeOfficial   = "official"
+)
+
+func slackConnectionCredentials(config core.ProviderConfig) (mode, apiToken, appToken string, err error) {
+	mode, _ = config.GetString("slack_mode")
+	if mode == "" {
+		mode = slackModeCompatible
+	}
+	if mode != slackModeCompatible && mode != slackModeOfficial {
+		return "", "", "", fmt.Errorf("unsupported Slack connection mode %q", mode)
+	}
+	if mode == slackModeOfficial {
+		apiToken, _ = config.GetString("token")
+		// Compatibility with configurations saved by the first version of the
+		// official-mode settings. Keep accepting the temporary key and migrate it
+		// in memory when no shared OAuth token has been stored yet.
+		if apiToken == "" {
+			apiToken, _ = config.GetString("official_user_token")
+			if apiToken != "" {
+				config["token"] = apiToken
+			}
+		}
+		appToken, _ = config.GetString("app_token")
+		if !strings.HasPrefix(apiToken, "xoxp-") {
+			return "", "", "", fmt.Errorf("official Slack mode requires a user OAuth token starting with xoxp-")
+		}
+		if !strings.HasPrefix(appToken, "xapp-") {
+			return "", "", "", fmt.Errorf("official Slack mode requires an app-level token starting with xapp-")
+		}
+		return mode, apiToken, appToken, nil
+	}
+	compatibleAuthMode, _ := config.GetString("compatible_auth_mode")
+	if compatibleAuthMode == "browser" {
+		return mode, "", "", nil
+	}
+	apiToken, _ = config.GetString("token")
+	return mode, apiToken, "", nil
+}
+
 // cookieTransport injects the d cookie into requests
 type cookieTransport struct {
 	Transport http.RoundTripper
@@ -216,18 +257,26 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 	p.log("SlackProvider.SetConfig: applying config\n")
 	fmt.Printf("SlackProvider.SetConfig: getting token and d_cookie\n")
 
-	token, _ := config.GetString("token")
+	mode, token, appToken, credentialErr := slackConnectionCredentials(config)
+	if credentialErr != nil {
+		return credentialErr
+	}
 	dCookie, _ := config.GetString("d_cookie")
+	if mode == slackModeOfficial {
+		// Browser-session cookies belong to the compatible authentication path and
+		// must never be attached to official OAuth Web API requests.
+		dCookie = ""
+	}
 
 	// A manual token in the config takes priority over the browser-auth session.
 	// This lets the user switch from xoxc (browser) to xoxp/xoxb without being
 	// silently overridden by the stale session file.
-	if token != "" {
+	if mode == slackModeCompatible && token != "" {
 		if p.session != nil {
 			p.session = nil
 			_ = os.Remove(p.sessionPath())
 		}
-	} else if p.session != nil {
+	} else if mode == slackModeCompatible && p.session != nil {
 		// No manual token provided → fall back to browser session.
 		token = p.session.Token
 		dCookie = p.session.DCookie
@@ -256,6 +305,9 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 		opts := []slack.Option{
 			slack.OptionDebug(false),
 			slack.OptionLog(p.logger),
+		}
+		if appToken != "" {
+			opts = append(opts, slack.OptionAppLevelToken(appToken))
 		}
 
 		apiHTTPClient := &http.Client{Timeout: 30 * time.Second}
@@ -300,6 +352,10 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 func (p *SlackProvider) IsAuthenticated() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	mode, token, _, err := slackConnectionCredentials(p.config)
+	if err == nil && mode == slackModeOfficial {
+		return token != ""
+	}
 	if p.session != nil {
 		return true
 	}
@@ -835,10 +891,23 @@ func (p *SlackProvider) Connect() error {
 	connectionCtx, connectionCancel := context.WithCancel(context.Background())
 	p.connectionCancel = connectionCancel
 
-	// Determine connection mode based on token type
-	token, _ := p.config.GetString("token")
+	// The official mode uses the user OAuth token for Web API calls and the
+	// app-level token already installed on p.client for Socket Mode. The
+	// compatible credentials remain stored and can be selected again later.
+	mode, token, _, credentialErr := slackConnectionCredentials(p.config)
+	if credentialErr != nil {
+		return credentialErr
+	}
 
-	if strings.HasPrefix(token, "xoxp") {
+	if mode == slackModeOfficial {
+		p.log("SlackProvider.Connect: official Slack app mode, initializing Socket Mode\n")
+		p.socketClient = socketmode.New(
+			p.client,
+			socketmode.OptionDebug(false),
+			socketmode.OptionLog(p.logger),
+		)
+		go p.startSocketMode(connectionCtx, p.socketClient)
+	} else if strings.HasPrefix(token, "xoxp") {
 		// OAuth user tokens may use RTM when the workspace grants rtm:stream.
 		p.log("SlackProvider.Connect: Detected user token (%s...), initializing RTM client\n", token[:5])
 
@@ -1363,48 +1432,42 @@ func (p *SlackProvider) checkStatusChanges() {
 // Disconnect disconnects from the Slack API.
 func (p *SlackProvider) Disconnect() error {
 	p.log("Slack: Disconnecting...\n")
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	// Close stopChan to signal goroutines to stop
+	// Detach connection state while holding the provider lock, then stop the
+	// transports after releasing it. slack-go's RTM disconnect can wait for its
+	// connection loop, whose callbacks also read p.mu; calling it under this lock
+	// therefore deadlocks when switching authentication modes during a sync.
+	p.mu.Lock()
+	stopChan := p.stopChan
 	select {
-	case <-p.stopChan:
+	case <-stopChan:
 		// Already closed
 	default:
-		close(p.stopChan)
+		close(stopChan)
 	}
-	if p.eventStreamCancel != nil {
-		p.eventStreamCancel()
-		p.eventStreamCancel = nil
-		p.eventStreamCtx = nil
-		p.eventStreamStarted = false
-	}
-	if p.connectionCancel != nil {
-		p.connectionCancel()
-		p.connectionCancel = nil
-	}
-
-	// Disconnect Socket Mode if active
-	if p.socketClient != nil {
-		// socketmode.Client doesn't have a direct Close/Stop method exposed easily
-		// but closing the context (if we used RunContext) or relying on stopChan logic helper
-		// mostly we just stop reading events.
-		p.socketClient = nil
-	}
-
-	// Disconnect RTM if active
-	if p.rtmClient != nil {
-		p.rtmClient.Disconnect()
-		p.rtmClient = nil
-	}
-
-	// Re-create stopChan for next connection
+	eventStreamCancel := p.eventStreamCancel
+	connectionCancel := p.connectionCancel
+	rtmClient := p.rtmClient
+	p.eventStreamCancel = nil
+	p.eventStreamCtx = nil
+	p.eventStreamStarted = false
+	p.connectionCancel = nil
+	p.socketClient = nil
+	p.rtmClient = nil
 	p.stopChan = make(chan struct{})
+	p.mu.Unlock()
 
-	// Clear status cache
-	p.statusCacheMu.Lock()
-	p.statusCache = make(map[string]userStatus)
-	p.statusCacheMu.Unlock()
+	if eventStreamCancel != nil {
+		eventStreamCancel()
+	}
+	if connectionCancel != nil {
+		connectionCancel()
+	}
+	if rtmClient != nil {
+		if err := rtmClient.Disconnect(); err != nil && !errors.Is(err, slack.ErrAlreadyDisconnected) {
+			p.log("SlackProvider.Disconnect: RTM disconnect returned: %v\n", err)
+		}
+	}
 
 	p.log("Slack: Disconnected\n")
 	return nil

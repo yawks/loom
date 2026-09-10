@@ -115,6 +115,31 @@ func TestCallLogOutcomeAcceptedElsewhereIsConnected(t *testing.T) {
 	}
 }
 
+func TestCompletedCallDurationFallsBackToObservedTime(t *testing.T) {
+	serverTimestamp := time.Date(2026, time.September, 10, 13, 7, 13, 0, time.UTC)
+	observedAccept := serverTimestamp.Add(250 * time.Millisecond)
+	duration := completedCallDuration(&activeCallInfo{
+		AcceptTime:         serverTimestamp,
+		AcceptObservedTime: observedAccept,
+	}, serverTimestamp, observedAccept.Add(8*time.Second))
+
+	if duration == nil || *duration != 8 {
+		t.Fatalf("observed duration = %v, want 8 seconds", duration)
+	}
+}
+
+func TestCompletedCallDurationDoesNotPersistFalseZero(t *testing.T) {
+	serverTimestamp := time.Date(2026, time.September, 10, 13, 7, 13, 0, time.UTC)
+	duration := completedCallDuration(&activeCallInfo{
+		AcceptTime:         serverTimestamp,
+		AcceptObservedTime: serverTimestamp,
+	}, serverTimestamp, serverTimestamp.Add(500*time.Millisecond))
+
+	if duration != nil {
+		t.Fatalf("sub-second duration = %v, want nil", duration)
+	}
+}
+
 func TestAppStateCallLogCreatesOfflineCallSummary(t *testing.T) {
 	previousDB := db.DB
 	t.Cleanup(func() { db.DB = previousDB })

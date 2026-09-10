@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { GetConfiguredProviders, SyncAllProviders } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, GetSyncingProviderIDs, SyncAllProviders } from "../../wailsjs/go/main/App";
 import { AlertCircle, AlertTriangle, Check, Layers, RefreshCw, Settings } from "lucide-react";
 import { ProtocolIcon } from "./ProtocolIcon";
 import { cn } from "@/lib/utils";
@@ -186,6 +186,38 @@ export function ProviderFilterBar({
       if (unsubscribe) unsubscribe();
     };
   }, [setSyncError, clearSyncError]);
+
+  // Events are the fast path, but the backend snapshot is authoritative. A
+  // provider can be replaced while its final event is queued on the previous
+  // stream; reconcile while a ring is visible so it can never spin forever.
+  useEffect(() => {
+    if (syncingProviders.size === 0) return;
+    const reconcile = async () => {
+      try {
+        const active = new Set((await GetSyncingProviderIDs()) ?? []);
+        setSyncingProviders(current => {
+          const next = new Set([...current].filter(id => active.has(id)));
+          return next.size === current.size && [...next].every(id => current.has(id)) ? current : next;
+        });
+        setSyncStatuses(current => {
+          const next = { ...current };
+          let changed = false;
+          for (const id of Object.keys(next)) {
+            if (!active.has(id) && next[id].status !== "error" && next[id].status !== "needs_reauth") {
+              delete next[id];
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        });
+      } catch (error) {
+        console.error("Failed to reconcile provider synchronization state:", error);
+      }
+    };
+    void reconcile();
+    const interval = window.setInterval(() => void reconcile(), 2000);
+    return () => window.clearInterval(interval);
+  }, [syncingProviders.size]);
 
   const syncAll = useCallback(async () => {
     if (configuredProviders.length === 0 || syncingProviders.size > 0) return;

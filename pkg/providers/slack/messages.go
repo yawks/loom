@@ -791,9 +791,10 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	selfNameForCheck, _ := p.resolveUserInfo(selfUserIDForCheck)
 
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	if p.client == nil {
+	if client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
@@ -804,7 +805,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	// to get the actual channel ID (which starts with "D")
 	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
 		// Open the DM conversation with this user to get the channel ID
-		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+		channel, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
 			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
@@ -819,7 +820,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	} else if len(rawConvID) > 0 && rawConvID[0] == 'D' {
 		// For DM channel IDs, ensure the conversation is open
 		// This is required before we can retrieve message history
-		_, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+		_, _, _, err := client.OpenConversation(&slack.OpenConversationParameters{
 			ChannelID: rawConvID,
 		})
 		if err != nil {
@@ -850,7 +851,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 			sinceTimestamp.Format(time.RFC3339Nano), params.Oldest)
 	}
 
-	history, err := p.client.GetConversationHistory(params)
+	history, err := client.GetConversationHistory(params)
 	if err != nil {
 		p.log("SlackProvider.GetConversationHistory: API call failed for %s: %v\n", conversationID, err)
 		return nil, err
@@ -884,9 +885,10 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 		}
 
 		// Detect corruption: a non-self sender resolved to our own name via the DB cache.
-		// p.client is stable here (we hold the read lock), so we call the API directly.
+		// Use the client snapshot taken above. Mode switches replace the provider
+		// instance rather than mutating this client in place.
 		if !convertedMsg.IsFromMe && selfNameForCheck != "" && convertedMsg.SenderName == selfNameForCheck && convertedMsg.SenderID != "" {
-			if user, err := p.client.GetUserInfo(convertedMsg.SenderID); err == nil && user != nil {
+			if user, err := client.GetUserInfo(convertedMsg.SenderID); err == nil && user != nil {
 				name := user.RealName
 				if name == "" {
 					name = user.Profile.DisplayName
@@ -957,9 +959,10 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 // Pass an optional oldest time to fetch only replies strictly after that timestamp.
 func (p *SlackProvider) getThreadReplies(channelID string, threadTS string, oldest ...time.Time) ([]models.Message, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	if p.client == nil {
+	if client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 
@@ -981,7 +984,7 @@ func (p *SlackProvider) getThreadReplies(channelID string, threadTS string, olde
 			params.Cursor = cursor
 		}
 
-		messages, hasMore, nextCursor, err := p.client.GetConversationReplies(params)
+		messages, hasMore, nextCursor, err := client.GetConversationReplies(params)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get thread replies: %w", err)
 		}

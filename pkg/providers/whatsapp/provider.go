@@ -116,16 +116,20 @@ type pendingEditInfo struct {
 }
 
 type activeCallInfo struct {
-	CallID      string
-	StartTime   time.Time
-	AcceptTime  time.Time
-	IsAccepted  bool
-	IsRejected  bool
-	IsOutgoing  bool
-	IsGroup     bool
-	GroupJID    string
-	CreatorJID  string
-	CallMessage *models.Message
+	CallID     string
+	StartTime  time.Time
+	AcceptTime time.Time
+	// AcceptObservedTime is the local time at which Loom received the accept
+	// event. WhatsApp may give accept and terminate events the same (rounded or
+	// stale) server timestamp, so the observed interval is a necessary fallback.
+	AcceptObservedTime time.Time
+	IsAccepted         bool
+	IsRejected         bool
+	IsOutgoing         bool
+	IsGroup            bool
+	GroupJID           string
+	CreatorJID         string
+	CallMessage        *models.Message
 }
 
 func (w *WhatsAppProvider) log(format string, args ...interface{}) {

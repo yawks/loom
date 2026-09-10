@@ -114,3 +114,23 @@ func TestHandleSocketMessageEventDeletesExistingMessage(t *testing.T) {
 	})
 	assertSlackMessageDeleted(t, provider, message)
 }
+
+func TestHandleSocketMessageEventUpdatesExistingMessage(t *testing.T) {
+	provider, message := setupSlackMessageDeletionTest(t)
+	provider.handleMessageEvent(&slackevents.MessageEvent{
+		Channel: "C1",
+		SubType: "message_changed",
+		Message: &goslack.Msg{
+			Timestamp: message.ProtocolMsgID,
+			Text:      "edited through Events API",
+		},
+	})
+
+	var stored models.Message
+	if err := db.DB.First(&stored, message.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !stored.IsEdited || stored.Body != "edited through Events API" {
+		t.Fatalf("socket edit was not persisted: %+v", stored)
+	}
+}

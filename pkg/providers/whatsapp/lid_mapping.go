@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/models"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm/clause"
@@ -76,6 +77,12 @@ func (w *WhatsAppProvider) loadLIDMappingsFromDB() error {
 	w.lidToJIDMu.Lock()
 
 	for _, mapping := range mappings {
+		// Older typing heuristics could accidentally persist a namespaced
+		// conversation ID as the JID. It is not a participant identity and must
+		// never be loaded back as an authoritative LID mapping.
+		if strings.Contains(mapping.JID, "::") {
+			continue
+		}
 		w.lidToJIDMap[mapping.LID] = mapping.JID
 	}
 	w.lidToJIDMu.Unlock()
@@ -100,10 +107,10 @@ func (w *WhatsAppProvider) canonicalizeAllPersistedReactionAuthors() error {
 		UPDATE reactions
 		SET user_id = (
 			SELECT jid FROM lid_mappings
-			WHERE lid = reactions.user_id AND protocol = 'whatsapp'
+			WHERE lid = reactions.user_id AND protocol = 'whatsapp' AND jid NOT LIKE '%::%'
 		), updated_at = ?
 		WHERE user_id IN (
-			SELECT lid FROM lid_mappings WHERE protocol = 'whatsapp'
+			SELECT lid FROM lid_mappings WHERE protocol = 'whatsapp' AND jid NOT LIKE '%::%'
 		)
 		AND message_id IN (
 			SELECT id FROM messages WHERE protocol_conv_id LIKE ?

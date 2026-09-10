@@ -1,4 +1,4 @@
-import { GetCurrentUserID, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNames, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
+import { GetCurrentUserID, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNamesForConversation, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -219,7 +219,7 @@ export function useMessageData(
         if (userIds.size === 0) return;
 
         const normalizedIds = Array.from(userIds);
-        const names = await GetParticipantNames(normalizedIds);
+        const names = await GetParticipantNamesForConversation(conversationId, normalizedIds);
         const namesMap = new Map<string, string>();
 
         // Store all entries from names object and their normalized variants
@@ -244,15 +244,14 @@ export function useMessageData(
           }
         });
 
-        // In a direct conversation, the message's scoped sender name is more
-        // authoritative than a global account lookup. Remote participant IDs
-        // are not guaranteed to be globally unique across provider instances.
-        const preferMessageSenderName = !isGroupFromProvider;
+        // Persisted profile names are canonical for this provider instance.
+        // Historical messages only fill gaps; they must not replace a resolved
+        // profile with varying push names from individual events.
         messages.forEach((msg) => {
           if (
             msg.senderId &&
             msg.senderName?.trim() &&
-            (preferMessageSenderName || !namesMap.has(msg.senderId))
+            !namesMap.has(msg.senderId)
           ) {
             namesMap.set(msg.senderId, msg.senderName);
           }

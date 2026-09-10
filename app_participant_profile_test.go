@@ -29,6 +29,9 @@ func TestPersistParticipantProfileIsScopedAndKeepsRichFields(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := persistParticipantProfile(models.ContactProfile{ProviderInstanceID: "work", UserID: "same-id", DisplayName: "Alice Updated"}); err != nil {
+		t.Fatal(err)
+	}
 
 	var rows []models.ParticipantProfile
 	if err := database.Order("provider_instance_id").Find(&rows).Error; err != nil {
@@ -42,7 +45,7 @@ func TestPersistParticipantProfileIsScopedAndKeepsRichFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := contactProfileFromParticipantCache(work)
-	if got.DisplayName != "Alice" || got.AvatarURL != "alice.png" || got.Company != "Example" || len(got.Emails) != 1 || len(got.PhoneNumbers) != 1 {
+	if got.DisplayName != "Alice Updated" || got.AvatarURL != "alice.png" || got.Company != "Example" || len(got.Emails) != 1 || len(got.PhoneNumbers) != 1 {
 		t.Fatalf("unexpected cached profile: %+v", got)
 	}
 }

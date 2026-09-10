@@ -415,7 +415,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		// Determine the real conversation ID
 		conversationID := chatJID.String()
-		userID := senderJID.String()
+		userID := w.NormalizeParticipantID(senderJID.String())
 
 		// For 1-on-1 chats, the Chat field in ChatPresence can be a LID
 		// In that case, the actual conversation ID should be the phone number JID of the other person
@@ -436,13 +436,16 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				if db.DB != nil {
 					var mapping models.LIDMapping
 					if err := db.DB.Where("lid = ? AND protocol = ?", chatJID.String(), "whatsapp").First(&mapping).Error; err == nil {
-						conversationID = mapping.JID
+						if parsed, parseErr := types.ParseJID(mapping.JID); parseErr == nil && !parsed.IsEmpty() {
+							conversationID = parsed.ToNonAD().String()
+						}
 						fmt.Printf("WhatsApp: Resolved LID %s to conversation ID %s from database\n", chatJID.String(), conversationID)
 
-						// Update cache for next time
-						w.lidToJIDMu.Lock()
-						w.lidToJIDMap[chatJID.String()] = conversationID
-						w.lidToJIDMu.Unlock()
+						if conversationID != chatJID.String() {
+							w.lidToJIDMu.Lock()
+							w.lidToJIDMap[chatJID.String()] = conversationID
+							w.lidToJIDMu.Unlock()
+						}
 					} else {
 						fmt.Printf("WhatsApp: LID %s not found in database: %v\n", chatJID.String(), err)
 					}
@@ -473,6 +476,13 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 							fmt.Printf("WhatsApp: Warning - Failed to save LID mapping: %v\n", err)
 						}
 					} else if senderJID.Server == "lid" {
+						// There is no reliable association between two unknown LIDs and a
+						// phone-number chat in this event. Guessing from the most recently
+						// active conversation can show one contact as typing in another.
+						// Wait for an authoritative mapping from message/group metadata.
+						fmt.Printf("WhatsApp: Skipping typing event with unresolved chat and sender LIDs (%s, %s)\n", chatJID.String(), senderJID.String())
+						return
+
 						// Both Chat and Sender are LIDs - this is tricky
 						// WhatsApp normalizes sender_lid in the XML to standard JID in MessageInfo
 						// but ChatPresence still uses LIDs for both fields
@@ -1073,7 +1083,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
 
 		callID := v.CallID
-		acceptTime := time.Now()
+		acceptObservedTime := time.Now()
+		acceptTime := acceptObservedTime
 		if !v.Timestamp.IsZero() {
 			acceptTime = v.Timestamp
 		}
@@ -1082,6 +1093,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if info, exists := w.activeCalls[callID]; exists {
 			info.IsAccepted = true
 			info.AcceptTime = acceptTime
+			info.AcceptObservedTime = acceptObservedTime
 		}
 		w.activeCallsMu.Unlock()
 
@@ -1207,7 +1219,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.mu.RUnlock()
 		}
 
-		callTimestamp := time.Now()
+		terminateObservedTime := time.Now()
+		callTimestamp := terminateObservedTime
 		if !v.Timestamp.IsZero() {
 			callTimestamp = v.Timestamp
 		}
@@ -1224,15 +1237,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			isAccepted = activeInfo.IsAccepted
 			isRejected = activeInfo.IsRejected
 			if isAccepted {
-				start := activeInfo.AcceptTime
-				if start.IsZero() {
-					start = activeInfo.StartTime
-				}
-				secs := int32(callTimestamp.Sub(start).Seconds())
-				if secs < 0 {
-					secs = 0
-				}
-				durationSecs = &secs
+				durationSecs = completedCallDuration(activeInfo, callTimestamp, terminateObservedTime)
 			}
 		} else if existingCallMessage != nil && existingCallMessage.CallOutcome == "CONNECTED" {
 			isAccepted = true
@@ -1386,6 +1391,33 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// Log other events for debugging
 		fmt.Printf("WhatsApp: Unhandled event type: %T\n", evt)
 	}
+}
+
+// completedCallDuration prefers WhatsApp's event timestamps, while retaining a
+// local observed-time fallback. Some companion-device events use the same
+// server timestamp for accept and terminate even though the call lasted several
+// seconds. A zero value is not a useful duration and would prevent the later
+// call-log summary from being represented accurately in the UI.
+func completedCallDuration(info *activeCallInfo, terminateTime, terminateObservedTime time.Time) *int32 {
+	var duration time.Duration
+	start := info.AcceptTime
+	if start.IsZero() {
+		start = info.StartTime
+	}
+	if !start.IsZero() && terminateTime.After(start) {
+		duration = terminateTime.Sub(start)
+	}
+	if !info.AcceptObservedTime.IsZero() && terminateObservedTime.After(info.AcceptObservedTime) {
+		observedDuration := terminateObservedTime.Sub(info.AcceptObservedTime)
+		if observedDuration > duration {
+			duration = observedDuration
+		}
+	}
+	secs := int32(duration / time.Second)
+	if secs <= 0 {
+		return nil
+	}
+	return &secs
 }
 
 func (w *WhatsAppProvider) syncOfflineCallLogs() {

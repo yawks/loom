@@ -24,6 +24,10 @@ func TestLoadLIDMappingsRepairsReactionsInOneInstanceOnly(t *testing.T) {
 	if err := database.Create(&models.LIDMapping{LID: lid, JID: jid, Protocol: "whatsapp", LastSeen: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
+	const invalidLID = "987654321@lid"
+	if err := database.Create(&models.LIDMapping{LID: invalidLID, JID: "whatsapp-a::33611111111@s.whatsapp.net", Protocol: "whatsapp", LastSeen: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
 	messages := []models.Message{
 		{ProtocolConvID: "whatsapp-a::conversation", ProtocolMsgID: "message-a", Timestamp: time.Now()},
 		{ProtocolConvID: "whatsapp-b::conversation", ProtocolMsgID: "message-b", Timestamp: time.Now()},
@@ -47,6 +51,9 @@ func TestLoadLIDMappingsRepairsReactionsInOneInstanceOnly(t *testing.T) {
 	provider.config["_instance_id"] = "whatsapp-a"
 	if err := provider.loadLIDMappingsFromDB(); err != nil {
 		t.Fatal(err)
+	}
+	if _, loaded := provider.lidToJIDMap[invalidLID]; loaded {
+		t.Fatal("namespaced conversation ID was loaded as a participant JID")
 	}
 
 	var stored []models.Reaction

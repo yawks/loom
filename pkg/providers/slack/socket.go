@@ -29,7 +29,17 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 			case socketmode.EventTypeConnected:
 				p.log("SlackProvider.startSocketMode: connected to Slack Socket Mode\n")
 
+			case socketmode.EventTypeHello:
+				p.log("SlackProvider.startSocketMode: Slack hello received; connection is ready for Events API envelopes\n")
+
+			case socketmode.EventTypeConnectionError:
+				p.log("SlackProvider.startSocketMode: connection error: %v\n", evt.Data)
+
+			case socketmode.EventTypeInvalidAuth:
+				p.log("SlackProvider.startSocketMode: invalid app-level token\n")
+
 			case socketmode.EventTypeEventsAPI:
+				p.log("SlackProvider.startSocketMode: Events API envelope received\n")
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
 					p.log("SlackProvider.startSocketMode: ignored valid event (type mismatch)\n")
@@ -42,17 +52,28 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 				switch eventsAPIEvent.Type {
 				case slackevents.CallbackEvent:
 					innerEvent := eventsAPIEvent.InnerEvent
+					p.log("SlackProvider.startSocketMode: callback inner event type=%T\n", innerEvent.Data)
 					switch ev := innerEvent.Data.(type) {
 					case *slackevents.MessageEvent:
 						p.log("SlackProvider.startSocketMode: received message event\n")
 						p.handleMessageEvent(ev)
+					case *slackevents.ReactionAddedEvent:
+						p.handleRTMReactionAddedEvent(&slack.ReactionAddedEvent{
+							User: ev.User, Reaction: ev.Reaction,
+							Item: slack.ReactionItem{Channel: ev.Item.Channel, Timestamp: ev.Item.Timestamp},
+						})
+					case *slackevents.ReactionRemovedEvent:
+						p.handleRTMReactionRemovedEvent(&slack.ReactionRemovedEvent{
+							User: ev.User, Reaction: ev.Reaction,
+							Item: slack.ReactionItem{Channel: ev.Item.Channel, Timestamp: ev.Item.Timestamp},
+						})
 					default:
 						// p.log("SlackProvider.startSocketMode: ignored inner event type: %T\n", ev)
 					}
 				}
 
 			default:
-				// p.log("SlackProvider.startSocketMode: ignored event type: %s\n", evt.Type)
+				p.log("SlackProvider.startSocketMode: ignored socket event type=%s\n", evt.Type)
 			}
 		}
 		p.log("SlackProvider.startSocketMode: event loop ended\n")
@@ -77,16 +98,20 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		return
 	}
 
-	if ev.SubType == "message_changed" && ev.Message != nil && ev.Message.Timestamp != "" && isSlackHuddleSubtype(ev.Message.SubType) {
-		ctx, cancel := huddleRoomContext()
-		room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.Message.Timestamp)
-		cancel()
-		if err == nil && p.handleHuddleRoomUpdate(ev.Channel, ev.Message.Timestamp, room) {
-			return
+	if ev.SubType == "message_changed" && ev.Message != nil && ev.Message.Timestamp != "" {
+		if isSlackHuddleSubtype(ev.Message.SubType) {
+			ctx, cancel := huddleRoomContext()
+			room, err := p.fetchHuddleRoom(ctx, ev.Channel, ev.Message.Timestamp)
+			cancel()
+			if err == nil && p.handleHuddleRoomUpdate(ev.Channel, ev.Message.Timestamp, room) {
+				return
+			}
+			if err != nil {
+				p.log("SlackProvider: failed to fetch updated socket huddle %s: %v\n", ev.Message.Timestamp, err)
+			}
 		}
-		if err != nil {
-			p.log("SlackProvider: failed to fetch updated socket huddle %s: %v\n", ev.Message.Timestamp, err)
-		}
+		p.handleRTMMessageChanged(ev.Channel, ev.Message.Timestamp, ev.Message.Text)
+		return
 	}
 	// Skip messages from the bot itself to avoid loops (though the UI should handle duplicates ideally)
 	// User ID isn't directly on the provider, we might want to store it.
@@ -107,7 +132,11 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	// Quick check using RTM info if available
 	p.mu.RLock()
 	rtmClient := p.rtmClient
+	selfUserID := p.selfUserID
 	p.mu.RUnlock()
+	if selfUserID != "" && selfUserID == ev.User {
+		isFromMe = true
+	}
 	if rtmClient != nil {
 		info := rtmClient.GetInfo()
 		if info != nil && info.User.ID == ev.User {

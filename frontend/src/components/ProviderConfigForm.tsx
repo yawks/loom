@@ -70,7 +70,9 @@ export function ProviderConfigForm({
       const initial =
         (initialValues && typeof initialValues[key] === "string"
           ? (initialValues[key] as string)
-          : undefined) ??
+          : key === "token" && typeof initialValues?.official_user_token === "string"
+            ? initialValues.official_user_token
+            : undefined) ??
         field.default ??
         "";
       defaults[key] = initial;
@@ -361,7 +363,7 @@ export function ProviderConfigForm({
           <CardContent className="space-y-4">
             {Object.entries(schema).filter(([key]) => {
               // Slack fields handled by the dedicated Slack card below
-              if (provider.id === "slack" && ["token", "d_cookie", "workspace_url"].includes(key)) return false;
+              if (provider.id === "slack" && ["slack_mode", "compatible_auth_mode", "token", "d_cookie", "workspace_url", "app_token"].includes(key)) return false;
               return true;
             }).map(([key, field]) => (
               <div key={key} className="space-y-1.5">
@@ -619,11 +621,36 @@ export function ProviderConfigForm({
       {provider.id === "slack" && (
         <Card>
           <CardHeader>
-            <CardTitle>{t("slack_browser_login_title")}</CardTitle>
-            <CardDescription>{t("slack_browser_login_description")}</CardDescription>
+            <CardTitle>{t("slack_mode_title")}</CardTitle>
+            <CardDescription>{t("slack_mode_description")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={(values.slack_mode || "compatible") === "compatible" ? "default" : "outline"}
+                onClick={() => handleChange("slack_mode", "compatible")}
+                disabled={isSaving}
+              >
+                {t("slack_mode_compatible")}
+              </Button>
+              <Button
+                type="button"
+                variant={values.slack_mode === "official" ? "default" : "outline"}
+                onClick={() => handleChange("slack_mode", "official")}
+                disabled={isSaving}
+              >
+                {t("slack_mode_official")}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {values.slack_mode === "official" ? t("slack_mode_official_description") : t("slack_mode_compatible_description")}
+            </p>
+
+            {values.slack_mode !== "official" && (<>
             <div className="space-y-2">
+              <h3 className="text-sm font-medium">{t("slack_browser_login_title")}</h3>
+              <p className="text-xs text-muted-foreground">{t("slack_browser_login_description")}</p>
               <label className="text-sm font-medium">{t("slack_workspace_url_label")}</label>
               <Input
                 placeholder={t("slack_workspace_url_placeholder")}
@@ -639,11 +666,15 @@ export function ProviderConfigForm({
               onClick={async () => {
                 setIsSaving(true);
                 try {
-                  let instanceID = provider.instanceId || currentInstanceID;
-                  if (!instanceID) {
-                    instanceID = await CreateProviderWithOptions(provider.id, {}, instanceName, "", true);
-                    setCurrentInstanceID(instanceID);
+                  const config: Record<string, string> = {};
+                  for (const [key, value] of Object.entries(values)) {
+                    if (value && value.trim() !== "") config[key] = value.trim();
                   }
+                  config.slack_mode = "compatible";
+                  config.compatible_auth_mode = "browser";
+                  const existingInstanceID = provider.instanceId || currentInstanceID || "";
+                  const instanceID = await CreateProviderWithOptions(provider.id, config, instanceName, existingInstanceID, true);
+                  setCurrentInstanceID(instanceID);
                   await AutoLoginSlack(instanceID, values.workspace_url?.trim() ?? "");
                   await onRefresh();
                   SyncProvider(instanceID).catch((error) => console.error("Failed to sync Slack:", error));
@@ -712,6 +743,8 @@ export function ProviderConfigForm({
                           filteredValues[key] = value;
                         }
                       }
+                      filteredValues.slack_mode = "compatible";
+                      filteredValues.compatible_auth_mode = "token";
                       const existingInstanceID = provider.instanceId || currentInstanceID || "";
                       const instanceID = await CreateProvider(provider.id, filteredValues, instanceName, existingInstanceID);
                       setCurrentInstanceID(instanceID);
@@ -730,6 +763,71 @@ export function ProviderConfigForm({
                 </Button>
               </div>
             </details>
+            </>)}
+
+            {values.slack_mode === "official" && (
+              <div className="space-y-4 border-t pt-4">
+                <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground">{t("slack_official_setup_title")}</p>
+                  <ol className="mt-2 list-decimal space-y-1 pl-4">
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_official_setup_step1").replace("<a>", '<a href="https://api.slack.com/apps" target="_blank" class="underline text-foreground">').replace("</a>", "</a>") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_official_setup_step2") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_official_setup_step3") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_official_setup_step4") }} />
+                    <li dangerouslySetInnerHTML={{ __html: t("slack_official_setup_step5") }} />
+                  </ol>
+                </div>
+                {(["token", "app_token"] as const).map((key) => {
+                  const field = schema[key];
+                  if (!field) return null;
+                  const title = key === "token" ? t("slack_user_oauth_token_label") : field.title ?? key;
+                  const description = key === "token" ? t("slack_user_oauth_token_description") : field.description;
+                  return (
+                    <div key={key} className="space-y-1">
+                      <label className="text-sm font-medium">{title}</label>
+                      <Input
+                        type="password"
+                        placeholder={description}
+                        value={values[key] ?? ""}
+                        onChange={(event) => handleChange(key, event.target.value)}
+                        disabled={isSaving}
+                      />
+                      <p className="text-xs text-muted-foreground">{description}</p>
+                    </div>
+                  );
+                })}
+                <p className="text-xs text-muted-foreground">{t("slack_shared_oauth_token_hint")}</p>
+                <Button
+                  className="w-full"
+                  disabled={isSaving || !values.token?.startsWith("xoxp-") || !values.app_token?.startsWith("xapp-")}
+                  onClick={async () => {
+                    setIsSaving(true);
+                    try {
+                      const config: Record<string, string> = {};
+                      for (const [key, value] of Object.entries(values)) {
+                        if (value && value.trim() !== "") config[key] = value.trim();
+                      }
+                      config.slack_mode = "official";
+                      const existingInstanceID = provider.instanceId || currentInstanceID || "";
+                      const instanceID = await CreateProvider(provider.id, config, instanceName, existingInstanceID);
+                      setCurrentInstanceID(instanceID);
+                      await ConnectProvider(instanceID);
+                      await onRefresh();
+                      SyncProvider(instanceID).catch((error) => console.error("Failed to sync official Slack provider:", error));
+                      showToast(t("slack_official_connected"), "success");
+                      if (onClose) onClose();
+                    } catch (error) {
+                      console.error("Failed to connect official Slack app:", error);
+                      showToast(String(error) || t("slack_connect_error"), "error");
+                    } finally {
+                      setIsSaving(false);
+                    }
+                  }}
+                >
+                  {isSaving ? t("connecting") : t("slack_official_connect_button")}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

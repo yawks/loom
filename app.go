@@ -650,6 +650,17 @@ func (a *App) startup(ctx context.Context) {
 		ConfigSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
+				"slack_mode": map[string]interface{}{
+					"type":        "string",
+					"title":       "Connection mode",
+					"description": "compatible uses the existing Slack credentials; official uses a Slack app with OAuth and Socket Mode",
+					"default":     "compatible",
+				},
+				"compatible_auth_mode": map[string]interface{}{
+					"type":        "string",
+					"title":       "Compatible authentication mode",
+					"description": "Internal selection between browser-session and manual-token compatible authentication.",
+				},
 				"workspace_url": map[string]interface{}{
 					"type":        "string",
 					"title":       "Workspace URL",
@@ -664,6 +675,12 @@ func (a *App) startup(ctx context.Context) {
 					"type":        "string",
 					"title":       "d Cookie (advanced)",
 					"description": "Required only for manual Client Token (xoxc-) authentication.",
+				},
+				"app_token": map[string]interface{}{
+					"type":        "string",
+					"format":      "password",
+					"title":       "App-Level Token",
+					"description": "App-level token (xapp-) with connections:write, used by Socket Mode.",
 				},
 				"sync_days": map[string]interface{}{
 					"type":        "number",
@@ -1054,6 +1071,18 @@ func (a *App) syncProviderHistory(instanceID string, since time.Time, reason str
 				db.DB.Model(&models.ProviderConfiguration{}).Where("instance_id = ?", instanceID).Update("last_sync_at", time.Now())
 			}
 			a.clearProviderError(instanceID)
+			// Providers normally emit their own detailed terminal status. Also emit
+			// one from the orchestrator after SyncHistory has actually returned: an
+			// event listener can be replaced while switching credentials, and in that
+			// case the provider's final event may remain on the old channel forever.
+			// Duplicate completed events are harmless and make the backend completion
+			// watermark authoritative for views mounted late.
+			a.emitSyncStatusCoordinated(core.SyncStatusEvent{
+				InstanceID: instanceID,
+				Status:     core.SyncStatusCompleted,
+				Message:    "Synchronization completed",
+				Progress:   100,
+			})
 			return
 		} else {
 			lastErr = syncErr
@@ -1355,6 +1384,16 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 						runtime.EventsEmit(a.ctx, "reaction", string(reactionJSON))
 					}
 				case core.TypingEvent:
+					if db.DB != nil && e.InstanceID != "" && e.UserID != "" {
+						var cached models.ParticipantProfile
+						if err := db.DB.Where("provider_instance_id = ? AND user_id = ?", e.InstanceID, e.UserID).First(&cached).Error; err == nil && cached.DisplayName != "" {
+							e.UserName = cached.DisplayName
+						} else if e.UserName != "" && e.UserName != e.UserID && e.UserName != e.ConversationID {
+							_ = persistParticipantProfile(models.ContactProfile{
+								ProviderInstanceID: e.InstanceID, UserID: e.UserID, DisplayName: e.UserName,
+							})
+						}
+					}
 					typingJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "typing", string(typingJSON))
@@ -2496,13 +2535,50 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 
 		nameMap[instID] = make(map[string]string)
 		avatarMap[instID] = make(map[string]string)
+		var profiles []models.ParticipantProfile
+		if profileErr := db.DB.Where("provider_instance_id = ? AND user_id IN ?", instID, userIDList).
+			Find(&profiles).Error; profileErr == nil {
+			for _, profile := range profiles {
+				if profile.DisplayName != "" {
+					nameMap[instID][profile.UserID] = profile.DisplayName
+				}
+				if profile.AvatarURL != "" {
+					avatarMap[instID][profile.UserID] = profile.AvatarURL
+				}
+			}
+		}
 		for _, account := range accounts {
-			if account.Username != "" && account.Username != account.UserID {
+			if nameMap[instID][account.UserID] == "" && account.Username != "" && account.Username != account.UserID {
 				nameMap[instID][account.UserID] = account.Username
 			}
-			if account.AvatarURL != "" {
+			if avatarMap[instID][account.UserID] == "" && account.AvatarURL != "" {
 				avatarMap[instID][account.UserID] = account.AvatarURL
 			}
+		}
+		// A participant can exist only in message history. Use the newest
+		// non-empty presentation as a provider-scoped fallback, then apply it to
+		// every message from that canonical sender below.
+		for _, message := range messages {
+			messageInstance := convToInstance[message.ConversationID]
+			if messageInstance == "" {
+				if idx := strings.Index(message.ProtocolConvID, "::"); idx > 0 {
+					messageInstance = message.ProtocolConvID[:idx]
+				}
+			}
+			if messageInstance != instID || message.SenderID == "" {
+				continue
+			}
+			if nameMap[instID][message.SenderID] == "" && message.SenderName != "" && message.SenderName != message.SenderID {
+				nameMap[instID][message.SenderID] = message.SenderName
+			}
+			if avatarMap[instID][message.SenderID] == "" && message.SenderAvatarURL != "" {
+				avatarMap[instID][message.SenderID] = message.SenderAvatarURL
+			}
+		}
+		for userID, name := range nameMap[instID] {
+			_ = persistParticipantProfile(models.ContactProfile{
+				ProviderInstanceID: instID, UserID: userID, DisplayName: name, AvatarURL: avatarMap[instID][userID],
+			})
 		}
 
 		// Group/thread authors are participants, not necessarily LinkedAccounts.
@@ -2516,6 +2592,9 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 					}
 					if name, nameErr := provider.GetContactName(userID); nameErr == nil && name != "" && name != userID {
 						nameMap[instID][userID] = name
+						_ = persistParticipantProfile(models.ContactProfile{
+							ProviderInstanceID: instID, UserID: userID, DisplayName: name,
+						})
 					}
 				}
 			}
@@ -2533,21 +2612,19 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		}
 
 		if msg.SenderID != "" {
-			// Enrich name if missing OR if it currently contains the ID (fix for previously bad persisted data)
-			if msg.SenderName == "" || msg.SenderName == msg.SenderID {
-				if name, ok := nameMap[instID][msg.SenderID]; ok {
-					msg.SenderName = name
+			// One provider-scoped profile is the canonical presentation for every
+			// message from this participant, including old varying push names.
+			if name, ok := nameMap[instID][msg.SenderID]; ok {
+				if msg.SenderName != name {
 					enrichedCount++
-				} else {
-					notFoundCount++
 				}
+				msg.SenderName = name
+			} else if msg.SenderName == "" || msg.SenderName == msg.SenderID {
+				notFoundCount++
 			}
 
-			// Enrich avatar if missing
-			if msg.SenderAvatarURL == "" {
-				if avatar, ok := avatarMap[instID][msg.SenderID]; ok && avatar != "" {
-					msg.SenderAvatarURL = avatar
-				}
+			if avatar, ok := avatarMap[instID][msg.SenderID]; ok && avatar != "" {
+				msg.SenderAvatarURL = avatar
 			}
 		}
 	}
@@ -4666,12 +4743,17 @@ func persistParticipantProfile(profile models.ContactProfile) error {
 	}
 	emails, _ := json.Marshal(profile.Emails)
 	phones, _ := json.Marshal(profile.PhoneNumbers)
-	extra, _ := json.Marshal(map[string]interface{}{
-		"protocol": profile.Protocol, "address": profile.Address, "company": profile.Company,
-		"jobTitle": profile.JobTitle, "department": profile.Department, "timezone": profile.Timezone,
-		"presence": profile.Presence, "statusText": profile.StatusText, "statusEmoji": profile.StatusEmoji,
-		"lastSeen": profile.LastSeen, "providerFields": profile.ProviderFields,
-	})
+	extra := []byte{}
+	if profile.Protocol != "" || profile.Address != "" || profile.Company != "" || profile.JobTitle != "" ||
+		profile.Department != "" || profile.Timezone != "" || profile.Presence != "" || profile.StatusText != "" ||
+		profile.StatusEmoji != "" || profile.LastSeen != nil || len(profile.ProviderFields) > 0 {
+		extra, _ = json.Marshal(map[string]interface{}{
+			"protocol": profile.Protocol, "address": profile.Address, "company": profile.Company,
+			"jobTitle": profile.JobTitle, "department": profile.Department, "timezone": profile.Timezone,
+			"presence": profile.Presence, "statusText": profile.StatusText, "statusEmoji": profile.StatusEmoji,
+			"lastSeen": profile.LastSeen, "providerFields": profile.ProviderFields,
+		})
+	}
 	row := models.ParticipantProfile{
 		ProviderInstanceID: profile.ProviderInstanceID, UserID: profile.UserID,
 		DisplayName: profile.DisplayName, AvatarURL: profile.AvatarURL,
@@ -4680,8 +4762,16 @@ func persistParticipantProfile(profile models.ContactProfile) error {
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		row.ID = 0
 		return tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "provider_instance_id"}, {Name: "user_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"display_name", "avatar_url", "emails", "phone_numbers", "extra", "refreshed_at", "updated_at"}),
+			Columns: []clause.Column{{Name: "provider_instance_id"}, {Name: "user_id"}},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				"display_name":  gorm.Expr("COALESCE(NULLIF(excluded.display_name, ''), participant_profiles.display_name)"),
+				"avatar_url":    gorm.Expr("COALESCE(NULLIF(excluded.avatar_url, ''), participant_profiles.avatar_url)"),
+				"emails":        gorm.Expr("CASE WHEN excluded.emails NOT IN ('', 'null', '[]') THEN excluded.emails ELSE participant_profiles.emails END"),
+				"phone_numbers": gorm.Expr("CASE WHEN excluded.phone_numbers NOT IN ('', 'null', '[]') THEN excluded.phone_numbers ELSE participant_profiles.phone_numbers END"),
+				"extra":         gorm.Expr("COALESCE(NULLIF(excluded.extra, ''), participant_profiles.extra)"),
+				"refreshed_at":  gorm.Expr("excluded.refreshed_at"),
+				"updated_at":    gorm.Expr("excluded.updated_at"),
+			}),
 		}).Create(&row).Error
 	})
 }
