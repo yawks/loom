@@ -153,6 +153,9 @@ func (p *SlackProvider) startRTM(ctx context.Context) {
 
 // handleRTMMessageEvent handles incoming RTM message events.
 func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
+	if allowed, err := p.canIngestConversation(context.Background(), ev.Channel); err != nil || !allowed {
+		return
+	}
 	// Slack sends deletions as a hidden message event. The deleted message ID is
 	// in deleted_ts rather than the regular top-level ts, and the event usually
 	// has no user/text, so it must be handled before the empty-message filter.
@@ -820,6 +823,9 @@ func (p *SlackProvider) handleRTMReactionRemovedEvent(ev *slack.ReactionRemovedE
 
 // syncConversationHistory fetches recent history for a conversation to populate context
 func (p *SlackProvider) syncConversationHistory(conversationID string) {
+	if allowed, err := p.canIngestConversation(context.Background(), conversationID); err != nil || !allowed {
+		return
+	}
 	p.log("SlackProvider: syncing history for new conversation %s\n", conversationID)
 
 	if conversationID == "" {

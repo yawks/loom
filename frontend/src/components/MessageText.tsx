@@ -112,7 +112,7 @@ function parseSerializedInlineQuote(text: string): SerializedInlineQuote | null 
   };
 }
 
-function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean, providerInstanceId?: string, emojiSize = 16): Components {
+function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean, providerInstanceId?: string, emojiSize = 16, multilinePreview = false): Components {
   return {
     a: ({ href, children, ...props }) => {
       if (href?.startsWith("loom://mention")) {
@@ -247,9 +247,9 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean,
     p: ({ className, ...props }) => (
       isInline
         ? <span className={className} {...props} />
-        : <p className={cn("m-0", !preview && "[&+p]:mt-[1.5em]", className)} {...props} />
+        : <p className={cn("m-0", (!preview || multilinePreview) && "[&+p]:mt-[1.5em]", className)} {...props} />
     ),
-    br: ({ ...props }) => (preview ? <span> </span> : <br {...props} />),
+    br: ({ ...props }) => (preview && !multilinePreview ? <span> </span> : <br {...props} />),
     div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
     blockquote: ({ ...props }) => (
       <blockquote className="my-1 border-l-2 border-current/40 pl-3 italic opacity-90" {...props} />
@@ -273,7 +273,8 @@ interface MessageTextProps {
   providerInstanceId?: string; // Provider instance ID
   className?: string;
   emojiSize?: number; // Size for emojis in pixels (default: 16)
-  preview?: boolean; // If true, render as preview (no blue links, single line)
+  preview?: boolean; // If true, render as preview (no blue links, single line by default)
+  multilinePreview?: boolean; // Preserve line breaks and paragraphs in previews
   isFromMe?: boolean; // If true, message is from current user
   highlightQuery?: string; // Literal text to emphasize in search previews
   mentions?: models.MessageMention[];
@@ -306,6 +307,7 @@ export const MessageText = memo(function MessageText({
   className = "",
   emojiSize = 16,
   preview = false,
+  multilinePreview = false,
   isFromMe = false,
   highlightQuery = "",
   mentions = [],
@@ -353,7 +355,7 @@ export const MessageText = memo(function MessageText({
     processedText = fixCodeBlocks(processedText);
     processedText = annotateUnlabeledCodeFences(processedText);
 
-    if (preview) {
+    if (preview && !multilinePreview) {
       processedText = processedText.replace(/\n+/g, " ");
     }
 
@@ -449,20 +451,20 @@ export const MessageText = memo(function MessageText({
     }
 
     return parts.length === 0 ? textWithoutSkinTones : parts;
-  }, [text, providerInstanceId, emojiSize, preview, mentions]);
+  }, [text, providerInstanceId, emojiSize, preview, multilinePreview, mentions]);
 
   const blockComponents = useMemo(
-    () => buildComponents(isFromMe, preview, false, providerInstanceId, emojiSize),
-    [isFromMe, preview, providerInstanceId, emojiSize]
+    () => buildComponents(isFromMe, preview, false, providerInstanceId, emojiSize, multilinePreview),
+    [isFromMe, preview, providerInstanceId, emojiSize, multilinePreview]
   );
   const inlineComponents = useMemo(
-    () => buildComponents(isFromMe, preview, true, providerInstanceId, emojiSize),
-    [isFromMe, preview, providerInstanceId, emojiSize]
+    () => buildComponents(isFromMe, preview, true, providerInstanceId, emojiSize, multilinePreview),
+    [isFromMe, preview, providerInstanceId, emojiSize, multilinePreview]
   );
 
   const remarkPlugins = useMemo(
-    () => (preview ? [remarkGfm] : [remarkGfm, remarkBreaks]),
-    [preview]
+    () => (preview && !multilinePreview ? [remarkGfm] : [remarkGfm, remarkBreaks]),
+    [preview, multilinePreview]
   );
   const rehypePlugins = useMemo<PluggableList>(
     () => [
@@ -572,7 +574,7 @@ export const MessageText = memo(function MessageText({
   if (typeof parsedContent === "string") {
     return (
       <div className={cn(className, "max-w-full overflow-hidden")}>
-        {renderMarkdown(parsedContent, preview)}
+        {renderMarkdown(parsedContent, preview && !multilinePreview)}
       </div>
     );
   }

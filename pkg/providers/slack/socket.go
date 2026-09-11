@@ -54,6 +54,10 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 					innerEvent := eventsAPIEvent.InnerEvent
 					p.log("SlackProvider.startSocketMode: callback inner event type=%T\n", innerEvent.Data)
 					switch ev := innerEvent.Data.(type) {
+					case *slackevents.MemberLeftChannelEvent:
+						p.handleMembershipChange(ev.User)
+					case *slackevents.MemberJoinedChannelEvent:
+						p.handleMembershipChange(ev.User)
 					case *slackevents.MessageEvent:
 						p.log("SlackProvider.startSocketMode: received message event channel=%s subtype=%s ts=%s thread_ts=%s bot_id=%s\n",
 							ev.Channel, ev.SubType, ev.TimeStamp, ev.ThreadTimeStamp, ev.BotID)
@@ -94,6 +98,9 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 
 // handleMessageEvent processes a new message from Slack
 func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
+	if allowed, err := p.canIngestConversation(context.Background(), ev.Channel); err != nil || !allowed {
+		return
+	}
 	if ev.SubType == slack.MsgSubTypeMessageDeleted {
 		p.handleRemoteMessageDeleted(ev.Channel, ev.DeletedTimeStamp, ev.EventTimeStamp)
 		return

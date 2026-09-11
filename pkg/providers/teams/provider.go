@@ -1464,8 +1464,15 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		Mentions: canonicalMentions,
 	}
 	if !message.IsFromMe {
+		self := mriLookupKey(client.UserMRI())
 		for _, mention := range remote.Mentions {
-			if strings.EqualFold(strings.TrimSpace(mention.UserID), strings.TrimSpace(client.UserMRI())) {
+			if self != "" && mriLookupKey(mention.UserID) == self {
+				message.HighlightReasons = []string{models.HighlightReasonDirectMention}
+				break
+			}
+		}
+		for _, mention := range canonicalMentions {
+			if self != "" && mriLookupKey(mention.UserID) == self {
 				message.HighlightReasons = []string{models.HighlightReasonDirectMention}
 				break
 			}

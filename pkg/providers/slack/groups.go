@@ -214,6 +214,7 @@ func (p *SlackProvider) LeaveGroup(conversationID string) error {
 	rawID := core.StripConvID(conversationID)
 	_, err := p.client.LeaveConversation(rawID)
 	if err == nil {
+		p.invalidateMemberships()
 		return nil
 	}
 	// Slack does not allow the final member to leave a channel. Archiving is
@@ -222,6 +223,7 @@ func (p *SlackProvider) LeaveGroup(conversationID string) error {
 		if archiveErr := p.client.ArchiveConversation(rawID); archiveErr != nil {
 			return fmt.Errorf("leave group: %v; archive final-member channel: %w", err, archiveErr)
 		}
+		p.invalidateMemberships()
 		return nil
 	}
 	return err

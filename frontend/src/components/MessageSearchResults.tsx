@@ -165,6 +165,7 @@ export function MessageSearchResults({
                 providerInstanceId={result.providerInstanceId}
                 emojiSize={14}
                 preview
+                multilinePreview
                 isFromMe={normalizedMessage.isFromMe}
               />
             </button>

@@ -44,6 +44,8 @@ type SlackProvider struct {
 	socketClient          *socketmode.Client
 	rtmClient             *slack.RTM
 	mu                    sync.RWMutex
+	connectionMu          sync.Mutex // Serializes connection replacement without blocking normal API calls
+	membership            slackMembershipCache
 	logger                *logging.ProviderLogger
 	userCache             map[string]*slack.User // Cache for user info to avoid repeated API calls
 	userCacheMu           sync.RWMutex
@@ -607,6 +609,11 @@ func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context
 		if ctx.Err() != nil {
 			return context.Canceled
 		}
+		if allowed, err := p.canIngestConversation(ctx, conv.ProtocolConvID); err != nil {
+			return err
+		} else if !allowed {
+			continue
+		}
 		// Skip conversations where Slack confirms no new messages since our last stored one.
 		// contactLatestTS holds the timestamp of the most recent message in the channel
 		// as returned by GetConversations — no API call needed to know there's nothing new.
@@ -865,21 +872,34 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 
 // Connect establishes the connection with the remote service.
 func (p *SlackProvider) Connect() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.connectionMu.Lock()
+	defer p.connectionMu.Unlock()
 
-	if p.client == nil {
+	p.mu.RLock()
+	client := p.client
+	config := p.config
+	p.mu.RUnlock()
+	if client == nil {
 		p.log("SlackProvider.Connect: ERROR - client not initialized\n")
 		return fmt.Errorf("slack client not initialized")
 	}
 
 	p.log("SlackProvider.Connect: performing auth test\n")
-	authInfo, err := p.client.AuthTest()
+	authCtx, cancelAuth := context.WithTimeout(context.Background(), 15*time.Second)
+	authInfo, err := client.AuthTestContext(authCtx)
+	cancelAuth()
 	if err != nil {
 		p.log("SlackProvider.Connect: ERROR - auth test failed: %v\n", err)
 		return err
 	}
 	p.log("SlackProvider.Connect: auth test successful, user=%s, team=%s\n", authInfo.User, authInfo.Team)
+
+	mode, token, _, credentialErr := slackConnectionCredentials(config)
+	if credentialErr != nil {
+		return credentialErr
+	}
+
+	p.mu.Lock()
 	if p.selfUserID != authInfo.UserID {
 		p.selfDMChannelID = ""
 	}
@@ -891,18 +911,10 @@ func (p *SlackProvider) Connect() error {
 	connectionCtx, connectionCancel := context.WithCancel(context.Background())
 	p.connectionCancel = connectionCancel
 
-	// The official mode uses the user OAuth token for Web API calls and the
-	// app-level token already installed on p.client for Socket Mode. The
-	// compatible credentials remain stored and can be selected again later.
-	mode, token, _, credentialErr := slackConnectionCredentials(p.config)
-	if credentialErr != nil {
-		return credentialErr
-	}
-
 	if mode == slackModeOfficial {
 		p.log("SlackProvider.Connect: official Slack app mode, initializing Socket Mode\n")
 		p.socketClient = socketmode.New(
-			p.client,
+			client,
 			socketmode.OptionDebug(false),
 			socketmode.OptionLog(p.logger),
 		)
@@ -913,7 +925,7 @@ func (p *SlackProvider) Connect() error {
 
 		rtmOptions := []slack.RTMOption{}
 
-		p.rtmClient = p.client.NewRTM(rtmOptions...)
+		p.rtmClient = client.NewRTM(rtmOptions...)
 		go p.startRTM(connectionCtx)
 	} else if strings.HasPrefix(token, "xoxc") {
 		// Browser sessions do not have rtm:stream. Polling is their live transport;
@@ -923,12 +935,13 @@ func (p *SlackProvider) Connect() error {
 		// Bot Token (xoxb) -> Use Socket Mode (Modern)
 		p.log("SlackProvider.Connect: Detected Bot Token (xoxb), initializing Socket Mode client\n")
 		p.socketClient = socketmode.New(
-			p.client,
+			client,
 			socketmode.OptionDebug(false),
 			socketmode.OptionLog(p.logger),
 		)
 		go p.startSocketMode(connectionCtx, p.socketClient)
 	}
+	p.mu.Unlock()
 
 	// Perform initialization tasks in background to avoid blocking Connect return
 	// This ensures the UI doesn't hang waiting for emojis/history
@@ -1432,6 +1445,8 @@ func (p *SlackProvider) checkStatusChanges() {
 // Disconnect disconnects from the Slack API.
 func (p *SlackProvider) Disconnect() error {
 	p.log("Slack: Disconnecting...\n")
+	p.connectionMu.Lock()
+	defer p.connectionMu.Unlock()
 
 	// Detach connection state while holding the provider lock, then stop the
 	// transports after releasing it. slack-go's RTM disconnect can wait for its
@@ -1543,6 +1558,7 @@ func (p *SlackProvider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
 		SupportsThreads:                       true,
 		SupportsReactions:                     true,
+		NativeEmojiReactions:                  true,
 		SupportsCustomEmojis:                  true,
 		SupportsTypingIndicator:               true,
 		SupportsGroupManagement:               true,

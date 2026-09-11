@@ -7,6 +7,7 @@ import (
 	"Loom/pkg/models"
 	"Loom/pkg/providers/messageformat"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -737,6 +738,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	}
 
 	// First, try to load from database
+	var cachedMessages []models.Message
 	if db.DB != nil {
 		var dbMessages []models.Message
 		query := db.DB.Where("protocol_conv_id = ?", nsConvID)
@@ -771,6 +773,7 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 
 			// Enrich messages with sender names and avatars from cache
 			p.enrichMessagesWithSenderInfo(dbMessages)
+			cachedMessages = dbMessages
 
 			// If beforeTimestamp is nil (initial load) and we have enough messages, return them
 			// If beforeTimestamp is set (loading older messages), return what we have
@@ -783,6 +786,14 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 	}
 
 	// Not enough messages in database or beforeTimestamp/sinceTimestamp specified, fetch from Slack API
+	if allowed, err := p.canIngestConversation(context.Background(), conversationID); err != nil {
+		return nil, err
+	} else if !allowed {
+		if sinceTimestamp == nil {
+			return cachedMessages, nil
+		}
+		return nil, nil
+	}
 
 	// Compute self name before acquiring the lock so we can detect corruption in convertMessage.
 	p.mu.RLock()
@@ -958,6 +969,11 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 // getThreadReplies retrieves all messages in a thread.
 // Pass an optional oldest time to fetch only replies strictly after that timestamp.
 func (p *SlackProvider) getThreadReplies(channelID string, threadTS string, oldest ...time.Time) ([]models.Message, error) {
+	if allowed, err := p.canIngestConversation(context.Background(), channelID); err != nil {
+		return nil, err
+	} else if !allowed {
+		return nil, nil
+	}
 	p.mu.RLock()
 	client := p.client
 	p.mu.RUnlock()
@@ -2328,6 +2344,9 @@ func (p *SlackProvider) SendTypingIndicator(_ string, _ bool) error {
 
 // AddReaction adds a reaction (emoji) to a message.
 func normalizeSlackReactionName(emoji string) string {
+	if name, ok := slackUnicodeNames[strings.ReplaceAll(emoji, "\ufe0f", "")]; ok {
+		return name
+	}
 	// emoji-picker-react uses CLDR-style underscore names for these gendered
 	// ZWJ sequences, while Slack exposes them with hyphens.
 	switch emoji {
@@ -2344,23 +2363,36 @@ func normalizeSlackReactionName(emoji string) string {
 
 func (p *SlackProvider) AddReaction(conversationID string, messageID string, emoji string) error {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	selfUserID := p.selfUserID
+	instanceID, _ := p.config.GetString("_instance_id")
+	p.mu.RUnlock()
+	if instanceID == "" {
+		return fmt.Errorf("slack instance ID is required")
+	}
+	conversationID = core.BuildConvID(instanceID, core.StripConvID(conversationID))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if p.client == nil {
+	if client == nil {
 		return fmt.Errorf("slack client not initialized")
 	}
 
 	// Strip namespace prefix (e.g. "slack-1:C123" → "C123") and resolve DM user IDs to channel IDs
-	rawConvID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	rawConvID := core.StripConvID(conversationID)
 	actualChannelID := rawConvID
 	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
-		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+		channel, _, _, err := client.OpenConversationContext(ctx, &slack.OpenConversationParameters{
 			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
-		if err == nil && channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
+		if err != nil {
+			return err
 		}
+		if channel == nil || channel.ID == "" {
+			return fmt.Errorf("Slack returned an empty DM channel")
+		}
+		actualChannelID = channel.ID
 	}
 
 	item := slack.ItemRef{
@@ -2368,7 +2400,7 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		Timestamp: messageID,
 	}
 	emoji = normalizeSlackReactionName(strings.Trim(emoji, ":"))
-	if err := p.client.AddReaction(emoji, item); err != nil {
+	if err := client.AddReactionContext(ctx, emoji, item); err != nil {
 		// emoji-picker-react exposes a few GitHub-style aliases such as
 		// "upside-down_face", while Slack names the same emoji
 		// "upside_down_face". Preserve valid hyphenated Slack names, but retry
@@ -2377,7 +2409,7 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 		if !strings.Contains(err.Error(), "invalid_name") || underscoreEmoji == emoji {
 			return err
 		}
-		if retryErr := p.client.AddReaction(underscoreEmoji, item); retryErr != nil {
+		if retryErr := client.AddReactionContext(ctx, underscoreEmoji, item); retryErr != nil {
 			return retryErr
 		}
 		emoji = underscoreEmoji
@@ -2385,28 +2417,28 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 
 	// Persist the reaction to DB so it survives query refetches.
 	// (The polling loop may trigger a refetch before the RTM event arrives.)
-	if db.DB != nil && p.selfUserID != "" {
+	if db.DB != nil && selfUserID != "" {
 		var msg models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error; err == nil {
+		if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, messageID).First(&msg).Error; err == nil {
 			reaction := models.Reaction{
 				MessageID: msg.ID,
-				UserID:    p.selfUserID,
+				UserID:    selfUserID,
 				Emoji:     emoji, // stored without colons, matching Slack API format
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
-			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, p.selfUserID, emoji).
+			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, selfUserID, emoji).
 				FirstOrCreate(&reaction)
 		}
 	}
 
 	// Emit an immediate reaction event so the frontend updates without waiting for polling.
-	if p.selfUserID != "" {
+	if selfUserID != "" {
 		select {
-		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
+		case p.eventChan <- core.ReactionEvent{InstanceID: instanceID,
 			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
 			MessageID:      messageID,
-			UserID:         p.selfUserID,
+			UserID:         selfUserID,
 			Emoji:          emoji,
 			Added:          true,
 			Timestamp:      time.Now().Unix(),
@@ -2421,23 +2453,36 @@ func (p *SlackProvider) AddReaction(conversationID string, messageID string, emo
 // RemoveReaction removes a reaction (emoji) from a message.
 func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, emoji string) error {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	client := p.client
+	selfUserID := p.selfUserID
+	instanceID, _ := p.config.GetString("_instance_id")
+	p.mu.RUnlock()
+	if instanceID == "" {
+		return fmt.Errorf("slack instance ID is required")
+	}
+	conversationID = core.BuildConvID(instanceID, core.StripConvID(conversationID))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if p.client == nil {
+	if client == nil {
 		return fmt.Errorf("slack client not initialized")
 	}
 
 	// Strip namespace prefix (e.g. "slack-1:C123" → "C123") and resolve DM user IDs to channel IDs
-	rawConvID := p.normalizeDMConversationID(core.StripConvID(conversationID))
+	rawConvID := core.StripConvID(conversationID)
 	actualChannelID := rawConvID
 	if len(rawConvID) > 0 && rawConvID[0] == 'U' {
-		channel, _, _, err := p.client.OpenConversation(&slack.OpenConversationParameters{
+		channel, _, _, err := client.OpenConversationContext(ctx, &slack.OpenConversationParameters{
 			Users:    []string{rawConvID},
 			ReturnIM: true,
 		})
-		if err == nil && channel != nil && channel.ID != "" {
-			actualChannelID = channel.ID
+		if err != nil {
+			return err
 		}
+		if channel == nil || channel.ID == "" {
+			return fmt.Errorf("Slack returned an empty DM channel")
+		}
+		actualChannelID = channel.ID
 	}
 
 	item := slack.ItemRef{
@@ -2445,33 +2490,33 @@ func (p *SlackProvider) RemoveReaction(conversationID string, messageID string, 
 		Timestamp: messageID,
 	}
 	emoji = normalizeSlackReactionName(strings.Trim(emoji, ":"))
-	if err := p.client.RemoveReaction(emoji, item); err != nil {
+	if err := client.RemoveReactionContext(ctx, emoji, item); err != nil {
 		underscoreEmoji := strings.ReplaceAll(emoji, "-", "_")
 		if !strings.Contains(err.Error(), "invalid_name") || underscoreEmoji == emoji {
 			return err
 		}
-		if retryErr := p.client.RemoveReaction(underscoreEmoji, item); retryErr != nil {
+		if retryErr := client.RemoveReactionContext(ctx, underscoreEmoji, item); retryErr != nil {
 			return retryErr
 		}
 		emoji = underscoreEmoji
 	}
 
 	// Remove the reaction from DB so refetches reflect the correct state.
-	if db.DB != nil && p.selfUserID != "" {
+	if db.DB != nil && selfUserID != "" {
 		var msg models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&msg).Error; err == nil {
-			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, p.selfUserID, emoji).
+		if err := db.ForProvider(db.DB, instanceID).Messages().Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, messageID).First(&msg).Error; err == nil {
+			db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", msg.ID, selfUserID, emoji).
 				Delete(&models.Reaction{})
 		}
 	}
 
 	// Emit an immediate reaction event so the frontend updates without waiting for polling.
-	if p.selfUserID != "" {
+	if selfUserID != "" {
 		select {
-		case p.eventChan <- core.ReactionEvent{InstanceID: p.getInstanceId(),
+		case p.eventChan <- core.ReactionEvent{InstanceID: instanceID,
 			ConversationID: conversationID, // Use original (normalized U...) ID to match frontend cache
 			MessageID:      messageID,
-			UserID:         p.selfUserID,
+			UserID:         selfUserID,
 			Emoji:          emoji,
 			Added:          false,
 			Timestamp:      time.Now().Unix(),

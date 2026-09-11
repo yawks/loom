@@ -303,6 +303,7 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 			case nil:
 				stored.Body = message.Body
 				stored.Mentions = message.Mentions
+				stored.HighlightReasons = message.HighlightReasons
 				stored.SenderID = message.SenderID
 				stored.SenderName = message.SenderName
 				stored.SenderAvatarURL = message.SenderAvatarURL

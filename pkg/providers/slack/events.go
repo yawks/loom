@@ -385,6 +385,9 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		if ctx.Err() != nil {
 			return cursor
 		}
+		if allowed, err := p.canIngestConversation(ctx, conversation.ProtocolConvID); err != nil || !allowed {
+			continue
+		}
 		lastTimestampMillis := db.ParseTimeMillis(conversation.LastTimestamp)
 		bootstrap := lastTimestampMillis == 0 && conversation.LastTimestamp == ""
 		if lastTimestampMillis == 0 && !bootstrap {
@@ -551,6 +554,11 @@ func (p *SlackProvider) pollGlobalUpdates(ctx context.Context, since time.Time) 
 
 			conversationID := match.Channel.ID
 			if conversationID == "" {
+				continue
+			}
+			if allowed, err := p.canIngestConversation(ctx, conversationID); err != nil {
+				return since, err
+			} else if !allowed {
 				continue
 			}
 
