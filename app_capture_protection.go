@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"Loom/pkg/db"
 	"Loom/pkg/models"
@@ -21,6 +22,17 @@ func (a *App) GetCaptureProtectionSettings() (CaptureProtectionSettings, error) 
 	settings := CaptureProtectionSettings{
 		Supported: screenprotection.Supported(), Limited: screenprotection.Limited(),
 		ConversationIDs: []string{},
+	}
+	// Wails can serve binding calls while OnStartup is still migrating SQLite.
+	// Wait for database publication, not for provider/network synchronization.
+	if a.databaseReady != nil {
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-a.databaseReady:
+		case <-timer.C:
+			return settings, fmt.Errorf("timed out waiting for database initialization")
+		}
 	}
 	if db.DB == nil {
 		return settings, fmt.Errorf("database unavailable")

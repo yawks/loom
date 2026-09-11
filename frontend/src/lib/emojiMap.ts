@@ -6373,6 +6373,11 @@ export function emojiNameToUnicode(name: string): string | null {
 // Reverse mapping: Unicode emoji -> emoji name (without colons)
 // Built lazily on first access for performance
 let reverseEmojiMap: Record<string, string> | null = null;
+let presentationIndependentEmojiMap: Record<string, string> | null = null;
+
+function withoutPresentationSelectors(emoji: string): string {
+  return emoji.replace(/[\uFE0E\uFE0F]/g, "");
+}
 
 function getReverseEmojiMap(): Record<string, string> {
   if (!reverseEmojiMap) {
@@ -6389,6 +6394,16 @@ function getReverseEmojiMap(): Record<string, string> {
         reverseEmojiMap[emoji] = name;
       }
     }
+
+    // Legacy persisted glyphs may omit Unicode presentation selectors. Build
+    // a generic fallback in the same order so preferred names still win.
+    presentationIndependentEmojiMap = {};
+    for (const [emoji, name] of Object.entries(reverseEmojiMap)) {
+      const key = withoutPresentationSelectors(emoji);
+      if (!presentationIndependentEmojiMap[key]) {
+        presentationIndependentEmojiMap[key] = name;
+      }
+    }
   }
   return reverseEmojiMap;
 }
@@ -6399,7 +6414,8 @@ function getReverseEmojiMap(): Record<string, string> {
  */
 export function unicodeToEmojiName(unicodeEmoji: string): string | null {
   const reverseMap = getReverseEmojiMap();
-  const directMatch = reverseMap[unicodeEmoji];
+  const directMatch = reverseMap[unicodeEmoji] ||
+    presentationIndependentEmojiMap?.[withoutPresentationSelectors(unicodeEmoji)];
   if (directMatch) {
     return directMatch;
   }
@@ -6410,7 +6426,8 @@ export function unicodeToEmojiName(unicodeEmoji: string): string | null {
   }
 
   const baseEmoji = unicodeEmoji.replace(SKIN_TONE_MODIFIER_PATTERN, "");
-  const baseName = reverseMap[baseEmoji];
+  const baseName = reverseMap[baseEmoji] ||
+    presentationIndependentEmojiMap?.[withoutPresentationSelectors(baseEmoji)];
   const toneIndex = SKIN_TONE_MODIFIERS.indexOf(
     toneModifier as (typeof SKIN_TONE_MODIFIERS)[number]
   );

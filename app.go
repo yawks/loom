@@ -93,6 +93,7 @@ type App struct {
 	metaContactsCache       metaContactsCache
 	mu                      sync.RWMutex
 	providerRestoreReady    chan struct{}
+	databaseReady           chan struct{}
 	providerRestoreStarted  bool
 	providerRestoreComplete bool
 
@@ -180,6 +181,7 @@ func NewApp() *App {
 		suppressedSyncCompletions: make(map[string]int),
 		lastPersistedLiveEventAt:  make(map[string]time.Time),
 		providerRestoreReady:      make(chan struct{}),
+		databaseReady:             make(chan struct{}),
 	}
 }
 
@@ -598,6 +600,9 @@ func (a *App) startup(ctx context.Context) {
 	}
 	if databaseErr != nil {
 		log.Fatalf("Failed to initialize database: %v", databaseErr)
+	}
+	if a.databaseReady != nil {
+		close(a.databaseReady)
 	}
 	if a.mockMode {
 		if err := seedMockData(); err != nil {

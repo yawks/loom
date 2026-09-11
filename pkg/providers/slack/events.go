@@ -1077,7 +1077,7 @@ func (p *SlackProvider) SyncHistoryContext(ctx context.Context, since time.Time)
 	// Run incremental sync to catch any messages missed in conversations already in the DB.
 	// incrementalSyncExistingConversations emits its own final "completed" status.
 	p.log("SlackProvider.SyncHistory: Starting incremental sync for existing conversations\n")
-	if err := p.incrementalSyncExistingConversations(ctx, contactLatestTS, contactLastRead); err != nil {
+	if err := p.incrementalSyncExistingConversations(ctx, since, contactLatestTS, contactLastRead); err != nil {
 		return err
 	}
 

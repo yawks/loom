@@ -522,7 +522,7 @@ func waitForSlackSync(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
-func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context, contactLatestTS, contactLastRead map[string]string) error {
+func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context, since time.Time, contactLatestTS, contactLastRead map[string]string) error {
 	if db.DB == nil {
 		p.log("SlackProvider.incrementalSyncExistingConversations: DB not initialized\n")
 		return nil
@@ -625,6 +625,11 @@ func (p *SlackProvider) incrementalSyncExistingConversations(ctx context.Context
 					conv.ProtocolConvID, slackLatestStr, dbLatestF)
 				continue
 			}
+		} else if !since.IsZero() && conv.LastTimestamp.Before(since) {
+			// Slack omits latest metadata for some old/archived conversations. A
+			// catch-up sync must remain bounded by its requested lower limit rather
+			// than issuing one history request for every conversation ever seen.
+			continue
 		}
 		progress := int((float64(i+1) / float64(len(conversations))) * 100)
 		p.emitSyncStatus(core.SyncStatusFetchingHistory, fmt.Sprintf("Syncing %s... (%d/%d)", conv.ProtocolConvID, i+1, len(conversations)), progress)

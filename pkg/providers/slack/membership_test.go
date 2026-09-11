@@ -115,6 +115,49 @@ func TestOfficialMembershipFailureDoesNotUsePartialOrStaleSnapshot(t *testing.T)
 	}
 }
 
+func TestOfficialMembershipRefreshDoesNotBlockCachedChecks(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	var calls atomic.Int32
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			fmt.Fprint(w, `{"ok":true,"channels":[{"id":"Cmember"}]}`)
+			return
+		}
+		close(refreshStarted)
+		<-releaseRefresh
+		fmt.Fprint(w, `{"ok":true,"channels":[{"id":"Cmember"}]}`)
+	})
+	if allowed, err := p.canIngestConversation(context.Background(), "Cmember"); !allowed || err != nil {
+		t.Fatal(allowed, err)
+	}
+	p.membership.mu.Lock()
+	p.membership.expires = time.Time{}
+	p.membership.mu.Unlock()
+	refreshDone := make(chan struct{})
+	go func() {
+		_, _ = p.canIngestConversation(context.Background(), "Cmember")
+		close(refreshDone)
+	}()
+	<-refreshStarted
+
+	checkDone := make(chan bool, 1)
+	go func() {
+		allowed, _ := p.canIngestConversation(context.Background(), "Cmember")
+		checkDone <- allowed
+	}()
+	select {
+	case allowed := <-checkDone:
+		if !allowed {
+			t.Fatal("cached membership was not available during refresh")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("cached membership check blocked behind network refresh")
+	}
+	close(releaseRefresh)
+	<-refreshDone
+}
+
 func TestOfficialLeftChannelCannotBeRecreatedByEventsOrPolling(t *testing.T) {
 	previousDB := db.DB
 	t.Cleanup(func() { db.DB = previousDB })
@@ -145,7 +188,7 @@ func TestOfficialLeftChannelCannotBeRecreatedByEventsOrPolling(t *testing.T) {
 	p.handleRTMMessageEvent(&slack.MessageEvent{Msg: slack.Msg{Channel: "Cleft", Text: "new", Timestamp: "4.0"}})
 	p.syncConversationHistory("slack-1::Cleft")
 	p.pollKnownConversationHistoryFallback(context.Background(), 0, 100)
-	if err := p.incrementalSyncExistingConversations(context.Background(), nil, nil); err != nil {
+	if err := p.incrementalSyncExistingConversations(context.Background(), time.Time{}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	since := time.Now().Add(-time.Minute)

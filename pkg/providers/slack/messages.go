@@ -71,6 +71,7 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 	if client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
+	p.log("SlackProvider.SendMessage: posting message to %s (thread=%t)\n", normalizedConversationID, threadID != nil)
 
 	if file != nil {
 		return p.SendFile(normalizedConversationID, file, threadID)
@@ -100,8 +101,11 @@ func (p *SlackProvider) SendMessage(conversationID string, text string, file *co
 		opts = append(opts, slack.MsgOptionTS(*threadID))
 	}
 
-	_, timestamp, err := client.PostMessage(actualChannelID, opts...)
+	postCtx, cancelPost := context.WithTimeout(context.Background(), 20*time.Second)
+	_, timestamp, err := client.PostMessageContext(postCtx, actualChannelID, opts...)
+	cancelPost()
 	if err != nil {
+		p.log("SlackProvider.SendMessage: post failed for %s: %v\n", normalizedConversationID, err)
 		return nil, err
 	}
 
@@ -371,6 +375,7 @@ func (p *SlackProvider) parseSlackBlockQuote(rawText string) (cleanText string, 
 // SendReply sends a quoted reply in the main channel (not as a Slack thread reply).
 // Slack has no native inline quote, so we format the original message as a block quote.
 func (p *SlackProvider) SendReply(conversationID string, text string, quotedMessageID string) (*models.Message, error) {
+	p.log("SlackProvider.SendReply: preparing reply in %s to %s\n", conversationID, quotedMessageID)
 	var prefix string
 	var quotedMsg *models.Message
 	var quotedSenderName string
@@ -378,18 +383,14 @@ func (p *SlackProvider) SendReply(conversationID string, text string, quotedMess
 
 	if db.DB != nil {
 		var quoted models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", quotedMessageID).First(&quoted).Error; err == nil {
+		if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().
+			Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, quotedMessageID).
+			First(&quoted).Error; err == nil {
 			quotedMsg = &quoted
 			quotedSenderName = quoted.SenderName
 			if quotedSenderName == "" || quotedSenderName == quoted.SenderID {
 				if cachedName, _ := p.getUserNameFromCache(quoted.SenderID); cachedName != "" {
 					quotedSenderName = cachedName
-				} else if p.client != nil {
-					if user, err := p.client.GetUserInfo(quoted.SenderID); err == nil && user != nil {
-						quotedSenderName = getUserDisplayName(user)
-					} else {
-						quotedSenderName = quoted.SenderID
-					}
 				} else {
 					quotedSenderName = quoted.SenderID
 				}
@@ -437,6 +438,7 @@ func (p *SlackProvider) SendReply(conversationID string, text string, quotedMess
 
 // SendThreadReply sends a quoted reply to a specific message inside a Slack thread.
 func (p *SlackProvider) SendThreadReply(conversationID string, text string, threadID string, quotedMessageID string) (*models.Message, error) {
+	p.log("SlackProvider.SendThreadReply: preparing reply in %s thread %s to %s\n", conversationID, threadID, quotedMessageID)
 	var prefix string
 	var quotedMsg *models.Message
 	var quotedSenderName string
@@ -444,18 +446,14 @@ func (p *SlackProvider) SendThreadReply(conversationID string, text string, thre
 
 	if db.DB != nil {
 		var quoted models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", quotedMessageID).First(&quoted).Error; err == nil {
+		if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().
+			Where("protocol_conv_id = ? AND protocol_msg_id = ?", conversationID, quotedMessageID).
+			First(&quoted).Error; err == nil {
 			quotedMsg = &quoted
 			quotedSenderName = quoted.SenderName
 			if quotedSenderName == "" || quotedSenderName == quoted.SenderID {
 				if cachedName, _ := p.getUserNameFromCache(quoted.SenderID); cachedName != "" {
 					quotedSenderName = cachedName
-				} else if p.client != nil {
-					if user, err := p.client.GetUserInfo(quoted.SenderID); err == nil && user != nil {
-						quotedSenderName = getUserDisplayName(user)
-					} else {
-						quotedSenderName = quoted.SenderID
-					}
 				} else {
 					quotedSenderName = quoted.SenderID
 				}

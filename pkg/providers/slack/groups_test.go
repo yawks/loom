@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	goslack "github.com/slack-go/slack"
 )
 
 func TestNormalizeSlackResponseObjectErrors(t *testing.T) {
@@ -47,5 +49,49 @@ func TestNormalizeSlackChannelNameTruncates(t *testing.T) {
 	actual := normalizeSlackChannelName(strings.Repeat("a", slackChannelNameMaxLength+10))
 	if len(actual) != slackChannelNameMaxLength {
 		t.Fatalf("normalized length = %d, want %d", len(actual), slackChannelNameMaxLength)
+	}
+}
+
+func TestGroupDetailsMPIMDoesNotRequireChannelMembershipFlag(t *testing.T) {
+	provider := NewSlackProvider()
+	provider.config = map[string]interface{}{"_instance_id": "slack-1"}
+
+	details := provider.groupDetails("C06867NN9ED", &goslack.Channel{
+		GroupConversation: goslack.GroupConversation{
+			Conversation: goslack.Conversation{IsMpIM: true},
+			Name:         "mpdm-example",
+		},
+		IsMember: false,
+	})
+
+	if !details.IsMember || !details.CanSendMessages {
+		t.Fatalf("MPIM details unexpectedly read-only: %+v", details)
+	}
+	if details.ConversationID != "slack-1::C06867NN9ED" {
+		t.Fatalf("conversation ID = %q", details.ConversationID)
+	}
+}
+
+func TestGroupDetailsKeepsNonMemberChannelReadOnly(t *testing.T) {
+	provider := NewSlackProvider()
+	provider.config = map[string]interface{}{"_instance_id": "slack-1"}
+
+	details := provider.groupDetails("C123", &goslack.Channel{IsMember: false})
+	if details.IsMember || details.CanSendMessages {
+		t.Fatalf("non-member channel unexpectedly writable: %+v", details)
+	}
+}
+
+func TestGroupDetailsKeepsReadOnlyMPIMReadOnly(t *testing.T) {
+	provider := NewSlackProvider()
+	provider.config = map[string]interface{}{"_instance_id": "slack-1"}
+
+	details := provider.groupDetails("C123", &goslack.Channel{
+		GroupConversation: goslack.GroupConversation{
+			Conversation: goslack.Conversation{IsMpIM: true, IsReadOnly: true},
+		},
+	})
+	if details.CanSendMessages {
+		t.Fatalf("read-only MPIM unexpectedly writable: %+v", details)
 	}
 }

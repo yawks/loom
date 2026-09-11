@@ -131,20 +131,40 @@ func (p *SlackProvider) UpdateGroupName(conversationID string, newName string) e
 
 func (p *SlackProvider) GetGroupDetails(conversationID string) (*models.GroupDetails, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.client == nil {
+	client := p.client
+	p.mu.RUnlock()
+	if client == nil {
 		return nil, fmt.Errorf("slack client not initialized")
 	}
 	rawID := core.StripConvID(conversationID)
-	channel, err := p.client.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: rawID, IncludeNumMembers: true})
+	channel, err := client.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: rawID, IncludeNumMembers: true})
 	if err != nil {
 		return nil, err
 	}
+	return p.groupDetails(rawID, channel), nil
+}
+
+func (p *SlackProvider) groupDetails(rawID string, channel *slack.Channel) *models.GroupDetails {
 	description := channel.Purpose.Value
 	if description == "" {
 		description = channel.Topic.Value
 	}
-	return &models.GroupDetails{ConversationID: core.BuildConvID(p.getInstanceId(), rawID), Name: channel.Name, Description: description, IsMember: channel.IsMember, CanSendMessages: channel.IsMember && !channel.IsArchived}, nil
+
+	// Slack's conversations.info response does not reliably set is_member for
+	// multi-person direct messages (including older MPIMs whose IDs start with
+	// C). Membership is inherent to an MPIM: if it is visible to the user and is
+	// not archived/read-only, Slack accepts messages and thread replies in it.
+	// Applying the channel-only is_member rule made Loom turn the composer
+	// read-only on the next 15-second group-details refresh.
+	isMember := channel.IsMember || channel.IsMpIM
+	canSend := isMember && !channel.IsArchived && !channel.IsReadOnly
+	return &models.GroupDetails{
+		ConversationID:  core.BuildConvID(p.getInstanceId(), rawID),
+		Name:            channel.Name,
+		Description:     description,
+		IsMember:        isMember,
+		CanSendMessages: canSend,
+	}
 }
 
 func (p *SlackProvider) UpdateGroupDescription(conversationID, description string) error {

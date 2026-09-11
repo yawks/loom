@@ -16,11 +16,12 @@ import (
 // paginated user-membership snapshot across ingestion paths, not an API call per
 // message. users.conversations implies membership; its objects omit is_member.
 type slackMembershipCache struct {
-	mu       sync.Mutex
-	client   *slack.Client
-	channels map[string]bool
-	expires  time.Time
-	err      error
+	mu        sync.RWMutex
+	refreshMu sync.Mutex
+	client    *slack.Client
+	channels  map[string]bool
+	expires   time.Time
+	err       error
 }
 
 func (p *SlackProvider) canIngestConversation(ctx context.Context, conversationID string) (bool, error) {
@@ -51,11 +52,38 @@ func (p *SlackProvider) canIngestConversation(ctx context.Context, conversationI
 		return false, fmt.Errorf("slack client not initialized")
 	}
 	c := &p.membership
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
 	if c.client == client && time.Now().Before(c.expires) {
-		return c.err == nil && c.channels[rawID], c.err
+		allowed, cachedErr := c.err == nil && c.channels[rawID], c.err
+		c.mu.RUnlock()
+		return allowed, cachedErr
 	}
+	c.mu.RUnlock()
+
+	// Never let a slow users.conversations refresh stop Socket Mode. The first
+	// caller refreshes the snapshot; concurrent callers use the last complete
+	// snapshot (or fail closed when none exists yet).
+	if !c.refreshMu.TryLock() {
+		c.mu.RLock()
+		allowed, cachedErr := c.client == client && c.err == nil && c.channels[rawID], c.err
+		hasSnapshot := c.client == client && c.channels != nil
+		c.mu.RUnlock()
+		if hasSnapshot {
+			return allowed, cachedErr
+		}
+		return false, fmt.Errorf("Slack membership refresh already in progress")
+	}
+	defer c.refreshMu.Unlock()
+
+	// Another caller may have completed the refresh before this caller acquired
+	// refreshMu.
+	c.mu.RLock()
+	if c.client == client && time.Now().Before(c.expires) {
+		allowed, cachedErr := c.err == nil && c.channels[rawID], c.err
+		c.mu.RUnlock()
+		return allowed, cachedErr
+	}
+	c.mu.RUnlock()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	channels := make(map[string]bool)
@@ -72,8 +100,10 @@ func (p *SlackProvider) canIngestConversation(ctx context.Context, conversationI
 		if err != nil {
 			// Never accept a partial list or stale positive membership on error.
 			// Briefly cache failures to avoid hammering Slack for every message.
+			c.mu.Lock()
 			c.client, c.channels, c.err = client, nil, err
 			c.expires = time.Now().Add(10 * time.Second)
+			c.mu.Unlock()
 			p.log("SlackProvider: unable to refresh memberships; channel ingestion paused: %v\n", err)
 			return false, err
 		}
@@ -88,8 +118,10 @@ func (p *SlackProvider) canIngestConversation(ctx context.Context, conversationI
 		seen[cursor] = true
 		params.Cursor = cursor
 	}
+	c.mu.Lock()
 	c.client, c.channels, c.err = client, channels, nil
 	c.expires = time.Now().Add(time.Minute)
+	c.mu.Unlock()
 	return channels[rawID], nil
 }
 

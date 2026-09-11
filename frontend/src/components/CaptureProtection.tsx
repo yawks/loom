@@ -78,7 +78,8 @@ export function CaptureProtectionProvider({ children }: { children: ReactNode })
         <div data-capture-protection-overlay className="pointer-events-auto fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-4 bg-background p-8 text-center text-foreground">
           <style>{`body > :not([data-capture-protection-overlay]), body > :not([data-capture-protection-overlay]) * { visibility: hidden !important; }`}</style>
           <Shield className="h-8 w-8" />
-          <p role={failed ? "alert" : "status"}>{t(failed ? "capture_protection_error" : "capture_protection_pending")}</p>
+          <p role={failed ? "alert" : "status"}>{t(settings.isError ? "capture_protection_settings_error" : nativeError ? "capture_protection_error" : "capture_protection_pending")}</p>
+          {settings.isError && <p className="max-w-xl break-words text-sm text-muted-foreground">{String(settings.error)}</p>}
           {failed && <Button onClick={() => { if (settings.isError) void settings.refetch(); else setAttempt((value) => value + 1); }}>{t("capture_protection_retry")}</Button>}
           {nativeError && enabled && <Button variant="outline" onClick={() => {
             useAppStore.getState().setSelectedContact(null);

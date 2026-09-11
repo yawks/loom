@@ -6,10 +6,47 @@ import (
 	"Loom/pkg/screenprotection"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestConversationCaptureProtectionWaitsForDatabaseStartup(t *testing.T) {
+	previous := db.DB
+	db.DB = nil
+	t.Cleanup(func() { db.DB = previous })
+	app := NewApp()
+	done := make(chan error, 1)
+	go func() { _, err := app.GetCaptureProtectionSettings(); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("settings returned before database initialization: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.ConversationCaptureProtection{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	db.DB = database
+	close(app.databaseReady)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("settings waited for provider synchronization after database became ready")
+	}
+}
 
 func TestConversationCaptureProtectionPersistenceAndIsolation(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
