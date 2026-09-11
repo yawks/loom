@@ -17,7 +17,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -34,6 +34,11 @@ import { MessageReactions } from "./MessageReactions";
 import { isStructuredAdaptiveCardAttachment, StructuredAdaptiveCard } from "./StructuredAdaptiveCard";
 import { StructuredEventCard } from "./StructuredEventCard";
 import { isStructuredEventCardAttachment } from "../lib/structuredEventCard";
+
+import { dataUrlToBytes } from "@/lib/attachmentData";
+import { getOfficeFormat } from "@/lib/officeDocument";
+
+const DocumentPreview = lazy(() => import("./DocumentPreview"));
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -73,17 +78,6 @@ function cacheAttachment(url: string, data: string): void {
     _attachmentDataCache.delete(oldest[0]);
     attachmentCacheBytes -= oldest[1].length * 2;
   }
-}
-
-function dataUrlToBytes(dataUrl: string): Uint8Array {
-  const comma = dataUrl.indexOf(",");
-  if (comma < 0) throw new Error("Invalid attachment data URL");
-
-  const metadata = dataUrl.slice(5, comma);
-  const encoded = dataUrl.slice(comma + 1);
-  return metadata.includes(";base64")
-    ? Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
-    : new TextEncoder().encode(decodeURIComponent(encoded));
 }
 
 // Drop base64 strings before an extended background/sleep period. WebKit can
@@ -788,6 +782,7 @@ export function MessageAttachments({
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
+  const [selectedOffice, setSelectedOffice] = useState<Attachment | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [selectedPdfAttachment, setSelectedPdfAttachment] = useState<Attachment | null>(null);
   const [loadingPdfIndex, setLoadingPdfIndex] = useState<number | null>(null);
@@ -1312,13 +1307,13 @@ export function MessageAttachments({
                     )}
                   </div>
                 </div>
-              ) : isPdf ? (
+              ) : isPdf || getOfficeFormat(attachment.fileName, attachment.mimeType) ? (
                 <div
                   className={`flex items-center gap-3 p-3 rounded-lg border ${isFromMe && layout === "bubble"
                     ? "bg-blue-600 text-white border-blue-700"
                     : "bg-muted text-foreground border-border"
                     } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
-                  onClick={() => { void handlePdfClick(attachment, index); }}
+                  onClick={() => { getOfficeFormat(attachment.fileName, attachment.mimeType) ? setSelectedOffice(attachment) : void handlePdfClick(attachment, index); }}
                   aria-busy={loadingPdfIndex === index}
                 >
                   <Icon className="h-8 w-8 shrink-0" />
@@ -1334,10 +1329,10 @@ export function MessageAttachments({
                     <button
                       type="button"
                       className="rounded-full p-1.5 hover:bg-black/10 disabled:cursor-wait"
-                      onClick={(event) => { event.stopPropagation(); void handlePdfClick(attachment, index); }}
+                      onClick={(event) => { event.stopPropagation(); getOfficeFormat(attachment.fileName, attachment.mimeType) ? setSelectedOffice(attachment) : void handlePdfClick(attachment, index); }}
                       disabled={loadingPdfIndex !== null}
-                      title="Aperçu du PDF"
-                      aria-label="Aperçu du PDF"
+                      title={t("office_preview")}
+                      aria-label={t("office_preview")}
                     >
                       {loadingPdfIndex === index ? <Loader2 className="h-5 w-5 animate-spin" /> : <Eye className="h-5 w-5" />}
                     </button>
@@ -1569,6 +1564,18 @@ export function MessageAttachments({
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedOffice !== null} onOpenChange={(open) => { if (!open) setSelectedOffice(null); }}>
+        <DialogContent className="flex h-[90vh] w-[95vw] max-w-6xl flex-col gap-3 p-4" aria-describedby={undefined}>
+          <div className="flex items-center gap-3 pr-8">
+            <DialogTitle className="min-w-0 flex-1 truncate">{selectedOffice?.fileName || t("office_preview")}</DialogTitle>
+            <button type="button" aria-label={t("download")} onClick={() => { if (selectedOffice) void handleDownload(selectedOffice); }}><Download className="h-5 w-5" /></button>
+          </div>
+          {selectedOffice && <Suspense fallback={<Loader2 className="m-auto animate-spin" />}>
+            <DocumentPreview key={selectedOffice.url} url={selectedOffice.url} format={getOfficeFormat(selectedOffice.fileName, selectedOffice.mimeType)!} providerInstanceId={providerInstanceId} />
+          </Suspense>}
         </DialogContent>
       </Dialog>
 

@@ -1,4 +1,12 @@
 {
+  "office_preview": "Aperçu du document",
+  "office_previous": "Précédent",
+  "office_next": "Suivant",
+  "office_zoom_out": "Dézoomer",
+  "office_zoom_in": "Zoomer",
+  "office_formula_note": "Les formules affichent les résultats enregistrés dans le fichier, sans recalcul.",
+  "office_preview_error": "Impossible d’afficher cet aperçu. Vous pouvez toujours télécharger le fichier.",
+
   "pin_message": "Épingler le message",
   "unpin_message": "Désépingler le message",
   "pinned_messages": "Messages épinglés",

@@ -1,4 +1,12 @@
 {
+  "office_preview": "Document preview",
+  "office_previous": "Previous",
+  "office_next": "Next",
+  "office_zoom_out": "Zoom out",
+  "office_zoom_in": "Zoom in",
+  "office_formula_note": "Formulas show the results saved in the file, without recalculation.",
+  "office_preview_error": "This preview could not be displayed. You can still download the file.",
+
   "pin_message": "Pin message",
   "unpin_message": "Unpin message",
   "pinned_messages": "Pinned messages",
