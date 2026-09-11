@@ -21,6 +21,8 @@ type roomSummary struct {
 
 func summarizeRoomEvents(p *Provider, events []matrixEvent) roomSummary {
 	s := roomSummary{}
+	var memberName, memberAvatar string
+	hasRoomAvatar := false
 	self := p.CurrentUserID()
 	for _, e := range events {
 		switch e.Type {
@@ -31,6 +33,7 @@ func summarizeRoomEvents(p *Provider, events []matrixEvent) roomSummary {
 			_ = json.Unmarshal(e.Content, &c)
 			s.Name = c.Name
 		case "m.room.avatar":
+			hasRoomAvatar = true
 			var c struct {
 				URL string `json:"url"`
 			}
@@ -49,12 +52,18 @@ func summarizeRoomEvents(p *Provider, events []matrixEvent) roomSummary {
 			if c.Membership == "join" {
 				s.Members = append(s.Members, *e.StateKey)
 				if *e.StateKey != self && s.Name == "" {
-					s.Name, s.Avatar = c.DisplayName, p.mediaURL(c.AvatarURL)
+					memberName, memberAvatar = c.DisplayName, p.mediaURL(c.AvatarURL)
 				}
 			}
 		}
 	}
 	s.IsDirect = len(s.Members) == 2
+	if s.Name == "" {
+		s.Name = memberName
+	}
+	if s.IsDirect && !hasRoomAvatar {
+		s.Avatar = memberAvatar
+	}
 	return s
 }
 
@@ -73,6 +82,16 @@ func (p *Provider) roomState(room string) (roomSummary, error) {
 		return roomSummary{}, err
 	}
 	s := summarizeRoomEvents(p, events)
+	if s.Avatar != "" {
+		avatar, err := p.downloadAvatar(noCancel(), s.Avatar)
+		if err != nil {
+			// Photo enrichment must not hide a room or fail contact discovery.
+			if cached, ok := db.ContactStore.FindByProviderUser(p.getInstanceID(), p.accountForRoom(room, s).UserID); ok {
+				avatar = cached.AvatarURL
+			}
+		}
+		s.Avatar = avatar
+	}
 	if s.Name == "" {
 		s.Name = room
 	}
@@ -88,17 +107,21 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 		err     error
 	}
 	results := make([]roomResult, len(rooms))
-	semaphore := make(chan struct{}, 6)
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for index, room := range rooms {
+	for worker := 0; worker < min(6, len(rooms)); worker++ {
 		wg.Add(1)
-		go func(index int, room string) {
+		go func() {
 			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-			results[index].summary, results[index].err = p.roomState(room)
-		}(index, room)
+			for index := range jobs {
+				results[index].summary, results[index].err = p.roomState(rooms[index])
+			}
+		}()
 	}
+	for index := range rooms {
+		jobs <- index
+	}
+	close(jobs)
 	wg.Wait()
 
 	out := make([]models.LinkedAccount, 0, len(rooms))
@@ -128,11 +151,11 @@ func (p *Provider) accountForRoom(room string, summary roomSummary) models.Linke
 }
 
 func (p *Provider) persistRoom(account models.LinkedAccount, roomID string) {
-	if db.DB == nil {
+	if db.DB == nil || p.getInstanceID() == "" {
 		return
 	}
 	var linked models.LinkedAccount
-	db.DB.Where("provider_instance_id = ? AND user_id = ?", p.getInstanceID(), account.UserID).First(&linked)
+	db.ForProvider(db.DB, p.getInstanceID()).LinkedAccounts().Where("user_id = ?", account.UserID).First(&linked)
 	if linked.ID == 0 {
 		meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
 		if db.DB.Create(&meta).Error != nil {
@@ -158,7 +181,7 @@ func (p *Provider) persistRoom(account models.LinkedAccount, roomID string) {
 	}
 	namespaced := p.namespacedRoom(roomID)
 	var conversation models.Conversation
-	db.DB.Where("protocol_conv_id = ?", namespaced).First(&conversation)
+	db.ForProvider(db.DB, p.getInstanceID()).Conversations().Where("protocol_conv_id = ?", namespaced).First(&conversation)
 	groupName := ""
 	if account.IsGroup {
 		groupName = account.Username

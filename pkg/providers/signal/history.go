@@ -56,6 +56,8 @@ func (p *Provider) syncTransferHistory(since time.Time) error {
 		progress := 10 + (index+1)*85/max(1, len(chats))
 		p.emit(core.SyncStatusEvent{InstanceID: p.instanceID(), Status: core.SyncStatusFetchingHistory, Message: "Importing Signal conversations", Progress: progress})
 	}
+	// Enrich photos after the canonical conversations exist, in one batch.
+	_, _ = p.GetContacts()
 	p.emit(core.SyncStatusEvent{InstanceID: p.instanceID(), Status: core.SyncStatusCompleted, Message: "Signal synchronization complete", Progress: 100})
 	return nil
 }

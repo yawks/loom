@@ -15,6 +15,7 @@ import { usePresenceStore } from "@/lib/presenceStore";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useTypingStore } from "@/lib/typingStore";
+import { CaptureProtectionControl } from "./CaptureProtection";
 
 export function MessageHeader({
   displayName,
@@ -186,6 +187,7 @@ export function MessageHeader({
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        <CaptureProtectionControl key={conversationId} conversationId={conversationId} />
         <Button
           variant="ghost"
           size="icon"

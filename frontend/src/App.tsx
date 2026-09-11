@@ -5,6 +5,7 @@ import { useAppStore } from "@/lib/store";
 import i18n from "@/i18n";
 import "./App.css";
 import { useSystemNotifications } from "@/hooks/useSystemNotifications";
+import { CaptureProtectionProvider } from "@/components/CaptureProtection";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -72,7 +73,7 @@ function AppContent() {
 
   return (
     <main className="h-screen overflow-hidden">
-      <ChatLayout />
+      <CaptureProtectionProvider><ChatLayout /></CaptureProtectionProvider>
     </main>
   );
 }

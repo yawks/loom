@@ -172,6 +172,22 @@ export namespace gorm {
 
 export namespace main {
 	
+	export class CaptureProtectionSettings {
+	    supported: boolean;
+	    limited: boolean;
+	    conversationIds: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CaptureProtectionSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
+	        this.limited = source["limited"];
+	        this.conversationIds = source["conversationIds"];
+	    }
+	}
 	export class LinkPreview {
 	    title: string;
 	    description: string;

@@ -531,5 +531,17 @@
     "hours_other": "{{count}} heures",
     "days_one": "{{count}} jour",
     "days_other": "{{count}} jours"
-  }
+  },
+  "capture_protection_title": "Protection contre la capture d’écran",
+  "capture_protection_on": "Protection contre la capture d’écran activée",
+  "capture_protection_description": "Exclure toute la fenêtre Loom des captures compatibles lorsque cette conversation est ouverte. Ce réglage est enregistré sur cet appareil.",
+  "capture_protection_limited": "Protection partielle sur ce système : certains outils de partage peuvent encore capturer cette fenêtre. Testez votre outil de partage avant de vous y fier.",
+  "capture_protection_scope": "Ce réglage ne masque pas les aperçus dans les autres vues ni les notifications système, et ne protège pas les fichiers ouverts dans une autre application.",
+  "capture_protection_enable": "Protéger cette conversation",
+  "capture_protection_disable": "Retirer la protection",
+  "capture_protection_pending": "Application de la protection contre la capture d’écran…",
+  "capture_protection_error": "La protection contre la capture d’écran n’a pas pu être vérifiée. Le contenu reste masqué.",
+  "capture_protection_retry": "Réessayer",
+  "capture_protection_leave": "Fermer cette conversation",
+  "capture_protection_save_error": "Le réglage n’a pas pu être enregistré. Veuillez réessayer."
 }

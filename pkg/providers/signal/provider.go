@@ -325,6 +325,7 @@ func (p *Provider) GetContacts() ([]models.LinkedAccount, error) {
 		out = append(out, models.LinkedAccount{Protocol: "signal", ProviderInstanceID: instanceID, UserID: id, Username: name, Status: "offline", IsGroup: isGroup, ConversationID: core.BuildConvID(instanceID, id)})
 		seen[id] = true
 	}
+	p.enrichGroupAvatars(client, out)
 	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
 	return out, nil
 }

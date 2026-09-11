@@ -31,6 +31,9 @@ func (p *Provider) syncLoop(ctx context.Context) {
 			NextBatch string `json:"next_batch"`
 			Rooms     struct {
 				Join map[string]struct {
+					State struct {
+						Events []matrixEvent `json:"events"`
+					} `json:"state"`
 					Timeline struct {
 						Events []matrixEvent `json:"events"`
 					} `json:"timeline"`
@@ -51,7 +54,9 @@ func (p *Provider) syncLoop(ctx context.Context) {
 		p.mu.Lock()
 		p.nextBatch = response.NextBatch
 		p.mu.Unlock()
+		avatarRooms := make(map[string][][]matrixEvent)
 		for roomID, room := range response.Rooms.Join {
+			avatarRooms[roomID] = [][]matrixEvent{room.State.Events, room.Timeline.Events}
 			roomMessages := make([]models.Message, 0, len(room.Timeline.Events))
 			for _, event := range room.Timeline.Events {
 				p.mu.Lock()
@@ -95,6 +100,7 @@ func (p *Provider) syncLoop(ctx context.Context) {
 				}
 			}
 		}
+		p.updateRoomAvatars(ctx, avatarRooms)
 	}
 }
 

@@ -45,7 +45,7 @@ func main() {
 			TitleBar: mac.TitleBarHiddenInset(),
 		},
 		Windows: &windows.Options{
-			// Windows-specific options
+			WindowClassName: "LoomMainWindow",
 		},
 	})
 

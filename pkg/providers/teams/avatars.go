@@ -1,18 +1,35 @@
 package teams
 
 import (
+	"Loom/pkg/db"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.mau.fi/mautrix-teams/pkg/msteams"
 )
 
 func (p *Provider) conversationAvatar(client *msteams.Client, chat msteams.Chat) string {
 	if chat.Type != msteams.ChatType1on1 {
+		if chat.Picture == "" {
+			return ""
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		data, _, err := client.FetchChatAvatar(ctx, chat.ID, chat.Picture)
+		if err == nil && len(data) <= 4<<20 && strings.HasPrefix(http.DetectContentType(data), "image/") {
+			return "data:" + http.DetectContentType(data) + ";base64," + base64.StdEncoding.EncodeToString(data)
+		}
+		// Temporary media failures do not mean the remote photo was removed.
+		if account, ok := db.ContactStore.FindByProviderUser(p.instance, chat.ID); ok {
+			return account.AvatarURL
+		}
 		return ""
 	}
 	members := chat.Members

@@ -173,6 +173,9 @@ func (p *Provider) handleChatEvent(evt *events.ChatEvent) {
 		}
 	}
 	conv := core.BuildConvID(p.instanceID(), evt.Info.ChatID)
+	if group := dm.GetGroupV2(); group != nil && len(group.GetGroupChange()) > 0 {
+		p.refreshGroupAvatar(evt.Info.ChatID, group.GetRevision())
+	}
 	ts := dm.GetTimestamp()
 	if ts == 0 {
 		ts = evt.Info.ServerTimestamp

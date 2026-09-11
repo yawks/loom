@@ -71,6 +71,8 @@ export function GetAvatar(arg1:string):Promise<string>;
 
 export function GetCapabilities(arg1:string):Promise<core.Capabilities>;
 
+export function GetCaptureProtectionSettings():Promise<main.CaptureProtectionSettings>;
+
 export function GetCommunicationStats(arg1:time.Time,arg2:time.Time):Promise<models.CommunicationStats>;
 
 export function GetConfig():Promise<Record<string, any>>;
@@ -207,7 +209,11 @@ export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 
 export function SetContactAliasForConversation(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function SetConversationCaptureProtection(arg1:string,arg2:boolean):Promise<void>;
+
 export function SetConversationMuted(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetWindowCaptureProtection(arg1:boolean):Promise<void>;
 
 export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string>;
 

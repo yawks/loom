@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -61,7 +62,13 @@ func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
 	}
 
 	// Get profile picture info
-	picInfo, err := w.client.GetProfilePictureInfo(w.ctx, jid, &whatsmeow.GetProfilePictureParams{
+	parent := w.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	picInfo, err := w.client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
 		Preview:     false,
 		ExistingID:  "",
 		IsCommunity: false,
@@ -102,7 +109,11 @@ func (w *WhatsAppProvider) getProfilePictureURL(jid types.JID) string {
 	}
 
 	// Download the image
-	resp, err := http.Get(picInfo.URL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, picInfo.URL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Printf("WhatsApp: Failed to download avatar for %s: %v\n", jid.String(), err)
 		return ""

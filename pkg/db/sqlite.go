@@ -123,6 +123,7 @@ func initDatabase(dsn string) error {
 		&models.LinkedAccount{},
 		&models.ParticipantProfile{},
 		&models.Conversation{},
+		&models.ConversationCaptureProtection{},
 		&models.GroupParticipant{},
 		&models.Message{},
 		&models.MessageWatchRule{},

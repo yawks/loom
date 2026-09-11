@@ -145,6 +145,12 @@ type LinkedAccount struct {
 }
 
 // Conversation represents a chat (Direct, Group).
+// ConversationCaptureProtection is a device-local preference independent of
+// provider synchronization. A row means capture exclusion is requested.
+type ConversationCaptureProtection struct {
+	ConversationID string `gorm:"primaryKey" json:"conversationId"`
+}
+
 type Conversation struct {
 	ID                uint               `gorm:"primarykey" json:"id"`
 	LinkedAccountID   uint               `json:"linkedAccountId"`

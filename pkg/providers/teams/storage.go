@@ -15,14 +15,14 @@ import (
 )
 
 func (p *Provider) storeConversation(account models.LinkedAccount) error {
+	if p.instance == "" || account.ProviderInstanceID != p.instance {
+		return fmt.Errorf("invalid Teams conversation ownership")
+	}
 	if db.DB == nil {
 		return nil
 	}
 	var stored models.LinkedAccount
-	result := db.DB.Where(
-		"provider_instance_id = ? AND user_id = ?",
-		account.ProviderInstanceID, account.UserID,
-	).First(&stored)
+	result := db.ForProvider(db.DB, p.instance).LinkedAccounts().Where("user_id = ?", account.UserID).First(&stored)
 	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 		return fmt.Errorf("%s: find conversation account: %w", providerID, result.Error)
 	}
@@ -66,7 +66,7 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 
 	nsConvID := core.BuildConvID(p.instance, account.ConversationID)
 	var conversation models.Conversation
-	result = db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
+	result = db.ForProvider(db.DB, p.instance).Conversations().Where("protocol_conv_id = ?", nsConvID).First(&conversation)
 	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
 		return fmt.Errorf("%s: find conversation: %w", providerID, result.Error)
 	}

@@ -529,5 +529,17 @@
     "hours_other": "{{count}} hours",
     "days_one": "{{count}} day",
     "days_other": "{{count}} days"
-  }
+  },
+  "capture_protection_title": "Screen capture protection",
+  "capture_protection_on": "Screen capture protection enabled",
+  "capture_protection_description": "Exclude the entire Loom window from compatible screen captures while this conversation is open. This preference is saved on this device.",
+  "capture_protection_limited": "Partial protection on this system: some sharing tools can still capture this window. Test your sharing tool before relying on it.",
+  "capture_protection_scope": "This does not hide previews in other views or system notifications, and does not protect files opened in another application.",
+  "capture_protection_enable": "Protect this conversation",
+  "capture_protection_disable": "Remove protection",
+  "capture_protection_pending": "Applying screen capture protection…",
+  "capture_protection_error": "Screen capture protection could not be verified. Content remains hidden.",
+  "capture_protection_retry": "Retry",
+  "capture_protection_leave": "Close this conversation",
+  "capture_protection_save_error": "The preference could not be saved. Please try again."
 }

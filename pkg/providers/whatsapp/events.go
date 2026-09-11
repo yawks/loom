@@ -111,6 +111,23 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		w.avatarFailuresMu.Lock()
 		delete(w.avatarFailures, v.JID.String())
 		w.avatarFailuresMu.Unlock()
+		avatar := ""
+		if !v.Remove {
+			avatar = w.getProfilePictureURL(v.JID)
+			if avatar == "" {
+				break // A failed download must not erase the previous photo.
+			}
+		}
+		if err := db.UpdateConversationAvatar(w.getInstanceId(), core.BuildConvID(w.getInstanceId(), v.JID.String()), avatar); err != nil {
+			fmt.Printf("WhatsApp: Failed to update group avatar: %v\n", err)
+			break
+		}
+		w.mu.Lock()
+		if account, ok := w.conversations[v.JID.String()]; ok {
+			account.AvatarURL = avatar
+			w.conversations[v.JID.String()] = account
+		}
+		w.mu.Unlock()
 		select {
 		case w.eventChan <- core.GroupChangeEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), v.JID.String()), ChangeType: core.GroupChangeUpdated, Timestamp: v.Timestamp.Unix()}:
 		default:

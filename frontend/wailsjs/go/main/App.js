@@ -134,6 +134,10 @@ export function GetCapabilities(arg1) {
   return window['go']['main']['App']['GetCapabilities'](arg1);
 }
 
+export function GetCaptureProtectionSettings() {
+  return window['go']['main']['App']['GetCaptureProtectionSettings']();
+}
+
 export function GetCommunicationStats(arg1, arg2) {
   return window['go']['main']['App']['GetCommunicationStats'](arg1, arg2);
 }
@@ -406,8 +410,16 @@ export function SetContactAliasForConversation(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetContactAliasForConversation'](arg1, arg2, arg3);
 }
 
+export function SetConversationCaptureProtection(arg1, arg2) {
+  return window['go']['main']['App']['SetConversationCaptureProtection'](arg1, arg2);
+}
+
 export function SetConversationMuted(arg1, arg2) {
   return window['go']['main']['App']['SetConversationMuted'](arg1, arg2);
+}
+
+export function SetWindowCaptureProtection(arg1) {
+  return window['go']['main']['App']['SetWindowCaptureProtection'](arg1);
 }
 
 export function StartGoogleMessagesLogin(arg1, arg2) {

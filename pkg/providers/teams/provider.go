@@ -612,6 +612,7 @@ func (p *Provider) GetGroupDetails(conversationID string) (*models.GroupDetails,
 		ConversationID:  core.BuildConvID(instance, threadID),
 		Name:            chat.Topic,
 		Description:     chat.Description,
+		AvatarURL:       p.conversationAvatar(client, *chat),
 		IsMember:        canSend,
 		CanSendMessages: canSend,
 	}, nil
@@ -1787,8 +1788,16 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 	case msteams.EventTypeChatUpdate:
 		// A membership event can be the first time this chat is visible locally.
 		// Persist it before asking the frontend to reload its conversation list.
-		_, _ = p.ensureConversationStored(client, event.ThreadID)
-		p.emit(core.ContactStatusEvent{InstanceID: p.instance, UserID: "refresh", Status: "new_conversations_discovered"})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		chat, err := client.GetChat(ctx, event.ThreadID)
+		cancel()
+		if err != nil || chat == nil || p.instance == "" {
+			return
+		}
+		if err := p.storeConversation(p.linkedAccount(client, *chat)); err != nil {
+			return
+		}
+		p.emit(core.GroupChangeEvent{InstanceID: p.instance, ConversationID: core.BuildConvID(p.instance, event.ThreadID), ChangeType: core.GroupChangeUpdated, Timestamp: time.Now().Unix()})
 	case msteams.EventTypeHistorySync:
 		p.scheduleHistoryRecovery(event.Timestamp)
 	}
