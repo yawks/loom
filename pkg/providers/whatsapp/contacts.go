@@ -532,6 +532,9 @@ func (w *WhatsAppProvider) GetContacts() ([]models.LinkedAccount, error) {
 		for i := range createdContacts {
 			db.ContactStore.UpsertLinkedAccount(createdContacts[i])
 		}
+		if err := w.reconcileContactConversations(); err != nil {
+			return nil, fmt.Errorf("persist WhatsApp conversations: %w", err)
+		}
 
 		fmt.Printf("WhatsApp: Contacts saved (%d updated, %d created)\n", updateCount, len(createdContacts))
 	} else {
