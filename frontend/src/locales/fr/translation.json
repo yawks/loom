@@ -541,6 +541,7 @@
     "days_other": "{{count}} jours"
   },
   "capture_protection_settings_error": "Les réglages de protection des conversations n’ont pas pu être chargés. Le contenu reste masqué.",
+  "capture_protection_release_error": "L’exclusion de la fenêtre du partage d’écran n’a pas pu être désactivée. Vous pouvez continuer à utiliser Loom ; la fenêtre peut rester exclue du partage.",
   "capture_protection_title": "Protection contre la capture d’écran",
   "capture_protection_on": "Protection contre la capture d’écran activée",
   "capture_protection_description": "Exclure toute la fenêtre Loom des captures compatibles lorsque cette conversation est ouverte. Ce réglage est enregistré sur cet appareil.",

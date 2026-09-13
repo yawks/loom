@@ -12,7 +12,8 @@ import { createCaptureProtectionQueue } from "@/lib/captureProtectionQueue";
 
 const settingsKey = ["captureProtectionSettings"];
 const applyProtection = createCaptureProtectionQueue(SetWindowCaptureProtection, () =>
-  new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  3,
 );
 
 interface ProtectionContext {
@@ -39,13 +40,13 @@ export function CaptureProtectionProvider({ children }: { children: ReactNode })
   if (selectedProfile) selectedIds.push(selectedProfile.conversationId);
   const enabled = selectedIds.some((id) => protectedIds.includes(id));
   const [ready, setReady] = useState(false);
-  const [nativeError, setNativeError] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useLayoutEffect(() => {
     let cancelled = false;
     setReady(false);
-    setNativeError(false);
+    setNativeError(null);
     if (settings.isSuccess) {
       // Layout effects hide the whole document (including portal dialogs)
       // before painting a newly selected confidential conversation.
@@ -53,7 +54,13 @@ export function CaptureProtectionProvider({ children }: { children: ReactNode })
         if (!cancelled) setReady(true);
       }).catch((error: unknown) => {
         console.error("Failed to apply window capture protection:", error);
-        if (!cancelled) setNativeError(true);
+        if (!cancelled) {
+          setNativeError(String(error));
+          // Failure to remove exclusion must not lock users out of an
+          // unprotected conversation. The previous content was hidden and
+          // painted before this operation. Enabling still fails closed.
+          if (!enabled) setReady(true);
+        }
       });
     }
     return () => { cancelled = true; };
@@ -74,17 +81,23 @@ export function CaptureProtectionProvider({ children }: { children: ReactNode })
   return (
     <Context.Provider value={{ supported: settings.data?.supported ?? false, limited: settings.data?.limited ?? false, conversationIds: protectedIds, save }}>
       <div inert={blocked} className="h-full">{children}</div>
+      {!blocked && nativeError && !enabled && <div role="status" className="fixed bottom-4 left-4 z-[99999] max-w-md rounded border bg-background p-3 text-sm text-foreground shadow-lg">
+        <p>{t("capture_protection_release_error")}</p>
+        <Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>{t("capture_protection_retry")}</Button>
+      </div>}
       {blocked && createPortal(
         <div data-capture-protection-overlay className="pointer-events-auto fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-4 bg-background p-8 text-center text-foreground">
           <style>{`body > :not([data-capture-protection-overlay]), body > :not([data-capture-protection-overlay]) * { visibility: hidden !important; }`}</style>
           <Shield className="h-8 w-8" />
           <p role={failed ? "alert" : "status"}>{t(settings.isError ? "capture_protection_settings_error" : nativeError ? "capture_protection_error" : "capture_protection_pending")}</p>
           {settings.isError && <p className="max-w-xl break-words text-sm text-muted-foreground">{String(settings.error)}</p>}
+          {nativeError && <p className="max-w-xl break-words text-sm text-muted-foreground">{nativeError}</p>}
           {failed && <Button onClick={() => { if (settings.isError) void settings.refetch(); else setAttempt((value) => value + 1); }}>{t("capture_protection_retry")}</Button>}
           {nativeError && enabled && <Button variant="outline" onClick={() => {
             useAppStore.getState().setSelectedContact(null);
             useAppStore.getState().setSelectedContactProfile(null);
             useAppStore.getState().setShowThreads(false);
+            useAppStore.getState().setSelectedThreadId(null);
             useAppStore.getState().setSelectedAvatarUrl(null);
           }}>{t("capture_protection_leave")}</Button>}
         </div>, document.body

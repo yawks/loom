@@ -539,6 +539,7 @@
     "days_other": "{{count}} days"
   },
   "capture_protection_settings_error": "Conversation protection settings could not be loaded. Content remains hidden.",
+  "capture_protection_release_error": "Window capture exclusion could not be disabled. You can keep using Loom; the window may remain excluded from screen sharing.",
   "capture_protection_title": "Screen capture protection",
   "capture_protection_on": "Screen capture protection enabled",
   "capture_protection_description": "Exclude the entire Loom window from compatible screen captures while this conversation is open. This preference is saved on this device.",

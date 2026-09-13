@@ -3,6 +3,8 @@
 export function createCaptureProtectionQueue(
   apply: (enabled: boolean) => Promise<void>,
   afterHiddenPaint: () => Promise<void>,
+  attempts = 1,
+  retryDelay: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 200)),
 ) {
   let pending = Promise.resolve();
   return (enabled: boolean): Promise<void> => {
@@ -10,7 +12,15 @@ export function createCaptureProtectionQueue(
       // Give the compositor a frame with the confidential content removed
       // before making the window capturable again.
       if (!enabled) await afterHiddenPaint();
-      await apply(enabled);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await apply(enabled);
+          break;
+        } catch (error) {
+          if (attempt + 1 >= attempts) throw error;
+          await retryDelay();
+        }
+      }
     });
     pending = next.catch(() => {});
     return next;

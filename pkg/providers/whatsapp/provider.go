@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -60,54 +61,58 @@ func refreshWAVersion(ctx context.Context) error {
 }
 
 type WhatsAppProvider struct {
-	client               *whatsmeow.Client
-	container            *sqlstore.Container
-	deviceStore          *store.Device // Store the device store for later use
-	eventChan            chan core.ProviderEvent
-	stopChan             chan struct{}
-	config               core.ProviderConfig
-	mu                   sync.RWMutex
-	qrMu                 sync.RWMutex
-	latestQRCode         string
-	qrError              string
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	knownGroups          map[string]string               // Map of group JID to group name (tracked from messages)
-	groupParticipants    map[string]map[types.JID]string // Map of group JID to map of participant JID to phone number
-	groupCacheSem        chan struct{}                   // Bounds concurrent group metadata network requests
-	groupCacheMu         sync.Mutex
-	groupCacheInFlight   map[string]bool                 // Coalesces duplicate requests during history bursts
-	conversations        map[string]models.LinkedAccount // Cached conversations from history sync
-	conversationMessages map[string][]models.Message     // Cached messages per conversation
-	disconnected         bool                            // Track if already disconnected
-	qrChan               <-chan whatsmeow.QRChannelItem  // QR code channel (must be obtained before Connect)
-	qrChanSet            bool                            // Track if QR channel has been set
-	qrListenerRunning    bool                            // Track if QR listener goroutine is running
-	qrListenerMu         sync.Mutex                      // Mutex for qrListenerRunning flag
-	avatarLoading        map[string]bool                 // Track which avatars are currently being loaded to avoid duplicates
-	avatarLoadingMu      sync.Mutex                      // Mutex for avatarLoading map
-	avatarFailures       map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
-	avatarFailuresMu     sync.RWMutex                    // Mutex for avatarFailures map
-	lastSyncTimestamp    *time.Time                      // Timestamp of last successful sync (loaded from DB)
-	hadSyncAtStartup     bool                            // Immutable for this process: separates a fresh import from later startups
-	groupsCacheTimestamp *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
-	groupsCache          []models.LinkedAccount          // Cached groups from GetJoinedGroups
-	lidToJIDMap          map[string]string               // Map of LID to standard JID for conversation resolution
-	lidToJIDMu           sync.RWMutex                    // Mutex for LID to JID map
-	lastAvatarRefresh    map[string]time.Time            // Map of contactID to last refresh time
-	avatarRefreshMu      sync.Mutex                      // Mutex for lastAvatarRefresh map
-	pendingEdits         map[string]pendingEditInfo      // Pending message edits keyed by target message ID
-	pendingEditsMu       sync.Mutex                      // Mutex for pendingEdits map
-	activeCalls          map[string]*activeCallInfo      // Active call tracker keyed by callID
-	activeCallsMu        sync.RWMutex                    // Mutex for activeCalls map
-	callLogFullSyncOnce  sync.Once                       // Recover call logs missed while Loom was offline once per startup
-	syncFallbackMu       sync.Mutex                      // Protects the reconnect completion fallback
-	syncFallbackTimer    *time.Timer                     // Cancelled when OfflineSyncCompleted arrives
-	historyBackfillMu    sync.Mutex
-	historyBackfills     map[string]bool // Per-process targeted legacy-history requests
-	legacyRequestMu      sync.Mutex
-	legacyRequests       map[string]string       // Requested message ID -> namespaced conversation ID
-	logger               *logging.ProviderLogger // Logger for this provider instance
+	client                *whatsmeow.Client
+	container             *sqlstore.Container
+	deviceStore           *store.Device // Store the device store for later use
+	eventChan             chan core.ProviderEvent
+	stopChan              chan struct{}
+	config                core.ProviderConfig
+	mu                    sync.RWMutex
+	qrMu                  sync.RWMutex
+	latestQRCode          string
+	qrError               string
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	knownGroups           map[string]string               // Map of group JID to group name (tracked from messages)
+	groupParticipants     map[string]map[types.JID]string // Map of group JID to map of participant JID to phone number
+	groupCacheSem         chan struct{}                   // Bounds concurrent group metadata network requests
+	groupCacheMu          sync.Mutex
+	groupCacheInFlight    map[string]bool                 // Coalesces duplicate requests during history bursts
+	conversations         map[string]models.LinkedAccount // Cached conversations from history sync
+	conversationMessages  map[string][]models.Message     // Cached messages per conversation
+	disconnected          bool                            // Track if already disconnected
+	qrChan                <-chan whatsmeow.QRChannelItem  // QR code channel (must be obtained before Connect)
+	qrChanSet             bool                            // Track if QR channel has been set
+	qrListenerRunning     bool                            // Track if QR listener goroutine is running
+	qrListenerMu          sync.Mutex                      // Mutex for qrListenerRunning flag
+	avatarLoading         map[string]bool                 // Track which avatars are currently being loaded to avoid duplicates
+	avatarLoadingMu       sync.Mutex                      // Mutex for avatarLoading map
+	avatarFailures        map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
+	avatarFailuresMu      sync.RWMutex                    // Mutex for avatarFailures map
+	lastSyncTimestamp     *time.Time                      // Timestamp of last successful sync (loaded from DB)
+	hadSyncAtStartup      bool                            // Immutable for this process: separates a fresh import from later startups
+	groupsCacheTimestamp  *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
+	groupsCache           []models.LinkedAccount          // Cached groups from GetJoinedGroups
+	lidToJIDMap           map[string]string               // Map of LID to standard JID for conversation resolution
+	lidToJIDMu            sync.RWMutex                    // Mutex for LID to JID map
+	lastAvatarRefresh     map[string]time.Time            // Map of contactID to last refresh time
+	avatarRefreshMu       sync.Mutex                      // Mutex for lastAvatarRefresh map
+	pendingEdits          map[string]pendingEditInfo      // Pending message edits keyed by target message ID
+	pendingEditsMu        sync.Mutex                      // Mutex for pendingEdits map
+	activeCalls           map[string]*activeCallInfo      // Active call tracker keyed by callID
+	activeCallsMu         sync.RWMutex                    // Mutex for activeCalls map
+	callLogRecordsSeen    atomic.Uint64
+	callLogRefreshMu      sync.Mutex
+	callLogRefreshRunning bool
+	callLogRefreshPending bool
+	callLogFullSyncOnce   sync.Once   // Recover call logs missed while Loom was offline once per startup
+	syncFallbackMu        sync.Mutex  // Protects the reconnect completion fallback
+	syncFallbackTimer     *time.Timer // Cancelled when OfflineSyncCompleted arrives
+	historyBackfillMu     sync.Mutex
+	historyBackfills      map[string]bool // Per-process targeted legacy-history requests
+	legacyRequestMu       sync.Mutex
+	legacyRequests        map[string]string       // Requested message ID -> namespaced conversation ID
+	logger                *logging.ProviderLogger // Logger for this provider instance
 }
 
 type pendingEditInfo struct {

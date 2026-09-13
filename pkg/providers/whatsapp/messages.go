@@ -852,10 +852,11 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 		fmt.Printf("WhatsApp: Detected call message type: %s for message %s (group: %v, isFromMe: %v)\n", callType, evt.Info.ID, isGroup, evt.Info.IsFromMe)
 	}
 	if callLog := msg.GetCallLogMesssage(); callLog != nil {
+		verboseLogf("WhatsApp: CallLogMessage received message=%s durationPresent=%v duration=%d outcome=%s\n", evt.Info.ID, callLog.DurationSecs != nil, callLog.GetDurationSecs(), callLog.GetCallOutcome())
 		isGroup := chatJID.Server == types.GroupServer || callLog.GetCallType() == waE2E.CallLogMessage_VOICE_CHAT
 		callIsVideo = callLog.GetIsVideo()
 		callOutcome = callLogOutcome(callLog.GetCallOutcome().String(), nil)
-		if callLog.DurationSecs != nil {
+		if callLog.GetDurationSecs() > 0 {
 			duration := int32(callLog.GetDurationSecs())
 			callDurationSecs = &duration
 		}
@@ -1660,6 +1661,21 @@ func (w *WhatsAppProvider) appendMessageToConversation(msg *models.Message) {
 func reconcileDuplicateMessage(existing, incoming *models.Message) {
 	if existing == nil || incoming == nil {
 		return
+	}
+	// Late summaries enrich calls; older replays must not erase known duration.
+	if incoming.CallType != "" && (existing.CallDurationSecs == nil ||
+		(incoming.CallDurationSecs != nil && *incoming.CallDurationSecs > 0)) {
+		existing.CallType = incoming.CallType
+		existing.CallIsVideo = incoming.CallIsVideo
+		if incoming.CallOutcome != "" {
+			existing.CallOutcome = incoming.CallOutcome
+		}
+		if incoming.CallDurationSecs != nil && *incoming.CallDurationSecs > 0 {
+			existing.CallDurationSecs = incoming.CallDurationSecs
+		}
+		if incoming.CallParticipants != "" {
+			existing.CallParticipants = incoming.CallParticipants
+		}
 	}
 	if incoming.IsEdited {
 		existing.Body = incoming.Body

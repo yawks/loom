@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"gorm.io/gorm"
 )
 
 func (w *WhatsAppProvider) cancelSyncFallback() {
@@ -263,6 +265,13 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if msg.Poll != nil && v.SourceWebMsg != nil {
 			w.applyPollSnapshot(msg, v.SourceWebMsg)
 		}
+		if msg.CallType != "" {
+			duration := "unknown"
+			if msg.CallDurationSecs != nil {
+				duration = fmt.Sprintf("%ds", *msg.CallDurationSecs)
+			}
+			w.log("WhatsApp: Live call message=%s outcome=%s duration=%s\n", msg.ProtocolMsgID, msg.CallOutcome, duration)
+		}
 		msgID = msg.ProtocolMsgID
 
 		// Check if message with same ID already exists
@@ -281,7 +290,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// If not found in cache, check database
 		if existingMsg == nil && db.DB != nil {
 			var dbMsg models.Message
-			if err := db.DB.Preload("Receipts").Preload("Reactions").Where("protocol_msg_id = ?", msgID).First(&dbMsg).Error; err == nil {
+			if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Preload("Receipts").Preload("Reactions").Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, msgID).First(&dbMsg).Error; err == nil {
 				existingMsg = &dbMsg
 				verboseLogf("WhatsApp: Found existing message %s in database\n", msgID)
 				// Also add to cache if we found it in DB
@@ -324,7 +333,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 				}
 				w.mu.Unlock()
 				if db.DB != nil {
-					db.DB.Model(&models.Message{}).Where("protocol_msg_id = ?", msgID).Updates(map[string]interface{}{
+					db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, msgID).Updates(map[string]interface{}{
 						"attachments": existingMsg.Attachments,
 						"body":        existingMsg.Body,
 					})
@@ -368,9 +377,14 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 						fmt.Printf("WhatsApp: Failed to encode reconciled poll state %s: %v\n", msgID, marshalErr)
 					}
 				}
-				if err := db.DB.Model(&models.Message{}).
-					Where("protocol_msg_id = ?", msgID).
+				if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().
+					Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, msgID).
 					Updates(map[string]interface{}{
+						"call_type":                existingMsg.CallType,
+						"call_outcome":             existingMsg.CallOutcome,
+						"call_duration_secs":       existingMsg.CallDurationSecs,
+						"call_is_video":            existingMsg.CallIsVideo,
+						"call_participants":        existingMsg.CallParticipants,
 						"body":                     existingMsg.Body,
 						"attachments":              existingMsg.Attachments,
 						"poll":                     encodedPoll,
@@ -799,7 +813,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// IMPORTANT: We only cache conversations, not messages (like Slack)
 		// Messages will be loaded on-demand when user selects a conversation or when a new message arrives
 		if v != nil && v.Data != nil {
-			fmt.Printf("WhatsApp: ===== HISTORY SYNC STARTED =====\n")
+			w.log("WhatsApp: HistorySync type=%s conversations=%d callLogs=%d\n", v.Data.GetSyncType(), len(v.Data.GetConversations()), len(v.Data.GetCallLogRecords()))
 			w.cacheConversationsFromHistory(v.Data)
 			// Process history messages to populate previews and cache
 			w.cacheMessagesFromHistory(v.Data)
@@ -854,6 +868,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		if v != nil && v.SyncActionValue != nil {
 			if action := v.GetCallLogAction(); action != nil {
 				if record := action.GetCallLogRecord(); record != nil {
+					w.callLogRecordsSeen.Add(1)
 					history := &waHistorySync.HistorySync{}
 					history.CallLogRecords = append(history.CallLogRecords, record)
 					w.processCallLogRecords(history)
@@ -965,6 +980,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 		}()
 	case *events.CallOffer:
+		w.log("WhatsApp: CallOffer call=%s eventTime=%s\n", v.CallID, v.Timestamp.Format(time.RFC3339Nano))
 		// Handle incoming call offer
 		fmt.Printf("WhatsApp: Received CallOffer event - CallCreator: %s (server: %s), CallID: %s\n",
 			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
@@ -1096,15 +1112,18 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		default:
 		}
 	case *events.CallPreAccept:
+		w.log("WhatsApp: CallPreAccept call=%s eventTime=%s\n", v.CallID, v.Timestamp.Format(time.RFC3339Nano))
 		// On some companion devices this is the earliest reliable indication that
 		// media setup has begun. Preserve it so a late/replayed CallAccept cannot
 		// collapse a real call to zero seconds.
 		w.markCallAccepted(v.CallID, v.Timestamp, time.Now())
 	case *events.CallTransport:
+		w.log("WhatsApp: CallTransport call=%s eventTime=%s\n", v.CallID, v.Timestamp.Format(time.RFC3339Nano))
 		// Transport may precede CallAccept, especially when the call is answered on
 		// another linked device. Keep the earliest connected timestamp observed.
 		w.markCallAccepted(v.CallID, v.Timestamp, time.Now())
 	case *events.CallAccept:
+		w.log("WhatsApp: CallAccept call=%s eventTime=%s\n", v.CallID, v.Timestamp.Format(time.RFC3339Nano))
 		fmt.Printf("WhatsApp: Received CallAccept event - CallCreator: %s (server: %s), CallID: %s\n",
 			v.CallCreator.String(), v.CallCreator.Server, v.CallID)
 
@@ -1131,9 +1150,11 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 
 		if db.DB != nil {
 			var dbMsg models.Message
-			if err := db.DB.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
+			if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
 				dbMsg.CallOutcome = "CONNECTED"
-				if err := db.DB.Save(&dbMsg).Error; err == nil {
+				if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+					return tx.Save(&dbMsg).Error
+				}); err == nil {
 					w.mu.Lock()
 					if msgs, ok := w.conversationMessages[convID]; ok {
 						for i := range msgs {
@@ -1161,6 +1182,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		}
 		w.activeCallsMu.Unlock()
 	case *events.CallTerminate:
+		w.log("WhatsApp: CallTerminate call=%s eventTime=%s reason=%s\n", v.CallID, v.Timestamp.Format(time.RFC3339Nano), v.Reason)
 		// Handle call termination - received for both incoming calls that end and,
 		// sometimes, outgoing calls when the callee rejects or the call times out.
 		fmt.Printf("WhatsApp: Received CallTerminate event - CallCreator: %s (server: %s), From: %s, CallID: %s\n",
@@ -1210,7 +1232,7 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		var existingCallMessage *models.Message
 		if db.DB != nil {
 			var dbMsg models.Message
-			if err := db.DB.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
+			if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&dbMsg).Error; err == nil {
 				existingCallMessage = &dbMsg
 				fmt.Printf("WhatsApp: Found existing call message for call %s, will update it\n", callID)
 			} else {
@@ -1253,7 +1275,16 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		var isAccepted bool
 		var isRejected bool
 		var durationSecs *int32
-		if wasActive {
+		if v.Reason == "accepted_elsewhere" {
+			// This ends ringing on this companion, not the conversation on the
+			// answering device. Neither server nor observed timing measures its
+			// duration; only a later call-log summary can supply that information.
+			// The reason itself proves acceptance even without a CallAccept event.
+			isAccepted = true
+			if existingCallMessage != nil {
+				durationSecs = existingCallMessage.CallDurationSecs
+			}
+		} else if wasActive {
 			isAccepted = activeInfo.IsAccepted
 			isRejected = activeInfo.IsRejected
 			if isAccepted {
@@ -1264,6 +1295,18 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			if existingCallMessage.CallDurationSecs != nil {
 				durationSecs = existingCallMessage.CallDurationSecs
 			}
+		}
+
+		durationLabel := "unknown"
+		if durationSecs != nil {
+			durationLabel = fmt.Sprintf("%ds", *durationSecs)
+		}
+		w.log("WhatsApp: CallTerminate summary call=%s tracked=%v accepted=%v rejected=%v duration=%s\n",
+			callID, wasActive, isAccepted, isRejected, durationLabel)
+		if wasActive {
+			w.log("WhatsApp: CallTerminate timing call=%s start=%s accept=%s acceptObserved=%s terminateObserved=%s\n",
+				callID, activeInfo.StartTime.Format(time.RFC3339Nano), activeInfo.AcceptTime.Format(time.RFC3339Nano),
+				activeInfo.AcceptObservedTime.Format(time.RFC3339Nano), terminateObservedTime.Format(time.RFC3339Nano))
 		}
 
 		// Determine call type and outcome
@@ -1323,7 +1366,9 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 
 			if db.DB != nil {
-				if err := db.DB.Save(existingCallMessage).Error; err != nil {
+				if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+					return tx.Save(existingCallMessage).Error
+				}); err != nil {
 					fmt.Printf("WhatsApp: Failed to update call message in database: %v\n", err)
 				} else {
 					fmt.Printf("WhatsApp: Updated call message in database for call %s\n", callID)
@@ -1401,6 +1446,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			}
 		}
 
+		if v.Reason == "accepted_elsewhere" || isAccepted {
+			w.scheduleCallLogRefresh()
+		}
+
 		// Emit contact refresh
 		select {
 		case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "call_received"}:
@@ -1464,31 +1513,42 @@ func (w *WhatsAppProvider) syncOfflineCallLogs() {
 		if w.client == nil || w.ctx == nil {
 			return
 		}
-		w.log("WhatsApp: Replaying regular app state to recover offline call logs\n")
+		w.log("WhatsApp: Replaying app state to recover offline call logs\n")
+		ctx, cancel := context.WithTimeout(w.ctx, 45*time.Second)
+		defer cancel()
 
-		// Full-sync events are normally suppressed by whatsmeow. Enable collection
-		// only for this fetch, then process only raw call_log actions ourselves.
+		collections := []appstate.WAPatchName{
+			appstate.WAPatchRegular,
+			appstate.WAPatchRegularLow,
+			appstate.WAPatchRegularHigh,
+		}
+
 		previousEmitFullSync := w.client.EmitAppStateEventsOnFullSync
 		w.client.EmitAppStateEventsOnFullSync = true
-		syncedEvents, err := w.client.DangerousInternals().FetchAppState(
-			w.ctx, appstate.WAPatchRegular, true, false,
-		)
-		w.client.EmitAppStateEventsOnFullSync = previousEmitFullSync
-		if err != nil {
-			w.log("WhatsApp: Failed to replay app state call logs: %v\n", err)
-			return
-		}
+		defer func() {
+			w.client.EmitAppStateEventsOnFullSync = previousEmitFullSync
+		}()
 
-		processed := 0
-		for _, syncedEvent := range syncedEvents {
-			appStateEvent, ok := syncedEvent.(*events.AppState)
-			if !ok || appStateEvent == nil || appStateEvent.GetCallLogAction() == nil {
+		for _, name := range collections {
+			syncedEvents, err := w.client.DangerousInternals().FetchAppState(
+				ctx, name, true, false,
+			)
+			if err != nil {
+				w.log("WhatsApp: Failed to replay app state %s call logs: %v\n", name, err)
 				continue
 			}
-			w.eventHandler(appStateEvent)
-			processed++
+
+			processed := 0
+			for _, syncedEvent := range syncedEvents {
+				appStateEvent, ok := syncedEvent.(*events.AppState)
+				if !ok || appStateEvent == nil || appStateEvent.GetCallLogAction() == nil {
+					continue
+				}
+				w.eventHandler(appStateEvent)
+				processed++
+			}
+			w.log("WhatsApp: Recovered %d call log actions from %d %s app state events\n", processed, len(syncedEvents), name)
 		}
-		w.log("WhatsApp: Recovered %d call log actions from app state\n", processed)
 	})
 }
 
@@ -1610,7 +1670,7 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 		// Determine if it's a group call
 		isGroupCall := strings.Contains(convID, "@g.us")
 
-		fmt.Printf("WhatsApp: Processing call log for call %s in conversation %s: duration=%s, isVideo=%v, result=%v, type=%v, participants=%d, isGroup=%v\n",
+		verboseLogf("WhatsApp: Processing call log for call %s in conversation %s: duration=%s, isVideo=%v, result=%v, type=%v, participants=%d, isGroup=%v\n",
 			callID, convID, durationStr, isVideo, callResult, callType, len(participants), isGroupCall)
 
 		// Find the call by its stable WhatsApp call ID first. Older Loom versions
@@ -1639,7 +1699,8 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			fmt.Printf("WhatsApp: Searching for call messages in conversation %s between %s and %s\n", convID, startSearch.Format("2006-01-02 15:04:05"), endSearch.Format("2006-01-02 15:04:05"))
 
 			// Search with resolved convID, and also with the namespaced original LID if available.
-			query := db.DB.Model(&models.Message{})
+			providerMessages := db.ForProvider(db.DB, w.getInstanceId()).Messages()
+			query := providerMessages
 			if originalLID != "" {
 				query = query.Where("(protocol_conv_id = ? OR protocol_conv_id = ?)", convID, core.BuildConvID(w.getInstanceId(), originalLID))
 			} else {
@@ -1648,6 +1709,10 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			query = query.Where("call_type != ''")
 
 			err := query.Where("protocol_msg_id LIKE ?", fmt.Sprintf("call_%s%%", callID)).Find(&dbMsgs).Error
+			if err == nil && len(dbMsgs) == 0 {
+				// Search provider-wide for the call ID in case of conversation ID format differences (e.g. LID vs phone number)
+				_ = providerMessages.Where("call_type != '' AND protocol_msg_id LIKE ?", fmt.Sprintf("call_%s%%", callID)).Find(&dbMsgs).Error
+			}
 			if err == nil && len(dbMsgs) == 0 {
 				// Compatibility fallback for call rows created before the call ID was
 				// included in ProtocolMsgID.
@@ -1659,14 +1724,31 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 			}
 			fmt.Printf("WhatsApp: Found %d existing call messages for call %s in conversation %s\n", len(dbMsgs), callID, convID)
 
-			// Update ProtocolConvID to resolved ID if any messages were found with LID
-			for i := range dbMsgs {
-				if dbMsgs[i].ProtocolConvID != convID {
-					fmt.Printf("WhatsApp: Updating ProtocolConvID from %s to %s for call message %s\n", dbMsgs[i].ProtocolConvID, convID, dbMsgs[i].ProtocolMsgID)
-					dbMsgs[i].ProtocolConvID = convID
-					if err := db.DB.Save(&dbMsgs[i]).Error; err != nil {
-						fmt.Printf("WhatsApp: Failed to update ProtocolConvID for call message: %v\n", err)
+			// Check in-memory cache if no database rows were found
+			if len(dbMsgs) == 0 {
+				w.mu.RLock()
+				for _, msgs := range w.conversationMessages {
+					for _, m := range msgs {
+						if strings.HasPrefix(m.ProtocolMsgID, fmt.Sprintf("call_%s", callID)) {
+							dbMsgs = append(dbMsgs, m)
+							break
+						}
 					}
+					if len(dbMsgs) > 0 {
+						break
+					}
+				}
+				w.mu.RUnlock()
+			}
+
+			// Update ProtocolConvID to resolved ID if any messages were found with LID
+			for j := range dbMsgs {
+				if dbMsgs[j].ProtocolConvID != convID {
+					fmt.Printf("WhatsApp: Updating ProtocolConvID from %s to %s for call message %s\n", dbMsgs[j].ProtocolConvID, convID, dbMsgs[j].ProtocolMsgID)
+					dbMsgs[j].ProtocolConvID = convID
+					_ = db.Transaction(db.DB, func(tx *gorm.DB) error {
+						return tx.Save(&dbMsgs[j]).Error
+					})
 				}
 			}
 
@@ -1792,38 +1874,29 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 					fmt.Printf("WhatsApp: [CALL LOGS] Saving call message to database: ProtocolMsgID=%s, ProtocolConvID=%s, CallType=%s\n",
 						callMsgID, callMessage.ProtocolConvID, callType)
 
-					// Use upsert to avoid duplicates
-					var existingMsg models.Message
-					err := db.DB.Where("protocol_msg_id = ?", callMsgID).First(&existingMsg).Error
-					if err != nil {
-						// Message doesn't exist, create it
-						fmt.Printf("WhatsApp: [CALL LOGS] Creating new call message in database\n")
-						if err := db.DB.Create(callMessage).Error; err != nil {
-							fmt.Printf("WhatsApp: [CALL LOGS] ERROR - Failed to create call message from call log %s: %v\n", callID, err)
-						} else {
-							durationStr := "N/A"
-							if durationSecs != nil {
-								durationStr = fmt.Sprintf("%ds", *durationSecs)
+					if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+						var existingMsg models.Message
+						if err := tx.Where("protocol_msg_id LIKE ? AND protocol_conv_id = ?", fmt.Sprintf("call_%s%%", callID), convID).First(&existingMsg).Error; err == nil {
+							existingMsg.ProtocolConvID = convID
+							existingMsg.CallType = callType
+							existingMsg.CallIsVideo = isVideo
+							existingMsg.CallOutcome = callOutcome
+							existingMsg.CallDurationSecs = durationSecs
+							if callMessage.CallParticipants != "" {
+								existingMsg.CallParticipants = callMessage.CallParticipants
 							}
-							fmt.Printf("WhatsApp: [CALL LOGS] SUCCESS - Created call message %s from call log in conversation %s (duration=%s, outcome=%s, type=%s, senderID=%s, timestamp=%s, ProtocolConvID=%s)\n",
-								callMsgID, convID, durationStr, callMessage.CallOutcome, callType, senderID, startTimestamp.Format("2006-01-02 15:04:05"), callMessage.ProtocolConvID)
+							return tx.Save(&existingMsg).Error
 						}
+						return tx.Create(callMessage).Error
+					}); err != nil {
+						fmt.Printf("WhatsApp: [CALL LOGS] ERROR - Failed to save call message from call log %s: %v\n", callID, err)
 					} else {
-						// Message exists, update it
-						fmt.Printf("WhatsApp: [CALL LOGS] Updating existing call message in database\n")
-						existingMsg.ProtocolConvID = convID
-						existingMsg.CallType = callType
-						existingMsg.CallIsVideo = isVideo
-						existingMsg.CallOutcome = callOutcome
-						existingMsg.CallDurationSecs = durationSecs
-						if callMessage.CallParticipants != "" {
-							existingMsg.CallParticipants = callMessage.CallParticipants
+						durationStr := "N/A"
+						if durationSecs != nil {
+							durationStr = fmt.Sprintf("%ds", *durationSecs)
 						}
-						if err := db.DB.Save(&existingMsg).Error; err != nil {
-							fmt.Printf("WhatsApp: [CALL LOGS] ERROR - Failed to update call message from call log %s: %v\n", callID, err)
-						} else {
-							fmt.Printf("WhatsApp: [CALL LOGS] SUCCESS - Updated call message %s from call log in conversation %s\n", callMsgID, convID)
-						}
+						fmt.Printf("WhatsApp: [CALL LOGS] SUCCESS - Saved call message %s from call log in conversation %s (duration=%s, outcome=%s, type=%s, senderID=%s, timestamp=%s, ProtocolConvID=%s)\n",
+							callMsgID, convID, durationStr, callMessage.CallOutcome, callType, senderID, startTimestamp.Format("2006-01-02 15:04:05"), callMessage.ProtocolConvID)
 					}
 				} else {
 					fmt.Printf("WhatsApp: [CALL LOGS] WARNING - Database not available, cannot save call message from call log\n")
@@ -1912,32 +1985,35 @@ func (w *WhatsAppProvider) processCallLogRecords(history *waHistorySync.HistoryS
 				}
 
 				// Save updated message
-				if err := db.DB.Save(dbMsg).Error; err != nil {
-					fmt.Printf("WhatsApp: Failed to update call message %s with summary: %v\n", dbMsg.ProtocolMsgID, err)
-				} else {
-					w.mu.Lock()
-					for cacheConvID, messages := range w.conversationMessages {
-						for messageIndex := range messages {
-							if messages[messageIndex].ProtocolMsgID == dbMsg.ProtocolMsgID {
-								messages[messageIndex] = *dbMsg
-								w.conversationMessages[cacheConvID] = messages
-							}
+				if db.DB != nil {
+					if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+						return tx.Save(dbMsg).Error
+					}); err != nil {
+						fmt.Printf("WhatsApp: Failed to update call message %s with summary: %v\n", dbMsg.ProtocolMsgID, err)
+					}
+				}
+				w.mu.Lock()
+				for cacheConvID, messages := range w.conversationMessages {
+					for messageIndex := range messages {
+						if messages[messageIndex].ProtocolMsgID == dbMsg.ProtocolMsgID {
+							messages[messageIndex] = *dbMsg
+							w.conversationMessages[cacheConvID] = messages
 						}
 					}
-					w.mu.Unlock()
-
-					select {
-					case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *dbMsg}:
-					default:
-					}
-
-					durationStr := "N/A"
-					if durationSecs != nil {
-						durationStr = fmt.Sprintf("%ds", *durationSecs)
-					}
-					fmt.Printf("WhatsApp: Successfully updated call message %s with summary (duration=%s, outcome=%s)\n",
-						dbMsg.ProtocolMsgID, durationStr, dbMsg.CallOutcome)
 				}
+				w.mu.Unlock()
+
+				select {
+				case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *dbMsg}:
+				default:
+				}
+
+				durationStr := "N/A"
+				if durationSecs != nil {
+					durationStr = fmt.Sprintf("%ds", *durationSecs)
+				}
+				fmt.Printf("WhatsApp: Successfully updated call message %s with summary (duration=%s, outcome=%s)\n",
+					dbMsg.ProtocolMsgID, durationStr, dbMsg.CallOutcome)
 			}
 		}
 	}

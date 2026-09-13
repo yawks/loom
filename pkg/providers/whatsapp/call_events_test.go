@@ -292,3 +292,161 @@ func TestConvertHistoryCallLogMessage(t *testing.T) {
 		t.Errorf("converted timestamp = %v, want %v", message.Timestamp, startedAt)
 	}
 }
+
+func TestCallAcceptedElsewhereDoesNotMeasureCompanionTermination(t *testing.T) {
+	for _, accepted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "without_accept", true: "delayed_termination"}[accepted], func(t *testing.T) {
+			previousDB := db.DB
+			db.DB = nil
+			t.Cleanup(func() { db.DB = previousDB })
+			provider := NewWhatsAppProvider()
+			provider.config["_instance_id"] = "whatsapp-test"
+			caller := types.NewJID("33123456789", types.DefaultUserServer)
+			start := time.Date(2026, time.September, 12, 12, 43, 24, 0, time.UTC)
+			meta := types.BasicCallMeta{CallCreator: caller, CallID: "HANDOFF", Timestamp: start}
+			provider.eventHandler(&events.CallOffer{BasicCallMeta: meta})
+			if accepted {
+				meta.Timestamp = start.Add(4 * time.Second)
+				provider.eventHandler(&events.CallAccept{BasicCallMeta: meta})
+			}
+			meta.Timestamp = start.Add(9 * time.Second)
+			provider.eventHandler(&events.CallTerminate{BasicCallMeta: meta, Reason: "accepted_elsewhere"})
+			messages := provider.conversationMessages[core.BuildConvID("whatsapp-test", caller.String())]
+			if len(messages) != 1 {
+				t.Fatalf("got %d messages, want one", len(messages))
+			}
+			message := messages[0]
+			if message.CallOutcome != "CONNECTED" || message.CallType != "incoming_call" {
+				t.Fatalf("handoff = %s/%s, want connected incoming call", message.CallType, message.CallOutcome)
+			}
+			if message.CallDurationSecs != nil {
+				t.Fatalf("handoff duration = %v, want unknown", *message.CallDurationSecs)
+			}
+		})
+	}
+}
+
+func TestDuplicateCallSummaryPersistsDurationAndIsolatesProvider(t *testing.T) {
+	previousDB := db.DB
+	t.Cleanup(func() { db.DB = previousDB })
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.DB = database
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-test"
+	caller := types.NewJID("33123456789", types.DefaultUserServer)
+	convID := core.BuildConvID("whatsapp-test", caller.String())
+	rows := []models.Message{
+		{ProtocolMsgID: "SUMMARY", ProtocolConvID: convID, CallType: "incoming_call", CallOutcome: "CONNECTED", Timestamp: time.Now()},
+		{ProtocolMsgID: "OTHER_SUMMARY", ProtocolConvID: core.BuildConvID("whatsapp-other", caller.String()), CallType: "incoming_call", CallOutcome: "CONNECTED", Timestamp: time.Now()},
+	}
+	if err := db.Transaction(database, func(tx *gorm.DB) error {
+		copyRows := append([]models.Message(nil), rows...)
+		return tx.Create(&copyRows).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	provider.conversationMessages[convID] = []models.Message{rows[0]}
+	duration := int64(6)
+	outcome := waE2E.CallLogMessage_CONNECTED
+	event := &events.Message{
+		Info:    types.MessageInfo{MessageSource: types.MessageSource{Chat: caller, Sender: caller}, ID: "SUMMARY", Timestamp: rows[0].Timestamp},
+		Message: &waE2E.Message{CallLogMesssage: &waE2E.CallLogMessage{DurationSecs: &duration, CallOutcome: &outcome}},
+	}
+	provider.eventHandler(event)
+	// An older summary without a duration must not erase the completed result.
+	event.Message.CallLogMesssage.DurationSecs = nil
+	provider.eventHandler(event)
+	var stored models.Message
+	if err := database.Where("protocol_conv_id = ?", convID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.CallDurationSecs == nil || *stored.CallDurationSecs != 6 {
+		t.Fatalf("duration = %v, want 6", stored.CallDurationSecs)
+	}
+	if stored.IsEdited {
+		t.Fatal("summary must not mark the call edited")
+	}
+	var other models.Message
+	if err := database.Where("protocol_conv_id = ?", rows[1].ProtocolConvID).First(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if other.CallDurationSecs != nil {
+		t.Fatal("other provider's call was modified")
+	}
+}
+
+func TestCallHandoffThenAppStateSummaryUpdatesMessageAndDuration(t *testing.T) {
+	previousDB := db.DB
+	t.Cleanup(func() { db.DB = previousDB })
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.DB = database
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-test"
+	caller := types.NewJID("33612345678", types.DefaultUserServer)
+	callID := "CALL_HANDOFF_123"
+	start := time.Date(2026, time.September, 12, 14, 0, 0, 0, time.UTC)
+	meta := types.BasicCallMeta{CallCreator: caller, CallID: callID, Timestamp: start}
+
+	// 1. CallOffer: ringing on desktop
+	provider.eventHandler(&events.CallOffer{BasicCallMeta: meta})
+
+	// 2. CallTerminate: answered on mobile (reason: accepted_elsewhere)
+	meta.Timestamp = start.Add(2 * time.Second)
+	provider.eventHandler(&events.CallTerminate{BasicCallMeta: meta, Reason: "accepted_elsewhere"})
+
+	var stored models.Message
+	convID := core.BuildConvID("whatsapp-test", caller.String())
+	if err := database.Where("protocol_conv_id = ?", convID).First(&stored).Error; err != nil {
+		t.Fatalf("call message was not found: %v", err)
+	}
+	if stored.CallOutcome != "CONNECTED" {
+		t.Fatalf("call outcome = %q, want CONNECTED", stored.CallOutcome)
+	}
+	if stored.CallDurationSecs != nil {
+		t.Fatalf("initial duration = %v, want nil before summary", *stored.CallDurationSecs)
+	}
+
+	// 3. Mobile phone finishes call and uploads AppState CallLogRecord
+	durationSeconds := int64(142)
+	startSeconds := start.Unix()
+	callerStr := caller.String()
+	result := waSyncAction.CallLogRecord_CONNECTED
+	callType := waSyncAction.CallLogRecord_REGULAR
+	isIncoming := true
+
+	provider.eventHandler(&events.AppState{SyncActionValue: &waSyncAction.SyncActionValue{
+		CallLogAction: &waSyncAction.CallLogAction{CallLogRecord: &waSyncAction.CallLogRecord{
+			CallResult:     &result,
+			Duration:       &durationSeconds,
+			StartTime:      &startSeconds,
+			IsIncoming:     &isIncoming,
+			CallID:         &callID,
+			CallCreatorJID: &callerStr,
+			CallType:       &callType,
+		}},
+	}})
+
+	if err := database.Where("protocol_conv_id = ?", convID).First(&stored).Error; err != nil {
+		t.Fatalf("call message was not found after summary: %v", err)
+	}
+	if stored.CallDurationSecs == nil || *stored.CallDurationSecs != 142 {
+		t.Fatalf("updated duration = %v, want 142", stored.CallDurationSecs)
+	}
+	if stored.CallOutcome != "CONNECTED" {
+		t.Fatalf("updated outcome = %q, want CONNECTED", stored.CallOutcome)
+	}
+}
+

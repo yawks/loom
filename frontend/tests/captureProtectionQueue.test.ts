@@ -2,6 +2,26 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { createCaptureProtectionQueue } from "../src/lib/captureProtectionQueue.ts";
 
+test("transient wake failures retry within the queue before the next change", async () => {
+  const calls: boolean[] = [];
+  const queue = createCaptureProtectionQueue(async (enabled) => {
+    calls.push(enabled);
+    if (calls.length < 3) throw new Error("window temporarily unavailable");
+  }, async () => {}, 3, async () => {});
+  await Promise.all([queue(true), queue(false)]);
+  assert.deepEqual(calls, [true, true, true, false]);
+});
+
+test("persistent native failure still rejects after bounded retries", async () => {
+  let calls = 0;
+  const queue = createCaptureProtectionQueue(async () => {
+    calls++;
+    throw new Error("native failure");
+  }, async () => {}, 3, async () => {});
+  await assert.rejects(queue(true), /native failure/);
+  assert.equal(calls, 3);
+});
+
 test("rapid navigation waits for hiding and serializes a slow disable before enabling", async () => {
   const events: string[] = [];
   let finishDisable!: () => void;
