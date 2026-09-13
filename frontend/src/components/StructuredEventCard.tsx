@@ -10,6 +10,8 @@ export function StructuredEventCard({ cardJson, providerInstanceId }: { cardJson
   const [imageData, setImageData] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
   useEffect(() => {
+    setImageData(null);
+    setImageFailed(false);
     if (!card?.imageUrl || !providerInstanceId) return;
     let active = true;
     GetProviderAttachmentData(providerInstanceId, card.imageUrl).then((data) => { if (active) setImageData(data); }).catch(() => { if (active) setImageFailed(true); });

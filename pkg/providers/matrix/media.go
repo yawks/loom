@@ -1,7 +1,9 @@
 package matrix
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"mime"
@@ -66,6 +68,23 @@ func (p *Provider) GetAttachmentData(ctx context.Context, reference string) ([]b
 	declared, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if strings.HasPrefix(detected, "text/html") || strings.Contains(detected, "json") || strings.HasPrefix(declared, "text/html") || strings.Contains(declared, "json") {
 		return nil, "", fmt.Errorf("matrix: server returned non-media content (%s)", detected)
+	}
+	// DetectContentType identifies SVG as text/XML. Preserve its image type
+	// after checking the root element so WebView img elements can decode it.
+	if strings.HasPrefix(detected, "text/plain") || strings.HasPrefix(detected, "text/xml") {
+		decoder := xml.NewDecoder(bytes.NewReader(data))
+		for {
+			token, err := decoder.Token()
+			if err != nil {
+				break
+			}
+			if root, ok := token.(xml.StartElement); ok {
+				if root.Name.Local == "svg" && root.Name.Space == "http://www.w3.org/2000/svg" {
+					detected = "image/svg+xml"
+				}
+				break
+			}
+		}
 	}
 	return data, detected, nil
 }

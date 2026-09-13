@@ -39,6 +39,34 @@ func TestAuthenticatedMediaDownloadUsesConfiguredHomeserver(t *testing.T) {
 	}
 }
 
+func TestMediaDownloadSVGIconMIME(t *testing.T) {
+	for _, tc := range []struct{ name, body, declared, want string }{
+		{"svg", `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>`, "image/svg+xml", "image/svg+xml"},
+		{"xml", `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`, "application/octet-stream", "image/svg+xml"},
+		{"false declaration", `ordinary text`, "image/svg+xml", "text/plain; charset=utf-8"},
+		{"other xml", `<?xml version="1.0"?><document/>`, "image/svg+xml", "text/xml; charset=utf-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.declared)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			p := NewProvider()
+			if err := p.Init(core.ProviderConfig{"homeserver": server.URL, "access_token": "secret"}); err != nil {
+				t.Fatal(err)
+			}
+			data, mimeType, err := p.GetAttachmentData(context.Background(), "mxc://example.org/icon")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mimeType != tc.want || string(data) != tc.body {
+				t.Fatalf("mime = %q, want %q; data = %q", mimeType, tc.want, data)
+			}
+		})
+	}
+}
+
 func TestMediaDownloadRejectsHTTPAndNonMediaResponses(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
