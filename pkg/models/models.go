@@ -248,13 +248,18 @@ type GroupParticipant struct {
 
 // GroupDetails contains provider-independent group metadata shown in the
 // conversation details panel.
+// Optional editing permissions override provider capabilities when available.
+// Nil preserves capability-based behavior for providers without per-room permissions.
 type GroupDetails struct {
-	ConversationID  string `json:"conversationId"`
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	AvatarURL       string `json:"avatarUrl"`
-	IsMember        bool   `json:"isMember"`
-	CanSendMessages bool   `json:"canSendMessages"`
+	CanEditName        *bool  `json:"canEditName,omitempty"`
+	CanEditDescription *bool  `json:"canEditDescription,omitempty"`
+	CanEditPhoto       *bool  `json:"canEditPhoto,omitempty"`
+	ConversationID     string `json:"conversationId"`
+	Name               string `json:"name"`
+	Description        string `json:"description"`
+	AvatarURL          string `json:"avatarUrl"`
+	IsMember           bool   `json:"isMember"`
+	CanSendMessages    bool   `json:"canSendMessages"`
 }
 
 // Poll is the provider-independent representation of an interactive poll.

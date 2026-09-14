@@ -1,6 +1,7 @@
 export namespace core {
 	
 	export class Capabilities {
+	    supportsDirectConversationMetadata: boolean;
 	    supportsThreads: boolean;
 	    supportsReactions: boolean;
 	    supportsCustomEmojis: boolean;
@@ -42,6 +43,7 @@ export namespace core {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supportsDirectConversationMetadata = source["supportsDirectConversationMetadata"];
 	        this.supportsThreads = source["supportsThreads"];
 	        this.supportsReactions = source["supportsReactions"];
 	        this.supportsCustomEmojis = source["supportsCustomEmojis"];
@@ -1049,6 +1051,9 @@ export namespace models {
 		}
 	}
 	export class GroupDetails {
+	    canEditName?: boolean;
+	    canEditDescription?: boolean;
+	    canEditPhoto?: boolean;
 	    conversationId: string;
 	    name: string;
 	    description: string;
@@ -1062,6 +1067,9 @@ export namespace models {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.canEditName = source["canEditName"];
+	        this.canEditDescription = source["canEditDescription"];
+	        this.canEditPhoto = source["canEditPhoto"];
 	        this.conversationId = source["conversationId"];
 	        this.name = source["name"];
 	        this.description = source["description"];

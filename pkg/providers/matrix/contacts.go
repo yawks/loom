@@ -13,19 +13,27 @@ import (
 )
 
 type roomSummary struct {
-	Name     string
-	Avatar   string
-	Members  []string
-	IsDirect bool
+	Events      []matrixEvent
+	Description string
+	Name        string
+	Avatar      string
+	Members     []string
+	IsDirect    bool
 }
 
 func summarizeRoomEvents(p *Provider, events []matrixEvent) roomSummary {
-	s := roomSummary{}
+	s := roomSummary{Events: events}
 	var memberName, memberAvatar string
 	hasRoomAvatar := false
 	self := p.CurrentUserID()
 	for _, e := range events {
 		switch e.Type {
+		case "m.room.topic":
+			var c struct {
+				Topic string `json:"topic"`
+			}
+			_ = json.Unmarshal(e.Content, &c)
+			s.Description = c.Topic
 		case "m.room.name":
 			var c struct {
 				Name string `json:"name"`

@@ -77,6 +77,7 @@ export function ConversationDetailsView({
   const groupCapabilities = selectedAccount?.providerInstanceId
     ? capabilities[selectedAccount.providerInstanceId]
     : undefined;
+  const supportsDetails = Boolean(selectedAccount?.isGroup || groupCapabilities?.supportsDirectConversationMetadata);
   const canAddMembers = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsAddGroupMembers);
   const canRemoveMembers = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsRemoveGroupMembers);
   const canManageAdmins = Boolean(selectedAccount?.isGroup && groupCapabilities?.supportsGroupAdminRoles);
@@ -84,9 +85,16 @@ export function ConversationDetailsView({
   const { data: groupDetails } = useQuery<models.GroupDetails>({
     queryKey: ["group-details", conversationId],
     queryFn: () => GetGroupDetails(conversationId),
-    enabled: Boolean(selectedAccount?.isGroup && conversationId),
+    enabled: Boolean(supportsDetails && conversationId),
     refetchInterval: 15000,
   });
+  // Direct conversations require explicit per-conversation permission as well as
+  // provider support. Older group providers retain capability-based behavior.
+  const canEditField = (permission?: boolean) =>
+    Boolean(groupDetails && (selectedAccount?.isGroup ? permission !== false : permission === true));
+  const canEditName = Boolean(groupCapabilities?.supportsRenameGroup && canEditField(groupDetails?.canEditName));
+  const canEditDescription = Boolean(groupCapabilities?.supportsGroupDescription && canEditField(groupDetails?.canEditDescription));
+  const canEditPhoto = Boolean(groupCapabilities?.supportsGroupPhoto && canEditField(groupDetails?.canEditPhoto));
   const canLeaveGroup = Boolean(
     leftConversationId !== conversationId &&
     groupDetails?.isMember !== false &&
@@ -96,9 +104,14 @@ export function ConversationDetailsView({
   );
 
   useEffect(() => {
-    setGroupName(groupDetails?.name ?? selectedConversation.displayName ?? "");
-    setGroupDescription(groupDetails?.description ?? "");
-  }, [groupDetails, selectedConversation.displayName]);
+    if (!editingName) setGroupName(groupDetails?.name ?? selectedConversation.displayName ?? "");
+    if (!editingDescription) setGroupDescription(groupDetails?.description ?? "");
+  }, [groupDetails, selectedConversation.displayName, editingName, editingDescription]);
+
+  useEffect(() => {
+    setEditingName(false);
+    setEditingDescription(false);
+  }, [conversationId]);
 
   useEffect(() => EventsOn("group-change", () => {
     void queryClient.invalidateQueries({ queryKey: ["group-details", conversationId] });
@@ -232,7 +245,7 @@ export function ConversationDetailsView({
       </div>
       <div className="flex-1 overflow-y-auto p-4 min-h-0 scroll-area">
         <div className="space-y-6">
-          {selectedAccount?.isGroup && (
+          {supportsDetails && (
             <div className="space-y-4">
               <div className="flex justify-center">
                 <div className="relative">
@@ -240,7 +253,7 @@ export function ConversationDetailsView({
                     <AvatarImage src={groupDetails?.avatarUrl || selectedAccount.avatarUrl} />
                     <AvatarFallback>{(groupDetails?.name || selectedConversation.displayName).slice(0, 2).toUpperCase()}</AvatarFallback>
                   </Avatar>
-                  {groupCapabilities?.supportsGroupPhoto && (
+                  {canEditPhoto && (
                     <Button size="icon" className="absolute -bottom-1 -right-1 rounded-full h-8 w-8" onClick={() => photoInputRef.current?.click()} disabled={savingGroupDetails}>
                       <Camera className="h-4 w-4" />
                     </Button>
@@ -251,8 +264,8 @@ export function ConversationDetailsView({
               <div className="space-y-2">
                 <label className="text-xs font-medium text-muted-foreground">{t("group_name")}</label>
                 <div className="flex gap-2">
-                  <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} disabled={!editingName} spellCheck={false} />
-                  {groupCapabilities?.supportsRenameGroup && (
+                  <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} disabled={!editingName || !canEditName} spellCheck={false} />
+                  {canEditName && (
                     <Button size="icon" variant="outline" disabled={savingGroupDetails} onClick={() => editingName ? void saveName() : setEditingName(true)}>
                       {editingName ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
                     </Button>
@@ -263,8 +276,8 @@ export function ConversationDetailsView({
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-muted-foreground">{t("group_description")}</label>
                   <div className="flex gap-2 items-start">
-                    <textarea className="flex min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-70" value={groupDescription} onChange={(event) => setGroupDescription(event.target.value)} disabled={!editingDescription} placeholder={t("no_group_description")} spellCheck={false} />
-                    <Button size="icon" variant="outline" disabled={savingGroupDetails} onClick={() => editingDescription ? void saveDescription() : setEditingDescription(true)}>
+                    <textarea className="flex min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-70" value={groupDescription} onChange={(event) => setGroupDescription(event.target.value)} disabled={!editingDescription || !canEditDescription} placeholder={t("no_group_description")} spellCheck={false} />
+                    <Button size="icon" variant="outline" disabled={savingGroupDetails || !canEditDescription} onClick={() => editingDescription ? void saveDescription() : setEditingDescription(true)}>
                       {editingDescription ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
                     </Button>
                   </div>

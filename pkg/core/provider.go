@@ -343,6 +343,10 @@ type HistoricalMessageMetadataProvider interface {
 
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
+	// SupportsDirectConversationMetadata extends group metadata operations to direct
+	// conversations. Providers must return explicit per-field GroupDetails permissions.
+	SupportsDirectConversationMetadata bool `json:"supportsDirectConversationMetadata"`
+
 	SupportsThreads               bool   `json:"supportsThreads"`
 	SupportsReactions             bool   `json:"supportsReactions"`
 	SupportsCustomEmojis          bool   `json:"supportsCustomEmojis"`

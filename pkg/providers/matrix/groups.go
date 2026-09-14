@@ -1,12 +1,16 @@
 package matrix
 
 import (
+	"Loom/pkg/db"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
+	"strings"
 
 	"Loom/pkg/core"
 	"Loom/pkg/models"
@@ -89,7 +93,21 @@ func (p *Provider) UpdateGroupDescription(room, description string) error {
 	return p.do(noCancel(), http.MethodPut, p.roomPath(room)+"/state/m.room.topic", nil, map[string]string{"topic": description}, nil)
 }
 func (p *Provider) UpdateGroupPhoto(room string, photo []byte) error {
-	return fmt.Errorf("matrix: group photo update requires MIME metadata not present in Loom's group contract")
+	mimeType := http.DetectContentType(photo)
+	if !strings.HasPrefix(mimeType, "image/") || len(photo) > 4<<20 {
+		return fmt.Errorf("matrix: invalid avatar image (maximum 4 MiB)")
+	}
+	uri, err := p.upload(&core.Attachment{Data: photo, MimeType: mimeType, FileName: "avatar"})
+	if err != nil {
+		return err
+	}
+	if err := p.do(noCancel(), http.MethodPut, p.roomPath(room)+"/state/m.room.avatar", nil, map[string]string{"url": uri}, nil); err != nil {
+		return err
+	}
+	if db.DB != nil {
+		return db.UpdateConversationAvatars(p.getInstanceID(), map[string]string{p.namespacedRoom(room): "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(photo)})
+	}
+	return nil
 }
 func (p *Provider) AddGroupParticipants(room string, ids []string) error {
 	for _, id := range ids {
@@ -143,7 +161,8 @@ func (p *Provider) GetGroupDetails(room string) (*models.GroupDetails, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &models.GroupDetails{ConversationID: p.namespacedRoom(room), Name: s.Name, AvatarURL: s.Avatar, IsMember: true, CanSendMessages: true}, nil
+	member, name, topic, avatar := roomMetadataPermissions(s.Events, p.CurrentUserID())
+	return &models.GroupDetails{ConversationID: p.namespacedRoom(room), Name: s.Name, Description: s.Description, AvatarURL: s.Avatar, IsMember: member, CanSendMessages: member, CanEditName: &name, CanEditDescription: &topic, CanEditPhoto: &avatar}, nil
 }
 func (p *Provider) CreateGroupInviteLink(string) (string, error) {
 	return "", fmt.Errorf("matrix: invite links are not supported")
@@ -159,3 +178,72 @@ func (p *Provider) JoinGroupByInviteMessage(string) (*models.Conversation, error
 }
 
 var _ = url.PathEscape
+
+// Matrix permissions are normalized here; the UI never interprets power levels.
+func roomMetadataPermissions(events []matrixEvent, self string) (member, name, topic, avatar bool) {
+	var powers map[string]json.RawMessage
+	creator, version := "", 1
+	creators := []string{}
+	for _, e := range events {
+		if e.StateKey == nil {
+			continue
+		}
+		switch e.Type {
+		case "m.room.member":
+			if *e.StateKey == self {
+				var c struct{ Membership string }
+				if json.Unmarshal(e.Content, &c) == nil {
+					member = c.Membership == "join"
+				}
+			}
+		case "m.room.create":
+			var c struct {
+				Creator            string
+				RoomVersion        string   `json:"room_version"`
+				AdditionalCreators []string `json:"additional_creators"`
+			}
+			if json.Unmarshal(e.Content, &c) != nil {
+				return false, false, false, false
+			}
+			creator = c.Creator
+			if creator == "" {
+				creator = e.Sender
+			}
+			if c.RoomVersion != "" {
+				version, _ = strconv.Atoi(c.RoomVersion)
+			}
+			creators = c.AdditionalCreators
+		case "m.room.power_levels":
+			if json.Unmarshal(e.Content, &powers) != nil {
+				return member, false, false, false
+			}
+		}
+	}
+	level := func(raw json.RawMessage, fallback int64) int64 {
+		if len(raw) == 0 {
+			return fallback
+		}
+		n, err := strconv.ParseInt(strings.Trim(string(raw), "\""), 10, 64)
+		if err != nil {
+			return fallback
+		}
+		return n
+	}
+	var users, required map[string]json.RawMessage
+	_ = json.Unmarshal(powers["users"], &users)
+	_ = json.Unmarshal(powers["events"], &required)
+	own := level(users[self], level(powers["users_default"], 0))
+	isCreator := self != "" && self == creator
+	if version >= 12 {
+		for _, id := range creators {
+			isCreator = isCreator || self == id
+		}
+	}
+	if powers == nil && isCreator {
+		own = 100
+	}
+	can := func(event string) bool {
+		return member && ((version >= 12 && isCreator) || own >= level(required[event], level(powers["state_default"], 50)))
+	}
+	return member, can("m.room.name"), can("m.room.topic"), can("m.room.avatar")
+}

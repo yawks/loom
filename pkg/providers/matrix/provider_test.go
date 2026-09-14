@@ -15,10 +15,13 @@ import (
 
 func TestCapabilitiesMatchImplementedMatrixFeatures(t *testing.T) {
 	caps := NewProvider().GetCapabilities()
+	if !caps.SupportsDirectConversationMetadata || !caps.SupportsRenameGroup || !caps.SupportsGroupDescription || !caps.SupportsGroupPhoto {
+		t.Fatalf("expected room metadata editing support, got %+v", caps)
+	}
 	if !caps.SupportsThreads || !caps.SupportsReactions || !caps.SupportsTypingIndicator || !caps.SupportsReadReceipts {
 		t.Fatalf("expected Matrix messaging capabilities, got %+v", caps)
 	}
-	if caps.SupportsQRCodeAuth || caps.SupportsPinConversation || caps.SupportsGroupPhoto || caps.SupportsGroupAdminRoles {
+	if caps.SupportsQRCodeAuth || caps.SupportsPinConversation || caps.SupportsGroupAdminRoles {
 		t.Fatalf("provider advertises an unsupported capability: %+v", caps)
 	}
 }
