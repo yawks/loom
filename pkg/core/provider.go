@@ -343,6 +343,7 @@ type HistoricalMessageMetadataProvider interface {
 
 // Capabilities defines the features supported by a provider.
 type Capabilities struct {
+	SupportsIdentitySelection bool `json:"supportsIdentitySelection"`
 	// SupportsDirectConversationMetadata extends group metadata operations to direct
 	// conversations. Providers must return explicit per-field GroupDetails permissions.
 	SupportsDirectConversationMetadata bool `json:"supportsDirectConversationMetadata"`
@@ -493,4 +494,21 @@ type PersistedContactProfileProvider interface {
 // using SyncHistory and can still be stopped at the orchestration boundaries.
 type ContextHistorySyncer interface {
 	SyncHistoryContext(ctx context.Context, since time.Time) error
+}
+
+// CommunicationIdentity is a local sending/receiving identity within one provider instance.
+// IDs are opaque and provider wire data never crosses this contract.
+type CommunicationIdentity struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Address string `json:"address"`
+}
+type ConversationIdentities struct {
+	Identities         []CommunicationIdentity `json:"identities"`
+	DefaultIdentityID  string                  `json:"defaultIdentityId"`
+	SelectedIdentityID string                  `json:"selectedIdentityId"`
+}
+type CommunicationIdentityProvider interface {
+	GetConversationIdentities(conversationID string) (*ConversationIdentities, error)
+	SetConversationIdentity(conversationID, identityID string) error
 }

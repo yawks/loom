@@ -54,8 +54,18 @@ func (p *Provider) ListScheduledMessages(conversationID string) ([]models.Schedu
 	if err != nil {
 		return nil, fmt.Errorf("%s: list scheduled messages: %w", providerID, err)
 	}
+	return upcomingScheduledMessages(drafts, instance, nsConvID, time.Now()), nil
+}
+
+func upcomingScheduledMessages(drafts []msteams.ScheduledDraftItem, instance, nsConvID string, now time.Time) []models.ScheduledMessage {
 	out := make([]models.ScheduledMessage, 0, len(drafts))
 	for _, d := range drafts {
+		// Teams may keep returning drafts after their scheduled send time.
+		// Only future drafts belong in the upcoming list; this does not
+		// confirm delivery or delete the remote draft.
+		if !d.SendAt.After(now) {
+			continue
+		}
 		plain, _ := msteams.HTMLToMatrix(d.Content)
 		if plain == "" {
 			plain = d.Content
@@ -69,7 +79,7 @@ func (p *Provider) ListScheduledMessages(conversationID string) ([]models.Schedu
 			CreatedAt:          d.CreatedAt,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // CancelScheduledMessage deletes a scheduled draft from the Teams server.

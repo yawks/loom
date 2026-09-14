@@ -1,4 +1,5 @@
 import { SendFile, SendMessage, SendReply, SendThreadFile, SendThreadFileFromPath } from "../../wailsjs/go/main/App";
+import { useTranslation } from "react-i18next";
 import { useCallback, useState } from "react";
 
 import type { InfiniteData } from "@tanstack/react-query";
@@ -59,6 +60,7 @@ export interface UploadState {
 
 export function useFileUpload(conversationId: string, showToast?: (message: string, type?: "error" | "info" | "success") => void, threadId?: string) {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
   const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -129,6 +131,10 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
   }, [conversationId, queryClient, threadId]);
 
   const handleFileUpload = useCallback(async (files: File[], filePaths?: string[]) => {
+    if (queryClient.isMutating({ mutationKey: ["conversation-identity", conversationId] })) {
+      showToast?.(t("identity_saving"), "info");
+      return;
+    }
     const hasFilePaths = Boolean(filePaths && filePaths.length > 0);
     if (!conversationId || (files.length === 0 && !hasFilePaths)) return;
 
@@ -428,7 +434,7 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
     }, 500);
 
     refreshMessages();
-  }, [addSentThreadMessage, conversationId, threadId, refreshMessages, showToast]);
+  }, [addSentThreadMessage, conversationId, threadId, refreshMessages, showToast, queryClient, t]);
 
   // Optimistic message state helpers (used for retry/delete local)
   const markMessageState = useCallback(
@@ -472,7 +478,7 @@ export function useFileUpload(conversationId: string, showToast?: (message: stri
       const convId = message.protocolConvId;
       const text = message.body || "";
       const quotedId = message.quotedMessageId || undefined;
-      if (!convId || !text.trim()) return;
+      if (!convId || !text.trim() || queryClient.isMutating({ mutationKey: ["conversation-identity", convId] })) return;
 
       markMessageState(convId, message.protocolMsgId, { isPending: true, sendFailed: false } as Partial<models.Message>);
 

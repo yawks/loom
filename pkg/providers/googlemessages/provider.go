@@ -33,15 +33,18 @@ const providerID = "googlemessages"
 type Provider struct {
 	unsupportedProvider
 
-	mu                sync.RWMutex
-	config            core.ProviderConfig
-	client            *libgm.Client
-	auth              *libgm.AuthData
-	pairing           *libgm.PairingSession
-	eventChan         chan core.ProviderEvent
-	instance          string
-	emoji             string
-	fullMediaRequests map[string]struct{}
+	mu                 sync.RWMutex
+	simCards           map[string]*gmproto.SIMCard
+	simSettingsKnown   bool
+	identityDiagnostic identityDiagnostic
+	config             core.ProviderConfig
+	client             *libgm.Client
+	auth               *libgm.AuthData
+	pairing            *libgm.PairingSession
+	eventChan          chan core.ProviderEvent
+	instance           string
+	emoji              string
+	fullMediaRequests  map[string]struct{}
 }
 
 var _ core.Provider = (*Provider)(nil)
@@ -49,7 +52,7 @@ var _ core.PhoneConversationCreator = (*Provider)(nil)
 var _ core.GlobalHistorySyncer = (*Provider)(nil)
 var _ core.PersistedContactProfileProvider = (*Provider)(nil)
 
-func (p *Provider) UsesPersistedContactProfiles() bool { return true }
+func (p *Provider) UsesPersistedContactProfiles() bool { return false }
 
 func NewProvider() *Provider {
 	return &Provider{
@@ -72,10 +75,12 @@ func (p *Provider) Init(config core.ProviderConfig) error {
 		return err
 	}
 	p.newClientLocked()
-	return nil
+	return p.repairParticipantIDs()
 }
 
 func (p *Provider) newClientLocked() {
+	p.simCards = nil
+	p.simSettingsKnown = false
 	p.client = libgm.NewClient(p.auth, nil, zerolog.Nop())
 	p.client.SetEventHandler(p.handleLibGMEvent)
 }
@@ -335,65 +340,59 @@ func (p *Provider) GetGroupParticipants(conversationID string) ([]models.GroupPa
 		if id == "" {
 			continue
 		}
-		participants = append(participants, models.GroupParticipant{UserID: id, IsSelf: participant.GetIsMe()})
+		participants = append(participants, models.GroupParticipant{UserID: googleMessagesParticipantID(id), IsSelf: participant.GetIsMe()})
 	}
 	return participants, nil
 }
 
 func (p *Provider) GetContactName(contactID string) (string, error) {
-	p.mu.RLock()
-	client := p.client
-	p.mu.RUnlock()
-	if client == nil || !p.IsAuthenticated() {
-		return "", fmt.Errorf("%s: not authenticated", providerID)
-	}
-	response, err := client.ListConversations(1000, gmproto.ListConversationsRequest_INBOX)
-	if err != nil {
-		return "", err
-	}
-	for _, conversation := range response.GetConversations() {
-		for _, participant := range conversation.GetParticipants() {
-			if participant.GetID().GetParticipantID() != contactID {
-				continue
-			}
-			for _, name := range []string{participant.GetFullName(), participant.GetFormattedNumber(), participant.GetID().GetNumber()} {
-				if strings.TrimSpace(name) != "" {
-					return name, nil
-				}
-			}
-		}
-	}
-	return "", fmt.Errorf("%s: contact %s not found", providerID, contactID)
+	profile, err := p.GetContactProfile(contactID)
+	return profile.DisplayName, err
 }
 
-// GetContactProfile exposes the phone number carried by Google Messages'
-// participant model through Loom's provider-neutral contact card. For direct
-// chats, callers may identify the contact by either its participant ID or the
-// conversation ID persisted in LinkedAccount.
+// Qualified IDs always identify participants. Unqualified IDs identify the
+// conversation-backed LinkedAccount, never a participant with the same number.
 func (p *Provider) GetContactProfile(contactID string) (models.ContactProfile, error) {
 	p.mu.RLock()
-	client := p.client
-	instance := p.instance
+	client, instance := p.client, p.instance
 	p.mu.RUnlock()
 	if client == nil || !p.IsAuthenticated() {
 		return models.ContactProfile{}, fmt.Errorf("%s: not authenticated", providerID)
 	}
+	if !strings.HasPrefix(contactID, participantPrefix) {
+		conversation, err := client.GetConversation(core.StripConvID(contactID))
+		if err != nil {
+			return models.ContactProfile{}, err
+		}
+		for _, participant := range conversation.GetParticipants() {
+			if !conversation.GetIsGroupChat() && !participant.GetIsMe() {
+				profile := googleMessagesContactProfile(participant, instance)
+				profile.UserID = contactID
+				if conversation.GetName() != "" {
+					profile.DisplayName = conversation.GetName()
+				}
+				return profile, nil
+			}
+		}
+		return models.ContactProfile{UserID: contactID, ProviderInstanceID: instance, Protocol: providerID, DisplayName: conversation.GetName()}, nil
+	}
+	rawID := strings.TrimPrefix(contactID, participantPrefix)
 	response, err := client.ListConversations(1000, gmproto.ListConversationsRequest_INBOX)
 	if err != nil {
-		return models.ContactProfile{}, fmt.Errorf("%s: list conversations: %w", providerID, err)
+		return models.ContactProfile{}, err
 	}
 	for _, conversation := range response.GetConversations() {
 		for _, participant := range conversation.GetParticipants() {
-			matchesParticipant := participant.GetID().GetParticipantID() == contactID
-			matchesDirectConversation := !conversation.GetIsGroupChat() &&
-				conversation.GetConversationID() == core.StripConvID(contactID) &&
-				!participant.GetIsMe()
-			if matchesParticipant || matchesDirectConversation {
-				return googleMessagesContactProfile(participant, instance), nil
+			if participant.GetID().GetParticipantID() == rawID {
+				profile := googleMessagesContactProfile(participant, instance)
+				if !participant.GetIsMe() && !conversation.GetIsGroupChat() && conversation.GetName() != "" {
+					profile.DisplayName = conversation.GetName()
+				}
+				return profile, nil
 			}
 		}
 	}
-	return models.ContactProfile{}, fmt.Errorf("%s: contact %s not found", providerID, contactID)
+	return models.ContactProfile{}, fmt.Errorf("%s: participant not found", providerID)
 }
 
 func googleMessagesContactProfile(participant *gmproto.Participant, instance string) models.ContactProfile {
@@ -413,7 +412,7 @@ func googleMessagesContactProfile(participant *gmproto.Participant, instance str
 		displayName = number
 	}
 	return models.ContactProfile{
-		UserID: participant.GetID().GetParticipantID(), DisplayName: displayName,
+		UserID: googleMessagesParticipantID(participant.GetID().GetParticipantID()), DisplayName: displayName,
 		Protocol: providerID, ProviderInstanceID: instance,
 		PhoneNumbers: phones, Emails: []string{}, ProviderFields: map[string]string{},
 	}
@@ -508,6 +507,7 @@ func (p *Provider) linkedAccount(remote *gmproto.Conversation) models.LinkedAcco
 }
 
 func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
+	p.rememberConversationSIM(remote)
 	if db.DB == nil {
 		return nil
 	}
@@ -656,6 +656,10 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				}
 				existingByID[message.ProtocolMsgID] = message
 			} else {
+				if message.LocalIdentityID != "" {
+					existing.LocalIdentityID, existing.LocalIdentityLabel, existing.LocalIdentityAddress = message.LocalIdentityID, message.LocalIdentityLabel, message.LocalIdentityAddress
+				}
+				existing.LocalIdentityApplicable = true
 				existing.Body, existing.Timestamp, existing.SenderID, existing.SenderName, existing.IsFromMe, existing.QuotedMessageID = message.Body, message.Timestamp, message.SenderID, message.SenderName, message.IsFromMe, message.QuotedMessageID
 				if message.Attachments != "" {
 					existing.Attachments = message.Attachments
@@ -740,7 +744,8 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 	if remote.GetTimestamp() == 0 {
 		timestamp = time.Now()
 	}
-	message := models.Message{ProtocolMsgID: remote.GetMessageID(), ProtocolConvID: conversationID, SenderID: senderID, SenderName: senderName, Body: strings.Join(parts, "\n"), Timestamp: timestamp, IsFromMe: fromMe, Attachments: p.mediaAttachmentsJSON(remote)}
+	message := models.Message{ProtocolMsgID: remote.GetMessageID(), ProtocolConvID: conversationID, SenderID: googleMessagesParticipantID(senderID), SenderName: senderName, Body: strings.Join(parts, "\n"), Timestamp: timestamp, IsFromMe: fromMe, Attachments: p.mediaAttachmentsJSON(remote)}
+	p.setMessageIdentity(&message, remote)
 	if fromMe {
 		message.Receipts = googleMessagesReceipts(remote.GetMessageStatus().GetStatus(), conversationID, timestamp)
 	}
@@ -750,7 +755,7 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 			continue
 		}
 		for _, userID := range entry.GetParticipantIDs() {
-			message.Reactions = append(message.Reactions, models.Reaction{UserID: userID, Emoji: emoji})
+			message.Reactions = append(message.Reactions, models.Reaction{UserID: googleMessagesParticipantID(userID), Emoji: emoji})
 		}
 	}
 	if reply := remote.GetReplyMessage(); reply != nil && reply.GetMessageID() != "" {
@@ -1008,6 +1013,7 @@ func (p *Provider) MarkConversationAsRead(conversationID string) error {
 
 func (p *Provider) GetCapabilities() core.Capabilities {
 	return core.Capabilities{
+		SupportsIdentitySelection:             true,
 		ReadCursorAuthoritativeForNewMessages: true,
 		SupportsReactions:                     true,
 		SupportsDeleteMessage:                 true,
@@ -1107,6 +1113,10 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	if err != nil {
 		return nil, fmt.Errorf("%s: get conversation for sending: %w", providerID, err)
 	}
+	identity, err := p.resolveSendingIdentity(nsConvID, conversation)
+	if err != nil {
+		return nil, err
+	}
 	tmpID := uuid.NewString()
 	infos := make([]*gmproto.MessageInfo, 0, 2)
 	if providerText != "" {
@@ -1127,9 +1137,9 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 		ConversationID: rawConvID,
 		MessagePayload: &gmproto.MessagePayload{
 			TmpID: tmpID, TmpID2: tmpID, ConversationID: rawConvID,
-			ParticipantID: conversation.GetDefaultOutgoingID(), MessageInfo: infos,
+			ParticipantID: identity.GetSIMParticipant().GetID(), MessageInfo: infos,
 		},
-		SIMPayload: conversation.GetSimCard().GetSIMData().GetSIMPayload(),
+		SIMPayload: identity.GetSIMData().GetSIMPayload(),
 		TmpID:      tmpID,
 	}
 	if quotedMessageID != "" {
@@ -1144,7 +1154,8 @@ func (p *Provider) sendMessage(conversationID, text string, file *core.Attachmen
 	}
 	// Google confirms delivery asynchronously and does not return the final ID.
 	// Return a local echo; the event stream later provides the canonical message.
-	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: nsConvID, SenderID: conversation.GetDefaultOutgoingID(), Body: canonicalText, Timestamp: time.Now(), IsFromMe: true}
+	message := &models.Message{ProtocolMsgID: "temp-" + tmpID, ProtocolConvID: nsConvID, SenderID: googleMessagesParticipantID(identity.GetSIMParticipant().GetID()), Body: canonicalText, Timestamp: time.Now(), IsFromMe: true}
+	applyMessageIdentity(message, canonicalIdentity(identity))
 	if quotedMessageID != "" {
 		message.QuotedMessageID = ptr(quotedMessageID)
 	}
@@ -1287,6 +1298,8 @@ func (p *Provider) Cleanup() error {
 
 func (p *Provider) handleLibGMEvent(event any) {
 	switch event := event.(type) {
+	case *gmproto.Settings:
+		p.updateSIMCards(event)
 	case *libgm.WrappedMessage:
 		if event.IsOld || event.Message == nil || event.GetMessageID() == "" {
 			return

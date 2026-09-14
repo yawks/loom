@@ -165,6 +165,9 @@ type Conversation struct {
 	WatchRules        []MessageWatchRule `gorm:"foreignKey:ConversationID;constraint:OnDelete:CASCADE" json:"-"`
 	CreatedAt         time.Time          `json:"createdAt"`
 	UpdatedAt         time.Time          `json:"updatedAt"`
+
+	// OutgoingIdentityID is the explicit local preference; empty follows the remote default.
+	OutgoingIdentityID string `json:"outgoingIdentityId,omitempty"`
 }
 
 // ConversationInvitation is the provider-neutral representation of an
@@ -340,6 +343,12 @@ type Message struct {
 	PollEncKey            []byte              `json:"-"`                                                 // Wire encryption key retained for historical poll vote decryption
 	PollVoteState         map[string][]string `gorm:"serializer:json" json:"-"`                          // Internal voter state for providers that hide participant details
 	DeletedAt             gorm.DeletedAt      `gorm:"index;index:idx_messages_deleted_conv,priority:1;index:idx_msg_conv_ts_del,priority:3" json:"-"`
+
+	// Identity metadata is a historical snapshot, never inferred from the current conversation default.
+	LocalIdentityID         string `json:"localIdentityId,omitempty"`
+	LocalIdentityLabel      string `json:"localIdentityLabel,omitempty"`
+	LocalIdentityAddress    string `json:"localIdentityAddress,omitempty"`
+	LocalIdentityApplicable bool   `json:"localIdentityApplicable,omitempty"`
 }
 
 // ThreadSummary is lightweight metadata for a message thread. It deliberately

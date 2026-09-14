@@ -553,5 +553,13 @@
   "capture_protection_error": "La protection contre la capture d’écran n’a pas pu être vérifiée. Le contenu reste masqué.",
   "capture_protection_retry": "Réessayer",
   "capture_protection_leave": "Fermer cette conversation",
-  "capture_protection_save_error": "Le réglage n’a pas pu être enregistré. Veuillez réessayer."
+  "capture_protection_save_error": "Le réglage n’a pas pu être enregistré. Veuillez réessayer.",
+  "identity_send_from": "Envoyer depuis",
+  "identity_remote_default": "Choix du téléphone : {{identity}}",
+  "identity_unknown": "Ligne inconnue",
+  "identity_unavailable": "Ligne indisponible : choisissez une autre ligne",
+  "identity_saving": "Enregistrement…",
+  "identity_load_failed": "Impossible de charger ou de modifier la ligne.",
+  "identity_sent_from": "Envoyé depuis : {{identity}}",
+  "identity_received_on": "Reçu sur : {{identity}}"
 }

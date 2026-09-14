@@ -551,5 +551,13 @@
   "capture_protection_error": "Screen capture protection could not be verified. Content remains hidden.",
   "capture_protection_retry": "Retry",
   "capture_protection_leave": "Close this conversation",
-  "capture_protection_save_error": "The preference could not be saved. Please try again."
+  "capture_protection_save_error": "The preference could not be saved. Please try again.",
+  "identity_send_from": "Send from",
+  "identity_remote_default": "Phone default: {{identity}}",
+  "identity_unknown": "Unknown line",
+  "identity_unavailable": "Line unavailable: choose another line",
+  "identity_saving": "Saving…",
+  "identity_load_failed": "Unable to load or change the line.",
+  "identity_sent_from": "Sent from: {{identity}}",
+  "identity_received_on": "Received on: {{identity}}"
 }

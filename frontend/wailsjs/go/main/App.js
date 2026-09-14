@@ -166,6 +166,10 @@ export function GetConversationApplications(arg1) {
   return window['go']['main']['App']['GetConversationApplications'](arg1);
 }
 
+export function GetConversationIdentities(arg1) {
+  return window['go']['main']['App']['GetConversationIdentities'](arg1);
+}
+
 export function GetConversationState(arg1) {
   return window['go']['main']['App']['GetConversationState'](arg1);
 }
@@ -412,6 +416,10 @@ export function SetContactAliasForConversation(arg1, arg2, arg3) {
 
 export function SetConversationCaptureProtection(arg1, arg2) {
   return window['go']['main']['App']['SetConversationCaptureProtection'](arg1, arg2);
+}
+
+export function SetConversationIdentity(arg1, arg2) {
+  return window['go']['main']['App']['SetConversationIdentity'](arg1, arg2);
 }
 
 export function SetConversationMuted(arg1, arg2) {

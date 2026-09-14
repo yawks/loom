@@ -1,10 +1,11 @@
+import { ConversationIdentitySelector } from "./ConversationIdentitySelector";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bold, ChevronDown, Code, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { GetAttachmentData, GetCustomEmojis, GetGroupDetails, GetGroupParticipants, GetParticipantNames, ScheduleMessage, SendMessage, SendMessageWithMentions, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ToastContainer, useToast } from "@/components/ui/toast";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { flushSync } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -225,6 +226,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const customEmojis = customEmojiCatalog.instanceId === activeAccount?.providerInstanceId
     ? customEmojiCatalog.emojis
     : [];
+  const identitySaving = useIsMutating({ mutationKey: ["conversation-identity", conversationId] }) > 0;
+  const supportsIdentitySelection = activeAccount?.providerInstanceId
+    ? capabilities[activeAccount.providerInstanceId]?.supportsIdentitySelection ?? false : false;
   const supportsScheduledMessages = activeAccount?.providerInstanceId
     ? capabilities[activeAccount.providerInstanceId]?.supportsScheduledMessages ?? false
     : false;
@@ -828,6 +832,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const makeNumberedList = useCallback(() => formatSelectedLines(true), [formatSelectedLines]);
 
   const handleSendMessage = async () => {
+    if (identitySaving) return;
     if (message.trim() && selectedContact) {
       const text = message.trim();
       const leadingWhitespace = message.length - message.trimStart().length;
@@ -1149,6 +1154,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   return (
     <>
     <div className="flex flex-col">
+      {supportsIdentitySelection && conversationId && <ConversationIdentitySelector key={conversationId} conversationId={conversationId} />}
       {supportsScheduledMessages && conversationId && (
         <ScheduledMessagesDialog
           open={isScheduledMessagesOpen}
@@ -1360,7 +1366,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         {hasMessage && (
           supportsScheduledMessages ? (
             <div className="chat-input__schedule-send flex shrink-0">
-              <Button onClick={handleSendMessage} size="icon" className="chat-input__send-button rounded-r-none" title={t("send")}>
+              <Button disabled={identitySaving} onClick={handleSendMessage} size="icon" className="chat-input__send-button rounded-r-none" title={t("send")}>
                 <Send className="h-5 w-5" />
               </Button>
               <Popover open={isScheduleMenuOpen} onOpenChange={setIsScheduleMenuOpen}>
@@ -1393,7 +1399,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
               </Popover>
             </div>
           ) : (
-            <Button onClick={handleSendMessage} size="icon" className="shrink-0" title={t("send")}>
+            <Button disabled={identitySaving} onClick={handleSendMessage} size="icon" className="shrink-0" title={t("send")}>
               <Send className="h-5 w-5" />
             </Button>
           )

@@ -1,3 +1,4 @@
+import { MessageIdentity } from "./MessageIdentity";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CheckCheck } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -347,6 +348,17 @@ export function MessageStatus({
   participantNames,
   layout,
 }: MessageStatusProps) {
+  const { t } = useTranslation();
+  const [isOpen, setIsOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keepOpen = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    setIsOpen(true);
+  };
+  const closeSoon = () => {
+    closeTimer.current = setTimeout(() => setIsOpen(false), 150);
+  };
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
   const [isAnimating, setIsAnimating] = useState(false);
   const previousStatusRef = useRef<MessageStatusType | null>(null);
 
@@ -360,22 +372,16 @@ export function MessageStatus({
     [message, isGroup, allMessages, participantStatuses]
   );
 
-  // Detect status change and trigger animation
+  // Animate status transitions after the browser commits the icon change.
   useEffect(() => {
-    if (previousStatusRef.current !== null && previousStatusRef.current !== status) {
-      setIsAnimating(true);
-      const timer = setTimeout(() => setIsAnimating(false), 500);
-      return () => clearTimeout(timer);
-    }
+    const previous = previousStatusRef.current;
     previousStatusRef.current = status;
+    if (previous !== null && previous !== status) {
+      const frame = requestAnimationFrame(() => setIsAnimating(true));
+      const timer = setTimeout(() => setIsAnimating(false), 500);
+      return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
+    }
   }, [status]);
-
-  // Only show status for messages sent by the user
-  if (!message.isFromMe) {
-    return null;
-  }
-
-  const { t } = useTranslation();
 
   const statusLabel = useMemo(() => {
     if (isGroup && participantStatuses.length > 0) {
@@ -419,45 +425,39 @@ export function MessageStatus({
     </div>
   );
 
-  if (isGroup && participantStatuses.length > 0) {
-    return (
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 rounded"
-            aria-label={statusLabel}
-            title={statusLabel}
-          >
-            {iconElement}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-64" align="end">
-          <Suspense fallback={<div className="text-sm">{statusLabel}</div>}>
-            <StatusTooltipContent
-              message={message}
-              isGroup={isGroup}
-              participantStatuses={participantStatuses}
-              status={status}
-            />
-          </Suspense>
-        </PopoverContent>
-      </Popover>
-    );
-  }
+  if (!message.isFromMe) return null;
 
-  // For individual conversations, use a simple tooltip with title attribute
   return (
-    <div
-      className={cn(
-        "flex items-center justify-center",
-        layout === "irc" ? "ml-2" : "mt-1",
-        isAnimating && "animate-pulse"
-      )}
-      title={statusLabel}
-      aria-label={statusLabel}
-    >
-      <StatusIcon status={status} />
-    </div>
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 rounded"
+          aria-label={statusLabel}
+          onMouseEnter={keepOpen}
+          onMouseLeave={closeSoon}
+          onFocus={keepOpen}
+        >
+          {iconElement}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-64 space-y-2"
+        align="end"
+        onMouseEnter={keepOpen}
+        onMouseLeave={closeSoon}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <Suspense fallback={<div className="text-sm">{statusLabel}</div>}>
+          <StatusTooltipContent
+            message={message}
+            isGroup={isGroup}
+            participantStatuses={participantStatuses}
+            status={status}
+          />
+        </Suspense>
+        <MessageIdentity message={message} />
+      </PopoverContent>
+    </Popover>
   );
 }

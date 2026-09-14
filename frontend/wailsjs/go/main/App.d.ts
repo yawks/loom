@@ -87,6 +87,8 @@ export function GetContactProfile(arg1:string,arg2:string):Promise<models.Contac
 
 export function GetConversationApplications(arg1:string):Promise<Array<models.ConversationApplication>>;
 
+export function GetConversationIdentities(arg1:string):Promise<core.ConversationIdentities>;
+
 export function GetConversationState(arg1:string):Promise<models.Conversation>;
 
 export function GetConversationsWithMessages():Promise<Array<string>>;
@@ -210,6 +212,8 @@ export function SetContactAlias(arg1:string,arg2:string):Promise<void>;
 export function SetContactAliasForConversation(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SetConversationCaptureProtection(arg1:string,arg2:boolean):Promise<void>;
+
+export function SetConversationIdentity(arg1:string,arg2:string):Promise<void>;
 
 export function SetConversationMuted(arg1:string,arg2:boolean):Promise<void>;
 

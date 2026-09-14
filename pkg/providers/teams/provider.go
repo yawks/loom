@@ -1435,6 +1435,15 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 			cardBody += "\n\n" + swiftBody
 		}
 	}
+	// Live notifications can carry an escaped SWIFT wrapper without the card
+	// payload available in history. Never expose that wire format as message text.
+	if teamsCardPreviewPattern.MatchString(html.UnescapeString(body)) {
+		body = ""
+	}
+	if cardBody == "" && strings.TrimSpace(body) == "" &&
+		teamsCardPreviewPattern.MatchString(html.UnescapeString(msteams.StripReplyBlockquote(remote.Content))) {
+		cardBody = "Carte"
+	}
 	if cardBody != "" {
 		if isTeamsUnsupportedCardPlaceholder(body) || strings.TrimSpace(body) == "" {
 			body = cardBody

@@ -1,6 +1,7 @@
 export namespace core {
 	
 	export class Capabilities {
+	    supportsIdentitySelection: boolean;
 	    supportsDirectConversationMetadata: boolean;
 	    supportsThreads: boolean;
 	    supportsReactions: boolean;
@@ -43,6 +44,7 @@ export namespace core {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supportsIdentitySelection = source["supportsIdentitySelection"];
 	        this.supportsDirectConversationMetadata = source["supportsDirectConversationMetadata"];
 	        this.supportsThreads = source["supportsThreads"];
 	        this.supportsReactions = source["supportsReactions"];
@@ -79,6 +81,56 @@ export namespace core {
 	        this.requiresGroupTitle = source["requiresGroupTitle"];
 	        this.groupConversationTypes = source["groupConversationTypes"];
 	    }
+	}
+	export class CommunicationIdentity {
+	    id: string;
+	    label: string;
+	    address: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CommunicationIdentity(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.address = source["address"];
+	    }
+	}
+	export class ConversationIdentities {
+	    identities: CommunicationIdentity[];
+	    defaultIdentityId: string;
+	    selectedIdentityId: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ConversationIdentities(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.identities = this.convertValues(source["identities"], CommunicationIdentity);
+	        this.defaultIdentityId = source["defaultIdentityId"];
+	        this.selectedIdentityId = source["selectedIdentityId"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Mention {
 	    userId: string;
@@ -720,6 +772,10 @@ export namespace models {
 	    callUrl?: string;
 	    callLinkAction?: string;
 	    poll?: Poll;
+	    localIdentityId?: string;
+	    localIdentityLabel?: string;
+	    localIdentityAddress?: string;
+	    localIdentityApplicable?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -764,6 +820,10 @@ export namespace models {
 	        this.callUrl = source["callUrl"];
 	        this.callLinkAction = source["callLinkAction"];
 	        this.poll = this.convertValues(source["poll"], Poll);
+	        this.localIdentityId = source["localIdentityId"];
+	        this.localIdentityLabel = source["localIdentityLabel"];
+	        this.localIdentityAddress = source["localIdentityAddress"];
+	        this.localIdentityApplicable = source["localIdentityApplicable"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -843,6 +903,7 @@ export namespace models {
 	    messages: Message[];
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
+	    outgoingIdentityId?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Conversation(source);
@@ -862,6 +923,7 @@ export namespace models {
 	        this.messages = this.convertValues(source["messages"], Message);
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	        this.outgoingIdentityId = source["outgoingIdentityId"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

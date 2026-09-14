@@ -2467,12 +2467,19 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		}
 	}
 
+	messageInstanceID := func(message models.Message) string {
+		if index := strings.Index(message.ProtocolConvID, "::"); index > 0 {
+			return message.ProtocolConvID[:index]
+		}
+		return convToInstance[message.ConversationID]
+	}
+
 	// Normalize every participant identity before exposing messages to the UI.
 	// This also repairs legacy database rows without rewriting protocol IDs that
 	// providers still need for remote operations.
 	for i := range messages {
 		canonicalizeAttachmentTypes(&messages[i])
-		instanceID := convToInstance[messages[i].ConversationID]
+		instanceID := messageInstanceID(messages[i])
 		if instanceID == "" || a.providerManager == nil {
 			continue
 		}
@@ -2500,17 +2507,7 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 	// 2. Group SenderIDs by InstanceID
 	instanceToSenderIDs := make(map[string]map[string]bool)
 	for _, msg := range messages {
-		instID := convToInstance[msg.ConversationID]
-		if instID == "" {
-			// Realtime/provider-fetched messages may not have their local numeric
-			// conversation ID yet. Their canonical namespaced conversation ID is
-			// authoritative; never route participant lookup through the active
-			// provider, which could hand (for example) a WhatsApp JID to Slack.
-			if idx := strings.Index(msg.ProtocolConvID, "::"); idx > 0 {
-				instID = msg.ProtocolConvID[:idx]
-				convToInstance[msg.ConversationID] = instID
-			}
-		}
+		instID := messageInstanceID(msg)
 
 		if instID != "" && msg.SenderID != "" {
 			if _, ok := instanceToSenderIDs[instID]; !ok {
@@ -2564,12 +2561,7 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 		// non-empty presentation as a provider-scoped fallback, then apply it to
 		// every message from that canonical sender below.
 		for _, message := range messages {
-			messageInstance := convToInstance[message.ConversationID]
-			if messageInstance == "" {
-				if idx := strings.Index(message.ProtocolConvID, "::"); idx > 0 {
-					messageInstance = message.ProtocolConvID[:idx]
-				}
-			}
+			messageInstance := messageInstanceID(message)
 			if messageInstance != instID || message.SenderID == "" {
 				continue
 			}
@@ -2611,7 +2603,7 @@ func (a *App) enrichMessagesWithSenderNames(messages []models.Message) {
 	notFoundCount := 0
 	for i := range messages {
 		msg := &messages[i]
-		instID := convToInstance[msg.ConversationID]
+		instID := messageInstanceID(*msg)
 		if instID == "" {
 			continue
 		}
@@ -5902,4 +5894,32 @@ func (a *App) FetchLinkPreview(url string) (LinkPreview, error) {
 	a.linkPreviewCacheMu.Unlock()
 
 	return preview, nil
+}
+
+// GetConversationIdentities exposes local lines through the canonical contract.
+func (a *App) GetConversationIdentities(conversationID string) (*core.ConversationIdentities, error) {
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	identities, ok := provider.(core.CommunicationIdentityProvider)
+	if !ok {
+		return nil, fmt.Errorf("identity selection is not supported")
+	}
+	result, err := identities.GetConversationIdentities(conversationID)
+	if err == nil {
+		a.invalidateMessageCaches()
+	}
+	return result, err
+}
+func (a *App) SetConversationIdentity(conversationID, identityID string) error {
+	provider, err := a.getConnectedProviderForConversation(conversationID)
+	if err != nil {
+		return err
+	}
+	identities, ok := provider.(core.CommunicationIdentityProvider)
+	if !ok {
+		return fmt.Errorf("identity selection is not supported")
+	}
+	return identities.SetConversationIdentity(conversationID, identityID)
 }
