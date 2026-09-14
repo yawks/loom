@@ -872,18 +872,27 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                     const previewText = lastMessage?.body?.trim() ||
                       getFirstAttachmentFileName(lastMessage?.attachments);
                     if (previewText) {
+                      const senderName = lastMessage?.isFromMe
+                        ? t("you")
+                        : lastMessage?.senderName?.trim() || (!isGroup ? contact.displayName : t("contact"));
                       return (
                         <div className={cn(
-                          "contact-list__item-preview mt-0.5 block h-4 max-h-4 overflow-hidden text-ellipsis whitespace-nowrap text-left text-xs leading-4 [&_*]:inline [&_br]:hidden [&_li]:list-none [&_ol]:m-0 [&_ol]:p-0 [&_ul]:m-0 [&_ul]:p-0",
+                          "contact-list__item-preview mt-0.5 flex h-4 max-h-4 min-w-0 items-baseline overflow-hidden whitespace-nowrap text-left text-xs leading-4",
                           isSelected ? "opacity-75" : "text-sidebar-muted-foreground"
                         )}>
-                          <MessageText
-                            text={previewText}
-                            providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}
-                            emojiSize={12}
-                            className="inline"
-                            preview={true}
-                          />
+                          <span className="max-w-[35%] shrink-0 truncate text-[11px] font-medium" title={senderName}>
+                            {senderName}
+                          </span>
+                          <span className="mr-1 shrink-0" aria-hidden="true">:</span>
+                          <span className="min-w-0 flex-1 truncate [&_*]:inline [&_br]:hidden [&_li]:list-none [&_ol]:m-0 [&_ol]:p-0 [&_ul]:m-0 [&_ul]:p-0">
+                            <MessageText
+                              text={previewText}
+                              providerInstanceId={contact.linkedAccounts[0]?.providerInstanceId}
+                              emojiSize={12}
+                              className="inline"
+                              preview={true}
+                            />
+                          </span>
                         </div>
                       );
                     }
