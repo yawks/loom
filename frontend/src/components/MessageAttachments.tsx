@@ -1045,7 +1045,7 @@ export function MessageAttachments({
           messageHandlers.onReplyClick(selectedGalleryMessage);
         }}
         onForward={() => {
-          messageHandlers.onForwardClick(selectedGalleryMessage, [selectedGalleryMessage]);
+          messageHandlers.onForwardClick(selectedGalleryMessage, galleryMessages);
         }}
         onReact={(emoji) => messageHandlers.onReaction(selectedGalleryMessage, emoji)}
         currentReactions={(selectedGalleryMessage.reactions || []).filter((reaction) => sameUserId(reaction.userId, currentUserId)).map((reaction) => reaction.emoji)}
