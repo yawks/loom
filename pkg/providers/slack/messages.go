@@ -685,22 +685,8 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 			sentMessage.ConversationID = convID
 		}
 
-		var existing models.Message
-		if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", protocolMsgID, nsConvID).First(&existing).Error; err != nil {
-			// Not yet stored — create it.
-			if err := db.DB.Create(sentMessage).Error; err != nil {
-				p.log("SlackProvider.SendFile: Failed to store message in database: %v\n", err)
-			}
-		} else {
-			// RTM already stored a record with this ID — merge our attachment data in.
-			sentMessage.ID = existing.ID
-			if existing.Attachments == "" {
-				existing.Attachments = string(attachmentsJSON)
-			}
-			if err := db.DB.Save(&existing).Error; err != nil {
-				p.log("SlackProvider.SendFile: Failed to update existing message: %v\n", err)
-			}
-			sentMessage.ID = existing.ID
+		if err := p.storeSentFile(db.DB, sentMessage); err != nil {
+			p.log("SlackProvider.SendFile: Failed to store sent file: %v\n", err)
 		}
 	}
 
@@ -715,6 +701,37 @@ func (p *SlackProvider) SendFile(conversationID string, file *core.Attachment, t
 	}
 
 	return sentMessage, nil
+}
+
+// storeSentFile reconciles an upload with an earlier, possibly incomplete socket event.
+func (p *SlackProvider) storeSentFile(database *gorm.DB, message *models.Message) error {
+	original := *message
+	var stored models.Message
+	err := db.Transaction(database, func(tx *gorm.DB) error {
+		candidate := original // GORM IDs must not survive a rolled-back attempt.
+		var existing models.Message
+		err := tx.Where("protocol_msg_id = ? AND protocol_conv_id = ?", candidate.ProtocolMsgID, candidate.ProtocolConvID).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			if err := tx.Omit("Reactions", "Receipts").Create(&candidate).Error; err != nil {
+				return err
+			}
+			stored = candidate
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		existing.Attachments = p.mergeAttachments(existing.Attachments, candidate.Attachments)
+		if err := tx.Model(&existing).Update("attachments", existing.Attachments).Error; err != nil {
+			return err
+		}
+		stored = existing
+		return nil
+	})
+	if err == nil {
+		*message = stored
+	}
+	return err
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.

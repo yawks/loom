@@ -12,6 +12,27 @@ import (
 	"golang.org/x/net/html"
 )
 
+var teamsCardPreviewPattern = regexp.MustCompile(`(?i)[<\[]URIObject\s+[^>\]]*\btype\s*=\s*["']SWIFT\.1["']`)
+
+// teamsReplyPreview also accepts legacy previews whose URIObject wrapper was
+// escaped as Markdown or HTML before being persisted.
+func teamsReplyPreview(body string) string {
+	decoded := stdhtml.UnescapeString(body)
+	if teamsCardPreviewPattern.MatchString(decoded) {
+		if card := teamsSwiftCardsToMarkdown(decoded); card != "" {
+			return card
+		}
+		return "Carte"
+	}
+	if looksLikeTeamsHTML(body) {
+		body = teamsHTMLToMarkdown(msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body)))
+	}
+	if isTeamsUnsupportedCardPlaceholder(body) {
+		return "Carte"
+	}
+	return normalizeTeamsEscapedTable(body)
+}
+
 // teamsHTMLToMarkdown preserves the formatting understood by Loom's Markdown
 // renderer while discarding Teams-specific HTML wrappers and attributes.
 func teamsHTMLToMarkdown(input string) string {

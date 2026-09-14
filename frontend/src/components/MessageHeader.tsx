@@ -232,15 +232,7 @@ export function MessageHeader({
         >
           <Paperclip className="h-4 w-4" />
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onToggleDetails}
-          title={t("conversation_details")}
-          aria-label={t("conversation_details")}
-        >
-          <Info className="h-4 w-4" />
-        </Button>
+        <ProtocolSwitcher linkedAccounts={linkedAccounts} />
         {supportsThreads && (
           <Button
             variant="ghost"
@@ -251,7 +243,15 @@ export function MessageHeader({
             <MessageSquare className="h-4 w-4" />
           </Button>
         )}
-        <ProtocolSwitcher linkedAccounts={linkedAccounts} />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onToggleDetails}
+          title={t("conversation_details")}
+          aria-label={t("conversation_details")}
+        >
+          <Info className="h-4 w-4" />
+        </Button>
       </div>
     </div>
     <ConversationSearchModal

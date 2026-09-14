@@ -1039,12 +1039,7 @@ func (p *Provider) inlineReplyHTML(conversationID, quotedMessageID string) strin
 				senderName = senderID
 			}
 			if strings.TrimSpace(quoted.Body) != "" {
-				preview = quoted.Body
-				if looksLikeTeamsHTML(preview) {
-					preview = teamsHTMLToMarkdown(
-						msteams.StripAMSAttachments(msteams.StripReplyBlockquote(preview)),
-					)
-				}
+				preview = teamsReplyPreview(quoted.Body)
 			}
 		}
 	}

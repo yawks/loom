@@ -424,15 +424,13 @@ func (p *Provider) enrichReplyMetadata(messages []models.Message) {
 			}
 		}
 		if parent == nil {
+			if message.QuotedBody != nil {
+				body := teamsReplyPreview(*message.QuotedBody)
+				message.QuotedBody = &body
+			}
 			continue
 		}
-		body := parent.Body
-		if looksLikeTeamsHTML(body) {
-			body = teamsHTMLToMarkdown(
-				msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body)),
-			)
-		}
-		body = normalizeTeamsEscapedTable(body)
+		body := teamsReplyPreview(parent.Body)
 		message.QuotedBody = &body
 		senderID := parent.SenderID
 		message.QuotedSenderID = &senderID
