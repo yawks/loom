@@ -86,11 +86,11 @@ export namespace core {
 	    id: string;
 	    label: string;
 	    address: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CommunicationIdentity(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -102,18 +102,18 @@ export namespace core {
 	    identities: CommunicationIdentity[];
 	    defaultIdentityId: string;
 	    selectedIdentityId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConversationIdentities(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.identities = this.convertValues(source["identities"], CommunicationIdentity);
 	        this.defaultIdentityId = source["defaultIdentityId"];
 	        this.selectedIdentityId = source["selectedIdentityId"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;

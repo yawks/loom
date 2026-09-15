@@ -302,6 +302,7 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 			switch err {
 			case nil:
 				stored.Body = message.Body
+				stored.IsForwarded = stored.IsForwarded || message.IsForwarded
 				stored.Mentions = message.Mentions
 				stored.HighlightReasons = message.HighlightReasons
 				stored.SenderID = message.SenderID

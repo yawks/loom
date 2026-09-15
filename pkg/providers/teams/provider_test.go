@@ -752,3 +752,22 @@ func TestTeamsHTMLListAndReplyWithIncorrectContentType(t *testing.T) {
 		t.Fatalf("reply body=%q", reply.Body)
 	}
 }
+
+func TestTeamsTableRepairsSplitHeader(t *testing.T) {
+	input := "Introduction\n\n| ID | Priority |\n |\nNeeds approval | Owner | Status |\n| --- | --- | --- | --- |\n| 1 | P1 | A | Open |"
+	want := "Introduction\n\n| ID | Priority<br>Needs approval | Owner | Status |\n| --- | --- | --- | --- |\n| 1 | P1 | A | Open |"
+	if got := normalizeTeamsEscapedTable(input); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := teamsHTMLToMarkdown(want); got != want {
+		t.Fatalf("normalization is not idempotent: %q", got)
+	}
+}
+
+func TestTeamsTableCellSourceNewlines(t *testing.T) {
+	got := teamsHTMLToMarkdown("<table><tr><td>Header\ncontinued</td><td>Status</td></tr><tr><td>First<br>Second</td><td>Open</td></tr></table>")
+	want := "| Header continued | Status |\n| --- | --- |\n| First<br>Second | Open |"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
+import { rehypeCanonicalBreaks } from "../lib/markdownBreaks";
 import type { PluggableList } from "unified";
 import type { models } from "../../wailsjs/go/models";
 
@@ -335,7 +336,7 @@ export const MessageText = memo(function MessageText({
           + canonicalText.slice(end);
       }
     }
-    const richProtected = canonicalText.replace(/<\/?loom-style\b[^>]*>/gi, (tag) => {
+    const richProtected = canonicalText.replace(/<br\s*\/?\s*>|<\/?loom-style\b[^>]*>/gi, (tag) => {
       const index = richTags.push(tag) - 1;
       return `LOOM_RICH_TAG_${index}_`;
     });
@@ -468,6 +469,7 @@ export const MessageText = memo(function MessageText({
   );
   const rehypePlugins = useMemo<PluggableList>(
     () => [
+      rehypeCanonicalBreaks,
       [rehypeHighlight, { detect: true }],
       [rehypeSearchHighlight, highlightQuery],
     ],

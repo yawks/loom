@@ -38,6 +38,7 @@ func teamsReplyPreview(body string) string {
 func teamsHTMLToMarkdown(input string) string {
 	input = msteams.ReplaceInlineEmojis(input)
 	input = normalizeTeamsMarkdown(input)
+	canonicalTable := teamsMarkdownTableSeparator.MatchString(input)
 	root, err := html.Parse(strings.NewReader("<body>" + input + "</body>"))
 	if err != nil {
 		return input
@@ -130,7 +131,11 @@ func teamsHTMLToMarkdown(input string) string {
 		}
 		switch tag {
 		case "br":
-			out.WriteByte('\n')
+			if canonicalTable {
+				out.WriteString("<br>")
+			} else {
+				out.WriteByte('\n')
+			}
 			return
 		case "code":
 			out.WriteByte('`')
@@ -313,6 +318,40 @@ func normalizeTeamsEscapedTable(input string) string {
 			line = strings.TrimRight(line, " \t") + " |"
 		}
 		lines[index] = line
+	}
+	// Legacy Office pastes can split the last header cell into a separate
+	// paragraph. Only join fragments when they reconstruct the separator width.
+	if separatorIndex >= 2 {
+		width := len(markdownTableCells(lines[separatorIndex]))
+		for start := separatorIndex - 2; start >= 0 && separatorIndex-start <= 8; start-- {
+			header := strings.TrimSpace(lines[start])
+			if header == "" {
+				break
+			}
+			if !strings.HasPrefix(header, "|") || header == "|" {
+				continue
+			}
+			if teamsNumberedFirstTableRow.MatchString(header) {
+				break
+			}
+			if len(markdownTableCells(header)) >= width {
+				break
+			}
+			fragments := []string{}
+			for _, fragment := range lines[start+1 : separatorIndex] {
+				fragment = strings.TrimSpace(fragment)
+				if fragment != "" && fragment != "|" {
+					fragments = append(fragments, fragment)
+				}
+			}
+			joined := strings.TrimSpace(strings.TrimSuffix(header, "|")) + "<br>" + strings.Join(fragments, "<br>")
+			if len(fragments) > 0 && len(markdownTableCells(joined)) == width {
+				lines[start] = joined
+				lines = append(lines[:start+1], lines[separatorIndex:]...)
+				separatorIndex = start + 1
+			}
+			break
+		}
 	}
 	// Some one-column tables arrive with an empty `|` paragraph between the
 	// first numbered row and its description, while Teams leaves the separator
@@ -617,7 +656,7 @@ func tableCellText(node *html.Node) string {
 	var walk func(*html.Node)
 	walk = func(current *html.Node) {
 		if current.Type == html.TextNode {
-			out.WriteString(current.Data)
+			out.WriteString(strings.ReplaceAll(strings.ReplaceAll(current.Data, "\r", ""), "\n", " "))
 			return
 		}
 		if current.Type == html.ElementNode && strings.EqualFold(current.Data, "br") {

@@ -1416,7 +1416,10 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	if len(canonicalMentions) > 0 {
 		body = mentionContent
 	}
-	embeddedAttachments := msteams.ExtractAMSAttachments(remote.Content)
+	embeddedAttachments, isForwarded := teamsEmbeddedMedia(remote.Content)
+	if template, ok := remote.Properties["forwardTemplateId"].(string); ok && strings.TrimSpace(template) != "" {
+		isForwarded = true
+	}
 	if remote.ContentType == "html" ||
 		strings.Contains(strings.ToLower(remote.MessageType), "richtext") ||
 		looksLikeTeamsHTML(remote.Content) {
@@ -1466,7 +1469,7 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		SenderID: remote.From, SenderName: senderName,
 		SenderAvatarURL: p.cachedAvatar(client, remote.From),
 		Body:            body, Timestamp: timestamp, IsFromMe: remote.From == client.UserMRI(),
-		Mentions: canonicalMentions,
+		Mentions: canonicalMentions, IsForwarded: isForwarded,
 	}
 	if !message.IsFromMe {
 		self := mriLookupKey(client.UserMRI())
@@ -1521,9 +1524,15 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 			continue
 		}
 		p.rememberAttachmentURL(embedded.URL)
+		seenAttachmentURLs[embedded.URL] = struct{}{}
 		attachmentType, contentType := teamsAttachmentType(embedded.AltText, "")
 		if embedded.IsImage {
 			attachmentType = "image"
+			if parsed, err := url.Parse(embedded.URL); err == nil {
+				if _, inferred := teamsAttachmentType(parsed.Path, ""); strings.HasPrefix(inferred, "image/") {
+					contentType = inferred
+				}
+			}
 		}
 		if embedded.IsVideo {
 			attachmentType = "video"

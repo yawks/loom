@@ -185,6 +185,9 @@ export function MessageIRCItem({
       <div
         className={cn(
           "flex items-start scroll-mt-28 group relative",
+          // A short preceding row's toolbar can extend into this row. Keep the
+          // hovered message above it so moving toward its actions preserves hover.
+          openActionsMessageId === messageId && "z-20",
           isPending && "opacity-70",
           sendFailed && "border-l-2 border-destructive pl-1",
           isHighlighted && "rounded-md bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 pb-2"
