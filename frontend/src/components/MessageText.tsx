@@ -14,6 +14,7 @@ import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import { rehypeCanonicalBreaks } from "../lib/markdownBreaks";
+import { rehypeCanonicalUnderline } from "../lib/markdownUnderline";
 import type { PluggableList } from "unified";
 import type { models } from "../../wailsjs/go/models";
 
@@ -470,6 +471,7 @@ export const MessageText = memo(function MessageText({
   const rehypePlugins = useMemo<PluggableList>(
     () => [
       rehypeCanonicalBreaks,
+      rehypeCanonicalUnderline,
       [rehypeHighlight, { detect: true }],
       [rehypeSearchHighlight, highlightQuery],
     ],
@@ -490,7 +492,7 @@ export const MessageText = memo(function MessageText({
   );
 
   const renderMarkdown = (content: string, isInline = false) => {
-    if (!/<(?:u|loom-style)\b/i.test(content)) return renderMarkdownBase(content, isInline);
+    if (!/<loom-style\b/i.test(content)) return renderMarkdownBase(content, isInline);
 
 
     // Parsing each rich-text element separately detaches a Markdown list marker
