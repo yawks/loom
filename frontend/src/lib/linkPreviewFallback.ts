@@ -1,4 +1,5 @@
 export type LinkPreviewFallbackType =
+  | "crm"
   | "calendar"
   | "bugtracker"
   | "shopping"
@@ -12,6 +13,7 @@ export type LinkPreviewFallbackType =
   | "link";
 
 export type LinkPreviewFallbackBrand =
+  | "hubspot"
   | "amazon"
   | "youtrack"
   | "jira"
@@ -94,6 +96,9 @@ export function getLinkPreviewFallback(rawURL: string): LinkPreviewFallback {
       return { type: "document" };
     }
 
+    if (domainMatches(hostname, "hubspot.com")) {
+      return { type: "crm", brand: "hubspot" };
+    }
     if (domainMatches(hostname, "amazon.fr") || domainMatches(hostname, "amazon.com") || domainMatches(hostname, "amzn.eu") || domainMatches(hostname, "amzn.to")) {
       return { type: "shopping", brand: "amazon" };
     }

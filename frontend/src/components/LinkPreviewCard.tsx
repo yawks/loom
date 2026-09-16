@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   Bug,
+  ContactRound,
   CalendarDays,
   Cloud,
   Code2,
@@ -23,11 +24,11 @@ import {
   type LinkPreviewFallbackBrand,
   type LinkPreviewFallbackType,
 } from "@/lib/linkPreviewFallback";
-import { Skeleton } from "@/components/ui/skeleton";
 
 const OFFSCREEN_PREVIEW_DELAY_MS = 1500;
 
 const FALLBACK_ICONS: Record<LinkPreviewFallbackType, LucideIcon> = {
+  crm: ContactRound,
   calendar: CalendarDays,
   bugtracker: Bug,
   shopping: Package,
@@ -42,6 +43,7 @@ const FALLBACK_ICONS: Record<LinkPreviewFallbackType, LucideIcon> = {
 };
 
 const FALLBACK_STYLES: Record<LinkPreviewFallbackType, { background: string; badge: string }> = {
+  crm: { background: "from-orange-500 via-orange-600 to-red-600", badge: "bg-white/20 text-white" },
   calendar: { background: "from-blue-500 via-blue-600 to-indigo-700", badge: "bg-white/20 text-white" },
   bugtracker: { background: "from-violet-600 via-fuchsia-600 to-pink-500", badge: "bg-white/20 text-white" },
   shopping: { background: "from-orange-400 via-orange-500 to-amber-600", badge: "bg-white/20 text-white" },
@@ -56,6 +58,7 @@ const FALLBACK_STYLES: Record<LinkPreviewFallbackType, { background: string; bad
 };
 
 const BRAND_STYLES: Record<LinkPreviewFallbackBrand, { label: string; background: string; badge: string }> = {
+  hubspot: { label: "HubSpot · CRM", background: "from-[#ff7a59] via-[#f76845] to-[#d94f2b]", badge: "bg-white text-[#ff7a59]" },
   amazon: { label: "Amazon", background: "from-[#131921] via-[#232f3e] to-[#ff9900]", badge: "bg-[#ff9900] text-[#131921]" },
   youtrack: { label: "YouTrack", background: "from-[#6b57ff] via-[#ff318c] to-[#00b8d9]", badge: "bg-black text-white" },
   jira: { label: "Jira", background: "from-[#0c66e4] via-[#1868db] to-[#579dff]", badge: "bg-white text-[#0c66e4]" },
@@ -122,8 +125,10 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
 
 function LinkPreviewContent({ url, isFromMe = false, isVisible }: LinkPreviewCardProps & { isVisible: boolean }) {
   const { t } = useTranslation();
+  const [loadedImageURL, setLoadedImageURL] = useState<string | null>(null);
+  const [failedFaviconURL, setFailedFaviconURL] = useState<string | null>(null);
   const [failedImageURL, setFailedImageURL] = useState<string | null>(null);
-  const { data: preview, isLoading, isError } = useQuery({
+  const { data: preview, isError } = useQuery({
     queryKey: ["link-preview", url],
     queryFn: () => FetchLinkPreview(url),
     staleTime: 60 * 60 * 1000,
@@ -132,30 +137,20 @@ function LinkPreviewContent({ url, isFromMe = false, isVisible }: LinkPreviewCar
   });
 
   const domain = (() => {
-    try { return new URL(preview?.url || url).hostname.replace(/^www\./, ""); }
+    try { return new URL(url).hostname.replace(/^www\./, ""); }
     catch { return ""; }
   })();
 
-  // Reserve the final card geometry before metadata and its image arrive. A
-  // link preview must never change the measured height of its message.
-  if (isLoading) {
-    return (
-      <div className="link-preview-card link-preview-card__skeleton mt-2 h-60 w-full max-w-sm overflow-hidden rounded-lg border border-border bg-card">
-        <Skeleton className="h-36 w-full rounded-none" />
-        <div className="h-24 space-y-2 p-3">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-4 w-3/4" />
-          <Skeleton className="h-3 w-full" />
-        </div>
-      </div>
-    );
-  }
+  // The standard card stays clickable while the thumbnail loads. Both states
+  // have identical dimensions to preserve the virtualized message layout.
+  // Keep the shared destination and its identity even if metadata fetching
+  // redirects to a sign-in page on another domain.
+  const targetUrl = url;
 
-  const targetUrl = preview?.url || url;
-  const title = preview?.title || domain || url;
   const imageURL = preview?.imageURL;
   const showImage = Boolean(imageURL && !isError && failedImageURL !== imageURL);
   const fallback = getLinkPreviewFallback(targetUrl);
+  const title = preview?.title || (fallback.brand ? BRAND_STYLES[fallback.brand].label : domain || url);
   const fallbackType = fallback.type;
   const FallbackIcon = FALLBACK_ICONS[fallbackType];
   const fallbackStyle = fallback.brand ? BRAND_STYLES[fallback.brand] : FALLBACK_STYLES[fallbackType];
@@ -172,28 +167,35 @@ function LinkPreviewContent({ url, isFromMe = false, isVisible }: LinkPreviewCar
           : "border-border bg-card"
       )}
     >
-      <div className="link-preview-card__media h-36 w-full bg-primary/5">
+      <div className="link-preview-card__media relative h-36 w-full bg-primary/5">
         {isVisible && showImage ? (
           <img
             src={imageURL}
             alt={title}
-            className="link-preview-card__image h-full w-full object-cover"
+            className={cn("link-preview-card__image absolute inset-0 h-full w-full object-cover", loadedImageURL !== imageURL && "opacity-0")}
+            onLoad={() => setLoadedImageURL(imageURL || null)}
             onError={() => setFailedImageURL(imageURL || null)}
           />
-        ) : (
+        ) : null}
+        {(!isVisible || !showImage || loadedImageURL !== imageURL) && (
           <div className={cn("link-preview-card__image-placeholder relative flex h-full w-full flex-col items-center justify-center gap-2 overflow-hidden bg-gradient-to-br text-white", fallbackStyle.background)}>
             <div className="absolute -right-8 -top-10 h-28 w-28 rounded-full bg-white/10" aria-hidden="true" />
             <div className="absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-black/10" aria-hidden="true" />
             <div className={cn("relative flex h-16 w-16 items-center justify-center rounded-2xl shadow-lg ring-1 ring-white/25", fallbackStyle.badge)}>
-              <FallbackIcon className="h-9 w-9" strokeWidth={1.8} aria-hidden="true" />
+              {preview?.faviconURL && failedFaviconURL !== preview.faviconURL ? (
+                <img src={preview.faviconURL} alt="" className="h-10 w-10 object-contain" onError={() => setFailedFaviconURL(preview.faviconURL)} />
+              ) : <FallbackIcon className="h-9 w-9" strokeWidth={1.8} aria-hidden="true" />}
             </div>
-            <span className="relative text-sm font-semibold tracking-wide text-white drop-shadow-sm">{fallbackLabel}</span>
+            <span className="relative text-sm font-semibold tracking-wide text-white drop-shadow-sm">{preview?.title || fallbackLabel}</span>
           </div>
         )}
       </div>
       <div className="link-preview-card__body h-24 overflow-hidden p-3 space-y-0.5">
         {domain && (
-          <p className={cn("link-preview-card__domain text-xs", isFromMe ? "text-white/60" : "text-muted-foreground")}>
+          <p className={cn("link-preview-card__domain flex items-center gap-1.5 text-xs", isFromMe ? "text-white/60" : "text-muted-foreground")}>
+            {preview?.faviconURL && failedFaviconURL !== preview.faviconURL && (
+              <img src={preview.faviconURL} alt="" className="h-3.5 w-3.5 shrink-0 object-contain" onError={() => setFailedFaviconURL(preview.faviconURL)} />
+            )}
             {domain}
           </p>
         )}

@@ -119,6 +119,7 @@ func initDatabase(dsn string) error {
 
 	// Auto-migrate schemas
 	err = db.AutoMigrate(
+		&models.LinkPreviewCache{},
 		&models.MetaContact{},
 		&models.LinkedAccount{},
 		&models.ParticipantProfile{},

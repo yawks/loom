@@ -381,6 +381,7 @@
   "forward_search_placeholder": "Rechercher des salles ou des personnes",
   "message_preview": "Aperçu du message",
   "link_preview_fallback": {
+    "crm": "CRM",
     "calendar": "Agenda",
     "bugtracker": "Suivi de bugs",
     "shopping": "Achat et livraison",

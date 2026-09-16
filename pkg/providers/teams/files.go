@@ -139,7 +139,16 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 	} else if isSharePointURL(fileURL) {
 		data, contentType, err = client.FetchSharedLink(context.Background(), fileURL)
 	} else {
-		data, contentType, err = client.FetchAttachment(context.Background(), fileURL)
+		// Legacy rows stored the AMS /imgo rendition as URL before the
+		// canonical model distinguished preview and original sources. Upgrade
+		// those opaque references at the provider boundary so existing messages
+		// also open at source quality. Fall back when an older AMS object does
+		// not expose the original view.
+		fetchURL, _ := teamsImageAttachmentURLs(fileURL, "image")
+		data, contentType, err = client.FetchAttachment(context.Background(), fetchURL)
+		if err != nil && fetchURL != fileURL {
+			data, contentType, err = client.FetchAttachment(context.Background(), fileURL)
+		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s: download attachment: %w", providerID, err)

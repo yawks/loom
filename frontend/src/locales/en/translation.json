@@ -379,6 +379,7 @@
   "forward_search_placeholder": "Search for rooms or people",
   "message_preview": "Message preview",
   "link_preview_fallback": {
+    "crm": "CRM",
     "calendar": "Calendar",
     "bugtracker": "Bug tracker",
     "shopping": "Shopping and delivery",

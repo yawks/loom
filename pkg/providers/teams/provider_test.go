@@ -732,6 +732,12 @@ func TestTeamsImageAttachmentURLs(t *testing.T) {
 		t.Fatalf("thumbnail URL=%q, want %q", gotThumbnail, thumbnail)
 	}
 
+	imgo := "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/object-id/views/imgo"
+	fullSize, gotThumbnail = teamsImageAttachmentURLs(imgo, "image")
+	if fullSize != "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/object-id/views/imgpsh_fullsize" || gotThumbnail != imgo {
+		t.Fatalf("imgo normalization: full=%q thumbnail=%q", fullSize, gotThumbnail)
+	}
+
 	unchanged, noThumbnail := teamsImageAttachmentURLs(thumbnail, "video")
 	if unchanged != thumbnail || noThumbnail != "" {
 		t.Fatalf("non-image URLs changed: full=%q thumbnail=%q", unchanged, noThumbnail)

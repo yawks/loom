@@ -1561,20 +1561,28 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	return message
 }
 
-// Teams commonly exposes an image's small chat preview as the attachment
-// contentUrl. AMS keeps the original pixels in the sibling imgpsh_fullsize
-// view. Store both in the canonical attachment contract so all frontends can
-// use Thumbnail for the bubble and URL for full-size viewing/downloading.
+// Teams commonly exposes an image's rendered chat preview as the attachment
+// contentUrl. AMS keeps the source pixels in a sibling view. Store both in the
+// canonical attachment contract so all frontends can use Thumbnail for the
+// bubble and URL for full-size viewing/downloading.
 func teamsImageAttachmentURLs(rawURL, attachmentType string) (fullSize, thumbnail string) {
 	if attachmentType != "image" || rawURL == "" {
 		return rawURL, ""
 	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil || !strings.HasSuffix(parsed.Path, "/views/imgpsh") {
+	if err != nil {
 		return rawURL, ""
 	}
-	thumbnail = rawURL
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/views/imgpsh") + "/views/imgpsh_fullsize"
+	switch {
+	case strings.HasSuffix(parsed.Path, "/views/imgo"):
+		thumbnail = rawURL
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/views/imgo") + "/views/imgpsh_fullsize"
+	case strings.HasSuffix(parsed.Path, "/views/imgpsh"):
+		thumbnail = rawURL
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/views/imgpsh") + "/views/imgpsh_fullsize"
+	default:
+		return rawURL, ""
+	}
 	return parsed.String(), thumbnail
 }
 

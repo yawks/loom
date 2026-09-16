@@ -26,7 +26,6 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"golang.org/x/net/html"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -73,6 +72,7 @@ type LinkPreview struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	ImageURL    string `json:"imageURL"`
+	FaviconURL  string `json:"faviconURL"`
 	URL         string `json:"url"`
 }
 
@@ -135,7 +135,7 @@ type App struct {
 	providerErrorsMu    sync.RWMutex
 	providerReconnectMu sync.Mutex
 
-	// linkPreviewCache caches fetched Open Graph previews (1-hour TTL).
+	// linkPreviewCache caches fetched previews (seven-day TTL, also persisted in SQLite).
 	linkPreviewCache   map[string]linkPreviewEntry
 	linkPreviewCacheMu sync.RWMutex
 
@@ -602,6 +602,7 @@ func (a *App) startup(ctx context.Context) {
 	if databaseErr != nil {
 		log.Fatalf("Failed to initialize database: %v", databaseErr)
 	}
+	go db.MaintainLinkPreviewCache(ctx, db.DB)
 	if a.databaseReady != nil {
 		close(a.databaseReady)
 	}
@@ -5704,197 +5705,6 @@ func (a *App) setupSystemTray(ctx context.Context) {
 	appMenu.Append(quitItem)
 
 	a.systemTray = appMenu
-}
-
-// metaAttrs extracts property, name, and content from a <meta> node's attributes.
-func metaAttrs(n *html.Node) (property, name, content string) {
-	for _, a := range n.Attr {
-		switch a.Key {
-		case "property":
-			property = a.Val
-		case "name":
-			name = a.Val
-		case "content":
-			content = a.Val
-		}
-	}
-	return
-}
-
-// applyMetaToPreview updates preview fields from a single <meta> node.
-func applyMetaToPreview(n *html.Node, p *LinkPreview) {
-	property, name, content := metaAttrs(n)
-	switch property {
-	case "og:title":
-		p.Title = content
-	case "og:description":
-		p.Description = content
-	case "og:image":
-		p.ImageURL = content
-	case "og:url":
-		if content != "" {
-			p.URL = content
-		}
-	}
-	if p.Description == "" && (name == "description" || name == "twitter:description") {
-		p.Description = content
-	}
-	if p.Title == "" && name == "twitter:title" {
-		p.Title = content
-	}
-	if p.ImageURL == "" && name == "twitter:image" {
-		p.ImageURL = content
-	}
-}
-
-// walkHTMLForPreview traverses the HTML tree and extracts OG/meta/title data into p.
-func walkHTMLForPreview(n *html.Node, p *LinkPreview, title *string) {
-	if n.Type == html.ElementNode {
-		switch n.Data {
-		case "title":
-			if n.FirstChild != nil && *title == "" {
-				*title = strings.TrimSpace(n.FirstChild.Data)
-			}
-		case "meta":
-			applyMetaToPreview(n, p)
-		}
-	}
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		walkHTMLForPreview(c, p, title)
-	}
-}
-
-// jsonLDString returns the first useful string representation of a JSON-LD
-// value. Schema.org allows image and URL fields to be strings, objects, or
-// arrays of either.
-func jsonLDString(value any) string {
-	switch value := value.(type) {
-	case string:
-		return strings.TrimSpace(value)
-	case []any:
-		for _, item := range value {
-			if result := jsonLDString(item); result != "" {
-				return result
-			}
-		}
-	case map[string]any:
-		for _, key := range []string{"url", "contentUrl", "@id"} {
-			if result := jsonLDString(value[key]); result != "" {
-				return result
-			}
-		}
-	}
-	return ""
-}
-
-// applyJSONLDToPreview walks a JSON-LD document and fills metadata missing
-// from the standard Open Graph tags. Nested @graph entries are common.
-func applyJSONLDToPreview(value any, p *LinkPreview) {
-	switch value := value.(type) {
-	case []any:
-		for _, item := range value {
-			applyJSONLDToPreview(item, p)
-		}
-	case map[string]any:
-		if p.Title == "" {
-			for _, key := range []string{"name", "headline"} {
-				if p.Title = jsonLDString(value[key]); p.Title != "" {
-					break
-				}
-			}
-		}
-		if p.Description == "" {
-			p.Description = jsonLDString(value["description"])
-		}
-		if p.ImageURL == "" {
-			p.ImageURL = jsonLDString(value["image"])
-		}
-		if nested, ok := value["@graph"]; ok {
-			applyJSONLDToPreview(nested, p)
-		}
-	}
-}
-
-func walkHTMLForJSONLD(n *html.Node, p *LinkPreview) {
-	if n.Type == html.ElementNode && n.Data == "script" {
-		var scriptType string
-		for _, attr := range n.Attr {
-			if attr.Key == "type" {
-				scriptType = strings.ToLower(strings.TrimSpace(strings.Split(attr.Val, ";")[0]))
-				break
-			}
-		}
-		if scriptType == "application/ld+json" && n.FirstChild != nil {
-			var value any
-			if json.Unmarshal([]byte(n.FirstChild.Data), &value) == nil {
-				applyJSONLDToPreview(value, p)
-			}
-		}
-	}
-	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		walkHTMLForJSONLD(child, p)
-	}
-}
-
-// FetchLinkPreview fetches and parses Open Graph metadata for a given URL.
-// Results are cached for one hour to avoid repeated network requests.
-func (a *App) FetchLinkPreview(url string) (LinkPreview, error) {
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return LinkPreview{}, fmt.Errorf("invalid URL: %s", url)
-	}
-
-	// Serve from cache when available.
-	a.linkPreviewCacheMu.RLock()
-	if a.linkPreviewCache != nil {
-		if entry, ok := a.linkPreviewCache[url]; ok && time.Now().Before(entry.expiresAt) {
-			a.linkPreviewCacheMu.RUnlock()
-			return entry.preview, nil
-		}
-	}
-	a.linkPreviewCacheMu.RUnlock()
-
-	client := &http.Client{Timeout: 8 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return LinkPreview{}, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Loom/1.0; +https://github.com/loom)")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return LinkPreview{}, fmt.Errorf("fetch failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return LinkPreview{}, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
-	}
-
-	// Limit to 512 KB to avoid reading huge pages.
-	body := io.LimitReader(resp.Body, 512*1024)
-	doc, err := html.Parse(body)
-	if err != nil {
-		return LinkPreview{}, fmt.Errorf("HTML parse error: %w", err)
-	}
-
-	preview := LinkPreview{URL: url}
-	var title string
-	walkHTMLForPreview(doc, &preview, &title)
-	walkHTMLForJSONLD(doc, &preview)
-
-	if preview.Title == "" {
-		preview.Title = title
-	}
-
-	a.linkPreviewCacheMu.Lock()
-	if a.linkPreviewCache == nil {
-		a.linkPreviewCache = make(map[string]linkPreviewEntry)
-	}
-	a.linkPreviewCache[url] = linkPreviewEntry{preview: preview, expiresAt: time.Now().Add(time.Hour)}
-	a.linkPreviewCacheMu.Unlock()
-
-	return preview, nil
 }
 
 // GetConversationIdentities exposes local lines through the canonical contract.

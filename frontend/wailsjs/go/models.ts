@@ -246,6 +246,7 @@ export namespace main {
 	    title: string;
 	    description: string;
 	    imageURL: string;
+	    faviconURL: string;
 	    url: string;
 	
 	    static createFrom(source: any = {}) {
@@ -257,6 +258,7 @@ export namespace main {
 	        this.title = source["title"];
 	        this.description = source["description"];
 	        this.imageURL = source["imageURL"];
+	        this.faviconURL = source["faviconURL"];
 	        this.url = source["url"];
 	    }
 	}
