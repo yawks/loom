@@ -590,6 +590,7 @@ func (a *App) startup(ctx context.Context) {
 		a.mu.Unlock()
 	}()
 	a.ctx = ctx
+	a.registerNotificationNavigation()
 
 	// Initialize the database
 	var databaseErr error

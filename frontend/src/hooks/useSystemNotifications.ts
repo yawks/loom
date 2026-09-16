@@ -7,9 +7,40 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import i18n from "@/i18n";
 import { initializeSystemNotifications } from "@/lib/systemNotifications";
 import { authorizeSystemNotifications } from "@/lib/systemNotifications";
-import { GetConfiguredProviders, GetNotificationSettings } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, GetMetaContacts, GetNotificationSettings } from "../../wailsjs/go/main/App";
+import { useAppStore } from "@/lib/store";
+import type { models } from "../../wailsjs/go/models";
 
 interface SystemNotificationPayload { id: string; title: string; subtitle?: string; body?: string; conversationId: string; messageId: string; timestamp: string }
+interface NotificationNavigationTarget { conversationId: string; messageId?: string }
+
+function selectNotificationTarget(target: NotificationNavigationTarget): boolean {
+  if (!target.conversationId) return false;
+  const state = useAppStore.getState();
+  for (const contact of state.metaContacts) {
+    const account = contact.linkedAccounts?.find((candidate) => candidate.conversationId === target.conversationId);
+    if (!account) continue;
+    const selected = contact.linkedAccounts[0] === account
+      ? contact
+      : { ...contact, linkedAccounts: [account, ...contact.linkedAccounts.filter((candidate) => candidate !== account)] } as models.MetaContact;
+    state.setSelectedProviderFilter(account.providerInstanceId || null);
+    state.setShowConversationDetails(false);
+    state.setSelectedThreadId(null);
+    state.setSelectedContact(selected);
+    if (target.messageId) state.setMessageSearchTargetId(target.messageId, "center");
+    return true;
+  }
+  return false;
+}
+
+async function openNotificationTarget(target: NotificationNavigationTarget): Promise<void> {
+  if (selectNotificationTarget(target)) return;
+  const contacts = await GetMetaContacts();
+  useAppStore.getState().setMetaContacts(contacts ?? []);
+  if (!selectNotificationTarget(target)) {
+    console.warn("Unable to find notification conversation", target.conversationId);
+  }
+}
 
 const isUnread = (notification: SystemNotificationPayload) => {
   const conversation = useMessageReadStore.getState().readByConversation[notification.conversationId];
@@ -39,10 +70,23 @@ export function useSystemNotifications() {
       })
       .catch((error) => console.error("Unable to check notification settings", error));
 
-    const sendWhenReady = async (notification: { id: string; title: string; subtitle?: string; body?: string }) => {
+    const sendWhenReady = async (notification: { id: string; title: string; subtitle?: string; body?: string; conversationId?: string; messageId?: string }) => {
       if (!await ready || !active) return;
-      await SendNotification(notification);
+      const data = notification.conversationId
+        ? { conversationId: notification.conversationId, messageId: notification.messageId ?? "" }
+        : undefined;
+      await SendNotification({ ...notification, data });
     };
+
+    const unsubscribeOpen = EventsOn("system-notification-open", (raw: string) => {
+      if (!active) return;
+      try {
+        void openNotificationTarget(JSON.parse(raw) as NotificationNavigationTarget).catch((error) =>
+          console.error("Unable to open notification conversation", error));
+      } catch (error) {
+        console.error("Invalid notification navigation target", error);
+      }
+    });
 
     const unsubscribe = EventsOn("system-notification", (raw: string) => {
       if (!active) return;
@@ -83,6 +127,7 @@ export function useSystemNotifications() {
       active = false;
       unsubscribe?.();
       unsubscribeBatch?.();
+      unsubscribeOpen?.();
       if (syncSummaryTimer !== undefined) window.clearTimeout(syncSummaryTimer);
       pendingSyncNotifications.clear();
     };

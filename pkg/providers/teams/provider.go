@@ -1498,11 +1498,13 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	}
 	seenAttachmentURLs := make(map[string]struct{})
 	for _, attachment := range remote.Attachments {
-		p.rememberAttachmentURL(attachment.URL)
-		seenAttachmentURLs[attachment.URL] = struct{}{}
 		attachmentType, contentType := teamsAttachmentType(attachment.Name, attachment.ContentType)
+		attachmentURL, thumbnailURL := teamsImageAttachmentURLs(attachment.URL, attachmentType)
+		p.rememberAttachmentURL(attachmentURL)
+		p.rememberAttachmentURL(thumbnailURL)
+		seenAttachmentURLs[attachment.URL] = struct{}{}
 		attachments = append(attachments, models.Attachment{
-			Type: attachmentType, URL: attachment.URL, FileName: attachment.Name,
+			Type: attachmentType, URL: attachmentURL, Thumbnail: thumbnailURL, FileName: attachment.Name,
 			FileSize: attachment.Size, MimeType: contentType,
 		})
 	}
@@ -1537,8 +1539,11 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		if embedded.IsVideo {
 			attachmentType = "video"
 		}
+		attachmentURL, thumbnailURL := teamsImageAttachmentURLs(embedded.URL, attachmentType)
+		p.rememberAttachmentURL(attachmentURL)
+		p.rememberAttachmentURL(thumbnailURL)
 		attachments = append(attachments, models.Attachment{
-			Type: attachmentType, URL: embedded.URL, FileName: embedded.AltText,
+			Type: attachmentType, URL: attachmentURL, Thumbnail: thumbnailURL, FileName: embedded.AltText,
 			MimeType: contentType, Duration: uint32(embedded.Duration.Seconds()),
 		})
 	}
@@ -1554,6 +1559,23 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		})
 	}
 	return message
+}
+
+// Teams commonly exposes an image's small chat preview as the attachment
+// contentUrl. AMS keeps the original pixels in the sibling imgpsh_fullsize
+// view. Store both in the canonical attachment contract so all frontends can
+// use Thumbnail for the bubble and URL for full-size viewing/downloading.
+func teamsImageAttachmentURLs(rawURL, attachmentType string) (fullSize, thumbnail string) {
+	if attachmentType != "image" || rawURL == "" {
+		return rawURL, ""
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !strings.HasSuffix(parsed.Path, "/views/imgpsh") {
+		return rawURL, ""
+	}
+	thumbnail = rawURL
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/views/imgpsh") + "/views/imgpsh_fullsize"
+	return parsed.String(), thumbnail
 }
 
 var teamsHTMLContentPattern = regexp.MustCompile(`(?i)<(?:p|div|br|ul|ol|li|table|blockquote|span|strong|em|i|b|a)\b`)

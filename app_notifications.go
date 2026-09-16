@@ -4,10 +4,13 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"gorm.io/gorm"
 )
 
@@ -26,6 +29,37 @@ type SystemNotification struct {
 	ConversationID string    `json:"conversationId"`
 	MessageID      string    `json:"messageId"`
 	Timestamp      time.Time `json:"timestamp"`
+}
+
+type notificationNavigationTarget struct {
+	ConversationID string `json:"conversationId"`
+	MessageID      string `json:"messageId,omitempty"`
+}
+
+// registerNotificationNavigation forwards the canonical target attached to a
+// system notification to the WebView. The frontend never has to decode a
+// provider-specific notification identifier.
+func (a *App) registerNotificationNavigation() {
+	if a.ctx == nil {
+		return
+	}
+	runtime.OnNotificationResponse(a.ctx, func(result runtime.NotificationResult) {
+		if result.Error != nil {
+			log.Printf("[Notifications] Failed to handle notification response: %v", result.Error)
+			return
+		}
+		conversationID, _ := result.Response.UserInfo["conversationId"].(string)
+		messageID, _ := result.Response.UserInfo["messageId"].(string)
+		if strings.TrimSpace(conversationID) == "" {
+			return
+		}
+		payload, err := json.Marshal(notificationNavigationTarget{ConversationID: conversationID, MessageID: messageID})
+		if err != nil {
+			return
+		}
+		runtime.WindowShow(a.ctx)
+		runtime.EventsEmit(a.ctx, "system-notification-open", string(payload))
+	})
 }
 
 func defaultNotificationSettings(instanceID string) models.NotificationSettings {

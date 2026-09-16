@@ -38,6 +38,25 @@ func TestSetCachedConversationMessagesLockedBoundsMessages(t *testing.T) {
 	}
 }
 
+func TestConvertMessageSkipsEncryptedReactionEnvelope(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	event := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   types.NewJID("120363410711696407", types.GroupServer),
+				Sender: types.NewJID("33600000000", types.DefaultUserServer),
+			},
+			ID:        "encrypted-reaction",
+			Timestamp: time.Now(),
+		},
+		Message: &waE2E.Message{EncReactionMessage: &waE2E.EncReactionMessage{}},
+	}
+
+	if got := provider.convertMessage(event); got != nil {
+		t.Fatalf("encrypted reaction converted to standalone message: %#v", got)
+	}
+}
+
 func TestReconcileDuplicateMessageBackfillsCaptionAndAttachmentWithoutEditing(t *testing.T) {
 	existing := &models.Message{ProtocolMsgID: "image-message"}
 	incoming := &models.Message{

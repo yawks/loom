@@ -318,7 +318,7 @@ function VisibleImageAttachment({
   attachment: Attachment;
   messageID: string;
   providerInstanceId?: string;
-  onOpen: (dataUrl: string) => void;
+  onOpen: () => void;
   onDownload: () => void;
 }) {
   const elementRef = useRef<HTMLDivElement>(null);
@@ -370,27 +370,28 @@ function VisibleImageAttachment({
     setFailed(false);
     const load = async () => {
       try {
+        const previewSource = attachment.thumbnail || attachment.url;
         const data = providerInstanceId
-          ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
-          : await GetAttachmentData(attachment.url);
+          ? await GetProviderAttachmentData(providerInstanceId, previewSource)
+          : await GetAttachmentData(previewSource);
         if (active) {
-          setLoadedFromThumbnail(false);
+          setLoadedFromThumbnail(Boolean(attachment.thumbnail));
           setImageData(data);
         }
       } catch (error) {
         console.warn("[MessageAttachments] Failed to load image:", error);
         // Preserve accessibility for old messages whose original media is no
         // longer available, but never retain this fallback outside the viewport.
-        if (!attachment.thumbnail) {
+        if (!attachment.thumbnail || attachment.thumbnail === attachment.url) {
           if (active) setFailed(true);
           return;
         }
         try {
           const fallback = providerInstanceId
-            ? await GetProviderAttachmentData(providerInstanceId, attachment.thumbnail)
-            : await GetAttachmentData(attachment.thumbnail);
+            ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
+            : await GetAttachmentData(attachment.url);
           if (active) {
-            setLoadedFromThumbnail(true);
+            setLoadedFromThumbnail(false);
             setImageData(fallback);
           }
         } catch (fallbackError) {
@@ -408,7 +409,7 @@ function VisibleImageAttachment({
       ref={elementRef}
       className="message-attachment__image relative cursor-pointer rounded-lg overflow-hidden"
       style={frameStyle}
-      onClick={() => imageData && onOpen(imageData)}
+      onClick={() => imageData && onOpen()}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -472,11 +473,13 @@ function VisibleImageAttachment({
 
 function MosaicImageAttachment({
   attachment,
+  providerInstanceId,
   onOpen,
   className,
 }: {
   attachment: Attachment;
-  onOpen: (dataUrl: string) => void;
+  providerInstanceId?: string;
+  onOpen: () => void;
   className?: string;
 }) {
   const elementRef = useRef<HTMLButtonElement>(null);
@@ -506,24 +509,31 @@ function MosaicImageAttachment({
     }
 
     let active = true;
-    GetAttachmentData(attachment.url)
+    const previewSource = attachment.thumbnail || attachment.url;
+    const loadPreview = providerInstanceId
+      ? GetProviderAttachmentData(providerInstanceId, previewSource)
+      : GetAttachmentData(previewSource);
+    loadPreview
       .then((data) => { if (active) setImageData(data); })
       .catch(() => {
         if (attachment.thumbnail && attachment.thumbnail !== attachment.url) {
-          GetAttachmentData(attachment.thumbnail)
+          const loadOriginal = providerInstanceId
+            ? GetProviderAttachmentData(providerInstanceId, attachment.url)
+            : GetAttachmentData(attachment.url);
+          loadOriginal
             .then((data) => { if (active) setImageData(data); })
             .catch(() => undefined);
         }
     });
     return () => { active = false; };
-  }, [attachment.thumbnail, attachment.url, isVisible]);
+  }, [attachment.thumbnail, attachment.url, isVisible, providerInstanceId]);
 
   return (
     <button
       ref={elementRef}
       type="button"
       className={`message-attachment__mosaic-tile relative min-h-0 overflow-hidden bg-muted ${className || ""}`}
-      onClick={() => imageData && onOpen(imageData)}
+      onClick={() => imageData && onOpen()}
       aria-label={attachment.fileName}
     >
       {imageData ? (
@@ -976,10 +986,28 @@ export function MessageAttachments({
   );
   const isMediaMosaic = visualMediaAttachments.length > 1 && visualMediaAttachments.length === parsedAttachments.length;
 
-  const openMosaicImage = (dataUrl: string, index: number) => {
-    setSelectedVideo(null);
-    setSelectedImage(dataUrl);
-    setSelectedImageIndex(index);
+  const openFullSizeImage = async (attachment: Attachment, index?: number) => {
+    try {
+      const data = providerInstanceId
+        ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
+        : await GetAttachmentData(attachment.url);
+      setSelectedVideo(null);
+      setSelectedImage(data);
+      if (index !== undefined) setSelectedImageIndex(index);
+    } catch (error) {
+      console.error("Failed to load full-size image:", error);
+      if (!attachment.thumbnail) return;
+      try {
+        const fallback = providerInstanceId
+          ? await GetProviderAttachmentData(providerInstanceId, attachment.thumbnail)
+          : await GetAttachmentData(attachment.thumbnail);
+        setSelectedVideo(null);
+        setSelectedImage(fallback);
+        if (index !== undefined) setSelectedImageIndex(index);
+      } catch (fallbackError) {
+        console.error("Failed to load image fallback:", fallbackError);
+      }
+    }
   };
 
   const openMosaicVideo = async (attachment: Attachment, index: number, preloadedData?: string) => {
@@ -1097,7 +1125,8 @@ export function MessageAttachments({
               <MosaicImageAttachment
                 key={`${attachment.url}-${index}`}
                 attachment={attachment}
-                onOpen={(dataUrl) => openMosaicImage(dataUrl, index)}
+                providerInstanceId={providerInstanceId}
+                onOpen={() => { void openFullSizeImage(attachment, index); }}
                 className={tileClass}
               />
             );
@@ -1261,8 +1290,8 @@ export function MessageAttachments({
                   attachment={attachment}
                   messageID={messageID}
                   providerInstanceId={providerInstanceId}
-                  onOpen={(dataUrl) => {
-                    setSelectedImage(dataUrl);
+                  onOpen={() => {
+                    void openFullSizeImage(attachment);
                     if (galleryMessages?.length) setSelectedImageIndex(0);
                   }}
                   onDownload={() => { void handleDownload(attachment); }}

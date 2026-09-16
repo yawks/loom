@@ -722,6 +722,22 @@ func TestTeamsAttachmentHTML(t *testing.T) {
 	}
 }
 
+func TestTeamsImageAttachmentURLs(t *testing.T) {
+	thumbnail := "https://api.asm.skype.com/v1/objects/object-id/views/imgpsh?token=value"
+	fullSize, gotThumbnail := teamsImageAttachmentURLs(thumbnail, "image")
+	if fullSize != "https://api.asm.skype.com/v1/objects/object-id/views/imgpsh_fullsize?token=value" {
+		t.Fatalf("full-size URL=%q", fullSize)
+	}
+	if gotThumbnail != thumbnail {
+		t.Fatalf("thumbnail URL=%q, want %q", gotThumbnail, thumbnail)
+	}
+
+	unchanged, noThumbnail := teamsImageAttachmentURLs(thumbnail, "video")
+	if unchanged != thumbnail || noThumbnail != "" {
+		t.Fatalf("non-image URLs changed: full=%q thumbnail=%q", unchanged, noThumbnail)
+	}
+}
+
 func TestTeamsHTMLListAndReplyWithIncorrectContentType(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh",

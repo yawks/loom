@@ -814,8 +814,12 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 	evt.Message = msg
 
-	// Skip reaction messages - they are handled separately in eventHandler
-	if msg.GetReactionMessage() != nil {
+	// Reactions are conversation activity, not standalone messages. WhatsApp can
+	// deliver the same reaction as either a decrypted ReactionMessage or an
+	// EncReactionMessage control envelope. Persisting the latter creates a blank
+	// incoming message, which makes an already-read conversation unread and moves
+	// it to the top of the recent list.
+	if msg.GetReactionMessage() != nil || msg.GetEncReactionMessage() != nil {
 		return nil
 	}
 
