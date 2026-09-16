@@ -335,12 +335,15 @@ function VisibleImageAttachment({
 
   const frameStyle = useMemo(() => {
     if (!dimensions) return { width: "320px", height: "200px" };
-    const scale = Math.min(1, 200 / dimensions.height);
-    const displayWidth = Math.min(640, Math.round(dimensions.width * scale));
+    // Thumbnail files can be much smaller than their display size. Calculate
+    // both dimensions explicitly so a percentage-height child cannot stretch
+    // the frame independently of its width.
+    const scale = Math.min(640 / dimensions.width, 200 / dimensions.height);
+    const displayWidth = Math.max(1, Math.round(dimensions.width * scale));
+    const displayHeight = Math.max(1, Math.round(dimensions.height * scale));
     return {
       width: `min(${displayWidth}px, 100%)`,
-      aspectRatio: `${dimensions.width} / ${dimensions.height}`,
-      maxHeight: "200px",
+      height: `${displayHeight}px`,
     };
   }, [dimensions]);
 
@@ -369,35 +372,32 @@ function VisibleImageAttachment({
     let active = true;
     setFailed(false);
     const load = async () => {
+      const getData = (source: string) => providerInstanceId
+        ? GetProviderAttachmentData(providerInstanceId, source)
+        : GetAttachmentData(source);
+      let hasPreview = false;
+      if (attachment.thumbnail && attachment.thumbnail !== attachment.url) {
+        try {
+          const thumbnail = await getData(attachment.thumbnail);
+          if (!active) return;
+          setLoadedFromThumbnail(true);
+          setImageData(thumbnail);
+          hasPreview = true;
+        } catch (error) {
+          console.warn("[MessageAttachments] Failed to load image thumbnail:", error);
+        }
+      }
       try {
-        const previewSource = attachment.thumbnail || attachment.url;
-        const data = providerInstanceId
-          ? await GetProviderAttachmentData(providerInstanceId, previewSource)
-          : await GetAttachmentData(previewSource);
+        // The thumbnail is only a placeholder. Display the full image once it
+        // loads so small provider previews are not enlarged and blurred.
+        const data = await getData(attachment.url);
         if (active) {
-          setLoadedFromThumbnail(Boolean(attachment.thumbnail));
+          setLoadedFromThumbnail(false);
           setImageData(data);
         }
       } catch (error) {
         console.warn("[MessageAttachments] Failed to load image:", error);
-        // Preserve accessibility for old messages whose original media is no
-        // longer available, but never retain this fallback outside the viewport.
-        if (!attachment.thumbnail || attachment.thumbnail === attachment.url) {
-          if (active) setFailed(true);
-          return;
-        }
-        try {
-          const fallback = providerInstanceId
-            ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
-            : await GetAttachmentData(attachment.url);
-          if (active) {
-            setLoadedFromThumbnail(false);
-            setImageData(fallback);
-          }
-        } catch (fallbackError) {
-          console.warn("[MessageAttachments] Failed to load image fallback:", fallbackError);
-          if (active) setFailed(true);
-        }
+        if (active && !hasPreview) setFailed(true);
       }
     };
     void load();
