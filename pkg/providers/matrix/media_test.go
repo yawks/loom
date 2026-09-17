@@ -233,6 +233,9 @@ func TestEventToMessageCreatesCanonicalEventCardBeforeGFM(t *testing.T) {
 	if message.Body != "" {
 		t.Fatalf("card message retained duplicate body: %q", message.Body)
 	}
+	if message.NotificationBody != "fallback text" {
+		t.Fatalf("notification body = %q, want Matrix fallback", message.NotificationBody)
+	}
 	var attachments []models.Attachment
 	if err := json.Unmarshal([]byte(message.Attachments), &attachments); err != nil {
 		t.Fatal(err)

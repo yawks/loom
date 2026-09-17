@@ -310,6 +310,7 @@ type Message struct {
 	SenderName            string              `json:"senderName,omitempty"`                                                                                                                                                             // Human-readable sender name
 	SenderAvatarURL       string              `json:"senderAvatarUrl,omitempty"`                                                                                                                                                        // Sender's avatar URL
 	Body                  string              `json:"body"`
+	NotificationBody      string              `gorm:"-" json:"-"` // Optional canonical text used when Body is intentionally hidden by a structured renderer
 	Mentions              []MessageMention    `gorm:"serializer:json" json:"mentions,omitempty"`
 	Timestamp             time.Time           `gorm:"index:idx_protocol_conv_id_timestamp,priority:2;index:idx_msg_conv_ts_del,priority:2" json:"timestamp"`
 	IsFromMe              bool                `json:"isFromMe"`

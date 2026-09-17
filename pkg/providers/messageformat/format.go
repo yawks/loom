@@ -5,6 +5,7 @@ package messageformat
 import (
 	"html"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ var (
 	italicPattern    = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
 	bulletPattern    = regexp.MustCompile(`(?m)^[ \t]*[-+*][ \t]+`)
 	orderedPattern   = regexp.MustCompile(`(?m)^[ \t]*([0-9]+)[.)][ \t]+`)
+	teamsLinkPattern = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)|https?://[^\s<>"'\x60*]+`)
 )
 
 // Slack returns Slack mrkdwn while keeping lists readable as ASCII.
@@ -59,12 +61,36 @@ func PlainText(markdown string) string {
 // TeamsHTML converts the common dialect to the small HTML subset supported by
 // Teams. Input text is escaped before formatting tags are introduced.
 func TeamsHTML(markdown string) string {
+	// Protect links before applying emphasis: URL contents must never become
+	// formatting tags, and explicit Markdown links must not be linked twice.
+	prefix := "LOOMLINKTOKEN"
+	for strings.Contains(markdown, prefix) {
+		prefix += "X"
+	}
+	var links []string
+	markdown = teamsLinkPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		label, target, suffix := match, match, ""
+		if parts := linkPattern.FindStringSubmatch(match); parts != nil {
+			label, target = parts[1], parts[2]
+		} else {
+			target = strings.TrimRight(target, ".,;:!?")
+			for strings.HasSuffix(target, ")") && strings.Count(target, ")") > strings.Count(target, "(") {
+				target = strings.TrimSuffix(target, ")")
+			}
+			for strings.HasSuffix(target, "]") && strings.Count(target, "]") > strings.Count(target, "[") {
+				target = strings.TrimSuffix(target, "]")
+			}
+			label, suffix = target, match[len(target):]
+		}
+		token := prefix + strconv.Itoa(len(links)) + "END"
+		links = append(links, `<a href="`+html.EscapeString(target)+`">`+html.EscapeString(label)+`</a>`)
+		return token + suffix
+	})
 	const underlineOpen = "LOOMUNDERLINEOPEN"
 	const underlineClose = "LOOMUNDERLINECLOSE"
 	out := strings.ReplaceAll(markdown, "<u>", underlineOpen)
 	out = strings.ReplaceAll(out, "</u>", underlineClose)
 	out = html.EscapeString(out)
-	out = linkPattern.ReplaceAllString(out, `<a href="$2">$1</a>`)
 	out = strings.ReplaceAll(out, underlineOpen, "<u>")
 	out = strings.ReplaceAll(out, underlineClose, "</u>")
 	out = italicPattern.ReplaceAllString(out, `${1}<em>$2</em>`)
@@ -105,5 +131,9 @@ func TeamsHTML(markdown string) string {
 		result.WriteString(line)
 	}
 	closeList()
-	return result.String()
+	out = result.String()
+	for index, link := range links {
+		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", link)
+	}
+	return out
 }

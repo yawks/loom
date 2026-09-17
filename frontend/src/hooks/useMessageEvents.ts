@@ -119,12 +119,18 @@ export function useMessageEvents() {
         if (conversationId) {
           queryClient.invalidateQueries({ queryKey: ["contact-exchange-stats", conversationId] });
           if (message.threadId && message.threadId !== message.protocolMsgId) {
-            queryClient.setQueryData<models.Message[]>(
-              ["threads", conversationId, message.threadId],
-              (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
-                ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
-                : [...current, message]
-            );
+            const threadKey = ["threads", conversationId, message.threadId];
+            // An absent cache may still be loading its full history. Creating it
+            // from this single event would briefly render only the new reply.
+            if (queryClient.getQueryData(threadKey) === undefined) {
+              queryClient.invalidateQueries({ queryKey: threadKey, exact: true });
+            } else {
+              queryClient.setQueryData<models.Message[]>(threadKey, (current) =>
+                current?.some((item) => item.protocolMsgId === message.protocolMsgId)
+                  ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
+                  : [...(current ?? []), message]
+              );
+            }
             queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
           }
           queryClient.setQueryData<Record<string, models.Message | null>>(["allLastMessages"], (old) => ({
@@ -312,12 +318,16 @@ export function useMessageEvents() {
         scheduleBatchRefresh();
         for (const message of batch.messages) {
           if (!message.protocolConvId || !message.threadId || message.threadId === message.protocolMsgId) continue;
-          queryClient.setQueryData<models.Message[]>(
-            ["threads", message.protocolConvId, message.threadId],
-            (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
-              ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
-              : [...current, message]
-          );
+          const threadKey = ["threads", message.protocolConvId, message.threadId];
+          if (queryClient.getQueryData(threadKey) === undefined) {
+            queryClient.invalidateQueries({ queryKey: threadKey, exact: true });
+          } else {
+            queryClient.setQueryData<models.Message[]>(threadKey, (current) =>
+              current?.some((item) => item.protocolMsgId === message.protocolMsgId)
+                ? current.map((item) => item.protocolMsgId === message.protocolMsgId ? message : item)
+                : [...(current ?? []), message]
+            );
+          }
         }
         if (batch.messages.some((message) => Boolean(message.callType?.trim()))) {
           queryClient.invalidateQueries({ queryKey: ["allActiveCalls"] });

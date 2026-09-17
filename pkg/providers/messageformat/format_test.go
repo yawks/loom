@@ -7,6 +7,29 @@ import (
 
 const sample = "**bold** *italic* <u>under</u> ~~gone~~ [site](https://example.com)\n- one\n1. first"
 
+func TestTeamsHTMLLinks(t *testing.T) {
+	tests := []struct{ name, input, want string }{
+		{"bare URL", "https://example.com", `<a href="https://example.com">https://example.com</a>`},
+		{"query escaping", "https://example.com/?a=1&b=2", `<a href="https://example.com/?a=1&amp;b=2">https://example.com/?a=1&amp;b=2</a>`},
+		{"punctuation", "Voir (https://example.com/page).", `Voir (<a href="https://example.com/page">https://example.com/page</a>).`},
+		{"balanced parentheses", "https://example.com/Page_(topic)", `<a href="https://example.com/Page_(topic)">https://example.com/Page_(topic)</a>`},
+		{"explicit link", "[site](https://example.com)", `<a href="https://example.com">site</a>`},
+		{"emphasis", "**https://example.com**", `<strong><a href="https://example.com">https://example.com</a></strong>`},
+		{"URL formatting preserved", "https://example.com/~~path~~", `<a href="https://example.com/~~path~~">https://example.com/~~path~~</a>`},
+		{"multiple links", "http://one.test\nhttps://two.test", `<a href="http://one.test">http://one.test</a><br><a href="https://two.test">https://two.test</a>`},
+		{"HTML escaped", `<script> https://example.com/"onclick="x`, `&lt;script&gt; <a href="https://example.com/">https://example.com/</a>&#34;onclick=&#34;x`},
+		{"unsafe scheme", "[bad](javascript:alert(1))", "[bad](javascript:alert(1))"},
+		{"token collision", "LOOMLINKTOKEN0END https://example.com", `LOOMLINKTOKEN0END <a href="https://example.com">https://example.com</a>`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := TeamsHTML(test.input); got != test.want {
+				t.Fatalf("TeamsHTML(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
 func TestProviderFormatting(t *testing.T) {
 	tests := []struct {
 		name string

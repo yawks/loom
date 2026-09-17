@@ -200,6 +200,9 @@ func (a *App) prepareSystemNotification(event core.MessageEvent) *SystemNotifica
 				subtitle = strings.TrimSpace(message.SenderName)
 			}
 			body = strings.TrimSpace(message.Body)
+			if body == "" {
+				body = strings.TrimSpace(message.NotificationBody)
+			}
 			if body == "" && strings.TrimSpace(message.Attachments) != "" && message.Attachments != "[]" {
 				body = "Attachment"
 			}

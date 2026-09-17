@@ -132,3 +132,20 @@ func TestPrepareSystemNotificationOmitsSenderForDirectMessage(t *testing.T) {
 		t.Fatalf("expected no sender subtitle for a direct message, got %+v", got)
 	}
 }
+
+func TestPrepareSystemNotificationUsesCanonicalNotificationBody(t *testing.T) {
+	conversation := seedNotificationConversation(t, false)
+	app := NewApp()
+	settings := defaultNotificationSettings("")
+	settings.Enabled = true
+	if _, err := app.SaveNotificationSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	got := app.prepareSystemNotification(core.MessageEvent{InstanceID: "account-1", Message: models.Message{
+		ConversationID: conversation.ID, ProtocolConvID: conversation.ProtocolConvID,
+		ProtocolMsgID: "widget", NotificationBody: "Widget fallback", Attachments: `[{"type":"event-card"}]`,
+	}})
+	if got == nil || got.Body != "Widget fallback" {
+		t.Fatalf("expected widget fallback in notification, got %+v", got)
+	}
+}

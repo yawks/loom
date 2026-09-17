@@ -1,6 +1,6 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { OpenConversation } from "../../wailsjs/go/main/App";
-import React, { type CSSProperties, type ReactElement, type ReactNode, useMemo, memo } from "react";
+import React, { type ReactElement, useMemo, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
 import { CodeBlock } from "./CodeBlock";
@@ -15,6 +15,8 @@ import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import { rehypeCanonicalBreaks } from "../lib/markdownBreaks";
 import { rehypeCanonicalUnderline } from "../lib/markdownUnderline";
+import { rehypeCanonicalStyle } from "../lib/markdownStyle";
+import { emojiShortcodePattern } from "../lib/emojiShortcodes";
 import type { PluggableList } from "unified";
 import type { models } from "../../wailsjs/go/models";
 
@@ -23,8 +25,6 @@ interface SerializedInlineQuote {
   quotedText: string;
   body: string;
 }
-
-const SAFE_RICH_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
 
 interface HastNode {
   type: string;
@@ -65,27 +65,6 @@ function rehypeSearchHighlight(query: string) {
     };
     visit(tree);
   };
-}
-
-function richTextStyle(element: Element): CSSProperties {
-  const style: CSSProperties = {};
-  const color = element.getAttribute("color")?.trim();
-  const background = element.getAttribute("background")?.trim();
-  if (color && SAFE_RICH_COLOR.test(color)) style.color = color;
-  if (background && SAFE_RICH_COLOR.test(background)) style.backgroundColor = background;
-
-  const size = element.getAttribute("size")?.trim().match(/^([0-9]+(?:\.[0-9]+)?)(px|pt|em|rem|%)$/i);
-  if (size) {
-    const value = Number(size[1]);
-    const unit = size[2].toLowerCase();
-    const limits: Record<string, [number, number]> = {
-      px: [8, 48], pt: [6, 36], em: [0.5, 3], rem: [0.5, 3], "%": [50, 300],
-    };
-    const [minimum, maximum] = limits[unit];
-    style.fontSize = `${Math.min(maximum, Math.max(minimum, value))}${unit}`;
-  }
-  if (element.getAttribute("underline") === "true") style.textDecorationLine = "underline";
-  return style;
 }
 
 // Legacy Loom rows may contain a quoted reply serialized as a Markdown block.
@@ -368,7 +347,7 @@ export const MessageText = memo(function MessageText({
     // Emoji components without breaking emphasis or links.
     if (/(\*\*|__|~~|`|\[[^\]]+\]\()/.test(textWithoutSkinTones)) {
       return textWithoutSkinTones.replace(
-        /(?<![a-zA-Z0-9]):([a-zA-Z0-9_+-]+):(?![a-zA-Z0-9])/g,
+        emojiShortcodePattern(),
         (match, name, offset, source) => {
           const before = source.slice(0, offset);
           const currentLine = before.slice(before.lastIndexOf("\n") + 1);
@@ -390,7 +369,7 @@ export const MessageText = memo(function MessageText({
     // needed.
     // A shortcode must be independently delimited. This prevents clock-like
     // text (12:42 and 12:42:05) from exposing :42: as an emoji shortcode.
-    const emojiPattern = /(?<![a-zA-Z0-9]):([a-zA-Z0-9_+-]+):(?![a-zA-Z0-9])/g;
+    const emojiPattern = emojiShortcodePattern();
     // Document-sharing URLs may contain path segments such as `/:p:/`. Do not
     // turn those path segments into custom emojis before Markdown sees the URL.
     const urlRanges = Array.from(textWithoutSkinTones.matchAll(/https?:\/\/[^\s<>"']+/g))
@@ -472,6 +451,7 @@ export const MessageText = memo(function MessageText({
     () => [
       rehypeCanonicalBreaks,
       rehypeCanonicalUnderline,
+      rehypeCanonicalStyle,
       [rehypeHighlight, { detect: true }],
       [rehypeSearchHighlight, highlightQuery],
     ],
@@ -491,77 +471,7 @@ export const MessageText = memo(function MessageText({
     </ReactMarkdown>
   );
 
-  const renderMarkdown = (content: string, isInline = false) => {
-    if (!/<loom-style\b/i.test(content)) return renderMarkdownBase(content, isInline);
-
-
-    // Parsing each rich-text element separately detaches a Markdown list marker
-    // from the colored text that follows it (`- <loom-style>text</loom-style>`).
-    // Keep rich-text lists as one React list and only parse the contents of each
-    // item independently, so color remains inline with its bullet.
-    const nonEmptyLines = content.split("\n").filter((line) => line.trim() !== "");
-    const unorderedItems = nonEmptyLines.map((line) => line.match(/^\s*[-+]\s+(.+)$/));
-    if (unorderedItems.length > 0 && unorderedItems.every(Boolean)) {
-      return (
-        <ul className="list-disc pl-5 my-1 space-y-0.5">
-          {unorderedItems.map((match, index) => (
-            <li className="leading-snug" key={index}>{renderMarkdown(match?.[1] ?? "", true)}</li>
-          ))}
-        </ul>
-      );
-    }
-    const orderedItems = nonEmptyLines.map((line) => line.match(/^\s*\d+[.)]\s+(.+)$/));
-    if (orderedItems.length > 0 && orderedItems.every(Boolean)) {
-      return (
-        <ol className="list-decimal pl-5 my-1 space-y-0.5">
-          {orderedItems.map((match, index) => (
-            <li className="leading-snug" key={index}>{renderMarkdown(match?.[1] ?? "", true)}</li>
-          ))}
-        </ol>
-      );
-    }
-
-    const documentNode = new DOMParser().parseFromString(content, "text/html");
-    const renderNodes = (nodes: NodeListOf<ChildNode> | ChildNode[], inline: boolean): ReactNode[] =>
-      Array.from(nodes).map((node, index) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          let value = node.textContent ?? "";
-          // HTML collapses boundary spaces inconsistently when React renders
-          // adjacent text and rich-text fragments as separate nodes. Preserve
-          // canonical spaces next to inline rich elements explicitly.
-          if (/[ \t]$/.test(value) && node.nextSibling?.nodeType === Node.ELEMENT_NODE) {
-            value = value.replace(/[ \t]$/, "\u00a0");
-          }
-          if (/^[ \t]/.test(value) && node.previousSibling?.nodeType === Node.ELEMENT_NODE) {
-            value = value.replace(/^[ \t]/, "\u00a0");
-          }
-          // Plain fragments already contain the exact spacing supplied by the
-          // canonical message. Sending each one through react-markdown creates
-          // a paragraph AST and can add separator whitespace around adjacent
-          // inline rich-text elements.
-          const needsMarkdown = /[\n*_~`<>]|https?:\/\/|loom-emoji:\/\//i.test(value) ||
-            value.includes("[") || value.includes("]");
-          if (!needsMarkdown) {
-            return <React.Fragment key={index}>{value}</React.Fragment>;
-          }
-          return <React.Fragment key={index}>{renderMarkdownBase(value, inline)}</React.Fragment>;
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE) return null;
-        const element = node as Element;
-        const children = renderNodes(element.childNodes, true);
-        if (element.tagName.toLowerCase() === "u") return <u className="underline" key={index}>{children}</u>;
-        if (element.tagName.toLowerCase() === "loom-style") {
-          return <span key={index} style={richTextStyle(element)}>{children}</span>;
-        }
-        return <React.Fragment key={index}>{children}</React.Fragment>;
-      });
-    // The DOM nodes here are fragments of one Markdown document, not separate
-    // blocks. Rendering root text nodes in block mode makes react-markdown wrap
-    // the text on either side of an inline rich tag in separate <p> elements
-    // (for example `before <u>under</u> after`). Keep every fragment inline;
-    // explicit Markdown line breaks are still handled by remark-breaks.
-    return <>{renderNodes(documentNode.body.childNodes, true)}</>;
-  };
+  const renderMarkdown = renderMarkdownBase;
 
   if (serializedInlineQuote) {
     return (

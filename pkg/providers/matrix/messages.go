@@ -89,6 +89,7 @@ func (p *Provider) eventToMessage(roomID string, event matrixEvent) (models.Mess
 	if content.Litefeed != nil && content.Litefeed.EventID != "" {
 		if card, ok := matrixHTMLToEventCard(content.FormattedBody); ok {
 			attachments = append(attachments, card)
+			m.NotificationBody = strings.TrimSpace(content.Body)
 			m.Body = ""
 		}
 	}
