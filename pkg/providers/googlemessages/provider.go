@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -511,94 +512,110 @@ func (p *Provider) storeConversation(remote *gmproto.Conversation) error {
 	if db.DB == nil {
 		return nil
 	}
-	account := p.linkedAccount(remote)
+	incomingAccount := p.linkedAccount(remote)
 	var storedAccount models.LinkedAccount
-	result := db.DB.Where("provider_instance_id = ? AND user_id = ?", account.ProviderInstanceID, account.UserID).First(&storedAccount)
-	if result.Error != nil {
-		meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
-		if err := db.DB.Create(&meta).Error; err != nil {
-			return fmt.Errorf("%s: create conversation contact: %w", providerID, err)
-		}
-		db.ContactStore.UpsertMetaContact(meta)
-		account.MetaContactID = meta.ID
-		if err := db.DB.Create(&account).Error; err != nil {
-			return fmt.Errorf("%s: store conversation account: %w", providerID, err)
-		}
-		storedAccount = account
-	} else {
-		accountChanged := false
-		if storedAccount.MetaContactID == 0 {
+	var storedMeta models.MetaContact
+	var conversation models.Conversation
+	nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		// GORM fills IDs during Create, so rebuild all retry-local models when a
+		// SQLITE_BUSY snapshot causes db.Transaction to invoke this callback again.
+		account := incomingAccount
+		storedAccount = models.LinkedAccount{}
+		storedMeta = models.MetaContact{}
+		conversation = models.Conversation{}
+		result := tx.Where("provider_instance_id = ? AND user_id = ?", account.ProviderInstanceID, account.UserID).First(&storedAccount)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
-			if err := db.DB.Create(&meta).Error; err != nil {
-				return fmt.Errorf("%s: create missing conversation contact: %w", providerID, err)
+			if err := tx.Create(&meta).Error; err != nil {
+				return fmt.Errorf("%s: create conversation contact: %w", providerID, err)
 			}
-			db.ContactStore.UpsertMetaContact(meta)
-			storedAccount.MetaContactID = meta.ID
-			accountChanged = true
-		}
-		if storedAccount.Username != account.Username ||
-			storedAccount.AvatarURL != account.AvatarURL ||
-			storedAccount.IsGroup != account.IsGroup ||
-			storedAccount.Status != account.Status ||
-			(account.Extra != "" && storedAccount.Extra != account.Extra) {
-			storedAccount.Username, storedAccount.AvatarURL, storedAccount.IsGroup, storedAccount.Status = account.Username, account.AvatarURL, account.IsGroup, account.Status
-			if account.Extra != "" {
-				storedAccount.Extra = account.Extra
+			account.ID = 0
+			account.MetaContactID = meta.ID
+			if err := tx.Create(&account).Error; err != nil {
+				return fmt.Errorf("%s: store conversation account: %w", providerID, err)
 			}
-			accountChanged = true
+			storedAccount, storedMeta = account, meta
+		} else if result.Error != nil {
+			return result.Error
+		} else {
+			accountChanged := false
+			if storedAccount.MetaContactID == 0 {
+				meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
+				if err := tx.Create(&meta).Error; err != nil {
+					return fmt.Errorf("%s: create missing conversation contact: %w", providerID, err)
+				}
+				storedAccount.MetaContactID = meta.ID
+				storedMeta = meta
+				accountChanged = true
+			}
+			if storedAccount.Username != account.Username ||
+				storedAccount.AvatarURL != account.AvatarURL ||
+				storedAccount.IsGroup != account.IsGroup ||
+				storedAccount.Status != account.Status ||
+				(account.Extra != "" && storedAccount.Extra != account.Extra) {
+				storedAccount.Username, storedAccount.AvatarURL, storedAccount.IsGroup, storedAccount.Status = account.Username, account.AvatarURL, account.IsGroup, account.Status
+				if account.Extra != "" {
+					storedAccount.Extra = account.Extra
+				}
+				accountChanged = true
+			}
+			if accountChanged {
+				if err := tx.Save(&storedAccount).Error; err != nil {
+					return err
+				}
+			}
 		}
-		if accountChanged {
-			if err := db.DB.Save(&storedAccount).Error; err != nil {
+
+		// Google Messages conversation titles are authoritative. The message view
+		// resolves its title through MetaContact, so update it with the same value.
+		if storedAccount.MetaContactID != 0 {
+			var meta models.MetaContact
+			if err := tx.First(&meta, storedAccount.MetaContactID).Error; err == nil {
+				if meta.DisplayName != storedAccount.Username || meta.AvatarURL != storedAccount.AvatarURL {
+					meta.DisplayName, meta.AvatarURL = storedAccount.Username, storedAccount.AvatarURL
+					if err := tx.Save(&meta).Error; err != nil {
+						return err
+					}
+				}
+				storedMeta = meta
+			}
+		}
+		// In a DM, the conversation title is Google's authoritative contact name.
+		// SenderParticipant.FullName can be stale or refer to another cached contact,
+		// so also repair messages that were persisted before this metadata arrived.
+		if !storedAccount.IsGroup && storedAccount.Username != "" && storedAccount.Username != storedAccount.UserID {
+			if err := tx.Model(&models.Message{}).
+				Where("protocol_conv_id = ? AND is_from_me = ? AND (sender_name IS NULL OR sender_name <> ?)", nsConvID, false, storedAccount.Username).
+				Update("sender_name", storedAccount.Username).Error; err != nil {
 				return err
 			}
 		}
-	}
-	// Google Messages conversation titles are authoritative. The message view
-	// resolves its title through MetaContact, so update it with the same value.
-	if storedAccount.MetaContactID != 0 {
-		var meta models.MetaContact
-		if err := db.DB.First(&meta, storedAccount.MetaContactID).Error; err == nil {
-			if meta.DisplayName != storedAccount.Username || meta.AvatarURL != storedAccount.AvatarURL {
-				meta.DisplayName, meta.AvatarURL = storedAccount.Username, storedAccount.AvatarURL
-				if err := db.DB.Save(&meta).Error; err != nil {
-					return err
-				}
-				db.ContactStore.UpsertMetaContact(meta)
-			}
+
+		result = tx.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			conversation = models.Conversation{LinkedAccountID: storedAccount.ID, ProtocolConvID: nsConvID, IsGroup: remote.GetIsGroupChat(), GroupName: remote.GetName(), IsPinned: remote.GetPinned()}
+			return tx.Create(&conversation).Error
 		}
-	}
-	// In a DM, the conversation title is Google's authoritative contact name.
-	// SenderParticipant.FullName can be stale or refer to another cached contact,
-	// so also repair messages that were persisted before this metadata arrived.
-	if !storedAccount.IsGroup && storedAccount.Username != "" && storedAccount.Username != storedAccount.UserID {
-		nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
-		if err := db.DB.Model(&models.Message{}).
-			Where("protocol_conv_id = ? AND is_from_me = ? AND (sender_name IS NULL OR sender_name <> ?)", nsConvID, false, storedAccount.Username).
-			Update("sender_name", storedAccount.Username).Error; err != nil {
-			return err
+		if result.Error != nil {
+			return result.Error
 		}
+		if conversation.LinkedAccountID != storedAccount.ID ||
+			conversation.IsGroup != remote.GetIsGroupChat() ||
+			conversation.GroupName != remote.GetName() ||
+			conversation.IsPinned != remote.GetPinned() {
+			conversation.LinkedAccountID, conversation.IsGroup, conversation.GroupName, conversation.IsPinned = storedAccount.ID, remote.GetIsGroupChat(), remote.GetName(), remote.GetPinned()
+			return tx.Save(&conversation).Error
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if storedMeta.ID != 0 {
+		db.ContactStore.UpsertMetaContact(storedMeta)
 	}
 	db.ContactStore.UpsertLinkedAccount(storedAccount)
-	nsConvID := core.BuildConvID(p.instance, remote.GetConversationID())
-	var conversation models.Conversation
-	result = db.DB.Where("protocol_conv_id = ?", nsConvID).First(&conversation)
-	if result.Error != nil {
-		conversation = models.Conversation{LinkedAccountID: storedAccount.ID, ProtocolConvID: nsConvID, IsGroup: remote.GetIsGroupChat(), GroupName: remote.GetName(), IsPinned: remote.GetPinned()}
-		if err := db.DB.Create(&conversation).Error; err != nil {
-			return err
-		}
-		db.ContactStore.UpsertConversation(storedAccount.ID, conversation.ProtocolConvID)
-		return nil
-	}
-	if conversation.LinkedAccountID != storedAccount.ID ||
-		conversation.IsGroup != remote.GetIsGroupChat() ||
-		conversation.GroupName != remote.GetName() ||
-		conversation.IsPinned != remote.GetPinned() {
-		conversation.LinkedAccountID, conversation.IsGroup, conversation.GroupName, conversation.IsPinned = storedAccount.ID, remote.GetIsGroupChat(), remote.GetName(), remote.GetPinned()
-		if err := db.DB.Save(&conversation).Error; err != nil {
-			return err
-		}
-	}
 	db.ContactStore.UpsertConversation(storedAccount.ID, conversation.ProtocolConvID)
 	return nil
 }

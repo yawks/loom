@@ -3,6 +3,8 @@ package googlemessages
 import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +12,56 @@ import (
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 	"gorm.io/gorm"
 )
+
+func TestStoreConversationRetriesSQLiteBusy(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "loom.db")+"?_busy_timeout=1&_journal_mode=WAL"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}, &models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+	if err := db.ContactStore.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := sqlDB.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		_ = conn.Close()
+	})
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(100*time.Millisecond, func() {
+		_, _ = conn.ExecContext(context.Background(), "COMMIT")
+	})
+
+	provider := &Provider{instance: "googlemessages-1"}
+	remote := &gmproto.Conversation{ConversationID: "conversation-1", Name: "PACIFICA"}
+	if err := provider.storeConversation(remote); err != nil {
+		t.Fatalf("store conversation while SQLite writer is busy: %v", err)
+	}
+
+	var count int64
+	if err := database.Model(&models.Conversation{}).Where("protocol_conv_id = ?", "googlemessages-1::conversation-1").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("stored conversations = %d, want 1", count)
+	}
+}
 
 func TestStoreConversationDoesNotRewriteUnchangedRows(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
