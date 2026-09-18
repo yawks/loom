@@ -5,6 +5,7 @@ import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -231,6 +232,21 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		quotedBody = &body
 	}
 
+	attachmentsJSON := "[]"
+	if ev.Message != nil && len(ev.Message.Files) > 0 {
+		attachments := make([]models.Attachment, 0, len(ev.Message.Files))
+		for _, file := range ev.Message.Files {
+			if attachment, ok := attachmentFromSlackFile(file); ok {
+				attachments = append(attachments, attachment)
+			}
+		}
+		if len(attachments) > 0 {
+			if data, err := json.Marshal(attachments); err == nil {
+				attachmentsJSON = string(data)
+			}
+		}
+	}
+
 	// Basic message construction
 	msg := models.Message{
 		ProtocolConvID:   normalizedConvID,
@@ -242,7 +258,7 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 		Timestamp:        timestamp,
 		IsFromMe:         isFromMe,
 		HighlightReasons: p.directMentionHighlightReasons(ev.Text, isFromMe),
-		Attachments:      "[]",
+		Attachments:      attachmentsJSON,
 		CallType:         callType,
 		CallUrl:          callUrl,
 		CallLinkAction:   callLinkAction,

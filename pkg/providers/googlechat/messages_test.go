@@ -436,8 +436,9 @@ func TestSendReplyKeepsQuotedReplyInMainConversation(t *testing.T) {
 			t.Fatalf("reply was sent to a thread: %s", req.URL.String())
 		}
 		var payload struct {
-			Text   string      `json:"text"`
-			Thread interface{} `json:"thread"`
+			Text         string      `json:"text"`
+			MarkupSyntax string      `json:"markupSyntax"`
+			Thread       interface{} `json:"thread"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode reply payload: %v", err)
@@ -445,8 +446,11 @@ func TestSendReplyKeepsQuotedReplyInMainConversation(t *testing.T) {
 		if payload.Thread != nil {
 			t.Fatalf("reply payload contains a thread: %#v", payload.Thread)
 		}
-		if payload.Text != "> *Alice*\n> Original message\n\nMy reply" {
+		if payload.Text != "> **Alice**\n> Original message\n\nMy reply" {
 			t.Fatalf("reply payload text = %q", payload.Text)
+		}
+		if payload.MarkupSyntax != "MARKUP_SYNTAX_MARKDOWN" {
+			t.Fatalf("reply payload markup syntax = %q", payload.MarkupSyntax)
 		}
 		return jsonResponse(`{"name":"spaces/reply-test/messages/reply-1","sender":{"name":"users/self"}}`), nil
 	})}

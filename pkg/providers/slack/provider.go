@@ -1590,6 +1590,10 @@ func (p *SlackProvider) GetCapabilities() core.Capabilities {
 		SupportsGroupTitle:                    true,
 		RequiresGroupTitle:                    true,
 		GroupConversationTypes:                "group_message,private_channel,public_channel",
+		MessageFormatting: strings.Join([]string{
+			core.MessageFormatBold, core.MessageFormatItalic, core.MessageFormatStrikethrough,
+			core.MessageFormatInlineCode, core.MessageFormatCodeBlock, core.MessageFormatLink,
+		}, ","),
 	}
 }
 

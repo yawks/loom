@@ -392,7 +392,26 @@ type Capabilities struct {
 	// GroupConversationTypes is a comma-separated list so Capabilities remains
 	// comparable (several provider contract tests compare it as a value).
 	GroupConversationTypes string `json:"groupConversationTypes"`
+	// MessageFormatting is a comma-separated list of canonical composer features.
+	// A string keeps Capabilities comparable while allowing the provider-neutral
+	// frontend to expose only formatting that survives the active adapter.
+	MessageFormatting string `json:"messageFormatting"`
 }
+
+const (
+	MessageFormatBold            = "bold"
+	MessageFormatItalic          = "italic"
+	MessageFormatUnderline       = "underline"
+	MessageFormatStrikethrough   = "strikethrough"
+	MessageFormatInlineCode      = "inline_code"
+	MessageFormatCodeBlock       = "code_block"
+	MessageFormatLink            = "link"
+	MessageFormatBulletedList    = "bulleted_list"
+	MessageFormatNumberedList    = "numbered_list"
+	MessageFormatTextColor       = "text_color"
+	MessageFormatBackgroundColor = "background_color"
+	MessageFormatFontSize        = "font_size"
+)
 
 // PollVotingProvider is implemented by providers that can submit or replace
 // the current user's selections on a remote poll. An empty selection withdraws

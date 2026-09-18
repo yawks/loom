@@ -15,7 +15,9 @@ static int loomSetCaptureProtection(int enabled) {
         for (NSWindow *window in NSApp.windows) {
             if (windowClass && [window isKindOfClass:windowClass]) {
                 window.sharingType = enabled ? NSWindowSharingNone : NSWindowSharingReadOnly;
-                found = window.sharingType == (enabled ? NSWindowSharingNone : NSWindowSharingReadOnly);
+                // AppKit may report the old value immediately when releasing
+                // exclusion. Only enabling protection needs fail-closed verification.
+                found = !enabled || window.sharingType == NSWindowSharingNone;
                 break;
             }
         }

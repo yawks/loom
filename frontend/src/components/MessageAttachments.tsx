@@ -109,6 +109,7 @@ interface Attachment {
   contactName?: string;
   contactPhones?: string[];
   cardJson?: string;
+  transcription?: string;
 }
 
 function openStreetMapEmbedURL(latitude: number, longitude: number): string {
@@ -509,22 +510,17 @@ function MosaicImageAttachment({
     }
 
     let active = true;
-    const previewSource = attachment.thumbnail || attachment.url;
-    const loadPreview = providerInstanceId
-      ? GetProviderAttachmentData(providerInstanceId, previewSource)
-      : GetAttachmentData(previewSource);
-    loadPreview
+    const getData = (source: string) => providerInstanceId
+      ? GetProviderAttachmentData(providerInstanceId, source)
+      : GetAttachmentData(source);
+    if (attachment.thumbnail && attachment.thumbnail !== attachment.url) {
+      getData(attachment.thumbnail)
+        .then((data) => { if (active) setImageData(data); })
+        .catch(() => undefined);
+    }
+    getData(attachment.url)
       .then((data) => { if (active) setImageData(data); })
-      .catch(() => {
-        if (attachment.thumbnail && attachment.thumbnail !== attachment.url) {
-          const loadOriginal = providerInstanceId
-            ? GetProviderAttachmentData(providerInstanceId, attachment.url)
-            : GetAttachmentData(attachment.url);
-          loadOriginal
-            .then((data) => { if (active) setImageData(data); })
-            .catch(() => undefined);
-        }
-    });
+      .catch(() => undefined);
     return () => { active = false; };
   }, [attachment.thumbnail, attachment.url, isVisible, providerInstanceId]);
 
@@ -1243,10 +1239,12 @@ export function MessageAttachments({
                 attachment={{
                   url: attachment.url,
                   duration: (attachment as any).duration,
-                  fileName: attachment.fileName
+                  fileName: attachment.fileName,
+                  transcription: attachment.transcription
                 }}
                 conversationID={conversationID}
                 messageID={messageID}
+                providerInstanceId={providerInstanceId}
                 isFromMe={isFromMe}
                 layout={layout}
               />
@@ -1261,10 +1259,12 @@ export function MessageAttachments({
                 attachment={{
                   url: attachment.url,
                   duration: (attachment as any).duration,
-                  fileName: attachment.fileName
+                  fileName: attachment.fileName,
+                  transcription: attachment.transcription
                 }}
                 conversationID={conversationID}
                 messageID={messageID}
+                providerInstanceId={providerInstanceId}
                 isFromMe={isFromMe}
                 layout={layout}
               />

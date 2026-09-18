@@ -15,6 +15,7 @@ build/darwin/
 !build/darwin/
 build/darwin/*
 !build/darwin/Info.dev.plist
+!build/darwin/Info.plist
 *.o
 *.a
 

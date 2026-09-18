@@ -210,6 +210,12 @@ func TestCapabilities(t *testing.T) {
 		SupportsContactDirectory:              true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
 		GroupConversationTypes: "group",
+		MessageFormatting: strings.Join([]string{
+			core.MessageFormatBold, core.MessageFormatItalic, core.MessageFormatUnderline,
+			core.MessageFormatStrikethrough, core.MessageFormatInlineCode, core.MessageFormatCodeBlock,
+			core.MessageFormatLink, core.MessageFormatBulletedList, core.MessageFormatNumberedList,
+			core.MessageFormatTextColor, core.MessageFormatBackgroundColor, core.MessageFormatFontSize,
+		}, ","),
 	}
 	if got != want {
 		t.Fatalf("capabilities=%+v, want %+v", got, want)

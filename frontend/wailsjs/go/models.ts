@@ -37,6 +37,7 @@ export namespace core {
 	    supportsGroupTitle: boolean;
 	    requiresGroupTitle: boolean;
 	    groupConversationTypes: string;
+	    messageFormatting: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
@@ -80,6 +81,7 @@ export namespace core {
 	        this.supportsGroupTitle = source["supportsGroupTitle"];
 	        this.requiresGroupTitle = source["requiresGroupTitle"];
 	        this.groupConversationTypes = source["groupConversationTypes"];
+	        this.messageFormatting = source["messageFormatting"];
 	    }
 	}
 	export class CommunicationIdentity {
@@ -260,6 +262,26 @@ export namespace main {
 	        this.imageURL = source["imageURL"];
 	        this.faviconURL = source["faviconURL"];
 	        this.url = source["url"];
+	    }
+	}
+	export class SpeechLocale {
+	    identifier: string;
+	    displayName: string;
+	    isOnDevice: boolean;
+	    isDictation: boolean;
+	    isDefault: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpeechLocale(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.identifier = source["identifier"];
+	        this.displayName = source["displayName"];
+	        this.isOnDevice = source["isOnDevice"];
+	        this.isDictation = source["isDictation"];
+	        this.isDefault = source["isDefault"];
 	    }
 	}
 

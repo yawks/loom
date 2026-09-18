@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -132,5 +133,55 @@ func TestHandleSocketMessageEventUpdatesExistingMessage(t *testing.T) {
 	}
 	if !stored.IsEdited || stored.Body != "edited through Events API" {
 		t.Fatalf("socket edit was not persisted: %+v", stored)
+	}
+}
+
+func TestHandleSocketFileSharePersistsAndEmitsAttachment(t *testing.T) {
+	provider, _ := setupSlackMessageDeletionTest(t)
+	const messageID = "1700000002.000001"
+	provider.handleMessageEvent(&slackevents.MessageEvent{
+		Channel:   "C1",
+		SubType:   "file_share",
+		User:      "U2",
+		TimeStamp: messageID,
+		Message: &goslack.Msg{
+			Timestamp: messageID,
+			Files: []goslack.File{{
+				ID:                 "F1",
+				Name:               "image.png",
+				Mimetype:           "image/png",
+				Size:               1024,
+				URLPrivateDownload: "https://files.slack.com/files-pri/T1-F1/download/image.png",
+				Thumb360:           "https://files.slack.com/files-tmb/T1-F1/image_360.png",
+			}},
+		},
+	})
+
+	var stored models.Message
+	if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertSocketImageAttachment(t, stored.Attachments)
+
+	select {
+	case rawEvent := <-provider.eventChan:
+		event, ok := rawEvent.(core.MessageEvent)
+		if !ok {
+			t.Fatalf("unexpected event: %#v", rawEvent)
+		}
+		assertSocketImageAttachment(t, event.Message.Attachments)
+	default:
+		t.Fatal("expected a message event for the file share")
+	}
+}
+
+func assertSocketImageAttachment(t *testing.T, raw string) {
+	t.Helper()
+	var attachments []models.Attachment
+	if err := json.Unmarshal([]byte(raw), &attachments); err != nil {
+		t.Fatalf("unmarshal attachments: %v (raw=%q)", err, raw)
+	}
+	if len(attachments) != 1 || attachments[0].Type != "image" || attachments[0].URL == "" || attachments[0].Thumbnail == "" {
+		t.Fatalf("unexpected attachments: %#v", attachments)
 	}
 }

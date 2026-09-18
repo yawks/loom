@@ -10,19 +10,25 @@ import (
 )
 
 var (
-	linkPattern      = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)`)
-	underlinePattern = regexp.MustCompile(`(?s)<u>(.*?)</u>`)
-	boldPattern      = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
-	strikePattern    = regexp.MustCompile(`~~([^~\n]+)~~`)
-	italicPattern    = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
-	bulletPattern    = regexp.MustCompile(`(?m)^[ \t]*[-+*][ \t]+`)
-	orderedPattern   = regexp.MustCompile(`(?m)^[ \t]*([0-9]+)[.)][ \t]+`)
-	teamsLinkPattern = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)|https?://[^\s<>"'\x60*]+`)
+	linkPattern               = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)`)
+	underlinePattern          = regexp.MustCompile(`(?s)<u>(.*?)</u>`)
+	boldPattern               = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	strikePattern             = regexp.MustCompile(`~~([^~\n]+)~~`)
+	italicPattern             = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
+	bulletPattern             = regexp.MustCompile(`(?m)^[ \t]*[-+*][ \t]+`)
+	orderedPattern            = regexp.MustCompile(`(?m)^[ \t]*([0-9]+)[.)][ \t]+`)
+	teamsLinkPattern          = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)|https?://[^\s<>"'\x60*]+`)
+	fencedCodePattern         = regexp.MustCompile("(?s)```(?:[^\\n`]*)\\n(.*?)\\n?```")
+	inlineCodePattern         = regexp.MustCompile("`([^`\\n]+)`")
+	loomStyleOpenPattern      = regexp.MustCompile(`(?i)<loom-style\b([^<>]*)>`)
+	loomStyleClosePattern     = regexp.MustCompile(`(?i)</loom-style\s*>`)
+	loomStyleAttributePattern = regexp.MustCompile(`(?i)(color|background|size)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 )
 
 // Slack returns Slack mrkdwn while keeping lists readable as ASCII.
 func Slack(markdown string) string {
-	out := linkPattern.ReplaceAllString(markdown, `<$2|$1>`)
+	out := stripCanonicalStyles(markdown)
+	out = linkPattern.ReplaceAllString(out, `<$2|$1>`)
 	out = underlinePattern.ReplaceAllString(out, `_${1}_`)
 	out = italicPattern.ReplaceAllString(out, `${1}_${2}_`)
 	out = boldPattern.ReplaceAllString(out, `*${1}*`)
@@ -32,7 +38,8 @@ func Slack(markdown string) string {
 
 // WhatsApp returns the lightweight formatting syntax accepted by WhatsApp.
 func WhatsApp(markdown string) string {
-	out := linkPattern.ReplaceAllString(markdown, `$1 ($2)`)
+	out := stripCanonicalStyles(markdown)
+	out = linkPattern.ReplaceAllString(out, `$1 ($2)`)
 	out = underlinePattern.ReplaceAllString(out, `_${1}_`)
 	out = italicPattern.ReplaceAllString(out, `${1}_${2}_`)
 	out = boldPattern.ReplaceAllString(out, `*${1}*`)
@@ -42,13 +49,18 @@ func WhatsApp(markdown string) string {
 
 // GoogleChat returns the formatting syntax accepted in Google Chat messages.
 func GoogleChat(markdown string) string {
-	return WhatsApp(markdown)
+	// Google Chat's MARKUP_SYNTAX_MARKDOWN accepts Loom's canonical Markdown
+	// directly. Drop only Loom extensions that Google Chat cannot represent.
+	out := stripCanonicalStyles(markdown)
+	out = underlinePattern.ReplaceAllString(out, `$1`)
+	return out
 }
 
 // PlainText degrades formatting to readable ASCII for providers without rich
 // text support. Unsupported underline and strike remain visible as _x_ / ~x~.
 func PlainText(markdown string) string {
-	out := linkPattern.ReplaceAllString(markdown, `$1 ($2)`)
+	out := stripCanonicalStyles(markdown)
+	out = linkPattern.ReplaceAllString(out, `$1 ($2)`)
 	out = underlinePattern.ReplaceAllString(out, `_${1}_`)
 	out = italicPattern.ReplaceAllString(out, `${1}${2}`)
 	out = boldPattern.ReplaceAllString(out, `$1`)
@@ -61,13 +73,26 @@ func PlainText(markdown string) string {
 // TeamsHTML converts the common dialect to the small HTML subset supported by
 // Teams. Input text is escaped before formatting tags are introduced.
 func TeamsHTML(markdown string) string {
-	// Protect links before applying emphasis: URL contents must never become
-	// formatting tags, and explicit Markdown links must not be linked twice.
-	prefix := "LOOMLINKTOKEN"
+	// Protect already-rendered fragments before applying emphasis. Their content
+	// must not be interpreted as Markdown a second time.
+	prefix := "LOOMHTMLTOKEN"
 	for strings.Contains(markdown, prefix) {
 		prefix += "X"
 	}
-	var links []string
+	var fragments []string
+	protect := func(fragment string) string {
+		token := prefix + strconv.Itoa(len(fragments)) + "END"
+		fragments = append(fragments, fragment)
+		return token
+	}
+	markdown = fencedCodePattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		parts := fencedCodePattern.FindStringSubmatch(match)
+		return protect("<pre><code>" + html.EscapeString(parts[1]) + "</code></pre>")
+	})
+	markdown = inlineCodePattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		parts := inlineCodePattern.FindStringSubmatch(match)
+		return protect("<code>" + html.EscapeString(parts[1]) + "</code>")
+	})
 	markdown = teamsLinkPattern.ReplaceAllStringFunc(markdown, func(match string) string {
 		label, target, suffix := match, match, ""
 		if parts := linkPattern.FindStringSubmatch(match); parts != nil {
@@ -82,10 +107,34 @@ func TeamsHTML(markdown string) string {
 			}
 			label, suffix = target, match[len(target):]
 		}
-		token := prefix + strconv.Itoa(len(links)) + "END"
-		links = append(links, `<a href="`+html.EscapeString(target)+`">`+html.EscapeString(label)+`</a>`)
-		return token + suffix
+		return protect(`<a href="`+html.EscapeString(target)+`">`+html.EscapeString(label)+`</a>`) + suffix
 	})
+	markdown = loomStyleOpenPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		attributes := loomStyleAttributePattern.FindAllStringSubmatch(match, -1)
+		styles := make([]string, 0, len(attributes))
+		for _, attribute := range attributes {
+			value := strings.TrimSpace(firstNonEmpty(attribute[2], attribute[3]))
+			switch strings.ToLower(attribute[1]) {
+			case "color":
+				if safeRichColor.MatchString(value) {
+					styles = append(styles, "color:"+value)
+				}
+			case "background":
+				if safeRichColor.MatchString(value) {
+					styles = append(styles, "background-color:"+value)
+				}
+			case "size":
+				if normalized := normalizeRichFontSize(value); normalized != "" {
+					styles = append(styles, "font-size:"+normalized)
+				}
+			}
+		}
+		if len(styles) == 0 {
+			return ""
+		}
+		return protect(`<span style="` + html.EscapeString(strings.Join(styles, ";")) + `">`)
+	})
+	markdown = loomStyleClosePattern.ReplaceAllStringFunc(markdown, func(string) string { return protect("</span>") })
 	const underlineOpen = "LOOMUNDERLINEOPEN"
 	const underlineClose = "LOOMUNDERLINECLOSE"
 	out := strings.ReplaceAll(markdown, "<u>", underlineOpen)
@@ -132,8 +181,49 @@ func TeamsHTML(markdown string) string {
 	}
 	closeList()
 	out = result.String()
-	for index, link := range links {
-		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", link)
+	for index, fragment := range fragments {
+		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", fragment)
 	}
 	return out
+}
+
+var safeRichColor = regexp.MustCompile(`(?i)^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$`)
+var safeRichFontSize = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)(px|pt|em|rem|%)$`)
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stripCanonicalStyles(markdown string) string {
+	out := loomStyleOpenPattern.ReplaceAllString(markdown, "")
+	return loomStyleClosePattern.ReplaceAllString(out, "")
+}
+
+func normalizeRichFontSize(value string) string {
+	parts := safeRichFontSize.FindStringSubmatch(value)
+	if parts == nil {
+		return ""
+	}
+	number, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		return ""
+	}
+	unit := strings.ToLower(parts[2])
+	limits := map[string][2]float64{"px": {8, 48}, "pt": {6, 36}, "em": {0.5, 3}, "rem": {0.5, 3}, "%": {50, 300}}
+	limit, ok := limits[unit]
+	if !ok {
+		return ""
+	}
+	if number < limit[0] {
+		number = limit[0]
+	}
+	if number > limit[1] {
+		number = limit[1]
+	}
+	return strconv.FormatFloat(number, 'f', -1, 64) + unit
 }

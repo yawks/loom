@@ -3,6 +3,7 @@ import type { core, models } from "../../wailsjs/go/models";
 
 export type Theme = "light" | "dark" | "system";
 export type ContactSortOption = "alphabetical" | "last_message" | "unread" | "highlighted";
+export type ComposerMode = "wysiwyg" | "markdown";
 export interface ContactProfileTarget {
   conversationId: string;
   userId: string;
@@ -31,6 +32,10 @@ interface AppState {
   setLanguage: (language: "en" | "fr") => void;
   fontSize: number;
   setFontSize: (fontSize: number) => void;
+  speechTranscriptionLocale: string;
+  setSpeechTranscriptionLocale: (locale: string) => void;
+  composerMode: ComposerMode;
+  setComposerMode: (mode: ComposerMode) => void;
   selectedAvatarUrl: string | null;
   setSelectedAvatarUrl: (url: string | null) => void;
   selectedContactProfile: ContactProfileTarget | null;
@@ -144,6 +149,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFontSize: (fontSize) => {
     set({ fontSize });
     saveToStorage("fontSize", fontSize);
+  },
+  speechTranscriptionLocale: loadFromStorage<string>("speechTranscriptionLocale", ""),
+  setSpeechTranscriptionLocale: (speechTranscriptionLocale) => {
+    set({ speechTranscriptionLocale });
+    saveToStorage("speechTranscriptionLocale", speechTranscriptionLocale);
+  },
+  composerMode: loadFromStorage<ComposerMode>("composerMode", "wysiwyg"),
+  setComposerMode: (composerMode) => {
+    set({ composerMode });
+    saveToStorage("composerMode", composerMode);
   },
   selectedProviderFilter: loadFromStorage<string | null>("selectedProviderFilter", null),
   setSelectedProviderFilter: (providerInstanceId) => {

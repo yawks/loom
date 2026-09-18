@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -791,6 +792,11 @@ func (w *WhatsAppProvider) GetCapabilities() core.Capabilities {
 		SupportsGroupTitle:                    true,
 		RequiresGroupTitle:                    true,
 		GroupConversationTypes:                "group",
+		MessageFormatting: strings.Join([]string{
+			core.MessageFormatBold, core.MessageFormatItalic, core.MessageFormatStrikethrough,
+			core.MessageFormatInlineCode, core.MessageFormatCodeBlock,
+			core.MessageFormatBulletedList, core.MessageFormatNumberedList,
+		}, ","),
 	}
 }
 

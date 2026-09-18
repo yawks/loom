@@ -262,6 +262,10 @@ export function GetScheduledMessages(arg1) {
   return window['go']['main']['App']['GetScheduledMessages'](arg1);
 }
 
+export function GetSpeechTranscriptionLocales() {
+  return window['go']['main']['App']['GetSpeechTranscriptionLocales']();
+}
+
 export function GetSyncingProviderIDs() {
   return window['go']['main']['App']['GetSyncingProviderIDs']();
 }
@@ -280,6 +284,10 @@ export function GetThreads(arg1) {
 
 export function GetUnreadMessageLocations(arg1, arg2) {
   return window['go']['main']['App']['GetUnreadMessageLocations'](arg1, arg2);
+}
+
+export function IsSpeechTranscriptionAvailable() {
+  return window['go']['main']['App']['IsSpeechTranscriptionAvailable']();
 }
 
 export function LeaveGroup(arg1) {
@@ -440,6 +448,10 @@ export function SyncAllProviders() {
 
 export function SyncProvider(arg1) {
   return window['go']['main']['App']['SyncProvider'](arg1);
+}
+
+export function TranscribeAudio(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TranscribeAudio'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function UnpinMessage(arg1, arg2) {

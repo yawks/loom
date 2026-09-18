@@ -1,15 +1,35 @@
-import { GetAttachmentData, MarkMessageAsPlayed } from "../../wailsjs/go/main/App";
-import { Loader2, Pause, Play } from "lucide-react";
+import { GetAttachmentData, GetProviderAttachmentData, GetSpeechTranscriptionLocales, IsSpeechTranscriptionAvailable, MarkMessageAsPlayed, TranscribeAudio } from "../../wailsjs/go/main/App";
+import type { main } from "../../wailsjs/go/models";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Captions, Check, ChevronDown, Globe, Loader2, Pause, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useAppStore } from "@/lib/store";
+
+let speechTranscriptionAvailable: Promise<boolean> | undefined;
+let speechTranscriptionLocales: Promise<main.SpeechLocale[]> | undefined;
+const networkConsentRequired = "network speech recognition consent required";
+
+function blobToDataURL(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+    });
+}
 
 interface VoiceMessageProps {
     attachment: {
         url: string;
         duration?: number; // Duration in seconds
         fileName: string;
+        transcription?: string;
     };
     conversationID: string;
     messageID: string;
+    providerInstanceId?: string;
     isFromMe: boolean;
     layout?: "bubble" | "irc";
 }
@@ -18,9 +38,11 @@ export function VoiceMessage({
     attachment,
     conversationID,
     messageID,
+    providerInstanceId,
     isFromMe,
     layout = "bubble"
 }: VoiceMessageProps) {
+    const { t } = useTranslation();
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(attachment.duration || 0);
@@ -30,8 +52,34 @@ export function VoiceMessage({
     const [waveform, setWaveform] = useState<number[]>([]);
     const [loadRequested, setLoadRequested] = useState(false);
     const [playWhenReady, setPlayWhenReady] = useState(false);
+    const globalSpeechLocale = useAppStore((state) => state.speechTranscriptionLocale);
+    const [speechLocales, setSpeechLocales] = useState<main.SpeechLocale[]>([]);
+    const [selectedLocale, setSelectedLocale] = useState<string>("");
+    const [isLocalePopoverOpen, setIsLocalePopoverOpen] = useState(false);
+    const [canTranscribe, setCanTranscribe] = useState(false);
+    const [transcriptionAudio, setTranscriptionAudio] = useState<string | null>(null);
+    const [transcription, setTranscription] = useState(attachment.transcription || "");
+    const [showTranscription, setShowTranscription] = useState(false);
+    const [transcriptionRequested, setTranscriptionRequested] = useState(false);
+    const [isTranscribing, setIsTranscribing] = useState(false);
+    const [transcriptionError, setTranscriptionError] = useState("");
+    const [allowNetworkTranscription, setAllowNetworkTranscription] = useState(false);
+    const [networkConsentOpen, setNetworkConsentOpen] = useState(false);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
+
+    useEffect(() => {
+        let active = true;
+        speechTranscriptionAvailable ??= IsSpeechTranscriptionAvailable().catch(() => false);
+        speechTranscriptionAvailable.then((available) => {
+            if (active) setCanTranscribe(available);
+        });
+        speechTranscriptionLocales ??= GetSpeechTranscriptionLocales().catch(() => []);
+        speechTranscriptionLocales.then((list) => {
+            if (active && list) setSpeechLocales(list);
+        });
+        return () => { active = false; };
+    }, []);
 
     // Convert Float32Array to WAV Blob
     const encodeWAV = (samples: Float32Array, sampleRate: number) => {
@@ -102,10 +150,13 @@ export function VoiceMessage({
         let audioContext: AudioContext | null = null;
         setAudioUrl(null);
         setWaveform([]);
+        setTranscriptionAudio(null);
         const loadAudio = async () => {
             if (!attachment.url || !loadRequested) return;
             try {
-                const data = await GetAttachmentData(attachment.url);
+                const data = providerInstanceId
+                    ? await GetProviderAttachmentData(providerInstanceId, attachment.url)
+                    : await GetAttachmentData(attachment.url);
                 if (!active) return;
 
                 // Check if it's OGG/Opus, a common voice-note format.
@@ -211,7 +262,55 @@ export function VoiceMessage({
             if (objectUrl) URL.revokeObjectURL(objectUrl);
             void audioContext?.close();
         };
-    }, [attachment.url, attachment.fileName, loadRequested]);
+    }, [attachment.url, attachment.fileName, loadRequested, providerInstanceId]);
+
+    useEffect(() => {
+        if (!transcriptionRequested || !audioUrl || transcriptionAudio) return;
+        let active = true;
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        fetch(audioUrl)
+            .then((response) => response.arrayBuffer())
+            .then((buffer) => audioContext.decodeAudioData(buffer))
+            // ponytail: voice notes are normally mono; downmix here if stereo-only audio appears.
+            .then((decoded) => blobToDataURL(encodeWAV(decoded.getChannelData(0), decoded.sampleRate)))
+            .then((data) => { if (active) setTranscriptionAudio(data); })
+            .catch(() => {
+                if (!active) return;
+                setTranscriptionRequested(false);
+                setTranscriptionError("audio decode failed");
+            })
+            .finally(() => void audioContext.close());
+        return () => { active = false; };
+    }, [audioUrl, transcriptionAudio, transcriptionRequested]);
+
+    const effectiveLocale = selectedLocale || globalSpeechLocale;
+    const activeLocale = speechLocales.find((l) => l.identifier === effectiveLocale)
+        || speechLocales.find((l) => l.isDefault)
+        || speechLocales[0];
+
+    useEffect(() => {
+        if (!transcriptionRequested || !transcriptionAudio || isTranscribing) return;
+        setTranscriptionRequested(false);
+        setIsTranscribing(true);
+        setTranscriptionError("");
+        TranscribeAudio(messageID, attachment.url, transcriptionAudio, effectiveLocale, allowNetworkTranscription)
+            .then((text) => {
+                setTranscription(text);
+                setTranscriptionAudio(null);
+                setShowTranscription(true);
+                setAllowNetworkTranscription(false);
+            })
+            .catch((error) => {
+                const message = String(error);
+                if (!allowNetworkTranscription && message.includes(networkConsentRequired)) {
+                    setNetworkConsentOpen(true);
+                } else {
+                    setTranscriptionError(message);
+                    setAllowNetworkTranscription(false);
+                }
+            })
+            .finally(() => setIsTranscribing(false));
+    }, [allowNetworkTranscription, attachment.url, effectiveLocale, isTranscribing, messageID, transcriptionAudio, transcriptionRequested]);
 
     // Handle playback rate
     useEffect(() => {
@@ -302,6 +401,38 @@ export function VoiceMessage({
         setPlaybackRate(speeds[nextIndex]);
     };
 
+    const toggleTranscription = () => {
+        if (transcription) {
+            setShowTranscription((visible) => !visible);
+            return;
+        }
+        setShowTranscription(true);
+        setTranscriptionError("");
+        setAllowNetworkTranscription(false);
+        setTranscriptionRequested(true);
+        if (!loadRequested) setLoadRequested(true);
+    };
+
+    const handleSelectLocale = (locId: string) => {
+        setSelectedLocale(locId);
+        setIsLocalePopoverOpen(false);
+        setTranscription("");
+        setShowTranscription(true);
+        setTranscriptionError("");
+        setAllowNetworkTranscription(false);
+        setTranscriptionRequested(true);
+        if (!loadRequested) setLoadRequested(true);
+    };
+
+    const retryTranscription = () => {
+        setTranscription("");
+        setShowTranscription(true);
+        setTranscriptionError("");
+        setAllowNetworkTranscription(false);
+        setTranscriptionRequested(true);
+        if (!loadRequested) setLoadRequested(true);
+    };
+
     const formatTime = (time: number) => {
         const invalid = isNaN(time) || !isFinite(time);
         if (invalid) return "0:00";
@@ -373,8 +504,9 @@ export function VoiceMessage({
     }
 
     return (
-        <div className={`flex items-center gap-3 px-3 ${layout === "bubble" ? "py-1" : "py-2"} rounded-xl ${widthClass} ${isFromMe ? "bg-blue-600 text-white" : "bg-muted/50 text-foreground border border-border"
+        <div className={`flex flex-col gap-1 px-3 ${layout === "bubble" ? "py-1" : "py-2"} rounded-xl ${widthClass} ${isFromMe ? "bg-blue-600 text-white" : "bg-muted/50 text-foreground border border-border"
             }`}>
+          <div className="flex items-center gap-3 w-full">
             {audioUrl && (
                 <audio
                     ref={audioRef}
@@ -403,6 +535,23 @@ export function VoiceMessage({
                 {audioUrl && isPlaying && <Pause className="h-5 w-5 fill-current" />}
                 {audioUrl && !isPlaying && <Play className="h-5 w-5 fill-current ml-0.5" />}
             </button>
+
+            {canTranscribe && (
+                <button
+                    onClick={toggleTranscription}
+                    disabled={isTranscribing || (transcriptionRequested && !transcriptionAudio)}
+                    title={t("transcribe_voice_message")}
+                    aria-label={t("transcribe_voice_message")}
+                    className={`flex items-center justify-center h-8 w-8 rounded-full shrink-0 transition-colors ${isFromMe
+                        ? "bg-white/20 hover:bg-white/30 text-white"
+                        : "bg-primary/10 hover:bg-primary/20 text-primary"
+                        }`}
+                >
+                    {isTranscribing || (transcriptionRequested && !transcriptionAudio)
+                        ? <Loader2 className="h-4 w-4 animate-spin opacity-60" />
+                        : <Captions className="h-4 w-4" />}
+                </button>
+            )}
 
             <div className="flex-1 flex flex-col gap-1 min-w-0">
                 {/* Fixed h-8 container so slider↔waveform swap doesn't change item height */}
@@ -434,6 +583,153 @@ export function VoiceMessage({
             >
                 {playbackRate}x
             </button>
+          </div>
+
+          {showTranscription && transcription && (
+              <div className={`flex items-start gap-2 border-t pt-2 ${isFromMe ? "border-white/20 text-white/90" : "border-border text-foreground/90"}`}>
+                  <p className="flex-1 text-sm leading-relaxed">{transcription}</p>
+                  <div className="flex items-center gap-1 shrink-0">
+                      {speechLocales.length > 0 && (
+                          <Popover open={isLocalePopoverOpen} onOpenChange={setIsLocalePopoverOpen}>
+                              <PopoverTrigger asChild>
+                                  <button
+                                      className={`text-[11px] font-medium px-1.5 py-0.5 rounded flex items-center gap-1 transition-colors ${
+                                          isFromMe ? "bg-white/20 hover:bg-white/30 text-white" : "bg-muted hover:bg-accent text-foreground"
+                                      }`}
+                                      title={t("transcription_language")}
+                                      aria-label={t("transcription_language")}
+                                  >
+                                      <span>{activeLocale ? (activeLocale.identifier.split("-")[0].toUpperCase()) : "Auto"}</span>
+                                      <ChevronDown className="h-3 w-3 opacity-60" />
+                                  </button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-64 p-1 text-foreground" align="end">
+                                  <div className="max-h-60 overflow-y-auto space-y-0.5">
+                                      <button
+                                          onClick={() => handleSelectLocale("")}
+                                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors ${
+                                              !selectedLocale && !globalSpeechLocale ? "font-semibold bg-accent/50" : ""
+                                          }`}
+                                      >
+                                          <div className="flex flex-col text-left">
+                                              <span>{t("voice_transcription_auto")}</span>
+                                              <span className="text-[10px] text-muted-foreground">
+                                                  {speechLocales.find((l) => l.isDefault)?.displayName || ""}
+                                              </span>
+                                          </div>
+                                          {!selectedLocale && !globalSpeechLocale && <Check className="h-3.5 w-3.5 text-primary" />}
+                                      </button>
+                                      <div className="border-t my-1" />
+                                      {speechLocales.map((loc) => {
+                                          const isSelected = (effectiveLocale === loc.identifier);
+                                          return (
+                                              <button
+                                                  key={loc.identifier}
+                                                  onClick={() => handleSelectLocale(loc.identifier)}
+                                                  className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors ${
+                                                      isSelected ? "font-semibold bg-accent/50" : ""
+                                                  }`}
+                                              >
+                                                  <div className="flex flex-col text-left pr-2">
+                                                      <span>{loc.displayName}</span>
+                                                      <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                          {loc.isOnDevice ? (
+                                                              <span className="inline-flex items-center text-emerald-600 dark:text-emerald-400 font-medium">
+                                                                  <ShieldCheck className="h-3 w-3 mr-0.5" />
+                                                                  {t("voice_transcription_offline_badge")}
+                                                              </span>
+                                                          ) : (
+                                                              <span className="inline-flex items-center text-muted-foreground">
+                                                                  <Globe className="h-3 w-3 mr-0.5" />
+                                                                  {t("voice_transcription_online_badge")}
+                                                              </span>
+                                                          )}
+                                                      </span>
+                                                  </div>
+                                                  {isSelected && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                                              </button>
+                                          );
+                                      })}
+                                  </div>
+                              </PopoverContent>
+                          </Popover>
+                      )}
+                      <button onClick={retryTranscription} title={t("retranscribe_voice_message")} aria-label={t("retranscribe_voice_message")} className="p-1 rounded hover:opacity-80 transition-opacity">
+                          <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                  </div>
+              </div>
+          )}
+          {showTranscription && transcriptionError && (
+              <div className={`flex items-start justify-between gap-2 border-t pt-2 text-xs ${isFromMe ? "border-white/20 text-white/80" : "border-border text-destructive"}`}>
+                  <p className="flex-1">
+                      {transcriptionError.replace(/^Error:\s*/, "") || t("voice_transcription_failed")}
+                  </p>
+                  {speechLocales.length > 0 && (
+                      <Popover open={isLocalePopoverOpen} onOpenChange={setIsLocalePopoverOpen}>
+                          <PopoverTrigger asChild>
+                              <button
+                                  className={`text-[11px] font-medium px-1.5 py-0.5 rounded flex items-center gap-1 transition-colors shrink-0 ${
+                                      isFromMe ? "bg-white/20 hover:bg-white/30 text-white" : "bg-muted hover:bg-accent text-foreground"
+                                  }`}
+                                  title={t("transcription_language")}
+                              >
+                                  <span>{activeLocale ? (activeLocale.identifier.split("-")[0].toUpperCase()) : "Auto"}</span>
+                                  <ChevronDown className="h-3 w-3 opacity-60" />
+                              </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-1 text-foreground" align="end">
+                              <div className="max-h-60 overflow-y-auto space-y-0.5">
+                                  {speechLocales.map((loc) => (
+                                      <button
+                                          key={loc.identifier}
+                                          onClick={() => handleSelectLocale(loc.identifier)}
+                                          className={`w-full flex items-center justify-between px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors ${
+                                              effectiveLocale === loc.identifier ? "font-semibold bg-accent/50" : ""
+                                          }`}
+                                      >
+                                          <div className="flex flex-col text-left pr-2">
+                                              <span>{loc.displayName}</span>
+                                              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                                  {loc.isOnDevice ? (
+                                                      <span className="inline-flex items-center text-emerald-600 dark:text-emerald-400 font-medium">
+                                                          <ShieldCheck className="h-3 w-3 mr-0.5" />
+                                                          {t("voice_transcription_offline_badge")}
+                                                      </span>
+                                                  ) : (
+                                                      <span className="inline-flex items-center text-muted-foreground">
+                                                          <Globe className="h-3 w-3 mr-0.5" />
+                                                          {t("voice_transcription_online_badge")}
+                                                      </span>
+                                                  )}
+                                              </span>
+                                          </div>
+                                          {effectiveLocale === loc.identifier && <Check className="h-3.5 w-3.5 text-primary shrink-0" />}
+                                      </button>
+                                  ))}
+                              </div>
+                          </PopoverContent>
+                      </Popover>
+                  )}
+              </div>
+          )}
+          <AlertDialog open={networkConsentOpen} onOpenChange={setNetworkConsentOpen}>
+              <AlertDialogContent>
+                  <AlertDialogHeader>
+                      <AlertDialogTitle>{t("voice_transcription_network_title")}</AlertDialogTitle>
+                      <AlertDialogDescription>{t("voice_transcription_network_description")}</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                      <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => {
+                          setAllowNetworkTranscription(true);
+                          setTranscriptionRequested(true);
+                      }}>
+                          {t("voice_transcription_network_confirm")}
+                      </AlertDialogAction>
+                  </AlertDialogFooter>
+              </AlertDialogContent>
+          </AlertDialog>
         </div>
     );
 }

@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, MessageSquare, Monitor, Moon, Settings, Sun, Terminal, Trash2, Type, Waypoints } from "lucide-react";
+import { Bell, ChevronDown, Globe, MessageSquare, Mic, Monitor, Moon, Settings, ShieldCheck, Sun, Terminal, Trash2, Type, Waypoints } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useEffect, useState } from "react";
@@ -12,6 +12,8 @@ import i18n from "@/i18n";
 import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
+import { GetSpeechTranscriptionLocales } from "../../wailsjs/go/main/App";
+import type { main } from "../../wailsjs/go/models";
 
 interface SettingsModalProps {
   open: boolean;
@@ -51,10 +53,26 @@ export function SettingsModal({
   const setLanguage = useAppStore((state) => state.setLanguage);
   const fontSize = useAppStore((state) => state.fontSize);
   const setFontSize = useAppStore((state) => state.setFontSize);
+  const speechTranscriptionLocale = useAppStore((state) => state.speechTranscriptionLocale);
+  const setSpeechTranscriptionLocale = useAppStore((state) => state.setSpeechTranscriptionLocale);
+  const [speechLocales, setSpeechLocales] = useState<main.SpeechLocale[]>([]);
+  const [isSpeechLocalePopoverOpen, setIsSpeechLocalePopoverOpen] = useState(false);
   const [isLanguagePopoverOpen, setIsLanguagePopoverOpen] = useState(false);
   const [isMessageLayoutPopoverOpen, setIsMessageLayoutPopoverOpen] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+
+  useEffect(() => {
+    let active = true;
+    GetSpeechTranscriptionLocales()
+      .then((list) => {
+        if (active && list) setSpeechLocales(list);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (open) setActiveSection(initialSection);
@@ -276,6 +294,87 @@ export function SettingsModal({
               </PopoverContent>
             </Popover>
           </div>
+          {speechLocales.length > 0 && (
+            <>
+              <div className="border-t" />
+              <div className="space-y-3">
+                <div className="text-sm font-semibold">
+                  {t("voice_transcription_language")}
+                </div>
+                <Popover open={isSpeechLocalePopoverOpen} onOpenChange={setIsSpeechLocalePopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-between"
+                    >
+                      <span className="flex items-center truncate">
+                        <Mic className="mr-2 h-4 w-4 opacity-70 shrink-0" />
+                        <span className="truncate">
+                          {speechTranscriptionLocale
+                            ? (speechLocales.find((l) => l.identifier === speechTranscriptionLocale)?.displayName || speechTranscriptionLocale)
+                            : `${t("voice_transcription_auto")}${speechLocales.find((l) => l.isDefault) ? ` (${speechLocales.find((l) => l.isDefault)?.displayName})` : ""}`}
+                        </span>
+                      </span>
+                      <ChevronDown className="h-4 w-4 opacity-50 shrink-0 ml-2" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1 max-h-72 overflow-y-auto" align="start">
+                    <div className="space-y-1">
+                      <Button
+                        variant={!speechTranscriptionLocale ? "secondary" : "ghost"}
+                        className="w-full justify-between h-auto py-2"
+                        onClick={() => {
+                          setSpeechTranscriptionLocale("");
+                          setIsSpeechLocalePopoverOpen(false);
+                        }}
+                      >
+                        <div className="flex flex-col text-left">
+                          <span>{t("voice_transcription_auto")}</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {speechLocales.find((l) => l.isDefault)?.displayName || ""}
+                          </span>
+                        </div>
+                        {!speechTranscriptionLocale && <span className="text-xs">✓</span>}
+                      </Button>
+                      <div className="border-t my-1" />
+                      {speechLocales.map((loc) => {
+                        const isSelected = speechTranscriptionLocale === loc.identifier;
+                        return (
+                          <Button
+                            key={loc.identifier}
+                            variant={isSelected ? "secondary" : "ghost"}
+                            className="w-full justify-between h-auto py-2"
+                            onClick={() => {
+                              setSpeechTranscriptionLocale(loc.identifier);
+                              setIsSpeechLocalePopoverOpen(false);
+                            }}
+                          >
+                            <div className="flex flex-col text-left pr-2">
+                              <span>{loc.displayName}</span>
+                              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                {loc.isOnDevice ? (
+                                  <span className="inline-flex items-center text-emerald-600 dark:text-emerald-400 font-medium">
+                                    <ShieldCheck className="h-3 w-3 mr-0.5" />
+                                    {t("voice_transcription_offline_badge")}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center text-muted-foreground">
+                                    <Globe className="h-3 w-3 mr-0.5" />
+                                    {t("voice_transcription_online_badge")}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            {isSelected && <span className="text-xs shrink-0">✓</span>}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </>
+          )}
           <div className="border-t" />
           <div className="space-y-3">
             <div className="text-sm font-semibold">

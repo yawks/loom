@@ -135,6 +135,8 @@ export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 
 export function GetScheduledMessages(arg1:string):Promise<Array<models.ScheduledMessage>>;
 
+export function GetSpeechTranscriptionLocales():Promise<Array<main.SpeechLocale>>;
+
 export function GetSyncingProviderIDs():Promise<Array<string>>;
 
 export function GetThreadMessages(arg1:string,arg2:string):Promise<Array<models.Message>>;
@@ -144,6 +146,8 @@ export function GetThreadSummaries(arg1:string,arg2:Array<string>):Promise<Array
 export function GetThreads(arg1:string):Promise<Array<models.Message>>;
 
 export function GetUnreadMessageLocations(arg1:string,arg2:Array<string>):Promise<Array<models.UnreadMessageLocation>>;
+
+export function IsSpeechTranscriptionAvailable():Promise<boolean>;
 
 export function LeaveGroup(arg1:string):Promise<void>;
 
@@ -224,6 +228,8 @@ export function StartGoogleMessagesLogin(arg1:string,arg2:string):Promise<string
 export function SyncAllProviders():Promise<void>;
 
 export function SyncProvider(arg1:string):Promise<void>;
+
+export function TranscribeAudio(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<string>;
 
 export function UnpinMessage(arg1:string,arg2:string):Promise<void>;
 

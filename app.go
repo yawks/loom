@@ -11,10 +11,12 @@ import (
 	"Loom/pkg/providers/slack"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -5609,6 +5611,219 @@ func persistAttachmentDimensions(database *gorm.DB, messageID, attachmentURL str
 		}
 		if !changed {
 			return nil
+		}
+
+		encoded, err := json.Marshal(attachments)
+		if err != nil {
+			return fmt.Errorf("encode message attachments: %w", err)
+		}
+		return tx.Model(&models.Message{}).Where("id = ?", message.ID).Update("attachments", string(encoded)).Error
+	})
+}
+
+// IsSpeechTranscriptionAvailable reports whether this OS can transcribe audio
+// locally without sending it to a remote service.
+func (a *App) IsSpeechTranscriptionAvailable() bool {
+	return speechTranscriptionAvailable()
+}
+
+// GetSpeechTranscriptionLocales returns the available speech recognition locales,
+// prioritizing on-device dictation models.
+func (a *App) GetSpeechTranscriptionLocales() []SpeechLocale {
+	return getSpeechTranscriptionLocales()
+}
+
+// TranscribeAudio transcribes browser-decoded WAV data with the OS speech API
+// and persists the result on the canonical attachment.
+func (a *App) TranscribeAudio(messageID, attachmentURL, dataURL, localeID string, allowNetwork bool) (string, error) {
+	if db.DB == nil || messageID == "" || attachmentURL == "" {
+		return "", fmt.Errorf("message and attachment are required")
+	}
+	if !speechTranscriptionAvailable() {
+		return "", fmt.Errorf("on-device speech transcription is unavailable")
+	}
+	const prefix = "data:audio/wav;base64,"
+	if !strings.HasPrefix(dataURL, prefix) {
+		return "", fmt.Errorf("decoded WAV audio is required")
+	}
+	if len(dataURL) > 64*1024*1024 {
+		return "", fmt.Errorf("audio is too large to transcribe")
+	}
+	audio, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(dataURL, prefix))
+	if err != nil {
+		return "", fmt.Errorf("decode transcription audio: %w", err)
+	}
+
+	chunks, err := splitTranscriptionWAV(audio)
+	if err != nil {
+		return "", err
+	}
+	var transcriptions []string
+	for _, chunk := range chunks {
+		file, err := os.CreateTemp("", "loom-transcription-*.wav")
+		if err != nil {
+			return "", err
+		}
+		path := file.Name()
+		if _, err = file.Write(chunk); err == nil {
+			err = file.Close()
+		} else {
+			file.Close()
+		}
+		if err == nil {
+			var text string
+			text, err = transcribeAudioFile(path, localeID, allowNetwork)
+			if text = strings.TrimSpace(text); text != "" {
+				transcriptions = append(transcriptions, text)
+			}
+		}
+		os.Remove(path)
+		if err != nil && err.Error() != "No speech was recognized" {
+			return "", err
+		}
+	}
+	transcription := strings.Join(transcriptions, " ")
+	transcription = strings.TrimSpace(transcription)
+	if transcription == "" {
+		return "", fmt.Errorf("no speech was recognized")
+	}
+	if err := persistAttachmentTranscription(db.DB, messageID, attachmentURL, transcription); err != nil {
+		return "", err
+	}
+	return transcription, nil
+}
+
+// splitTranscriptionWAV keeps each native Speech request below on-device
+// recognition limits by splitting long audio at natural silence pauses (~8-12s).
+// The frontend always sends 44-byte PCM WAVs.
+func splitTranscriptionWAV(audio []byte) ([][]byte, error) {
+	if len(audio) < 44 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" || string(audio[36:40]) != "data" {
+		return nil, fmt.Errorf("invalid transcription WAV")
+	}
+	sampleRate := int(binary.LittleEndian.Uint32(audio[24:28]))
+	byteRate := int(binary.LittleEndian.Uint32(audio[28:32]))
+	blockAlign := int(binary.LittleEndian.Uint16(audio[32:34]))
+	dataSize := int(binary.LittleEndian.Uint32(audio[40:44]))
+	if sampleRate <= 0 || byteRate <= 0 || blockAlign <= 0 || dataSize <= 0 || dataSize > len(audio)-44 {
+		return nil, fmt.Errorf("invalid transcription WAV")
+	}
+
+	data := audio[44 : 44+dataSize]
+	totalSamples := dataSize / blockAlign
+	totalDuration := float64(totalSamples) / float64(sampleRate)
+
+	// If short enough (under 12 seconds), process directly
+	if totalDuration <= 12.0 {
+		return [][]byte{audio}, nil
+	}
+
+	// Calculate RMS energy per 50ms window for pause detection
+	windowSamples := sampleRate / 20
+	if windowSamples < 1 {
+		windowSamples = 1
+	}
+	numWindows := totalSamples / windowSamples
+	windowEnergy := make([]float64, numWindows)
+	for w := 0; w < numWindows; w++ {
+		var sum float64
+		startIdx := w * windowSamples * blockAlign
+		for s := 0; s < windowSamples; s++ {
+			sampleVal := int16(binary.LittleEndian.Uint16(data[startIdx+s*blockAlign : startIdx+s*blockAlign+2]))
+			f := float64(sampleVal) / 32768.0
+			sum += f * f
+		}
+		windowEnergy[w] = math.Sqrt(sum / float64(windowSamples))
+	}
+
+	var splitPoints []int
+	currentSample := 0
+	targetSamples := int(9.0 * float64(sampleRate))
+	maxSamples := int(12.0 * float64(sampleRate))
+	minSamples := int(5.0 * float64(sampleRate))
+
+	for currentSample+maxSamples < totalSamples {
+		searchStartSample := currentSample + targetSamples - int(2.0*float64(sampleRate))
+		if searchStartSample < currentSample+minSamples {
+			searchStartSample = currentSample + minSamples
+		}
+		searchEndSample := currentSample + maxSamples
+		if searchEndSample > totalSamples {
+			searchEndSample = totalSamples
+		}
+
+		startWindow := searchStartSample / windowSamples
+		endWindow := searchEndSample / windowSamples
+		if endWindow >= numWindows {
+			endWindow = numWindows - 1
+		}
+
+		bestWindow := startWindow
+		minEnergy := windowEnergy[startWindow]
+		for w := startWindow; w <= endWindow; w++ {
+			if windowEnergy[w] < minEnergy {
+				minEnergy = windowEnergy[w]
+				bestWindow = w
+			}
+		}
+
+		splitSample := bestWindow * windowSamples
+		splitPoints = append(splitPoints, splitSample)
+		currentSample = splitSample
+	}
+
+	splitPoints = append(splitPoints, totalSamples)
+
+	var chunks [][]byte
+	prevSample := 0
+	for _, splitSample := range splitPoints {
+		startByte := prevSample * blockAlign
+		endByte := splitSample * blockAlign
+		chunkDataSize := endByte - startByte
+		if chunkDataSize <= 0 {
+			continue
+		}
+		chunk := make([]byte, 44+chunkDataSize)
+		copy(chunk, audio[:44])
+		copy(chunk[44:], data[startByte:endByte])
+		binary.LittleEndian.PutUint32(chunk[4:8], uint32(len(chunk)-8))
+		binary.LittleEndian.PutUint32(chunk[40:44], uint32(chunkDataSize))
+		chunks = append(chunks, chunk)
+		prevSample = splitSample
+	}
+
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("empty transcription WAV")
+	}
+	return chunks, nil
+}
+
+func persistAttachmentTranscription(database *gorm.DB, messageID, attachmentURL, transcription string) error {
+	return db.Transaction(database, func(tx *gorm.DB) error {
+		var message models.Message
+		query := tx
+		if id, err := strconv.ParseUint(messageID, 10, 64); err == nil {
+			query = query.Where("id = ? OR protocol_msg_id = ?", id, messageID)
+		} else {
+			query = query.Where("protocol_msg_id = ?", messageID)
+		}
+		if err := query.First(&message).Error; err != nil {
+			return err
+		}
+
+		var attachments []models.Attachment
+		if err := json.Unmarshal([]byte(message.Attachments), &attachments); err != nil {
+			return fmt.Errorf("decode message attachments: %w", err)
+		}
+		found := false
+		for index := range attachments {
+			if attachments[index].URL == attachmentURL {
+				attachments[index].Transcription = transcription
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("attachment not found")
 		}
 
 		encoded, err := json.Marshal(attachments)

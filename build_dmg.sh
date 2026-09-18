@@ -5,7 +5,8 @@ APP_NAME="Loom"
 BUNDLE="${APP_NAME}.app"
 DMG_NAME="${APP_NAME}.dmg"
 BUILD_DIR="build/bin"
-ARCH="${1:-universal}"   # universal | amd64 | arm64
+ARCH="${1:-$(uname -m)}" # universal | amd64 | arm64
+[[ "$ARCH" == "x86_64" ]] && ARCH="amd64"
 
 echo "==> Building ${APP_NAME} (darwin/${ARCH})..."
 wails build -platform "darwin/${ARCH}" -clean

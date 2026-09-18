@@ -517,6 +517,7 @@ type Attachment struct {
 	Width         uint32     `json:"width,omitempty"`     // Intrinsic media width in pixels
 	Height        uint32     `json:"height,omitempty"`    // Intrinsic media height in pixels
 	Duration      uint32     `json:"duration,omitempty"`  // Duration in seconds (for audio/video)
+	Transcription string     `json:"transcription,omitempty"`
 	Latitude      *float64   `json:"latitude,omitempty"`  // Latitude for location attachments
 	Longitude     *float64   `json:"longitude,omitempty"` // Longitude for location attachments
 	LocationName  string     `json:"locationName,omitempty"`

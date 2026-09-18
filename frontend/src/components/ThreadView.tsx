@@ -532,7 +532,7 @@ export function ThreadView() {
   });
   const currentUserId = providerCurrentUserId || sortedThreadMessages.find((msg) => msg.isFromMe && msg.senderId)?.senderId;
 
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLElement | null>(null);
   const focusComposer = useCallback(() => composerRef.current?.focus(), []);
 
   const handleReplyClick = useCallback((message: models.Message) => {

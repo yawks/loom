@@ -1163,6 +1163,12 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsContactDirectory:              true, SupportsDirectConversation: true,
 		SupportsGroupConversation: true, SupportsGroupTitle: true,
 		RequiresGroupTitle: false, GroupConversationTypes: "group",
+		MessageFormatting: strings.Join([]string{
+			core.MessageFormatBold, core.MessageFormatItalic, core.MessageFormatUnderline,
+			core.MessageFormatStrikethrough, core.MessageFormatInlineCode, core.MessageFormatCodeBlock,
+			core.MessageFormatLink, core.MessageFormatBulletedList, core.MessageFormatNumberedList,
+			core.MessageFormatTextColor, core.MessageFormatBackgroundColor, core.MessageFormatFontSize,
+		}, ","),
 	}
 }
 

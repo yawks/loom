@@ -149,12 +149,16 @@ func (p *GoogleChatProvider) SendMessage(convID, text string, file *core.Attachm
 		Name string `json:"name"`
 	}
 	type msgBody struct {
-		Text       string           `json:"text,omitempty"`
-		Thread     *threadRef       `json:"thread,omitempty"`
-		Attachment []ChatAttachment `json:"attachment,omitempty"`
+		Text         string           `json:"text,omitempty"`
+		MarkupSyntax string           `json:"markupSyntax,omitempty"`
+		Thread       *threadRef       `json:"thread,omitempty"`
+		Attachment   []ChatAttachment `json:"attachment,omitempty"`
 	}
 
 	body := msgBody{Text: messageformat.GoogleChat(text)}
+	if body.Text != "" {
+		body.MarkupSyntax = "MARKUP_SYNTAX_MARKDOWN"
+	}
 	path := "/" + rawConvID + "/messages"
 	if file != nil {
 		uploaded, err := p.apiUploadAttachment(spaceName(rawConvID), file.FileName, file.MimeType, file.Data)

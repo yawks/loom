@@ -247,7 +247,7 @@ export function MessageList({
   });
 
   // Hooks
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLElement | null>(null);
   const focusComposer = useCallback(() => composerRef.current?.focus(), []);
 
   useEffect(() => {

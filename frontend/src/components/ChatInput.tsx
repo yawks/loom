@@ -1,6 +1,6 @@
 import { ConversationIdentitySelector } from "./ConversationIdentitySelector";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bold, ChevronDown, Code, Italic, Link, List, ListOrdered, Paperclip, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
+import { Baseline, Bold, ChevronDown, Code, CodeXml, Highlighter, Italic, Link, List, ListOrdered, Paperclip, Pilcrow, Send, Smile, Strikethrough, Underline, X } from "lucide-react";
 import { GetAttachmentData, GetCustomEmojis, GetGroupDetails, GetGroupParticipants, GetParticipantNames, ScheduleMessage, SendMessage, SendMessageWithMentions, SendReply, SendThreadMessage, SendThreadReply, SendTypingIndicator } from "../../wailsjs/go/main/App";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +18,7 @@ import { core, models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
 import { orderCustomEmojis, prepareEmojiSuggestions, recordCustomEmojiUsage, recordStandardEmojiUsage } from "@/lib/emojiUsage";
+import { RichTextComposer, type RichTextComposerHandle } from "./RichTextComposer";
 
 interface ChatInputProps {
   onFileUploadRequest?: (files: File[], filePaths?: string[]) => void;
@@ -28,7 +29,7 @@ interface ChatInputProps {
   currentUserName?: string;
   currentUserAvatarUrl?: string;
   onHeightChange?: () => void;
-  onTextareaMount?: (textarea: HTMLTextAreaElement | null) => void;
+  onTextareaMount?: (element: HTMLElement | null) => void;
 }
 
 // emoji-picker-react carries a large emoji dataset. Do not retain it in the
@@ -179,29 +180,45 @@ const saveDraft = (key: string | null, value: string): void => {
   }
 };
 
+const resolveMentionPositions = (text: string, mentions: core.Mention[]): core.Mention[] => {
+  let searchFrom = 0;
+  return mentions.flatMap((mention) => {
+    const token = `@${mention.displayName}`;
+    const start = text.indexOf(token, searchFrom);
+    if (start < 0) return [];
+    searchFrom = start + token.length;
+    return [{ ...mention, start, length: token.length }];
+  });
+};
+
 export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange, onTextareaMount }: ChatInputProps) {
   const { t, i18n } = useTranslation();
   const { toasts, showToast, closeToast } = useToast();
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [isScheduledMessagesOpen, setIsScheduledMessagesOpen] = useState(false);
   const [isScheduleMenuOpen, setIsScheduleMenuOpen] = useState(false);
+  const [isFormattingToolbarOpen, setIsFormattingToolbarOpen] = useState(false);
   const [customEmojiCatalog, setCustomEmojiCatalog] = useState<{ instanceId: string; emojis: CustomEmoji[] }>({
     instanceId: "",
     emojis: [],
   });
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const richComposerRef = useRef<RichTextComposerHandle>(null);
   const textareaMeasurementRef = useRef<HTMLTextAreaElement | null>(null);
   const draftSaveRef = useRef<{ key: string | null; value: string; timeoutId: number } | null>(null);
   const hasTextRef = useRef(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [isLinkEditorOpen, setIsLinkEditorOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("https://");
+  const [richCursorPrefix, setRichCursorPrefix] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedContact = useAppStore((state) => state.selectedContact);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const theme = useAppStore((state) => state.theme);
   const capabilities = useAppStore((state) => state.capabilities);
+  const composerMode = useAppStore((state) => state.composerMode);
+  const setComposerMode = useAppStore((state) => state.setComposerMode);
   const metaContacts = useAppStore((state) => state.metaContacts);
   const setIsTypingInInput = useAppStore((state) => state.setIsTypingInInput);
   const showThreads = useAppStore((state) => state.showThreads);
@@ -238,6 +255,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   const supportsTypingIndicator = activeAccount?.providerInstanceId
     ? capabilities[activeAccount.providerInstanceId]?.supportsTypingIndicator ?? false
     : false;
+  const formattingFeatures = useMemo(() => new Set(
+    (activeAccount?.providerInstanceId
+      ? capabilities[activeAccount.providerInstanceId]?.messageFormatting
+      : "")?.split(",").filter(Boolean) ?? []
+  ), [activeAccount?.providerInstanceId, capabilities]);
   const { data: groupDetails } = useQuery<models.GroupDetails>({
     queryKey: ["group-details", conversationId],
     queryFn: () => GetGroupDetails(conversationId ?? ""),
@@ -279,12 +301,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     });
   }, [conversationId, mentionParticipantData, metaContacts, queryClient, selectedContact]);
   const mentionMatch = useMemo(() => {
-    const cursor = mentionCursor;
-    const prefix = message.slice(0, cursor);
+    const prefix = composerMode === "wysiwyg" ? richCursorPrefix : message.slice(0, mentionCursor);
     const match = prefix.match(/(^|\s)@([^@\n]*)$/);
     if (!match) return null;
-    return { start: cursor - match[2].length - 1, query: match[2].toLocaleLowerCase() };
-  }, [message, mentionCursor]);
+    return { start: prefix.length - match[2].length - 1, query: match[2].toLocaleLowerCase() };
+  }, [composerMode, message, mentionCursor, richCursorPrefix]);
   const mentionSuggestions = useMemo(() => mentionMatch
     ? mentionParticipants.filter((participant) => participant.displayName.toLocaleLowerCase().includes(mentionMatch.query))
     : [], [mentionMatch, mentionParticipants]);
@@ -348,11 +369,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (selectedContact) {
       // Small delay to ensure the component is fully rendered
       const timeoutId = setTimeout(() => {
-        textareaRef.current?.focus();
+        if (composerMode === "wysiwyg") richComposerRef.current?.focus();
+        else textareaRef.current?.focus();
       }, 100);
       return () => clearTimeout(timeoutId);
     }
-  }, [selectedContact]);
+  }, [composerMode, selectedContact]);
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ conversationId, text, quotedMessageId, mentions }: { conversationId: string; text: string; quotedMessageId?: string; mentions: core.Mention[] }) => {
@@ -748,9 +770,21 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     updateTypingState(newValue.trim().length > 0);
   };
 
+  const handleRichMessageChange = useCallback((newValue: string) => {
+    setMessage(newValue);
+    scheduleDraftSave(draftStorageKey, newValue);
+    updateTypingState(newValue.trim().length > 0);
+  }, [draftStorageKey, scheduleDraftSave, updateTypingState]);
+
   const chooseMention = useCallback((participant: { userId: string; displayName: string }) => {
     if (!mentionMatch) return;
     const token = `@${participant.displayName}`;
+    if (composerMode === "wysiwyg") {
+      richComposerRef.current?.insertText(`${token} `);
+      setMentions((current) => [...current, { userId: participant.userId, displayName: participant.displayName, start: mentionMatch.start, length: token.length }]);
+      setMentionCursor(-1);
+      return;
+    }
     const next = message.slice(0, mentionMatch.start) + token + " " + message.slice(mentionCursor);
     setMessage(next);
     setMentions((current) => [...current, { userId: participant.userId, displayName: participant.displayName, start: mentionMatch.start, length: token.length }]);
@@ -760,7 +794,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(mentionMatch.start + token.length + 1, mentionMatch.start + token.length + 1);
     });
-  }, [draftStorageKey, mentionCursor, mentionMatch, message, scheduleDraftSave]);
+  }, [composerMode, draftStorageKey, mentionCursor, mentionMatch, message, scheduleDraftSave]);
 
   const updateTextSelection = useCallback(() => {
     const textarea = textareaRef.current;
@@ -773,8 +807,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   const replaceSelection = useCallback((before: string, after = before) => {
     const textarea = textareaRef.current;
-    if (!textarea || !textSelection) return;
-    const { start, end } = textSelection;
+    if (!textarea) return;
+    const { start, end } = textSelection ?? { start: textarea.selectionStart, end: textarea.selectionEnd };
     const selected = message.slice(start, end);
     const nextMessage = message.slice(0, start) + before + selected + after + message.slice(end);
     setMessage(nextMessage);
@@ -790,8 +824,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
 
   const formatSelectedLines = useCallback((ordered: boolean) => {
     const textarea = textareaRef.current;
-    if (!textarea || !textSelection) return;
-    const { start, end } = textSelection;
+    if (!textarea) return;
+    const { start, end } = textSelection ?? { start: textarea.selectionStart, end: textarea.selectionEnd };
     const lineStart = message.lastIndexOf("\n", start - 1) + 1;
     const nextLineBreak = message.indexOf("\n", end);
     const lineEnd = nextLineBreak === -1 ? message.length : nextLineBreak;
@@ -812,24 +846,27 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   }, [adjustTextareaHeight, draftStorageKey, message, saveDraftImmediately, textSelection, updateTypingState]);
 
   const openLinkEditor = useCallback(() => {
-    if (!textSelection) return;
+    if (composerMode === "markdown" && !textSelection) return;
+    if (composerMode === "wysiwyg" && !richComposerRef.current?.hasSelection()) return;
     setLinkUrl("https://");
     setIsLinkEditorOpen(true);
-  }, [textSelection]);
+  }, [composerMode, textSelection]);
 
   const addLink = useCallback(() => {
     const url = linkUrl.trim();
     if (!/^https?:\/\/\S+$/i.test(url)) return;
     setIsLinkEditorOpen(false);
-    replaceSelection("[", `](${url})`);
-  }, [linkUrl, replaceSelection]);
-  const makeBold = useCallback(() => replaceSelection("**"), [replaceSelection]);
-  const makeItalic = useCallback(() => replaceSelection("*"), [replaceSelection]);
-  const makeUnderline = useCallback(() => replaceSelection("<u>", "</u>"), [replaceSelection]);
-  const makeStrikethrough = useCallback(() => replaceSelection("~~"), [replaceSelection]);
-  const makeCodeBlock = useCallback(() => replaceSelection("```\n", "\n```"), [replaceSelection]);
-  const makeBulletedList = useCallback(() => formatSelectedLines(false), [formatSelectedLines]);
-  const makeNumberedList = useCallback(() => formatSelectedLines(true), [formatSelectedLines]);
+    if (composerMode === "wysiwyg") richComposerRef.current?.setLink(url);
+    else replaceSelection("[", `](${url})`);
+  }, [composerMode, linkUrl, replaceSelection]);
+  const makeBold = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleBold() : replaceSelection("**"), [composerMode, replaceSelection]);
+  const makeItalic = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleItalic() : replaceSelection("*"), [composerMode, replaceSelection]);
+  const makeUnderline = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleUnderline() : replaceSelection("<u>", "</u>"), [composerMode, replaceSelection]);
+  const makeStrikethrough = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleStrike() : replaceSelection("~~"), [composerMode, replaceSelection]);
+  const makeInlineCode = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleCode() : replaceSelection("`"), [composerMode, replaceSelection]);
+  const makeCodeBlock = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleCodeBlock() : replaceSelection("```\n", "\n```"), [composerMode, replaceSelection]);
+  const makeBulletedList = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleBulletList() : formatSelectedLines(false), [composerMode, formatSelectedLines]);
+  const makeNumberedList = useCallback(() => composerMode === "wysiwyg" ? richComposerRef.current?.toggleOrderedList() : formatSelectedLines(true), [composerMode, formatSelectedLines]);
 
   const handleSendMessage = async () => {
     if (identitySaving) return;
@@ -841,7 +878,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // otherwise batches both operations until this handler returns, so the
       // cache/list work can make the typed text linger visibly after Enter.
       flushSync(() => setMessage(""));
-      const sentMentions = mentions
+      const sentMentions = resolveMentionPositions(message, mentions)
         .filter((mention) => mention.start >= leadingWhitespace && mention.start + mention.length <= leadingWhitespace + text.length)
         .map((mention) => ({ ...mention, start: mention.start - leadingWhitespace }));
       setMentions([]);
@@ -872,7 +909,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLElement> | KeyboardEvent) => {
     if (mentionMatch && mentionSuggestions.length > 0) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -886,17 +923,17 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }
       if (e.key === "Escape") { setMentionCursor(-1); return; }
     }
-    if (textSelection && (e.metaKey || e.ctrlKey)) {
+    if ((textSelection || (composerMode === "wysiwyg" && richComposerRef.current?.hasSelection())) && (e.metaKey || e.ctrlKey)) {
       const key = e.key.toLowerCase();
       const formattingShortcut =
-        (!e.shiftKey && key === "b" && makeBold) ||
-        (!e.shiftKey && key === "i" && makeItalic) ||
-        (!e.shiftKey && key === "u" && makeUnderline) ||
-        (!e.shiftKey && key === "k" && openLinkEditor) ||
-        (e.shiftKey && key === "x" && makeStrikethrough) ||
-        (e.shiftKey && key === "c" && makeCodeBlock) ||
-        (e.shiftKey && key === "7" && makeNumberedList) ||
-        (e.shiftKey && key === "8" && makeBulletedList);
+        (!e.shiftKey && key === "b" && formattingFeatures.has("bold") && makeBold) ||
+        (!e.shiftKey && key === "i" && formattingFeatures.has("italic") && makeItalic) ||
+        (!e.shiftKey && key === "u" && formattingFeatures.has("underline") && makeUnderline) ||
+        (!e.shiftKey && key === "k" && formattingFeatures.has("link") && openLinkEditor) ||
+        (e.shiftKey && key === "x" && formattingFeatures.has("strikethrough") && makeStrikethrough) ||
+        (e.shiftKey && key === "c" && formattingFeatures.has("code_block") && makeCodeBlock) ||
+        (e.shiftKey && key === "7" && formattingFeatures.has("numbered_list") && makeNumberedList) ||
+        (e.shiftKey && key === "8" && formattingFeatures.has("bulleted_list") && makeBulletedList);
 
       if (formattingShortcut) {
         e.preventDefault();
@@ -909,13 +946,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (e.key === "ArrowUp" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       // Only navigate if cursor is at the start of the textarea or textarea is empty
       const textarea = textareaRef.current;
-      const canNavigate = textarea && (textarea.selectionStart === 0 || message.trim() === "");
+      const canNavigate = composerMode === "wysiwyg"
+        ? richComposerRef.current?.isAtStart()
+        : textarea && (textarea.selectionStart === 0 || message.trim() === "");
       if (canNavigate) {
         e.preventDefault();
         if (onNavigateToEdit) {
           onNavigateToEdit("up", () => {
             setTimeout(() => {
-              textareaRef.current?.focus();
+              if (composerMode === "wysiwyg") richComposerRef.current?.focus();
+              else textareaRef.current?.focus();
             }, 0);
           });
         }
@@ -926,13 +966,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (e.key === "ArrowDown" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       // Only navigate if cursor is at the end of the textarea
       const textarea = textareaRef.current;
-      const canNavigate = textarea && (textarea.selectionStart === textarea.value.length || message.trim() === "");
+      const canNavigate = composerMode === "wysiwyg"
+        ? richComposerRef.current?.isAtEnd()
+        : textarea && (textarea.selectionStart === textarea.value.length || message.trim() === "");
       if (canNavigate) {
         e.preventDefault();
         if (onNavigateToEdit) {
           onNavigateToEdit("down", () => {
             setTimeout(() => {
-              textareaRef.current?.focus();
+              if (composerMode === "wysiwyg") richComposerRef.current?.focus();
+              else textareaRef.current?.focus();
             }, 0);
           });
         }
@@ -987,6 +1030,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       recordStandardEmojiUsage(emojiData.unified, emojiData.unifiedWithoutSkinTone);
     }
     const emojiText = emojiData.isCustom ? `:${emojiData.unified}:` : emojiData.emoji;
+    if (composerMode === "wysiwyg") {
+      richComposerRef.current?.insertText(emojiText);
+      updateTypingState(true);
+      setIsEmojiPickerOpen(false);
+      return;
+    }
     setMessage((prev) => {
       const newMessage = prev + emojiText;
       saveDraftImmediately(draftStorageKey, newMessage);
@@ -1012,7 +1061,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
   };
 
   // Handle paste event for files
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
     // Persist event for async operations (React synthetic events)
     if (typeof e.persist === "function") {
       e.persist();
@@ -1274,6 +1323,18 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             </PopoverContent>
           </Popover>
 
+          <Button
+            variant={isFormattingToolbarOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="shrink-0"
+            title={t("format_toolbar_toggle")}
+            aria-label={t("format_toolbar_toggle")}
+            aria-pressed={isFormattingToolbarOpen}
+            onClick={() => setIsFormattingToolbarOpen((open) => !open)}
+          >
+            <Pilcrow className="h-4 w-4" />
+          </Button>
+
           <div className="relative flex-1">
             {mentionMatch && mentionSuggestions.length > 0 && (
               <div role="listbox" aria-label={t("mention_participant")} className="absolute bottom-full left-0 z-30 mb-1 max-h-[408px] w-72 overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
@@ -1292,11 +1353,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                 ))}
               </div>
             )}
-            {textSelection && (
+            {isFormattingToolbarOpen && (
               <div
-                className="absolute bottom-full left-1/2 z-20 mb-1 flex -translate-x-1/2 items-center rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+                className="left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center gap-0.5 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+                style={{ position: "absolute", bottom: "calc(100% + 1.25rem)" }}
                 onMouseDown={(event) => {
-                  if (!(event.target instanceof HTMLInputElement)) {
+                  if (!(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) {
                     event.preventDefault();
                   }
                 }}
@@ -1319,7 +1381,8 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                       onKeyDown={(event) => {
                         if (event.key === "Escape") {
                           setIsLinkEditorOpen(false);
-                          textareaRef.current?.focus();
+                          if (composerMode === "wysiwyg") richComposerRef.current?.focus();
+                          else textareaRef.current?.focus();
                         }
                       }}
                     />
@@ -1329,37 +1392,70 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                   </form>
                 ) : (
                   <>
-                    <button type="button" title={t("format_bold")} aria-label={t("format_bold")} className="rounded p-1.5 hover:bg-accent" onClick={makeBold}><Bold className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_italic")} aria-label={t("format_italic")} className="rounded p-1.5 hover:bg-accent" onClick={makeItalic}><Italic className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_underline")} aria-label={t("format_underline")} className="rounded p-1.5 hover:bg-accent" onClick={makeUnderline}><Underline className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_strikethrough")} aria-label={t("format_strikethrough")} className="rounded p-1.5 hover:bg-accent" onClick={makeStrikethrough}><Strikethrough className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_code_block")} aria-label={t("format_code_block")} className="rounded p-1.5 hover:bg-accent" onClick={makeCodeBlock}><Code className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_link")} aria-label={t("format_link")} className="rounded p-1.5 hover:bg-accent" onClick={openLinkEditor}><Link className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_bulleted_list")} aria-label={t("format_bulleted_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeBulletedList}><List className="h-4 w-4" /></button>
-                    <button type="button" title={t("format_numbered_list")} aria-label={t("format_numbered_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeNumberedList}><ListOrdered className="h-4 w-4" /></button>
+                    <div className="mr-1 flex rounded border bg-background p-0.5">
+                      <button type="button" className={cn("rounded px-2 py-1 text-xs", composerMode === "wysiwyg" && "bg-accent font-medium")} onClick={() => setComposerMode("wysiwyg")}>{t("composer_mode_wysiwyg")}</button>
+                      <button type="button" className={cn("rounded px-2 py-1 text-xs", composerMode === "markdown" && "bg-accent font-medium")} onClick={() => setComposerMode("markdown")}>{t("composer_mode_markdown")}</button>
+                    </div>
+                    {formattingFeatures.has("bold") && <button type="button" title={t("format_bold")} aria-label={t("format_bold")} className="rounded p-1.5 hover:bg-accent" onClick={makeBold}><Bold className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("italic") && <button type="button" title={t("format_italic")} aria-label={t("format_italic")} className="rounded p-1.5 hover:bg-accent" onClick={makeItalic}><Italic className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("underline") && <button type="button" title={t("format_underline")} aria-label={t("format_underline")} className="rounded p-1.5 hover:bg-accent" onClick={makeUnderline}><Underline className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("strikethrough") && <button type="button" title={t("format_strikethrough")} aria-label={t("format_strikethrough")} className="rounded p-1.5 hover:bg-accent" onClick={makeStrikethrough}><Strikethrough className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("inline_code") && <button type="button" title={t("format_inline_code")} aria-label={t("format_inline_code")} className="rounded p-1.5 hover:bg-accent" onClick={makeInlineCode}><CodeXml className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("code_block") && <button type="button" title={t("format_code_block")} aria-label={t("format_code_block")} className="rounded p-1.5 hover:bg-accent" onClick={makeCodeBlock}><Code className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("link") && <button type="button" title={t("format_link")} aria-label={t("format_link")} className="rounded p-1.5 hover:bg-accent" onClick={openLinkEditor}><Link className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("bulleted_list") && <button type="button" title={t("format_bulleted_list")} aria-label={t("format_bulleted_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeBulletedList}><List className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("numbered_list") && <button type="button" title={t("format_numbered_list")} aria-label={t("format_numbered_list")} className="rounded p-1.5 hover:bg-accent" onClick={makeNumberedList}><ListOrdered className="h-4 w-4" /></button>}
+                    {formattingFeatures.has("text_color") && (
+                      <label className="relative cursor-pointer rounded p-1.5 hover:bg-accent" title={t("format_text_color")}><Baseline className="h-4 w-4" /><input type="color" className="absolute inset-0 cursor-pointer opacity-0" onChange={(event) => composerMode === "wysiwyg" ? richComposerRef.current?.setColor(event.target.value) : replaceSelection(`<loom-style color="${event.target.value}">`, "</loom-style>")} /></label>
+                    )}
+                    {formattingFeatures.has("background_color") && (
+                      <label className="relative cursor-pointer rounded p-1.5 hover:bg-accent" title={t("format_background_color")}><Highlighter className="h-4 w-4" /><input type="color" className="absolute inset-0 cursor-pointer opacity-0" onChange={(event) => composerMode === "wysiwyg" ? richComposerRef.current?.setBackgroundColor(event.target.value) : replaceSelection(`<loom-style background="${event.target.value}">`, "</loom-style>")} /></label>
+                    )}
+                    {formattingFeatures.has("font_size") && (
+                      <select className="h-7 rounded border bg-background px-1 text-xs" defaultValue="14px" aria-label={t("format_font_size")} onChange={(event) => composerMode === "wysiwyg" ? richComposerRef.current?.setFontSize(event.target.value) : replaceSelection(`<loom-style size="${event.target.value}">`, "</loom-style>")}>
+                        <option value="12px">12</option><option value="14px">14</option><option value="16px">16</option><option value="18px">18</option><option value="24px">24</option>
+                      </select>
+                    )}
                   </>
                 )}
               </div>
             )}
-            <textarea
-              ref={mountTextarea}
-              value={message}
-              onChange={handleMessageChange}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              onSelect={updateTextSelection}
-              onClick={(event) => setMentionCursor(event.currentTarget.selectionStart)}
-              onBlur={() => {
-                if (!isLinkEditorOpen) setTextSelection(null);
-              }}
-              disabled={isThreadOpen}
-              placeholder={t("type_a_message")}
-              className="block w-full min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              rows={1}
-              autoCorrect="off"
-              autoComplete="off"
-              spellCheck="false"
-            />
+            {composerMode === "wysiwyg" ? (
+              <RichTextComposer
+                key={`${activeAccount?.providerInstanceId ?? "none"}:${[...formattingFeatures].join(",")}`}
+                ref={richComposerRef}
+                value={message}
+                onChange={handleRichMessageChange}
+                onCursorPrefixChange={setRichCursorPrefix}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                onHeightChange={onHeightChange}
+                onMount={onTextareaMount}
+                disabled={isThreadOpen}
+                placeholder={t("type_a_message")}
+                features={formattingFeatures}
+              />
+            ) : (
+              <textarea
+                ref={mountTextarea}
+                value={message}
+                onChange={handleMessageChange}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                onSelect={updateTextSelection}
+                onClick={(event) => setMentionCursor(event.currentTarget.selectionStart)}
+                onBlur={() => {
+                  if (!isLinkEditorOpen && !isFormattingToolbarOpen) setTextSelection(null);
+                }}
+                disabled={isThreadOpen}
+                placeholder={t("type_a_message")}
+                className="block w-full min-h-[40px] max-h-[200px] resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                rows={1}
+                autoCorrect="off"
+                autoComplete="off"
+                spellCheck="false"
+              />
+            )}
           </div>
         </div>
 
