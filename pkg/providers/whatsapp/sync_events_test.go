@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"go.mau.fi/whatsmeow/types"
+	"gorm.io/gorm"
 )
 
 func TestFinishHistoryLookbackEmitsTerminalStatus(t *testing.T) {
@@ -27,6 +29,41 @@ func TestFinishHistoryLookbackEmitsTerminalStatus(t *testing.T) {
 		}
 	default:
 		t.Fatal("history lookback did not emit a terminal status")
+	}
+}
+
+func TestLoadHistoryAnchorsScopesProviderAndUsesRecentTip(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	cutoff := time.Unix(100, 0)
+	messages := []models.Message{
+		{ProtocolConvID: "whatsapp-2::recent@s.whatsapp.net", ProtocolMsgID: "older", Timestamp: cutoff.Add(time.Minute)},
+		{ProtocolConvID: "whatsapp-2::recent@s.whatsapp.net", ProtocolMsgID: "tip", Timestamp: cutoff.Add(2 * time.Minute)},
+		{ProtocolConvID: "whatsapp-2::old@s.whatsapp.net", ProtocolMsgID: "old", Timestamp: cutoff.Add(-time.Minute)},
+		{ProtocolConvID: "whatsapp-2::self@s.whatsapp.net", ProtocolMsgID: "self", Timestamp: cutoff.Add(3 * time.Minute)},
+		{ProtocolConvID: "whatsapp-3::other@s.whatsapp.net", ProtocolMsgID: "other-provider", Timestamp: cutoff.Add(4 * time.Minute)},
+	}
+	if err := database.Create(&messages).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-2"
+	anchors, err := provider.loadHistoryAnchors(cutoff, "whatsapp-2::self@s.whatsapp.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(anchors) != 1 || anchors[0].ProtocolMsgID != "tip" {
+		t.Fatalf("history anchors = %#v, want only recent provider tip", anchors)
 	}
 }
 

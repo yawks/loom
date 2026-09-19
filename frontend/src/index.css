@@ -325,7 +325,7 @@ html.dark .scroll-area::-webkit-scrollbar-thumb:hover {
 }
 
 .rich-message-composer:empty::before,
-.rich-message-composer:has(> p:only-child > br.ProseMirror-trailingBreak)::before {
+.rich-message-composer:has(> p:only-child > br.ProseMirror-trailingBreak:only-child)::before {
   position: absolute;
   top: 0.5rem;
   left: 0.75rem;

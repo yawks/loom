@@ -1048,6 +1048,7 @@ export function MessageAttachments({
   };
 
   const selectedGalleryMessage = selectedImageIndex === null ? undefined : galleryMessages?.[selectedImageIndex];
+  const selectedGalleryAttachment = selectedImageIndex === null ? undefined : visualMediaAttachments[selectedImageIndex];
   const galleryActions = selectedGalleryMessage && messageHandlers ? (
     <div className="message-attachment__gallery-actions absolute left-1/2 top-3 z-30 -translate-x-1/2">
       <MessageActions
@@ -1056,6 +1057,7 @@ export function MessageAttachments({
         onEdit={() => undefined}
         showEdit={false}
         showDeleteForAll
+        onDownload={selectedGalleryAttachment ? () => { void handleDownload(selectedGalleryAttachment); } : undefined}
         onDelete={() => {
           setSelectedImage(null);
           setSelectedVideo(null);

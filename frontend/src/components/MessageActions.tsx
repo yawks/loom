@@ -1,4 +1,4 @@
-import { Edit, Forward, MessageSquare, MoreVertical, Pin, Reply, Trash2 } from "lucide-react";
+import { Download, Edit, Forward, MessageSquare, MoreVertical, Pin, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -17,6 +17,7 @@ interface MessageActionsProps {
   hasAttachments: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onDownload?: () => void;
   onReply?: () => void;
   onReact?: (emoji: string) => void;
   onStartThread?: () => void;
@@ -37,6 +38,7 @@ export function MessageActions({
   isFromMe,
   onEdit,
   onDelete,
+  onDownload,
   onReply,
   onReact,
   onStartThread,
@@ -176,6 +178,19 @@ export function MessageActions({
                 >
                   <Edit className="h-4 w-4" />
                   {t("edit_message")}
+                </Button>
+              )}
+              {onDownload && (
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-2 h-9"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDownload();
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  {t("download")}
                 </Button>
               )}
               <Button

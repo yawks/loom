@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -126,14 +127,31 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 
 	w.log("WhatsApp: SyncHistory called for messages since %s\n", since.Format("2006-01-02 15:04:05"))
 
-	// WhatsApp syncs history automatically via HistorySync events delivered by whatsmeow.
-	// OfflineSyncCompleted (or the 30s fallback in the Connected handler) calls GetContacts
-	// and emits its own SyncStatusCompleted once whatsmeow has finished delivering those events.
+	// Reconnecting normally recovers offline events, but WhatsApp can omit reactions
+	// that arrived while this linked device was asleep. Ask the primary phone for the
+	// recent conversations explicitly so their authoritative reaction list is replayed.
+	if lastSync != nil && db.DB != nil && client.IsConnected() && client.IsLoggedIn() {
+		baseCtx := w.ctx
+		if baseCtx == nil {
+			baseCtx = context.Background()
+		}
+		requestCtx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+		defer cancel()
+		// Reactions have their own timestamp and may target a message older than
+		// the sync watermark. Use a bounded conversation window, not the message
+		// watermark alone, or the exact sleep gap remains invisible.
+		repairSince := since
+		if floor := time.Now().Add(-24 * time.Hour); repairSince.After(floor) {
+			repairSince = floor
+		}
+		if err := w.requestHistorySince(requestCtx, repairSince, "wake history repair"); err != nil {
+			return err
+		}
+	}
 
 	// On subsequent syncs, re-scan the lookback window so the contact list reflects any
-	// messages that were stored in a prior HistorySync but never individually emitted.
-	// WhatsApp does not expose a per-conversation history API, so we can only surface what
-	// is already in the local database — we cannot fetch truly missing messages from the server.
+	// messages that were stored in a prior HistorySync but never individually emitted. The
+	// targeted phone request above repairs remote gaps; this pass refreshes local UI state.
 	if lastSync != nil {
 		go w.finishHistoryLookback()
 	}
@@ -177,69 +195,15 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 	selfConversationID := core.BuildConvID(w.getInstanceId(), client.Store.ID.ToNonAD().String())
 	w.cleanupEmptySelfHistoryMessages(selfConversationID)
 
-	type historyAnchor struct {
-		ProtocolConvID string
-		ProtocolMsgID  string
-		SenderID       string
-		Timestamp      time.Time
-		IsFromMe       bool
-	}
-	var anchors []historyAnchor
-	prefix := w.getInstanceId() + "::%"
 	cutoff := time.Now().Add(-30 * 24 * time.Hour)
-	err := db.DB.Raw(`
-		SELECT protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me
-		FROM (
-			SELECT protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me,
-				ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num
-			FROM messages
-			WHERE protocol_conv_id LIKE ? AND protocol_conv_id != ?
-				AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'
-		)
-		WHERE row_num = 1
-		ORDER BY timestamp DESC`, prefix, selfConversationID, cutoff).Scan(&anchors).Error
-	if err != nil {
-		return fmt.Errorf("load history anchors: %w", err)
+	if err := w.requestHistorySince(w.ctx, cutoff, "global history audit"); err != nil {
+		return err
 	}
-
-	w.log("WhatsApp: Global history audit requesting recent history for %d conversations\n", len(anchors))
-	requested := 0
-	failed := 0
-	for _, anchor := range anchors {
-		rawConvID := strings.TrimPrefix(anchor.ProtocolConvID, w.getInstanceId()+"::")
-		chatJID, parseErr := types.ParseJID(rawConvID)
-		if parseErr != nil {
-			failed++
-			continue
-		}
-		senderJID, _ := types.ParseJID(anchor.SenderID)
-		if senderJID.Server == types.DefaultUserServer && client.Store != nil && client.Store.LIDs != nil {
-			if lid, mapErr := client.Store.LIDs.GetLIDForPN(w.ctx, senderJID); mapErr == nil && !lid.IsEmpty() {
-				senderJID = lid
-			}
-		}
-		request := client.BuildHistorySyncRequest(&types.MessageInfo{
-			MessageSource: types.MessageSource{
-				Chat:     chatJID,
-				Sender:   senderJID,
-				IsFromMe: anchor.IsFromMe,
-				IsGroup:  chatJID.Server == types.GroupServer,
-			},
-			ID:        types.MessageID(anchor.ProtocolMsgID),
-			Timestamp: anchor.Timestamp,
-		}, 50)
-		if _, sendErr := client.SendPeerMessage(w.ctx, request); sendErr != nil {
-			failed++
-			w.log("WhatsApp: History audit request failed for %s: %v\n", rawConvID, sendErr)
-			continue
-		}
-		requested++
-	}
-	w.log("WhatsApp: Global history audit sent %d requests (%d failed)\n", requested, failed)
 
 	// A reply contains the exact ID and sender of its quoted source. Repair
 	// recent references whose source row is absent even when the normal 50-item
 	// history window fails to include that individual message.
+	prefix := w.getInstanceId() + "::%"
 	type missingQuote struct {
 		ProtocolConvID string
 		MessageID      string
@@ -274,8 +238,70 @@ func (w *WhatsAppProvider) SyncAllHistory(since time.Time) error {
 		}
 	}
 
+	return nil
+}
+
+type historyAnchor struct {
+	ProtocolConvID string
+	ProtocolMsgID  string
+	SenderID       string
+	Timestamp      time.Time
+	IsFromMe       bool
+}
+
+func (w *WhatsAppProvider) loadHistoryAnchors(since time.Time, selfConversationID string) ([]historyAnchor, error) {
+	ranked := db.ForProvider(db.DB, w.getInstanceId()).Messages().
+		Select("protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num").
+		Where("protocol_conv_id != ? AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'", selfConversationID, since)
+	var anchors []historyAnchor
+	err := db.DB.Table("(?) AS ranked_messages", ranked).
+		Select("protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me").
+		Where("row_num = 1").Order("timestamp DESC").Scan(&anchors).Error
+	return anchors, err
+}
+
+func (w *WhatsAppProvider) requestHistorySince(ctx context.Context, since time.Time, label string) error {
+	w.mu.RLock()
+	client := w.client
+	w.mu.RUnlock()
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return fmt.Errorf("client is not connected")
+	}
+
+	selfConversationID := core.BuildConvID(w.getInstanceId(), client.Store.ID.ToNonAD().String())
+	anchors, err := w.loadHistoryAnchors(since, selfConversationID)
+	if err != nil {
+		return fmt.Errorf("load history anchors: %w", err)
+	}
+	w.log("WhatsApp: %s requesting recent history for %d conversations\n", label, len(anchors))
+	requested, failed := 0, 0
+	for _, anchor := range anchors {
+		rawConvID := strings.TrimPrefix(anchor.ProtocolConvID, w.getInstanceId()+"::")
+		chatJID, parseErr := types.ParseJID(rawConvID)
+		if parseErr != nil {
+			failed++
+			continue
+		}
+		senderJID, _ := types.ParseJID(anchor.SenderID)
+		if senderJID.Server == types.DefaultUserServer && client.Store.LIDs != nil {
+			if lid, mapErr := client.Store.LIDs.GetLIDForPN(ctx, senderJID); mapErr == nil && !lid.IsEmpty() {
+				senderJID = lid
+			}
+		}
+		request := client.BuildHistorySyncRequest(&types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chatJID, Sender: senderJID, IsFromMe: anchor.IsFromMe, IsGroup: chatJID.Server == types.GroupServer},
+			ID:            types.MessageID(anchor.ProtocolMsgID), Timestamp: anchor.Timestamp,
+		}, 50)
+		if _, sendErr := client.SendPeerMessage(ctx, request); sendErr != nil {
+			failed++
+			w.log("WhatsApp: %s request failed for %s: %v\n", label, rawConvID, sendErr)
+			continue
+		}
+		requested++
+	}
+	w.log("WhatsApp: %s sent %d requests (%d failed)\n", label, requested, failed)
 	if requested == 0 && failed > 0 {
-		return fmt.Errorf("all %d history audit requests failed", failed)
+		return fmt.Errorf("all %d history requests failed", failed)
 	}
 	return nil
 }
