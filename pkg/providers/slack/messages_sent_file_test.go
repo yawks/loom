@@ -3,9 +3,10 @@ package slack
 import (
 	"Loom/pkg/models"
 	"encoding/json"
+	"testing"
+
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-	"testing"
 )
 
 func TestStoreSentFileReconcilesEarlySocketEvent(t *testing.T) {
@@ -47,5 +48,73 @@ func TestStoreSentFileReconcilesEarlySocketEvent(t *testing.T) {
 				t.Fatalf("event differs from stored message: %+v", sent)
 			}
 		})
+	}
+}
+
+func TestReconcileSentFilePlaceholderWithSlackMessage(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	placeholder := models.Message{
+		ProtocolMsgID: "F123", ProtocolConvID: "slack-1::U123",
+		Attachments: `[{"type":"video","url":"","fileName":"clip.mov"}]`,
+	}
+	if err := database.Create(&placeholder).Error; err != nil {
+		t.Fatal(err)
+	}
+	real := models.Message{
+		ProtocolMsgID: "1700000000.123", ProtocolConvID: placeholder.ProtocolConvID,
+		Attachments: `[{"type":"video","url":"https://files.slack.com/files-pri/T-F123/download/clip.mov","fileName":"clip.mov"}]`,
+	}
+	provider := &SlackProvider{}
+	superseded, err := provider.reconcileSentFilePlaceholder(database, &real, []string{"F123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if superseded != "F123" || real.ID != placeholder.ID {
+		t.Fatalf("unexpected reconciliation: superseded=%q message=%+v", superseded, real)
+	}
+	var rows []models.Message
+	if err := database.Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ProtocolMsgID != real.ProtocolMsgID || rows[0].Attachments != real.Attachments {
+		t.Fatalf("placeholder was not replaced: %+v", rows)
+	}
+}
+
+func TestStoreSentFileUsesEarlierSlackMessage(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	real := models.Message{
+		ProtocolMsgID: "1700000000.123", ProtocolConvID: "slack-1::U123",
+		Attachments: `[{"type":"video","url":"https://files.slack.com/files-pri/T-F123/download/clip.mov","fileName":"clip.mov"}]`,
+	}
+	if err := database.Create(&real).Error; err != nil {
+		t.Fatal(err)
+	}
+	placeholder := models.Message{
+		ProtocolMsgID: "F123", ProtocolConvID: real.ProtocolConvID,
+		Attachments: `[{"type":"video","url":"","fileName":"clip.mov"}]`,
+	}
+	provider := &SlackProvider{}
+	if err := provider.storeSentFile(database, &placeholder); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := database.Model(&models.Message{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || placeholder.ProtocolMsgID != real.ProtocolMsgID || placeholder.ID != real.ID {
+		t.Fatalf("created duplicate instead of using real message: count=%d message=%+v", count, placeholder)
 	}
 }

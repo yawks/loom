@@ -287,13 +287,29 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	// Persist immediately so unread counts & sorting work
+	supersededMessageID := ""
 	if db.DB != nil {
-		p.storeMessagesForConversation(normalizedConvID, []models.Message{msg})
+		fileIDs := make([]string, 0)
+		if ev.Message != nil {
+			for _, file := range ev.Message.Files {
+				if file.ID != "" {
+					fileIDs = append(fileIDs, file.ID)
+				}
+			}
+		}
+		var err error
+		supersededMessageID, err = p.reconcileSentFilePlaceholder(db.DB, &msg, fileIDs)
+		if err != nil {
+			p.log("SlackProvider: failed reconciling sent file placeholder: %v\n", err)
+		}
+		if supersededMessageID == "" {
+			p.storeMessagesForConversation(normalizedConvID, []models.Message{msg})
+		}
 	}
 
 	// Create the event
 	event := core.MessageEvent{InstanceID: p.getInstanceId(),
-		Message: msg,
+		Message: msg, SupersedesMessageID: supersededMessageID,
 	}
 
 	// If this is the first time we see this conversation, trigger a history sync in background

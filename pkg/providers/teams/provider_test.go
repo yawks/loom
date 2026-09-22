@@ -4,6 +4,7 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/models"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -101,6 +102,53 @@ func TestSplitTeamsRecoveredMessagesUsesConsumptionHorizon(t *testing.T) {
 	)
 	if len(read) != 2 || len(unread) != 1 || unread[0].ProtocolMsgID != "1700000002000" {
 		t.Fatalf("unexpected split: read=%v unread=%v", read, unread)
+	}
+}
+
+func TestSplitTeamsRecoveredMessagesOwnActivityAdvancesStaleHorizon(t *testing.T) {
+	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	messages := []models.Message{
+		{ProtocolMsgID: "100", Timestamp: base},
+		{ProtocolMsgID: "200", Timestamp: base.Add(time.Minute), IsFromMe: true},
+		{ProtocolMsgID: "300", Timestamp: base.Add(2 * time.Minute)},
+	}
+	read, unread := splitTeamsRecoveredMessages(messages, "100;100;100", "self", time.Time{})
+	if len(read) != 2 || len(unread) != 1 || unread[0].ProtocolMsgID != "300" {
+		t.Fatalf("unexpected split: read=%v unread=%v", read, unread)
+	}
+}
+
+func TestTeamsVoiceMessageIsAudioAttachment(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	message := NewProvider().toModelMessage(client, msteams.Message{
+		ID: "voice-1", ContentType: "html",
+		Content: `<a href="https://example.test/v1/objects/audio-1/views/original">Voice message</a>`,
+	}, "thread-1")
+	if !strings.Contains(message.Attachments, `"type":"audio"`) {
+		t.Fatalf("voice attachment = %s", message.Attachments)
+	}
+}
+
+func TestTeamsAudioCardIsAttachment(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	message := NewProvider().toModelMessage(client, msteams.Message{
+		ID: "audio-card", Content: `<div><span itemtype="http://schema.skype.com/InputExtension"></span></div>`,
+		Properties: map[string]any{"cards": `[{"contentType":"application/vnd.microsoft.card.audio","content":{"duration":"PT18S","media":[{"url":"https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/voice/views/audio"}]}}]`},
+	}, "thread-1")
+	var attachments []models.Attachment
+	if err := json.Unmarshal([]byte(message.Attachments), &attachments); err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 || attachments[0].Type != "audio" || attachments[0].Duration != 18 {
+		t.Fatalf("audio card attachments = %+v", attachments)
 	}
 }
 

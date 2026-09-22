@@ -14,6 +14,7 @@ import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
+import { resolveMentionPositions } from "@/lib/mentions";
 import { core, models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useTranslation } from "react-i18next";
@@ -178,17 +179,6 @@ const saveDraft = (key: string | null, value: string): void => {
   } catch {
     // A draft is non-critical; ignore unavailable or full localStorage.
   }
-};
-
-const resolveMentionPositions = (text: string, mentions: core.Mention[]): core.Mention[] => {
-  let searchFrom = 0;
-  return mentions.flatMap((mention) => {
-    const token = `@${mention.displayName}`;
-    const start = text.indexOf(token, searchFrom);
-    if (start < 0) return [];
-    searchFrom = start + token.length;
-    return [{ ...mention, start, length: token.length }];
-  });
 };
 
 export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelReply, onNavigateToEdit, threadId, currentUserName, currentUserAvatarUrl, onHeightChange, onTextareaMount }: ChatInputProps) {
@@ -393,7 +383,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       return await SendMessage(conversationId, text);
     },
     // Optimistic update: insert temp message immediately
-    onMutate: ({ conversationId, text, quotedMessageId }) => {
+    onMutate: ({ conversationId, text, quotedMessageId, mentions }) => {
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
 
@@ -780,7 +770,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     if (!mentionMatch) return;
     const token = `@${participant.displayName}`;
     if (composerMode === "wysiwyg") {
-      richComposerRef.current?.insertText(`${token} `);
+      richComposerRef.current?.replaceTextBeforeCursor(richCursorPrefix.length - mentionMatch.start, `${token} `);
       setMentions((current) => [...current, { userId: participant.userId, displayName: participant.displayName, start: mentionMatch.start, length: token.length }]);
       setMentionCursor(-1);
       return;
@@ -794,7 +784,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(mentionMatch.start + token.length + 1, mentionMatch.start + token.length + 1);
     });
-  }, [composerMode, draftStorageKey, mentionCursor, mentionMatch, message, scheduleDraftSave]);
+  }, [composerMode, draftStorageKey, mentionCursor, mentionMatch, message, richCursorPrefix, scheduleDraftSave]);
 
   const updateTextSelection = useCallback(() => {
     const textarea = textareaRef.current;

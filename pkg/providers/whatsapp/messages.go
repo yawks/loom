@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"gorm.io/gorm"
 )
+
+var legacyWhatsAppMentionPattern = regexp.MustCompile(`(?:^|[^[:alnum:]])@([0-9]{5,20})\b`)
 
 func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, mediaType string) *models.Attachment {
 	if w.client == nil {
@@ -1146,6 +1149,9 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 			}
 
 			if quotedText != "" {
+				if quotedContext := quotedMsg.GetExtendedTextMessage().GetContextInfo(); quotedContext != nil {
+					quotedText = w.formatMentions(quotedText, quotedContext.GetMentionedJID())
+				}
 				quotedBody = &quotedText
 			}
 		}
@@ -1472,6 +1478,15 @@ func (w *WhatsAppProvider) formatMentions(body string, mentionedJIDs []string) s
 		link := "[@" + displayName + "](loom://conversation?accountId=" + url.QueryEscape(targetJID) +
 			"&instanceId=" + url.QueryEscape(w.getInstanceId()) + ")"
 		body = strings.ReplaceAll(body, "@"+jid.User, link)
+	}
+	return body
+}
+
+// formatLegacyPersistedMentions repairs quoted bodies saved before Loom
+// normalized mentions embedded in WhatsApp's quoted-message payload.
+func (w *WhatsAppProvider) formatLegacyPersistedMentions(body string) string {
+	for _, match := range legacyWhatsAppMentionPattern.FindAllStringSubmatch(body, -1) {
+		body = w.formatMentions(body, []string{match[1] + "@lid"})
 	}
 	return body
 }
@@ -3162,6 +3177,10 @@ func (w *WhatsAppProvider) enrichMessagesWithSenderInfo(messages []models.Messag
 
 	for i := range messages {
 		msg := &messages[i]
+		if msg.QuotedBody != nil && *msg.QuotedBody != "" {
+			repaired := w.formatLegacyPersistedMentions(*msg.QuotedBody)
+			msg.QuotedBody = &repaired
+		}
 
 		// Skip if already enriched with a proper name (not a LID)
 		// LIDs are numeric-only, so if SenderName contains only digits, it's likely a LID that needs enrichment

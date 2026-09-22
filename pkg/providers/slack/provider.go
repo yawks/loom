@@ -1128,25 +1128,7 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 			_ = os.Remove(cachePath)
 		} else {
 			// Determine MIME type from file extension
-			mimeType := "application/octet-stream"
-			switch ext {
-			case ".jpg", ".jpeg":
-				mimeType = "image/jpeg"
-			case ".png":
-				mimeType = "image/png"
-			case ".gif":
-				mimeType = "image/gif"
-			case ".webp":
-				mimeType = "image/webp"
-			case ".mp4":
-				mimeType = "video/mp4"
-			case ".mp3":
-				mimeType = "audio/mpeg"
-			case ".pdf":
-				mimeType = "application/pdf"
-			case ".ogg":
-				mimeType = "audio/ogg"
-			}
+			mimeType := slackFileMIME(ext)
 			base64Data := base64.StdEncoding.EncodeToString(data)
 			return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
 		}
@@ -1177,33 +1159,38 @@ func (p *SlackProvider) GetFileData(fileURL string) (string, error) {
 
 	// Determine MIME type from Content-Type header or file extension
 	mimeType := contentType
-	if mimeType == "" {
-		// Fallback to extension-based detection
-		switch ext {
-		case ".jpg", ".jpeg":
-			mimeType = "image/jpeg"
-		case ".png":
-			mimeType = "image/png"
-		case ".gif":
-			mimeType = "image/gif"
-		case ".webp":
-			mimeType = "image/webp"
-		case ".mp4":
-			mimeType = "video/mp4"
-		case ".mp3":
-			mimeType = "audio/mpeg"
-		case ".pdf":
-			mimeType = "application/pdf"
-		case ".ogg":
-			mimeType = "audio/ogg"
-		default:
-			mimeType = "application/octet-stream"
-		}
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		mimeType = slackFileMIME(ext)
 	}
 
 	// Encode to base64
 	base64Data := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64Data), nil
+}
+
+func slackFileMIME(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".mp4":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".ogg":
+		return "audio/ogg"
+	case ".pdf":
+		return "application/pdf"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // normalizeSlackDownloadURL upgrades url_private links to the binary

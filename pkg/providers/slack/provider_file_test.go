@@ -37,3 +37,9 @@ func TestNormalizeSlackDownloadURL(t *testing.T) {
 		})
 	}
 }
+
+func TestSlackFileMIMEQuickTime(t *testing.T) {
+	if got := slackFileMIME(".mov"); got != "video/quicktime" {
+		t.Fatalf("slackFileMIME(.mov) = %q, want video/quicktime", got)
+	}
+}

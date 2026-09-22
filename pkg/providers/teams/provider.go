@@ -311,11 +311,15 @@ func splitTeamsRecoveredMessages(messages []models.Message, horizon, currentUser
 	if horizonID == "" {
 		return core.SplitRecoveredMessagesAtOwnActivity(messages, currentUserID, activityAt)
 	}
+	// A stale remote cursor cannot make messages before our own activity unread.
+	if ownRead, _ := core.SplitRecoveredMessagesAtOwnActivity(messages, currentUserID, activityAt); len(ownRead) > 0 {
+		activityAt = ownRead[len(ownRead)-1].Timestamp
+	}
 	horizonNumber, numericHorizonErr := strconv.ParseInt(horizonID, 10, 64)
 	if numericHorizonErr == nil {
 		for _, message := range messages {
 			messageNumber, err := strconv.ParseInt(message.ProtocolMsgID, 10, 64)
-			if err == nil && messageNumber <= horizonNumber {
+			if (!activityAt.IsZero() && !message.Timestamp.After(activityAt)) || (err == nil && messageNumber <= horizonNumber) {
 				read = append(read, message)
 			} else {
 				unread = append(unread, message)
@@ -325,6 +329,9 @@ func splitTeamsRecoveredMessages(messages []models.Message, horizon, currentUser
 	}
 	for index, message := range messages {
 		if message.ProtocolMsgID == horizonID {
+			for index+1 < len(messages) && !messages[index+1].Timestamp.After(activityAt) {
+				index++
+			}
 			return messages[:index+1], messages[index+1:]
 		}
 	}
@@ -1497,6 +1504,10 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		message.QuotedMessageID = &parent
 	}
 	attachments := make([]models.Attachment, 0, len(remote.Attachments)+len(remote.SharedFiles))
+	for _, attachment := range teamsAudioCardAttachments(remote.Properties) {
+		p.rememberAttachmentURL(attachment.URL)
+		attachments = append(attachments, attachment)
+	}
 	for _, cardJSON := range teamsSwiftCardPayloads(remote.Content) {
 		attachments = append(attachments, models.Attachment{
 			Type: "adaptive_card", MimeType: "application/vnd.microsoft.card.adaptive", CardJSON: cardJSON,
@@ -1534,6 +1545,9 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		p.rememberAttachmentURL(embedded.URL)
 		seenAttachmentURLs[embedded.URL] = struct{}{}
 		attachmentType, contentType := teamsAttachmentType(embedded.AltText, "")
+		if strings.EqualFold(embedded.AltText, "voice message") {
+			attachmentType = "audio"
+		}
 		if embedded.IsImage {
 			attachmentType = "image"
 			if parsed, err := url.Parse(embedded.URL); err == nil {

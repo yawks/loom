@@ -101,9 +101,10 @@ func ValidateProviderEventOwnership(sourceInstanceID string, event ProviderEvent
 
 // MessageEvent represents a new message event (text or file).
 type MessageEvent struct {
-	InstanceID string         `json:"instanceId"`
-	Message    models.Message `json:"message"`
-	IsUpdate   bool           `json:"isUpdate,omitempty"`
+	InstanceID          string         `json:"instanceId"`
+	Message             models.Message `json:"message"`
+	IsUpdate            bool           `json:"isUpdate,omitempty"`
+	SupersedesMessageID string         `json:"supersedesMessageId,omitempty"`
 }
 
 // Type returns the event type for MessageEvent.

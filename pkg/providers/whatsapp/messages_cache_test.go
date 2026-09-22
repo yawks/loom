@@ -161,6 +161,74 @@ func TestConvertMessageUsesImageCaptionAsBody(t *testing.T) {
 	}
 }
 
+func TestConvertMessageFormatsMentionInQuotedBody(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.LIDMapping{}, &models.LinkedAccount{}); err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+
+	const (
+		lid  = "161306086760487@lid"
+		jid  = "33614375843@s.whatsapp.net"
+		name = "Yaël Osterreich"
+	)
+	if err := database.Create(&models.LIDMapping{LID: lid, JID: jid, Protocol: "whatsapp"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&models.LinkedAccount{
+		ProviderInstanceID: "whatsapp-2", Protocol: "whatsapp", UserID: jid, Username: name,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-2"
+	chat := types.NewJID("120363247668713956", types.GroupServer)
+	event := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: types.NewJID("33662258100", types.DefaultUserServer)},
+			ID:            "reply",
+			Timestamp:     time.Unix(1_700_000_000, 0),
+		},
+		Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("Ah !"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    proto.String("quoted"),
+				Participant: proto.String("33614375843@s.whatsapp.net"),
+				QuotedMessage: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+					Text:        proto.String("Au temps pour moi @161306086760487"),
+					ContextInfo: &waE2E.ContextInfo{MentionedJID: []string{lid}},
+				}},
+			},
+		}},
+	}
+
+	got := provider.convertMessage(event)
+	if got == nil || got.QuotedBody == nil {
+		t.Fatalf("converted message = %#v", got)
+	}
+	want := "Au temps pour moi [@Yaël Osterreich](loom://conversation?accountId=33614375843%40s.whatsapp.net&instanceId=whatsapp-2)"
+	if *got.QuotedBody != want {
+		t.Fatalf("quoted body = %q, want %q", *got.QuotedBody, want)
+	}
+
+	legacyQuotedBody := "Au temps pour moi @161306086760487"
+	stored := []models.Message{{
+		SenderID: "33662258100@s.whatsapp.net", SenderName: "Alice", SenderAvatarURL: "cached",
+		QuotedBody: &legacyQuotedBody,
+	}}
+	provider.enrichMessagesWithSenderInfo(stored, chat, true)
+	if stored[0].QuotedBody == nil || *stored[0].QuotedBody != want {
+		t.Fatalf("persisted quoted body = %v, want %q", stored[0].QuotedBody, want)
+	}
+}
+
 func TestConvertGroupMessageWithoutMetadataLookup(t *testing.T) {
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"

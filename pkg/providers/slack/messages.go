@@ -712,6 +712,18 @@ func (p *SlackProvider) storeSentFile(database *gorm.DB, message *models.Message
 		var existing models.Message
 		err := tx.Where("protocol_msg_id = ? AND protocol_conv_id = ?", candidate.ProtocolMsgID, candidate.ProtocolConvID).First(&existing).Error
 		if err == gorm.ErrRecordNotFound {
+			// The socket event can beat UploadFileV2's response. In that ordering the
+			// real message already contains the Slack file ID in its download URL.
+			if strings.HasPrefix(candidate.ProtocolMsgID, "F") {
+				err = tx.Where("protocol_conv_id = ? AND attachments LIKE ?", candidate.ProtocolConvID, "%"+candidate.ProtocolMsgID+"%").First(&existing).Error
+				if err == nil {
+					stored = existing
+					return nil
+				}
+				if err != gorm.ErrRecordNotFound {
+					return err
+				}
+			}
 			if err := tx.Omit("Reactions", "Receipts").Create(&candidate).Error; err != nil {
 				return err
 			}
@@ -732,6 +744,36 @@ func (p *SlackProvider) storeSentFile(database *gorm.DB, message *models.Message
 		*message = stored
 	}
 	return err
+}
+
+// reconcileSentFilePlaceholder replaces the File-ID fallback created when
+// Slack takes longer than SendFile's polling window to publish its real message.
+func (p *SlackProvider) reconcileSentFilePlaceholder(database *gorm.DB, message *models.Message, fileIDs []string) (string, error) {
+	if database == nil || len(fileIDs) == 0 {
+		return "", nil
+	}
+	original := *message
+	var supersededID string
+	err := db.Transaction(database, func(tx *gorm.DB) error {
+		candidate := original
+		var placeholder models.Message
+		err := tx.Where("protocol_conv_id = ? AND protocol_msg_id IN ?", candidate.ProtocolConvID, fileIDs).First(&placeholder).Error
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		supersededID = placeholder.ProtocolMsgID
+		candidate.ID = placeholder.ID
+		candidate.ConversationID = placeholder.ConversationID
+		if err := tx.Save(&candidate).Error; err != nil {
+			return err
+		}
+		*message = candidate
+		return nil
+	})
+	return supersededID, err
 }
 
 // GetConversationHistory retrieves the message history for a specific conversation.

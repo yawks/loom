@@ -1308,6 +1308,13 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 				switch e := event.(type) {
 				case core.MessageEvent:
 					a.invalidateMessageCaches()
+					if e.SupersedesMessageID != "" && a.ctx != nil {
+						payload, _ := json.Marshal(struct {
+							ConversationID string `json:"conversationId"`
+							MessageID      string `json:"messageId"`
+						}{ConversationID: e.Message.ProtocolConvID, MessageID: e.SupersedesMessageID})
+						runtime.EventsEmit(a.ctx, "message-deleted", string(payload))
+					}
 					if !e.IsUpdate {
 						if e.InstanceID == "" {
 							e.InstanceID = instanceID
