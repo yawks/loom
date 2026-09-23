@@ -217,9 +217,8 @@ func (p *SlackProvider) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	messageBody := p.preprocessMessageBody(ev.Text)
-	// For huddle messages, text is empty and content is in blocks.
-	if messageBody == "" && ev.Message != nil && len(ev.Message.Blocks.BlockSet) > 0 {
-		messageBody = p.extractTextFromRichContent(slack.Message{Msg: *ev.Message})
+	if ev.Message != nil {
+		messageBody = p.slackMessageBody(slack.Message{Msg: *ev.Message})
 	}
 	var quotedMessageID *string
 	var quotedSenderName string

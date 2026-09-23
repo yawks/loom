@@ -28,6 +28,27 @@ func TestExtractTextFromAttachmentBlocks(t *testing.T) {
 	}
 }
 
+func TestSlackMessageBodyPrefersAttachmentBlocksOverDigest(t *testing.T) {
+	p := &SlackProvider{}
+	msg := slackapi.Message{Msg: slackapi.Msg{
+		Text: "digest",
+		Attachments: []slackapi.Attachment{{
+			Blocks: slackapi.Blocks{BlockSet: []slackapi.Block{
+				slackapi.NewSectionBlock(
+					slackapi.NewTextBlockObject("mrkdwn", "<https://youtrack.example/issue/RDS-6081|RDS-6081> - Erreurs", false, false),
+					nil, nil,
+				),
+				slackapi.NewContextBlock("", slackapi.NewTextBlockObject("mrkdwn", "From : user@example.com", false, false)),
+			}},
+		}},
+	}}
+
+	want := "[RDS-6081](https://youtrack.example/issue/RDS-6081) - Erreurs\nFrom : user@example.com"
+	if got := p.slackMessageBody(msg); got != want {
+		t.Fatalf("slackMessageBody() = %q, want %q", got, want)
+	}
+}
+
 func TestExtractTextKeepsAttachmentTitleLink(t *testing.T) {
 	p := &SlackProvider{}
 	msg := slackapi.Message{Msg: slackapi.Msg{Attachments: []slackapi.Attachment{{

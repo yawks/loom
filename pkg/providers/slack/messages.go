@@ -1849,21 +1849,7 @@ func (p *SlackProvider) convertMessage(msg slack.Message, conversationID string)
 		}
 	}
 
-	// Extract and optimize message body
-	body := msg.Text
-
-	// When the message has blocks, prefer block extraction over msg.Text:
-	// - rich_text blocks: Slack serializes bullet lists as triple-backtick code blocks in msg.Text
-	// - section/header/action blocks (bot messages): msg.Text is a short fallback, blocks hold full content
-	if len(msg.Blocks.BlockSet) > 0 || len(body) < 10 {
-		extracted := p.extractTextFromRichContent(msg)
-		if len(extracted) > len(body) {
-			body = extracted
-		}
-	}
-
-	// Preprocess message body: resolve mentions, links, and formatting
-	body = p.preprocessMessageBody(body)
+	body := p.slackMessageBody(msg)
 
 	// Detect huddle start/end via text patterns
 	// Common patterns: "started a huddle", "joined the huddle", "left the huddle", "ended the huddle"
@@ -1992,6 +1978,18 @@ func (p *SlackProvider) preprocessMessageBody(text string) string {
 	text = strings.ReplaceAll(text, "<!everyone>", "@everyone")
 
 	return text
+}
+
+// slackMessageBody applies the same rich-content preference to history and
+// live events, whose text field may contain only an app-provided fallback.
+func (p *SlackProvider) slackMessageBody(msg slack.Message) string {
+	body := msg.Text
+	if len(msg.Blocks.BlockSet) > 0 || len(msg.Attachments) > 0 || len(body) < 10 {
+		if extracted := p.extractTextFromRichContent(msg); len(extracted) > len(body) {
+			body = extracted
+		}
+	}
+	return p.preprocessMessageBody(body)
 }
 
 func applyRichTextStyle(text string, style *slack.RichTextSectionTextStyle) string {

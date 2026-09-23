@@ -303,11 +303,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 		rtmThreadID = &ts
 	}
 
-	messageBody := p.preprocessMessageBody(ev.Text)
-	// For huddle messages, text is empty and content is in blocks.
-	if messageBody == "" && len(ev.Blocks.BlockSet) > 0 {
-		messageBody = p.extractTextFromRichContent(slack.Message{Msg: ev.Msg})
-	}
+	messageBody := p.slackMessageBody(slack.Message{Msg: ev.Msg})
 	var quotedMessageID *string
 	var quotedSenderName string
 	var quotedBody *string
