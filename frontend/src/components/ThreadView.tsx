@@ -588,6 +588,7 @@ export function ThreadView() {
 
       const threadQueryKey = ["threads", conversationId, selectedThreadId || ""];
       const previousThreadMessages = queryClient.getQueryData<models.Message[]>(threadQueryKey);
+      const previousParentMessage = selectedThreadParentMessage;
       if (currentUserId) {
         queryClient.setQueryData<models.Message[]>(threadQueryKey, (oldData) =>
           oldData?.map((msg) => {
@@ -606,6 +607,24 @@ export function ThreadView() {
             return models.Message.createFrom({ ...msg, reactions: updatedReactions });
           })
         );
+        if (selectedThreadParentMessage &&
+            (selectedThreadParentMessage.protocolMsgId === protocolMsgId || getMessageDomId(selectedThreadParentMessage) === protocolMsgId)) {
+          const updatedReactions = hasReaction
+            ? (selectedThreadParentMessage.reactions || []).filter((reaction) =>
+                !(reactionMatches(reaction.emoji, canonicalName) && sameUserId(reaction.userId, currentUserId)))
+            : [...(selectedThreadParentMessage.reactions || []), models.Reaction.createFrom({
+                id: 0,
+                messageId: selectedThreadParentMessage.id,
+                userId: currentUserId,
+                emoji: storedEmoji,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              })];
+          setSelectedThreadParentMessage(models.Message.createFrom({
+            ...selectedThreadParentMessage,
+            reactions: updatedReactions,
+          }));
+        }
       }
 
       try {
@@ -619,10 +638,14 @@ export function ThreadView() {
       } catch (error) {
         console.error("Failed to update reaction:", error);
         queryClient.setQueryData(threadQueryKey, previousThreadMessages);
+        if (previousParentMessage &&
+            (previousParentMessage.protocolMsgId === protocolMsgId || getMessageDomId(previousParentMessage) === protocolMsgId)) {
+          setSelectedThreadParentMessage(previousParentMessage);
+        }
         showToast(String(error), "error");
       }
     },
-    [capabilities, conversationId, selectedThreadId, providerInstanceId, currentUserId, queryClient, showToast]
+    [capabilities, conversationId, selectedThreadId, selectedThreadParentMessage, setSelectedThreadParentMessage, providerInstanceId, currentUserId, queryClient, showToast]
   );
 
   const correctThreadBottomImmediately = useCallback(() => {

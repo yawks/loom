@@ -387,19 +387,6 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
 
-      // A thread reply is conversation activity too. Move the parent conversation
-      // immediately, even though the reply itself lives in the thread cache.
-      if (threadId) {
-        const previousTimestamp = queryClient.getQueryData<Record<string, string | number | null>>(
-          ["allLastMessageTimestamps"]
-        )?.[conversationId];
-        queryClient.setQueryData<Record<string, string | number | null>>(
-          ["allLastMessageTimestamps"],
-          (old) => ({ ...(old || {}), [conversationId]: now.toISOString() })
-        );
-        return { tempId, conversationId, isThreadMessage: true, previousTimestamp };
-      }
-
       // Get current user info from existing messages, fall back to props passed from MessageList
       let currentUserInfo: { senderId?: string; senderName?: string; senderAvatarUrl?: string } = {
         senderName: currentUserName,
@@ -442,7 +429,25 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         senderId: currentUserInfo.senderId,
         senderName: currentUserInfo.senderName,
         senderAvatarUrl: currentUserInfo.senderAvatarUrl,
+        threadId,
       };
+
+      // Thread replies use their own cache, but should appear just as immediately
+      // as messages in the main conversation.
+      if (threadId) {
+        const previousTimestamp = queryClient.getQueryData<Record<string, string | number | null>>(
+          ["allLastMessageTimestamps"]
+        )?.[conversationId];
+        queryClient.setQueryData<models.Message[]>(
+          ["threads", conversationId, threadId],
+          (current = []) => [...current, optimisticMessage as models.Message]
+        );
+        queryClient.setQueryData<Record<string, string | number | null>>(
+          ["allLastMessageTimestamps"],
+          (old) => ({ ...(old || {}), [conversationId]: now.toISOString() })
+        );
+        return { tempId, conversationId, isThreadMessage: true, previousTimestamp };
+      }
 
       // Update messages cache (append to last page to keep chronological order)
       queryClient.setQueryData<InfiniteData<models.Message[]>>(
@@ -502,9 +507,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         if (message?.protocolMsgId && threadId) {
           queryClient.setQueryData<models.Message[]>(
             ["threads", conversationId, threadId],
-            (current = []) => current.some((item) => item.protocolMsgId === message.protocolMsgId)
-              ? current
-              : [...current, message]
+            (current = []) => current.map((item) =>
+              item.protocolMsgId === tempId ? message : item
+            )
           );
           queryClient.setQueriesData<models.ThreadSummary[]>(
             { queryKey: ["thread-summaries", conversationId] },
@@ -575,6 +580,12 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const conversationId = variables.conversationId;
       const tempId = context?.tempId;
       if (context?.isThreadMessage) {
+        queryClient.setQueryData<models.Message[]>(
+          ["threads", conversationId, threadId || ""],
+          (current = []) => current.map((msg) => msg.protocolMsgId === tempId
+            ? ({ ...(msg as any), isPending: false, sendFailed: true } as models.Message)
+            : msg)
+        );
         queryClient.setQueryData<Record<string, string | number | null>>(
           ["allLastMessageTimestamps"],
           (old) => {
