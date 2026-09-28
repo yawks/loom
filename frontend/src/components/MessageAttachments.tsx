@@ -1047,42 +1047,50 @@ export function MessageAttachments({
     }
   };
 
-  const selectedGalleryMessage = selectedImageIndex === null ? undefined : galleryMessages?.[selectedImageIndex];
+  const galleryMessageAt = (index: number) => galleryMessages?.length === 1 ? galleryMessages[0] : galleryMessages?.[index];
+  const selectedGalleryMessage = selectedImageIndex === null ? undefined : galleryMessageAt(selectedImageIndex);
   const selectedGalleryAttachment = selectedImageIndex === null ? undefined : visualMediaAttachments[selectedImageIndex];
-  const galleryActions = selectedGalleryMessage && messageHandlers ? (
-    <div className="message-attachment__gallery-actions absolute left-1/2 top-3 z-30 -translate-x-1/2">
+  const renderMediaActions = (mediaMessage: models.Message, attachment: Attachment, className: string, closePreview = false) => (
+    <div className={className} onClick={(event) => event.stopPropagation()}>
       <MessageActions
-        isFromMe={selectedGalleryMessage.isFromMe}
+        isFromMe={mediaMessage.isFromMe}
         hasAttachments
         onEdit={() => undefined}
         showEdit={false}
-        showDeleteForAll
-        onDownload={selectedGalleryAttachment ? () => { void handleDownload(selectedGalleryAttachment); } : undefined}
+        onDownload={() => { void handleDownload(attachment); }}
         onDelete={() => {
-          setSelectedImage(null);
-          setSelectedVideo(null);
-          setSelectedImageIndex(null);
-          messageHandlers.onDeleteClick(selectedGalleryMessage);
+          if (closePreview) {
+            setSelectedImage(null);
+            setSelectedVideo(null);
+            setSelectedImageIndex(null);
+          }
+          messageHandlers!.onDeleteClick(mediaMessage);
         }}
         onReply={() => {
-          setSelectedImage(null);
-          setSelectedVideo(null);
-          setSelectedImageIndex(null);
-          messageHandlers.onReplyClick(selectedGalleryMessage);
+          if (closePreview) {
+            setSelectedImage(null);
+            setSelectedVideo(null);
+            setSelectedImageIndex(null);
+          }
+          messageHandlers!.onReplyClick(mediaMessage);
         }}
-        onForward={() => {
-          messageHandlers.onForwardClick(selectedGalleryMessage, galleryMessages);
-        }}
-        onReact={(emoji) => messageHandlers.onReaction(selectedGalleryMessage, emoji)}
-        currentReactions={(selectedGalleryMessage.reactions || []).filter((reaction) => sameUserId(reaction.userId, currentUserId)).map((reaction) => reaction.emoji)}
-        messageId={getMessageDomId(selectedGalleryMessage)}
-        openActionsMessageId={getMessageDomId(selectedGalleryMessage)}
+        onForward={() => messageHandlers!.onForwardClick(mediaMessage)}
+        onPin={() => messageHandlers!.onPinClick(mediaMessage)}
+        isPinned={messageHandlers!.isMessagePinned(mediaMessage)}
+        onReact={(emoji) => messageHandlers!.onReaction(mediaMessage, emoji)}
+        onStartThread={() => messageHandlers!.onThreadClick(mediaMessage.protocolMsgId, mediaMessage)}
+        currentReactions={(mediaMessage.reactions || []).filter((reaction) => sameUserId(reaction.userId, currentUserId)).map((reaction) => reaction.emoji)}
+        messageId={getMessageDomId(mediaMessage)}
+        openActionsMessageId={getMessageDomId(mediaMessage)}
         provider={protocol}
         instanceId={providerInstanceId}
         className="shadow-xl [&_button]:h-9 [&_button]:w-9"
       />
     </div>
-  ) : null;
+  );
+  const galleryActions = selectedGalleryMessage && selectedGalleryAttachment && messageHandlers
+    ? renderMediaActions(selectedGalleryMessage, selectedGalleryAttachment, "message-attachment__gallery-actions absolute left-1/2 top-3 z-30 -translate-x-1/2", true)
+    : null;
   const galleryReactions = selectedGalleryMessage?.reactions?.length ? (
     <div className="message-attachment__gallery-reactions absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg bg-black/65 px-2 py-1 shadow-lg backdrop-blur-sm">
       <MessageReactions
@@ -1109,24 +1117,32 @@ export function MessageAttachments({
           {visualMediaAttachments.slice(0, 4).map((attachment, index) => {
             const tileClass = visualMediaAttachments.length === 2 ? "row-span-2" : visualMediaAttachments.length === 3 && index === 0 ? "row-span-2" : "";
             const isVideoAttachment = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
-            return isVideoAttachment ? (
-              <MosaicVideoAttachment
-                key={`${attachment.url}-${index}`}
-                attachment={attachment}
-                onPlay={(preloadedData) => {
-                  setSelectedImageIndex(index);
-                  void openMosaicVideo(attachment, index, preloadedData);
-                }}
-                className={tileClass}
-              />
-            ) : (
-              <MosaicImageAttachment
-                key={`${attachment.url}-${index}`}
-                attachment={attachment}
-                providerInstanceId={providerInstanceId}
-                onOpen={() => { void openFullSizeImage(attachment, index); }}
-                className={tileClass}
-              />
+            const mediaMessage = galleryMessageAt(index);
+            return (
+              <div key={`${attachment.url}-${index}`} className={`group/media relative min-h-0 ${tileClass}`}>
+                {isVideoAttachment ? (
+                  <MosaicVideoAttachment
+                    attachment={attachment}
+                    onPlay={(preloadedData) => {
+                      setSelectedImageIndex(index);
+                      void openMosaicVideo(attachment, index, preloadedData);
+                    }}
+                    className="h-full w-full"
+                  />
+                ) : (
+                  <MosaicImageAttachment
+                    attachment={attachment}
+                    providerInstanceId={providerInstanceId}
+                    onOpen={() => { void openFullSizeImage(attachment, index); }}
+                    className="h-full w-full"
+                  />
+                )}
+                {mediaMessage && messageHandlers && renderMediaActions(
+                  mediaMessage,
+                  attachment,
+                  "absolute left-1 top-1 z-20 opacity-0 transition-opacity group-hover/media:opacity-100 group-focus-within/media:opacity-100 [&_button]:!h-7 [&_button]:!w-7",
+                )}
+              </div>
             );
           })}
           <div className="message-attachment__photo-count pointer-events-none absolute bottom-2 right-2 z-10 rounded-full bg-black/70 px-2.5 py-1 text-xs font-semibold text-white shadow">

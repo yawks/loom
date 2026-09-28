@@ -182,7 +182,7 @@ export function getSenderDisplayName(
 ): string {
   if (isFromMe) {
     // Use the real name when the backend resolved one; fall back to "you" for phone-number-only values
-    if (senderName?.trim() && senderName !== senderId && /^\d+$/.exec(senderName) === null) return senderName;
+    if (senderName?.trim() && senderName !== senderId && !looksLikePhoneNumber(senderName)) return senderName;
     return t("you") || "You";
   }
   if (senderName?.trim() && senderName !== senderId) return senderName;
@@ -193,4 +193,8 @@ export function getSenderDisplayName(
     .split("-")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+export function looksLikePhoneNumber(value: string): boolean {
+  return /^\+?[\d .()-]+$/.test(value.trim()) && (value.match(/\d/g)?.length ?? 0) >= 6;
 }

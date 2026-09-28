@@ -152,7 +152,7 @@ export function MessageActions({
           onOpenChange={setReactionPickerOpen}
         />
       )}
-      {(isFromMe || showDeleteForAll) && (
+      {(isFromMe || showDeleteForAll || onDownload) && (
         <Popover open={open} onOpenChange={setInternalOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -193,17 +193,19 @@ export function MessageActions({
                   {t("download")}
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete();
-                }}
-              >
-                <Trash2 className="h-4 w-4" />
-                {t("delete_message")}
-              </Button>
+              {(isFromMe || showDeleteForAll) && (
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-2 h-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {t("delete_message")}
+                </Button>
+              )}
             </div>
           </PopoverContent>
         </Popover>

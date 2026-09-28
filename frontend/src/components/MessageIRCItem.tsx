@@ -362,7 +362,7 @@ export function MessageIRCItem({
               </div>
             )}
           </div>
-          {!isDeleted && editingMessageId !== messageId && (
+          {!isDeleted && editingMessageId !== messageId && (!photoGroupMessages || photoGroupMessages.length === 1) && (
             <div className={cn("absolute right-4 top-1 z-10 transition-opacity", openActionsMessageId === messageId ? "opacity-100" : "opacity-0 pointer-events-none")}>
               <MessageActions
                 isFromMe={message.isFromMe}

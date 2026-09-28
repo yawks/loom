@@ -22,79 +22,94 @@ func (p *Provider) storeConversation(account models.LinkedAccount) error {
 		return nil
 	}
 	var stored models.LinkedAccount
-	result := db.ForProvider(db.DB, p.instance).LinkedAccounts().Where("user_id = ?", account.UserID).First(&stored)
-	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
-		return fmt.Errorf("%s: find conversation account: %w", providerID, result.Error)
-	}
-	if result.Error == gorm.ErrRecordNotFound {
-		if account.Status == "" {
-			account.Status = "offline"
+	var conversation models.Conversation
+	var metaToCache *models.MetaContact
+	var oldLinkedAccountID uint
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		// GORM fills IDs during Create, so retry with fresh values after SQLITE_BUSY.
+		stored = models.LinkedAccount{}
+		conversation = models.Conversation{}
+		metaToCache = nil
+		oldLinkedAccountID = 0
+		retryAccount := account
+
+		result := db.ForProvider(tx, p.instance).LinkedAccounts().Where("user_id = ?", retryAccount.UserID).First(&stored)
+		if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+			return fmt.Errorf("%s: find conversation account: %w", providerID, result.Error)
 		}
-		meta := models.MetaContact{DisplayName: account.Username, AvatarURL: account.AvatarURL}
-		if err := db.DB.Create(&meta).Error; err != nil {
-			return fmt.Errorf("%s: create conversation contact: %w", providerID, err)
-		}
-		db.ContactStore.UpsertMetaContact(meta)
-		account.MetaContactID = meta.ID
-		if err := db.DB.Create(&account).Error; err != nil {
-			return fmt.Errorf("%s: store conversation account: %w", providerID, err)
-		}
-		stored = account
-	} else {
-		stored.Username = account.Username
-		stored.AvatarURL = account.AvatarURL
-		stored.IsGroup = account.IsGroup
-		if account.Status != "" {
-			stored.Status = account.Status
-		}
-		if err := db.DB.Save(&stored).Error; err != nil {
-			return fmt.Errorf("%s: update conversation account: %w", providerID, err)
-		}
-		if stored.MetaContactID != 0 {
-			var meta models.MetaContact
-			if err := db.DB.First(&meta, stored.MetaContactID).Error; err == nil {
-				meta.DisplayName = account.Username
-				meta.AvatarURL = account.AvatarURL
-				if err := db.DB.Save(&meta).Error; err != nil {
-					return fmt.Errorf("%s: update conversation contact: %w", providerID, err)
+		if result.Error == gorm.ErrRecordNotFound {
+			if retryAccount.Status == "" {
+				retryAccount.Status = "offline"
+			}
+			meta := models.MetaContact{DisplayName: retryAccount.Username, AvatarURL: retryAccount.AvatarURL}
+			if err := tx.Create(&meta).Error; err != nil {
+				return fmt.Errorf("%s: create conversation contact: %w", providerID, err)
+			}
+			metaToCache = &meta
+			retryAccount.MetaContactID = meta.ID
+			if err := tx.Create(&retryAccount).Error; err != nil {
+				return fmt.Errorf("%s: store conversation account: %w", providerID, err)
+			}
+			stored = retryAccount
+		} else {
+			stored.Username = retryAccount.Username
+			stored.AvatarURL = retryAccount.AvatarURL
+			stored.IsGroup = retryAccount.IsGroup
+			if retryAccount.Status != "" {
+				stored.Status = retryAccount.Status
+			}
+			if err := tx.Save(&stored).Error; err != nil {
+				return fmt.Errorf("%s: update conversation account: %w", providerID, err)
+			}
+			if stored.MetaContactID != 0 {
+				var meta models.MetaContact
+				if err := tx.First(&meta, stored.MetaContactID).Error; err == nil {
+					meta.DisplayName = retryAccount.Username
+					meta.AvatarURL = retryAccount.AvatarURL
+					if err := tx.Save(&meta).Error; err != nil {
+						return fmt.Errorf("%s: update conversation contact: %w", providerID, err)
+					}
+					metaToCache = &meta
 				}
-				db.ContactStore.UpsertMetaContact(meta)
 			}
 		}
-	}
-	db.ContactStore.UpsertLinkedAccount(stored)
 
-	nsConvID := core.BuildConvID(p.instance, account.ConversationID)
-	var conversation models.Conversation
-	result = db.ForProvider(db.DB, p.instance).Conversations().Where("protocol_conv_id = ?", nsConvID).First(&conversation)
-	if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
-		return fmt.Errorf("%s: find conversation: %w", providerID, result.Error)
-	}
-	if result.Error == gorm.ErrRecordNotFound {
-		conversation = models.Conversation{
-			LinkedAccountID: stored.ID, ProtocolConvID: nsConvID,
-			IsGroup: account.IsGroup,
+		nsConvID := core.BuildConvID(p.instance, retryAccount.ConversationID)
+		result = db.ForProvider(tx, p.instance).Conversations().Where("protocol_conv_id = ?", nsConvID).First(&conversation)
+		if result.Error != nil && result.Error != gorm.ErrRecordNotFound {
+			return fmt.Errorf("%s: find conversation: %w", providerID, result.Error)
 		}
-		if account.IsGroup {
-			conversation.GroupName = account.Username
+		if result.Error == gorm.ErrRecordNotFound {
+			conversation = models.Conversation{LinkedAccountID: stored.ID, ProtocolConvID: nsConvID, IsGroup: retryAccount.IsGroup}
+			if retryAccount.IsGroup {
+				conversation.GroupName = retryAccount.Username
+			}
+			if err := tx.Create(&conversation).Error; err != nil {
+				return fmt.Errorf("%s: create conversation: %w", providerID, err)
+			}
+			return nil
 		}
-		if err := db.DB.Create(&conversation).Error; err != nil {
-			return fmt.Errorf("%s: create conversation: %w", providerID, err)
-		}
-	} else {
-		oldLinkedAccountID := conversation.LinkedAccountID
+		oldLinkedAccountID = conversation.LinkedAccountID
 		conversation.LinkedAccountID = stored.ID
 		if conversation.IsGroup {
-			conversation.GroupName = account.Username
+			conversation.GroupName = retryAccount.Username
 		}
 		if oldLinkedAccountID != stored.ID || conversation.IsGroup {
-			if err := db.DB.Save(&conversation).Error; err != nil {
+			if err := tx.Save(&conversation).Error; err != nil {
 				return fmt.Errorf("%s: update conversation: %w", providerID, err)
 			}
-			if oldLinkedAccountID != stored.ID {
-				db.ContactStore.SetConversation(oldLinkedAccountID, "")
-			}
 		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if metaToCache != nil {
+		db.ContactStore.UpsertMetaContact(*metaToCache)
+	}
+	db.ContactStore.UpsertLinkedAccount(stored)
+	if oldLinkedAccountID != 0 && oldLinkedAccountID != stored.ID {
+		db.ContactStore.SetConversation(oldLinkedAccountID, "")
 	}
 	db.ContactStore.UpsertConversation(stored.ID, conversation.ProtocolConvID)
 	return nil

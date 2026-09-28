@@ -228,7 +228,7 @@ export function MessageBubbleItem({
             </div>
           )}
           <div className="flex flex-col items-start gap-1 relative group/bubble">
-            {!isDeleted && editingMessageId !== messageId && (
+            {!isDeleted && editingMessageId !== messageId && (!photoGroupMessages || photoGroupMessages.length === 1) && (
               <div className={cn("opacity-0 group-hover/bubble:opacity-100 transition-opacity mb-1", message.isFromMe ? "self-end" : "self-start")}>
                 <MessageActions
                   isFromMe={message.isFromMe}
