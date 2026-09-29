@@ -2,6 +2,7 @@ package teams
 
 import (
 	"Loom/pkg/core"
+	"Loom/pkg/db"
 	"Loom/pkg/models"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"go.mau.fi/mautrix-teams/pkg/msteams"
+	"gorm.io/gorm"
 )
 
 func TestToModelMessage(t *testing.T) {
@@ -53,6 +56,43 @@ func TestToModelMessage(t *testing.T) {
 	}
 	if !message.Timestamp.Equal(created) {
 		t.Fatalf("timestamp=%s, want %s", message.Timestamp, created)
+	}
+}
+
+func TestStoreMessagesEditRestoresDeletedMessage(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Conversation{}, &models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previous := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previous; sqlDB, _ := database.DB(); _ = sqlDB.Close() })
+
+	conversation := models.Conversation{ProtocolConvID: "teams-1::room"}
+	if err := database.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	deletedAt := time.Unix(100, 0)
+	message := models.Message{ProtocolConvID: conversation.ProtocolConvID, ProtocolMsgID: "edited", Body: "old", IsDeleted: true, DeletedTimestamp: &deletedAt}
+	provider := NewProvider()
+	if err := provider.storeMessages([]models.Message{message}); err != nil {
+		t.Fatal(err)
+	}
+
+	editedAt := time.Unix(200, 0)
+	message.Body, message.IsDeleted, message.IsEdited, message.EditedTimestamp = "new", false, true, &editedAt
+	if err := provider.storeMessages([]models.Message{message}); err != nil {
+		t.Fatal(err)
+	}
+	var stored models.Message
+	if err := database.Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.IsDeleted || !stored.IsEdited || stored.Body != "new" || stored.DeletedTimestamp != nil {
+		t.Fatalf("stored edit did not restore message: %+v", stored)
 	}
 }
 
@@ -245,6 +285,7 @@ func TestCapabilities(t *testing.T) {
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
 		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
+		SupportsPollVoting:                    true,
 		MessagePinScope:                       string(models.MessagePinScopeShared),
 		SupportsGroupManagement:               true,
 		SupportsAddGroupMembers:               true,

@@ -106,6 +106,21 @@ func (p *Provider) RefreshHistoricalMessageMetadata(conversationID string, messa
 	if len(messages) == 0 {
 		return nil
 	}
+	upgraded := make([]models.Message, 0)
+	for index := range messages {
+		if upgradeStoredTeamsPoll(&messages[index]) {
+			upgraded = append(upgraded, messages[index])
+		}
+	}
+	if len(upgraded) > 0 {
+		if err := p.storeMessages(upgraded); err != nil {
+			return err
+		}
+		p.emit(core.MessageBatchEvent{
+			InstanceID: p.instance, ConversationID: core.BuildConvID(p.instance, core.StripConvID(conversationID)),
+			Messages: upgraded, IsHistorical: true,
+		})
+	}
 	ids := make([]string, 0, len(messages))
 	targets := make(map[string]struct{}, len(messages))
 	var oldest, newest time.Time

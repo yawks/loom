@@ -1157,6 +1157,7 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 		SupportsEditMessage: true, SupportsReadReceipts: true,
 		SupportsPinMessage: true, SupportsListMessagePins: true,
 		SupportsScheduledMessages: true, SupportsListScheduledMessages: true,
+		SupportsPollVoting:                    true,
 		MessagePinScope:                       string(models.MessagePinScopeShared),
 		SupportsGroupManagement:               true,
 		SupportsLeaveGroup:                    true,
@@ -1177,6 +1178,50 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 			core.MessageFormatTextColor, core.MessageFormatBackgroundColor, core.MessageFormatFontSize,
 		}, ","),
 	}
+}
+
+func (p *Provider) VotePoll(conversationID, messageID string, optionIDs []string) error {
+	client, _, err := p.connectedClient()
+	if err != nil {
+		return err
+	}
+	var message models.Message
+	convID := core.BuildConvID(p.instance, core.StripConvID(conversationID))
+	if db.DB == nil || db.ForProvider(db.DB, p.instance).Messages().Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, convID).First(&message).Error != nil {
+		return fmt.Errorf("poll message %s was not found", messageID)
+	}
+	if message.Poll == nil || message.Poll.Closed || message.PollVotePayload == nil {
+		return fmt.Errorf("poll is unavailable or closed")
+	}
+	wanted := make(map[string]struct{}, len(optionIDs))
+	for _, id := range optionIDs {
+		wanted[id] = struct{}{}
+	}
+	if len(wanted) > message.Poll.MaxSelections {
+		return fmt.Errorf("poll allows at most %d selections", message.Poll.MaxSelections)
+	}
+	selected := make([]string, 0, len(wanted))
+	for _, option := range message.Poll.Options {
+		if _, ok := wanted[option.ID]; ok {
+			selected = append(selected, option.ID)
+			delete(wanted, option.ID)
+		}
+	}
+	if len(wanted) > 0 {
+		return fmt.Errorf("unknown poll option")
+	}
+	p.mu.RLock()
+	displayName := ""
+	if p.session != nil {
+		displayName = p.session.DisplayName
+	}
+	p.mu.RUnlock()
+	payload := make(map[string]any, len(message.PollVotePayload)+1)
+	for key, value := range message.PollVotePayload {
+		payload[key] = value
+	}
+	payload["choice"] = strings.Join(selected, ",")
+	return client.InvokeCardAction(context.Background(), core.StripConvID(conversationID), messageID, message.PollTransportSenderID, displayName, message.PollVoteActionTitle, payload)
 }
 
 func (p *Provider) Cleanup() error {
@@ -1509,6 +1554,14 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		attachments = append(attachments, attachment)
 	}
 	for _, cardJSON := range teamsSwiftCardPayloads(remote.Content) {
+		if poll, payload, title := teamsPollFromCard(cardJSON); poll != nil {
+			message.Poll = poll
+			message.PollTransportSenderID = remote.From
+			message.PollVotePayload = payload
+			message.PollVoteActionTitle = title
+			message.Body = poll.Question
+			continue
+		}
 		attachments = append(attachments, models.Attachment{
 			Type: "adaptive_card", MimeType: "application/vnd.microsoft.card.adaptive", CardJSON: cardJSON,
 		})

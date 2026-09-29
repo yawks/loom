@@ -326,8 +326,14 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				// A Trouter echo can omit attachment content even though the
 				// optimistic outgoing message already contains the uploaded file.
 				// Never erase that durable metadata with an incomplete echo.
-				if message.Attachments != "" || stored.Attachments == "" {
+				if message.Attachments != "" || stored.Attachments == "" || message.Poll != nil {
 					stored.Attachments = message.Attachments
+				}
+				if message.Poll != nil {
+					stored.Poll = message.Poll
+					stored.PollTransportSenderID = message.PollTransportSenderID
+					stored.PollVotePayload = message.PollVotePayload
+					stored.PollVoteActionTitle = message.PollVoteActionTitle
 				}
 				stored.ThreadID = message.ThreadID
 				stored.QuotedMessageID = message.QuotedMessageID
@@ -342,11 +348,18 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				stored.CallUrl = message.CallUrl
 				stored.CallLinkAction = message.CallLinkAction
 				stored.IsEdited = stored.IsEdited || message.IsEdited
-				stored.IsDeleted = stored.IsDeleted || message.IsDeleted
+				if message.IsEdited {
+					stored.IsDeleted = false
+					stored.DeletedBy = ""
+					stored.DeletedReason = ""
+					stored.DeletedTimestamp = nil
+				} else {
+					stored.IsDeleted = stored.IsDeleted || message.IsDeleted
+				}
 				if message.EditedTimestamp != nil {
 					stored.EditedTimestamp = message.EditedTimestamp
 				}
-				if message.DeletedTimestamp != nil {
+				if !message.IsEdited && message.DeletedTimestamp != nil {
 					stored.DeletedTimestamp = message.DeletedTimestamp
 				}
 				if err := tx.Save(&stored).Error; err != nil {

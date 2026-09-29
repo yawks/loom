@@ -111,6 +111,129 @@ func teamsSwiftCardPayloads(content string) []string {
 	return payloads
 }
 
+func teamsPollFromCard(raw string) (*models.Poll, map[string]any, string) {
+	var card map[string]any
+	if json.Unmarshal([]byte(raw), &card) != nil {
+		return nil, nil, ""
+	}
+	var choiceSet map[string]any
+	var walk func(any)
+	walk = func(value any) {
+		if choiceSet != nil {
+			return
+		}
+		switch value := value.(type) {
+		case []any:
+			for _, item := range value {
+				walk(item)
+			}
+		case map[string]any:
+			if strings.EqualFold(cardString(value, "type"), "Input.ChoiceSet") {
+				choiceSet = value
+				return
+			}
+			for _, child := range value {
+				walk(child)
+			}
+		}
+	}
+	walk(card["body"])
+	if choiceSet == nil {
+		return nil, nil, ""
+	}
+
+	selected := make(map[string]struct{})
+	for _, id := range strings.Split(pollCardString(choiceSet, "value"), ",") {
+		selected[strings.TrimSpace(id)] = struct{}{}
+	}
+	choices, _ := choiceSet["choices"].([]any)
+	options := make([]models.PollOption, 0, len(choices))
+	for _, rawChoice := range choices {
+		choice, _ := rawChoice.(map[string]any)
+		id, label := pollCardString(choice, "value"), pollCardString(choice, "title")
+		if id == "" || label == "" {
+			continue
+		}
+		_, isSelected := selected[id]
+		options = append(options, models.PollOption{ID: id, Text: label, Selected: isSelected})
+	}
+	if len(options) == 0 {
+		return nil, nil, ""
+	}
+
+	var payload map[string]any
+	var title string
+	for _, action := range cardNodes(card["actions"]) {
+		data, _ := action["data"].(map[string]any)
+		inner, _ := data["data"].(map[string]any)
+		if strings.EqualFold(pollCardString(action, "type"), "Action.Submit") && pollCardString(inner, "Type") == "QuickPoll.SubmitVote" {
+			payload, title = data, pollCardString(action, "title")
+			break
+		}
+	}
+	if payload == nil {
+		return nil, nil, ""
+	}
+	maxSelections := 1
+	if multi, _ := choiceSet["isMultiSelect"].(bool); multi {
+		maxSelections = len(options)
+	}
+	return &models.Poll{Question: pollCardString(choiceSet, "label"), Options: options, MaxSelections: maxSelections}, payload, title
+}
+
+func upgradeStoredTeamsPoll(message *models.Message) bool {
+	if message == nil || message.Poll != nil || message.Attachments == "" {
+		return false
+	}
+	var attachments []models.Attachment
+	if json.Unmarshal([]byte(message.Attachments), &attachments) != nil {
+		return false
+	}
+	kept := attachments[:0]
+	for _, attachment := range attachments {
+		poll, payload, title := teamsPollFromCard(attachment.CardJSON)
+		if poll == nil {
+			kept = append(kept, attachment)
+			continue
+		}
+		message.Poll = poll
+		message.PollTransportSenderID = message.SenderID
+		message.PollVotePayload = payload
+		message.PollVoteActionTitle = title
+		message.Body = poll.Question
+	}
+	if message.Poll == nil {
+		return false
+	}
+	message.Attachments = ""
+	if len(kept) > 0 {
+		encoded, _ := json.Marshal(kept)
+		message.Attachments = string(encoded)
+	}
+	return true
+}
+
+func cardNodes(value any) []map[string]any {
+	items, _ := value.([]any)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if node, ok := item.(map[string]any); ok {
+			out = append(out, node)
+		}
+	}
+	return out
+}
+
+func pollCardString(card map[string]any, wanted string) string {
+	for key, value := range card {
+		if strings.EqualFold(key, wanted) {
+			text, _ := value.(string)
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
+}
+
 func uniqueTeamsCardLines(lines []string) string {
 	seen := make(map[string]struct{}, len(lines))
 	out := lines[:0]
