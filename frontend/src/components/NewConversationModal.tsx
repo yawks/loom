@@ -333,7 +333,10 @@ export function NewConversationModal({ open, onOpenChange }: NewConversationModa
         </div>
         <DialogFooter className="p-6 pt-4 border-t mt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>{t("cancel")}</Button>
-          {matches.length === 0 && <Button onClick={submit} disabled={!canSubmit || isSubmitting}>{isSubmitting ? t("creating") : t("continue")}</Button>}
+          {matches.length === 0 && <Button className="gap-2" onClick={submit} disabled={!canSubmit || isSubmitting}>
+            {isSubmitting && <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />}
+            {isSubmitting ? t("creating") : t("continue")}
+          </Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

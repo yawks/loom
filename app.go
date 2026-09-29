@@ -2077,6 +2077,10 @@ func sameParticipantSet(selected map[string]bool, participants []models.GroupPar
 	return true
 }
 
+func sameConversationType(stored, requested string) bool {
+	return requested == "" || stored == requested
+}
+
 // OpenConversation reuses exact existing conversations and only creates when
 // there is no match. Multiple matches are returned for an explicit user choice.
 func (a *App) OpenConversation(request models.OpenConversationRequest) (models.ConversationResolution, error) {
@@ -2093,15 +2097,27 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 	if withCurrentUser, ok := provider.(core.CurrentUserProvider); ok {
 		selfID = withCurrentUser.CurrentUserID()
 	}
-	directory, err := a.GetProviderContacts(request.ProviderInstanceID)
-	if err != nil {
-		return resolution, err
-	}
+	directory := providerAccountsToMetaContacts(request.ProviderInstanceID, db.ContactStore.FindByProvider(request.ProviderInstanceID))
 	directoryUsers := make(map[string]bool, len(directory))
 	selected := make(map[string]bool, len(request.ParticipantIDs))
 	for _, contact := range directory {
 		if len(contact.LinkedAccounts) > 0 {
 			directoryUsers[contact.LinkedAccounts[0].UserID] = true
+		}
+	}
+	for _, id := range request.ParticipantIDs {
+		if !directoryUsers[id] {
+			directory, err = a.GetProviderContacts(request.ProviderInstanceID)
+			if err != nil {
+				return resolution, err
+			}
+			directoryUsers = make(map[string]bool, len(directory))
+			for _, contact := range directory {
+				if len(contact.LinkedAccounts) > 0 {
+					directoryUsers[contact.LinkedAccounts[0].UserID] = true
+				}
+			}
+			break
 		}
 	}
 	for _, id := range request.ParticipantIDs {
@@ -2182,8 +2198,7 @@ func (a *App) OpenConversation(request models.OpenConversationRequest) (models.C
 		}
 		var storedConversation models.Conversation
 		if err := db.DB.Where("protocol_conv_id = ?", convID).First(&storedConversation).Error; err == nil &&
-			storedConversation.ConversationType != "" && request.ConversationType != "" &&
-			storedConversation.ConversationType != request.ConversationType {
+			!sameConversationType(storedConversation.ConversationType, request.ConversationType) {
 			continue
 		}
 		participants, err := provider.GetGroupParticipants(core.StripConvID(convID))

@@ -83,6 +83,15 @@ func TestSameParticipantSetRejectsExtraDirectoryContact(t *testing.T) {
 	}
 }
 
+func TestUntypedConversationDoesNotMatchTypedRequest(t *testing.T) {
+	if sameConversationType("", "group_message") {
+		t.Fatal("legacy untyped conversation should be resolved by the provider, not scanned remotely")
+	}
+	if !sameConversationType("group_message", "group_message") {
+		t.Fatal("matching canonical conversation type was rejected")
+	}
+}
+
 func TestProviderAccountsNamespaceConversationID(t *testing.T) {
 	contacts := providerAccountsToMetaContacts("teams-work", []models.LinkedAccount{{
 		Protocol: "teams", ProviderInstanceID: "teams-work", UserID: "8:orgid:alice",

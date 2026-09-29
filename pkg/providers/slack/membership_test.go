@@ -29,6 +29,21 @@ func membershipTestProvider(t *testing.T, handler http.HandlerFunc) *SlackProvid
 	return p
 }
 
+func TestGroupParticipantsStopsOnRepeatedCursor(t *testing.T) {
+	var calls atomic.Int32
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `{"ok":true,"members":["U1"],"response_metadata":{"next_cursor":"stuck"}}`)
+	})
+
+	if _, err := p.GetGroupParticipants("Cgroup"); err == nil {
+		t.Fatal("repeated pagination cursor did not return an error")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("conversations.members called %d times, want 2", calls.Load())
+	}
+}
+
 func TestOfficialMembershipSnapshot(t *testing.T) {
 	var calls atomic.Int32
 	var joined atomic.Bool

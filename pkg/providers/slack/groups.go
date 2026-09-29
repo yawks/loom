@@ -352,6 +352,9 @@ func (p *SlackProvider) GetGroupParticipants(conversationID string) ([]models.Gr
 		if nextCursor == "" {
 			break
 		}
+		if nextCursor == cursor {
+			return nil, fmt.Errorf("get users in Slack conversation %s: pagination cursor did not advance", conversationID)
+		}
 		cursor = nextCursor
 	}
 
