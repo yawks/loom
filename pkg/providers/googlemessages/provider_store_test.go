@@ -14,7 +14,7 @@ import (
 )
 
 func TestStoreConversationRetriesSQLiteBusy(t *testing.T) {
-	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "loom.db")+"?_busy_timeout=1&_journal_mode=WAL"), &gorm.Config{})
+	database, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "loom.db")+"?_txlock=immediate&_pragma=busy_timeout(1)&_pragma=journal_mode(WAL)"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,5 +129,50 @@ func TestStoreConversationDoesNotRewriteUnchangedRows(t *testing.T) {
 	}
 	if !storedConversation.UpdatedAt.Equal(conversation.UpdatedAt) {
 		t.Fatal("unchanged conversation was rewritten")
+	}
+}
+
+func TestStoreMessagesUsesConversationFromProviderInstance(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared&_pragma=foreign_keys(1)"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}, &models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, instance := range []string{"googlemessages-1", "googlemessages-2"} {
+		meta := models.MetaContact{DisplayName: instance}
+		if err := database.Create(&meta).Error; err != nil {
+			t.Fatal(err)
+		}
+		account := models.LinkedAccount{MetaContactID: meta.ID, Protocol: providerID, ProviderInstanceID: instance, UserID: "conversation-1"}
+		if err := database.Create(&account).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := database.Create(&models.Conversation{LinkedAccountID: account.ID, ProtocolConvID: instance + "::conversation-1"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previousDB := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previousDB })
+	provider := &Provider{instance: "googlemessages-1"}
+	message := models.Message{ProtocolConvID: "googlemessages-1::conversation-1", ProtocolMsgID: "message-1", Timestamp: time.Now()}
+	if err := provider.storeMessages([]models.Message{message}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored models.Message
+	if err := database.Where("protocol_msg_id = ?", message.ProtocolMsgID).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	var conversation models.Conversation
+	if err := database.Where("protocol_conv_id = ?", message.ProtocolConvID).First(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ConversationID != conversation.ID {
+		t.Fatalf("message conversation ID = %d, want %d", stored.ConversationID, conversation.ID)
 	}
 }

@@ -244,6 +244,40 @@ export namespace main {
 	        this.conversationIds = source["conversationIds"];
 	    }
 	}
+	export class DocumentPreview {
+	    kind: string;
+	    name: string;
+	    subject: string;
+	    from: string;
+	    to: string;
+	    date: string;
+	    body: string;
+	    organization: string;
+	    title: string;
+	    phones: string[];
+	    emails: string[];
+	    addresses: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DocumentPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.name = source["name"];
+	        this.subject = source["subject"];
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.date = source["date"];
+	        this.body = source["body"];
+	        this.organization = source["organization"];
+	        this.title = source["title"];
+	        this.phones = source["phones"];
+	        this.emails = source["emails"];
+	        this.addresses = source["addresses"];
+	    }
+	}
 	export class LinkPreview {
 	    title: string;
 	    description: string;

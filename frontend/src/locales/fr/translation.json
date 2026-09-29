@@ -6,6 +6,10 @@
   "office_zoom_in": "Zoomer",
   "office_formula_note": "Les formules affichent les résultats enregistrés dans le fichier, sans recalcul.",
   "office_preview_error": "Impossible d’afficher cet aperçu. Vous pouvez toujours télécharger le fichier.",
+  "email_no_subject": "Sans objet",
+  "email_from": "De",
+  "email_to": "À",
+  "email_date": "Date",
 
   "pin_message": "Épingler le message",
   "unpin_message": "Désépingler le message",

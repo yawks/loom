@@ -20,6 +20,8 @@ var DB *gorm.DB
 
 const sqliteBusyRetryAttempts = 6
 
+const sqliteConnectionOptions = "?_txlock=immediate&_pragma=busy_timeout(30000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+
 // Transaction retries the whole transaction when SQLite reports SQLITE_BUSY.
 // In WAL mode, a read transaction that is upgraded to a writer can fail with
 // SQLITE_BUSY_SNAPSHOT (517) as soon as another connection commits. SQLite's
@@ -59,7 +61,7 @@ func InitDatabase() error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return fmt.Errorf("could not create db directory: %w", err)
 	}
-	return initDatabase(dbPath + "?_busy_timeout=30000&_journal_mode=WAL")
+	return initDatabase(dbPath + sqliteConnectionOptions)
 }
 
 // InitMockDatabase initializes an isolated, process-local database. It is used by

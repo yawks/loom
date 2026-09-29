@@ -186,6 +186,10 @@ export function GetCustomEmojis(arg1) {
   return window['go']['main']['App']['GetCustomEmojis'](arg1);
 }
 
+export function GetDocumentPreview(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetDocumentPreview'](arg1, arg2, arg3);
+}
+
 export function GetGoogleChatWebCookies(arg1) {
   return window['go']['main']['App']['GetGoogleChatWebCookies'](arg1);
 }

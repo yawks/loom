@@ -39,6 +39,7 @@ import { dataUrlToBytes } from "@/lib/attachmentData";
 import { getOfficeFormat } from "@/lib/officeDocument";
 
 const DocumentPreview = lazy(() => import("./DocumentPreview"));
+const TextDocumentPreview = lazy(() => import("./TextDocumentPreview"));
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -150,6 +151,17 @@ function formatFileSize(bytes: number): string {
 }
 
 type FileKind = "pdf" | "presentation" | "document" | "spreadsheet" | "other";
+
+function isTextPreview(fileName: string, mimeType: string): boolean {
+  const extension = getFileExtension(fileName).toLowerCase();
+  const mime = mimeType?.split(";")[0].trim().toLowerCase();
+  return ["eml", "vcf", "vcard"].includes(extension) || ["message/rfc822", "text/vcard", "text/x-vcard"].includes(mime);
+}
+
+function getTextPreviewKind(fileName: string, mimeType: string): "eml" | "vcard" {
+  const extension = getFileExtension(fileName).toLowerCase();
+  return extension === "eml" || mimeType?.toLowerCase().startsWith("message/rfc822") ? "eml" : "vcard";
+}
 
 type FileBadgeIconProps = React.SVGProps<SVGSVGElement> & {
   accent: string;
@@ -789,6 +801,7 @@ export function MessageAttachments({
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
   const [selectedOffice, setSelectedOffice] = useState<Attachment | null>(null);
+  const [selectedText, setSelectedText] = useState<Attachment | null>(null);
   const [selectedPdf, setSelectedPdf] = useState<string | null>(null);
   const [selectedPdfAttachment, setSelectedPdfAttachment] = useState<Attachment | null>(null);
   const [loadingPdfIndex, setLoadingPdfIndex] = useState<number | null>(null);
@@ -1294,6 +1307,7 @@ export function MessageAttachments({
           const isVideo = attachment.type === "video" || attachment.mimeType?.startsWith("video/");
           const isAudio = attachment.type === "audio";
           const isPdf = getFileKind(attachment.fileName, attachment.mimeType) === "pdf";
+          const hasTextPreview = isTextPreview(attachment.fileName, attachment.mimeType);
           const audioUrl = getCachedAttachment(attachment.url);
 
           return (
@@ -1354,13 +1368,17 @@ export function MessageAttachments({
                     )}
                   </div>
                 </div>
-              ) : isPdf || getOfficeFormat(attachment.fileName, attachment.mimeType) ? (
+              ) : isPdf || getOfficeFormat(attachment.fileName, attachment.mimeType) || hasTextPreview ? (
                 <div
                   className={`flex items-center gap-3 p-3 rounded-lg border ${isFromMe && layout === "bubble"
                     ? "bg-blue-600 text-white border-blue-700"
                     : "bg-muted text-foreground border-border"
                     } max-w-xs cursor-pointer hover:opacity-90 transition-opacity`}
-                  onClick={() => { getOfficeFormat(attachment.fileName, attachment.mimeType) ? setSelectedOffice(attachment) : void handlePdfClick(attachment, index); }}
+                  onClick={() => {
+                    if (getOfficeFormat(attachment.fileName, attachment.mimeType)) setSelectedOffice(attachment);
+                    else if (hasTextPreview) setSelectedText(attachment);
+                    else void handlePdfClick(attachment, index);
+                  }}
                   aria-busy={loadingPdfIndex === index}
                 >
                   <Icon className="h-8 w-8 shrink-0" />
@@ -1376,7 +1394,12 @@ export function MessageAttachments({
                     <button
                       type="button"
                       className="rounded-full p-1.5 hover:bg-black/10 disabled:cursor-wait"
-                      onClick={(event) => { event.stopPropagation(); getOfficeFormat(attachment.fileName, attachment.mimeType) ? setSelectedOffice(attachment) : void handlePdfClick(attachment, index); }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (getOfficeFormat(attachment.fileName, attachment.mimeType)) setSelectedOffice(attachment);
+                        else if (hasTextPreview) setSelectedText(attachment);
+                        else void handlePdfClick(attachment, index);
+                      }}
                       disabled={loadingPdfIndex !== null}
                       title={t("office_preview")}
                       aria-label={t("office_preview")}
@@ -1622,6 +1645,18 @@ export function MessageAttachments({
           </div>
           {selectedOffice && <Suspense fallback={<Loader2 className="m-auto animate-spin" />}>
             <DocumentPreview key={selectedOffice.url} url={selectedOffice.url} format={getOfficeFormat(selectedOffice.fileName, selectedOffice.mimeType)!} providerInstanceId={providerInstanceId} />
+          </Suspense>}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={selectedText !== null} onOpenChange={(open) => { if (!open) setSelectedText(null); }}>
+        <DialogContent className="flex h-[90vh] w-[95vw] max-w-4xl flex-col gap-3 p-4" aria-describedby={undefined}>
+          <div className="flex items-center gap-3 pr-8">
+            <DialogTitle className="min-w-0 flex-1 truncate">{selectedText?.fileName || t("office_preview")}</DialogTitle>
+            <button type="button" aria-label={t("download")} onClick={() => { if (selectedText) void handleDownload(selectedText); }}><Download className="h-5 w-5" /></button>
+          </div>
+          {selectedText && <Suspense fallback={<Loader2 className="m-auto animate-spin" />}>
+            <TextDocumentPreview key={selectedText.url} url={selectedText.url} kind={getTextPreviewKind(selectedText.fileName, selectedText.mimeType)} providerInstanceId={providerInstanceId} />
           </Suspense>}
         </DialogContent>
       </Dialog>

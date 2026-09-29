@@ -6,6 +6,10 @@
   "office_zoom_in": "Zoom in",
   "office_formula_note": "Formulas show the results saved in the file, without recalculation.",
   "office_preview_error": "This preview could not be displayed. You can still download the file.",
+  "email_no_subject": "No subject",
+  "email_from": "From",
+  "email_to": "To",
+  "email_date": "Date",
 
   "pin_message": "Pin message",
   "unpin_message": "Unpin message",

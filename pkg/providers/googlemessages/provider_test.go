@@ -163,7 +163,7 @@ func TestStoredConversationTipIsProviderScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
+	if err := database.AutoMigrate(&models.Conversation{}, &models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := db.DB
@@ -173,7 +173,12 @@ func TestStoredConversationTipIsProviderScoped(t *testing.T) {
 	provider := NewProvider()
 	provider.instance = "googlemessages-1"
 	remote := &gmproto.Conversation{ConversationID: "21", LatestMessageID: "other-tip"}
-	other := models.Message{ProtocolConvID: "googlemessages-2::21", ProtocolMsgID: "other-tip", Timestamp: time.Now()}
+	otherConversation := models.Conversation{ProtocolConvID: "googlemessages-2::21"}
+	ownConversation := models.Conversation{ProtocolConvID: "googlemessages-1::21"}
+	if err := database.Create(&[]models.Conversation{otherConversation, ownConversation}).Error; err != nil {
+		t.Fatal(err)
+	}
+	other := models.Message{ConversationID: otherConversation.ID, ProtocolConvID: otherConversation.ProtocolConvID, ProtocolMsgID: "other-tip", Timestamp: time.Now()}
 	if err := database.Create(&other).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +188,7 @@ func TestStoredConversationTipIsProviderScoped(t *testing.T) {
 
 	remote.LatestMessageID = "own-tip"
 	ownTimestamp := time.Date(2026, 9, 3, 7, 45, 33, 0, time.UTC)
-	own := models.Message{ProtocolConvID: "googlemessages-1::21", ProtocolMsgID: "own-tip", Timestamp: ownTimestamp}
+	own := models.Message{ConversationID: ownConversation.ID, ProtocolConvID: ownConversation.ProtocolConvID, ProtocolMsgID: "own-tip", Timestamp: ownTimestamp}
 	if err := database.Create(&own).Error; err != nil {
 		t.Fatal(err)
 	}

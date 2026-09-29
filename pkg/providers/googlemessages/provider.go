@@ -625,15 +625,27 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 		return nil
 	}
 	ids := make([]string, 0, len(messages))
+	conversationKeys := make([]string, 0, len(messages))
 	for _, message := range messages {
 		if message.ProtocolMsgID != "" {
 			ids = append(ids, message.ProtocolMsgID)
+		}
+		if message.ProtocolConvID != "" {
+			conversationKeys = append(conversationKeys, message.ProtocolConvID)
 		}
 	}
 	instance := p.instance
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		// Rebuild retry-local state inside the callback: db.Transaction may invoke
 		// it again after SQLITE_BUSY_SNAPSHOT.
+		var conversations []models.Conversation
+		if err := db.ForProvider(tx, instance).Conversations().Where("protocol_conv_id IN ?", conversationKeys).Find(&conversations).Error; err != nil {
+			return err
+		}
+		conversationIDs := make(map[string]uint, len(conversations))
+		for _, conversation := range conversations {
+			conversationIDs[conversation.ProtocolConvID] = conversation.ID
+		}
 		var storedMessages []models.Message
 		if len(ids) > 0 {
 			if err := db.ForProvider(tx, instance).Messages().Where("messages.protocol_msg_id IN ?", ids).Find(&storedMessages).Error; err != nil {
@@ -647,6 +659,11 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 
 		for _, incoming := range messages {
 			message := incoming
+			conversationID, ok := conversationIDs[message.ProtocolConvID]
+			if !ok {
+				return fmt.Errorf("%s: conversation %s is not stored", providerID, message.ProtocolConvID)
+			}
+			message.ConversationID = conversationID
 			existing, exists := existingByID[message.ProtocolMsgID]
 			if !exists {
 				reactions := message.Reactions

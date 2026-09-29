@@ -97,6 +97,8 @@ export function GetCurrentUserID(arg1:string):Promise<string>;
 
 export function GetCustomEmojis(arg1:string):Promise<Record<string, string>>;
 
+export function GetDocumentPreview(arg1:string,arg2:string,arg3:string):Promise<main.DocumentPreview>;
+
 export function GetGoogleChatWebCookies(arg1:string):Promise<Record<string, string>>;
 
 export function GetGroupDetails(arg1:string):Promise<models.GroupDetails>;
