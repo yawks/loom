@@ -46,7 +46,6 @@ export function ReactionPicker({
   // Fetch custom emojis when the picker opens (once per session)
   useEffect(() => {
     if (!open || !instanceId) return;
-    prepareEmojiSuggestions();
     if (customEmojis.length > 0) return;
 
     GetCustomEmojis(instanceId)
@@ -65,6 +64,7 @@ export function ReactionPicker({
   }, [open, provider, instanceId, customEmojis.length]);
 
   const setPickerOpen = (nextOpen: boolean) => {
+    if (nextOpen) prepareEmojiSuggestions();
     setOpen(nextOpen);
     onOpenChange?.(nextOpen);
   };
