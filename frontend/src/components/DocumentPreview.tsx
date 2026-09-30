@@ -22,7 +22,7 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
   const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
-  const navigateRef = useRef<((index: number) => Promise<void>) | null>(null);
+  const navigateRef = useRef<((index: number) => Promise<void> | void) | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [page, setPage] = useState({ index: 0, total: 0 });
 
@@ -43,7 +43,7 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
         void BrowserOpenURL(target.url);
       }
     };
-    const options = { mode: "worker" as const, useGoogleFonts: false, onError: fail, onHyperlinkClick };
+    const options = { mode: "worker" as const, useGoogleFonts: false, enableTextSelection: true, onError: fail, onHyperlinkClick };
     const load = async () => {
       const data = providerInstanceId
         ? await GetProviderAttachmentData(providerInstanceId, url)
@@ -55,6 +55,17 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
         const { XlsxViewer } = await import("@silurus/ooxml/xlsx");
         if (disposed) return;
         viewer = new XlsxViewer(mount, { ...options, resizable: false, showZoomSlider: false });
+      } else if (format === "docx") {
+        const { DocxScrollViewer } = await import("@silurus/ooxml/docx");
+        if (disposed) return;
+        const doc = new DocxScrollViewer(mount, { ...options, onVisiblePageChange: changed });
+        viewer = doc;
+        navigateRef.current = (index) => {
+          doc.scrollToPage(index);
+          // At an exact page boundary the viewer reports the preceding page as
+          // still visible. Keep the pager on the page explicitly requested.
+          setPage((current) => ({ ...current, index }));
+        };
       } else {
         // Auto margins center the complete viewer (canvas and text/link layers).
         // When zoomed wider than the viewport, margins collapse to zero so the
@@ -63,21 +74,13 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
         mount.style.flexDirection = "column";
         const canvas = document.createElement("canvas");
         mount.appendChild(canvas);
-        if (format === "docx") {
-          const { DocxViewer } = await import("@silurus/ooxml/docx");
-          if (disposed) return;
-          const doc = new DocxViewer(canvas, { ...options, container: mount, onPageChange: changed });
-          viewer = doc;
-          navigateRef.current = (index) => doc.goToPage(index);
-        } else {
-          const { PptxViewer } = await import("@silurus/ooxml/pptx");
-          if (disposed) return;
-          const slides = new PptxViewer(canvas, { ...options, width: mount.clientWidth, onSlideChange: changed });
-          viewer = slides;
-          navigateRef.current = (index) => slides.goToSlide(index);
-        }
+        const { PptxViewer } = await import("@silurus/ooxml/pptx");
+        if (disposed) return;
+        const slides = new PptxViewer(canvas, { ...options, width: mount.clientWidth, onSlideChange: changed });
+        viewer = slides;
+        navigateRef.current = (index) => slides.goToSlide(index);
       }
-      if (format !== "xlsx") {
+      if (format === "pptx") {
         const page = mount.firstElementChild as HTMLElement | null;
         if (page) {
           page.style.marginInline = "auto";
