@@ -417,11 +417,15 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			// Update last sync timestamp when receiving a new message
 			w.saveLastSyncTimestamp(msg.Timestamp)
 
+			// A persisted live message must reach the application listener so its
+			// last-message caches are invalidated. Dropping this event when a history
+			// burst fills the queue leaves the conversation body current but its
+			// sidebar snippet stale indefinitely.
 			select {
 			case w.eventChan <- core.MessageEvent{InstanceID: w.getInstanceId(), Message: *msg}:
 				verboseLogf("WhatsApp: MessageEvent emitted successfully for message %s\n", msg.ProtocolMsgID)
-			default:
-				fmt.Printf("WhatsApp: WARNING - Failed to emit MessageEvent (channel full) for message %s\n", msg.ProtocolMsgID)
+			case <-w.ctx.Done():
+				return
 			}
 			select {
 			case w.eventChan <- core.ContactStatusEvent{InstanceID: w.getInstanceId(), UserID: "refresh", Status: "message_received"}:

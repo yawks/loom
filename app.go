@@ -3441,7 +3441,11 @@ func (a *App) SendReply(conversationID string, content string, quotedMessageID s
 	if err != nil {
 		return nil, err
 	}
-	return provider.SendReply(conversationID, content, quotedMessageID)
+	message, err := provider.SendReply(conversationID, content, quotedMessageID)
+	if err == nil {
+		a.invalidateMessageCaches()
+	}
+	return message, err
 }
 
 // SendThreadMessage sends a reply inside a thread
