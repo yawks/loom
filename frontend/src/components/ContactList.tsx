@@ -754,7 +754,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                       return (
                         <div
                           className="absolute -top-1 -left-1 bg-background rounded-full p-0.5 border border-border shadow-sm flex items-center justify-center "
-                          title={statusEmojiData.emoji}
+                          title={statusEmojiData.statusText}
                         >
                           <Emoji
                             emoji={statusEmojiData.emoji}

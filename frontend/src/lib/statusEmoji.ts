@@ -37,7 +37,7 @@ export function getProviderInstanceId(linkedAccount: models.LinkedAccount | unde
  */
 export function getContactStatusEmoji(
   contact: models.MetaContact
-): { emoji: string; providerInstanceId: string } | null {
+): { emoji: string; providerInstanceId: string; statusText?: string } | null {
   if (!contact.linkedAccounts || contact.linkedAccounts.length === 0) {
     return null;
   }
@@ -46,11 +46,17 @@ export function getContactStatusEmoji(
     const emoji = getStatusEmoji(account);
     if (emoji) {
       const providerInstanceId = getProviderInstanceId(account);
+      let statusText: string | undefined;
+      try {
+        statusText = JSON.parse(account.extra || "{}").statusText || undefined;
+      } catch {
+        // Ignore malformed legacy metadata; the emoji can still be displayed.
+      }
       if (providerInstanceId) {
-        return { emoji, providerInstanceId };
+        return { emoji, providerInstanceId, statusText };
       }
       // If emoji exists but no provider instance ID, still return the emoji
-      return { emoji, providerInstanceId: "" };
+      return { emoji, providerInstanceId: "", statusText };
     }
   }
   return null;
