@@ -81,6 +81,23 @@ function cacheAttachment(url: string, data: string): void {
   }
 }
 
+async function copyImageToClipboard(source: string): Promise<void> {
+  const png = (async () => {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext("2d")!.drawImage(image, 0, 0);
+    return new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Image conversion failed")), "image/png"),
+    );
+  })();
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+}
+
 // Drop base64 strings before an extended background/sleep period. WebKit can
 // retain decoded image surfaces after JS has released the corresponding string.
 export function clearAttachmentCache(): void {
@@ -1071,6 +1088,11 @@ export function MessageAttachments({
         onEdit={() => undefined}
         showEdit={false}
         onDownload={() => { void handleDownload(attachment); }}
+        onCopy={closePreview && selectedImage ? () => {
+          void copyImageToClipboard(selectedImage)
+            .then(() => showToast?.(t("image_copied"), "success"))
+            .catch(() => showToast?.(t("image_copy_error"), "error"));
+        } : undefined}
         onDelete={() => {
           if (closePreview) {
             setSelectedImage(null);

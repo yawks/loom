@@ -1,4 +1,4 @@
-import { Download, Edit, Forward, MessageSquare, MoreVertical, Pin, Reply, Trash2 } from "lucide-react";
+import { Copy, Download, Edit, Forward, MessageSquare, MoreVertical, Pin, Reply, Trash2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -18,6 +18,7 @@ interface MessageActionsProps {
   onEdit: () => void;
   onDelete: () => void;
   onDownload?: () => void;
+  onCopy?: () => void;
   onReply?: () => void;
   onReact?: (emoji: string) => void;
   onStartThread?: () => void;
@@ -39,6 +40,7 @@ export function MessageActions({
   onEdit,
   onDelete,
   onDownload,
+  onCopy,
   onReply,
   onReact,
   onStartThread,
@@ -152,7 +154,7 @@ export function MessageActions({
           onOpenChange={setReactionPickerOpen}
         />
       )}
-      {(isFromMe || showDeleteForAll || onDownload) && (
+      {(isFromMe || showDeleteForAll || onDownload || onCopy) && (
         <Popover open={open} onOpenChange={setInternalOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -191,6 +193,19 @@ export function MessageActions({
                 >
                   <Download className="h-4 w-4" />
                   {t("download")}
+                </Button>
+              )}
+              {onCopy && (
+                <Button
+                  variant="ghost"
+                  className="justify-start gap-2 h-9"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCopy();
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                  {t("copy_image")}
                 </Button>
               )}
               {(isFromMe || showDeleteForAll) && (
