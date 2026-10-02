@@ -34,6 +34,12 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 		return
 	}
 
+	instanceID, _ := p.GetConfig().GetString("_instance_id")
+	if strings.TrimSpace(instanceID) == "" {
+		p.log("GoogleChatProvider.pollAllSpaces: missing provider instance ID\n")
+		return
+	}
+
 	// List all spaces.
 	var spaces []Space
 	pageToken := ""
@@ -54,7 +60,6 @@ func (p *GoogleChatProvider) pollAllSpaces(ctx context.Context) {
 		pageToken = resp.NextPageToken
 	}
 
-	instanceID := p.getInstanceID()
 	selfID := p.getSelfID()
 
 	for _, space := range spaces {
@@ -201,6 +206,12 @@ func (p *GoogleChatProvider) pollReactionChanges(spaceName string) {
 	if db.DB == nil {
 		return
 	}
+	instanceID, _ := p.GetConfig().GetString("_instance_id")
+	scope := db.ForProvider(db.DB, instanceID)
+	if scope.InstanceID() == "" {
+		p.log("GoogleChatProvider.pollReactionChanges: missing provider instance ID\n")
+		return
+	}
 	params := url.Values{"pageSize": {"100"}, "orderBy": {"createTime desc"}}
 	if pageToken := p.reactionPageTokens[spaceName]; pageToken != "" {
 		params.Set("pageToken", pageToken)
@@ -223,11 +234,14 @@ func (p *GoogleChatProvider) pollReactionChanges(spaceName string) {
 		return
 	}
 	var rows []storedReactionCount
-	if err := db.DB.Table("reactions AS r").
-		Select("m.protocol_msg_id, r.emoji, COUNT(*) AS count").
-		Joins("JOIN messages AS m ON m.id = r.message_id").
-		Where("m.protocol_msg_id IN ?", messageIDs).
-		Group("m.protocol_msg_id, r.emoji").
+	// Keep locally stored messages with zero reactions in the result, while
+	// excluding unknown messages before any per-message network work.
+	if err := scope.Messages().
+		Select("messages.protocol_msg_id, COALESCE(r.emoji, '') AS emoji, COUNT(r.id) AS count").
+		Joins("LEFT JOIN reactions AS r ON messages.id = r.message_id").
+		Where("messages.protocol_conv_id = ?", scope.ConversationID(core.StripConvID(spaceName))).
+		Where("messages.protocol_msg_id IN ?", messageIDs).
+		Group("messages.protocol_msg_id, r.emoji").
 		Scan(&rows).Error; err != nil {
 		p.log("GoogleChatProvider.pollReactionChanges: load stored counts for %s: %v\n", spaceName, err)
 		return
@@ -237,13 +251,19 @@ func (p *GoogleChatProvider) pollReactionChanges(spaceName string) {
 		if stored[row.ProtocolMsgID] == nil {
 			stored[row.ProtocolMsgID] = make(map[string]int)
 		}
-		stored[row.ProtocolMsgID][row.Emoji] = row.Count
+		if row.Count > 0 {
+			stored[row.ProtocolMsgID][row.Emoji] = row.Count
+		}
 	}
 
 	reconciled := 0
 	for _, message := range response.Messages {
+		previous, exists := stored[message.Name]
+		if !exists || message.DeleteTime != nil {
+			continue
+		}
 		remoteCounts := reactionSummaryCounts(message.EmojiReactionSummaries)
-		if equalReactionCounts(remoteCounts, stored[message.Name]) {
+		if equalReactionCounts(remoteCounts, previous) {
 			continue
 		}
 		reactions, err := p.listMessageReactions(message.Name)
@@ -265,9 +285,22 @@ func (p *GoogleChatProvider) emitReactionDiff(convID, messageID string, current 
 	if db.DB == nil {
 		return
 	}
+	instanceID, _ := p.GetConfig().GetString("_instance_id")
+	scope := db.ForProvider(db.DB, instanceID)
+	if scope.InstanceID() == "" {
+		p.log("GoogleChatProvider.emitReactionDiff: missing provider instance ID\n")
+		return
+	}
 	var message models.Message
-	namespacedConvID := core.BuildConvID(p.getInstanceID(), core.StripConvID(convID))
-	if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, namespacedConvID).First(&message).Error; err != nil {
+	namespacedConvID := scope.ConversationID(core.StripConvID(convID))
+	// A boundary message may not have been imported yet. That is an expected
+	// miss, so use Find rather than logging ErrRecordNotFound every poll.
+	result := scope.Messages().Select("id").Where("protocol_msg_id = ? AND protocol_conv_id = ?", messageID, namespacedConvID).Limit(1).Find(&message)
+	if result.Error != nil {
+		p.log("GoogleChatProvider.emitReactionDiff: load message %s: %v\n", messageID, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
 		return
 	}
 	var previous []models.Reaction

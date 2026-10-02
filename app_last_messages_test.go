@@ -25,12 +25,20 @@ func TestGetAllLastMessagesCollapsesConcurrentCacheMisses(t *testing.T) {
 	}
 
 	base := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
+	threadRoot := "thread-root"
 	messages := []models.Message{
 		{ProtocolConvID: "conversation-a", ProtocolMsgID: "older", Body: "older", Timestamp: base},
 		{ProtocolConvID: "conversation-a", ProtocolMsgID: "newer", Body: "newer", Timestamp: base.Add(time.Minute)},
 		{ProtocolConvID: "conversation-a", ProtocolMsgID: "empty-technical", Timestamp: base.Add(2 * time.Minute)},
 		{ProtocolConvID: "conversation-b", ProtocolMsgID: "only", Body: "only", Timestamp: base},
 		{ProtocolConvID: "conversation-c", ProtocolMsgID: "media", Attachments: `[{"type":"image","fileName":"image.jpg"}]`, Timestamp: base},
+		{ProtocolConvID: "conversation-d", ProtocolMsgID: "offset-older", Body: "older", Timestamp: base.Add(-time.Minute).In(time.FixedZone("+02", 7200))},
+		{ProtocolConvID: "conversation-d", ProtocolMsgID: "utc-newer", Body: "newer", Timestamp: base},
+		{ProtocolConvID: "conversation-e", ProtocolMsgID: "tie-first", Body: "first", Timestamp: base},
+		{ProtocolConvID: "conversation-e", ProtocolMsgID: "tie-last", Body: "last", ThreadID: &threadRoot, Timestamp: base},
+		{ProtocolConvID: "conversation-f", ProtocolMsgID: "call", CallType: "incoming_call", Timestamp: base},
+		{ProtocolConvID: "conversation-empty", ProtocolMsgID: "technical", Body: "  ", Attachments: "null", Timestamp: base},
+		{ProtocolConvID: "conversation-deleted", ProtocolMsgID: "deleted", Body: "deleted", Timestamp: base, DeletedAt: gorm.DeletedAt{Time: base, Valid: true}},
 	}
 	if err := database.Create(&messages).Error; err != nil {
 		t.Fatal(err)
@@ -85,6 +93,14 @@ func TestGetAllLastMessagesCollapsesConcurrentCacheMisses(t *testing.T) {
 		}
 		if got := result["conversation-c"].ProtocolMsgID; got != "media" {
 			t.Fatalf("latest media message = %q, want media", got)
+		}
+		for conv, want := range map[string]string{"conversation-d": "utc-newer", "conversation-e": "tie-last", "conversation-f": "call"} {
+			if got := result[conv].ProtocolMsgID; got != want {
+				t.Fatalf("%s latest message = %q, want %q", conv, got, want)
+			}
+		}
+		if len(result) != 6 {
+			t.Fatalf("got %d conversations, want 6 (exclude empty and deleted)", len(result))
 		}
 	}
 	if got := queries.Load(); got != 1 {

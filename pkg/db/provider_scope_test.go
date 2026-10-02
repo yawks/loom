@@ -33,6 +33,24 @@ func TestProviderScopeFiltersSharedTablesAndFailsClosed(t *testing.T) {
 	if len(scoped) != 1 || scoped[0].ProtocolMsgID != "slack-message" {
 		t.Fatalf("scoped messages = %#v", scoped)
 	}
+	for _, test := range []struct {
+		instanceID, conversationID string
+		want                       int
+	}{
+		{"slack-1", "slack-1::C1", 1},
+		{"slack-1", "teams-1::C1", 0},
+		{"slack-1", "C1", 0},
+		{"", "slack-1::C1", 0},
+	} {
+		var rows []models.Message
+		if err := ForProvider(database, test.instanceID).MessagesForConversation(test.conversationID).Find(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != test.want {
+			t.Fatalf("exact scope %q/%q returned %d messages, want %d", test.instanceID, test.conversationID, len(rows), test.want)
+		}
+	}
+
 	var unowned int64
 	if err := ForProvider(database, "").Messages().Count(&unowned).Error; err != nil {
 		t.Fatal(err)

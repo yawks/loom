@@ -3,6 +3,7 @@ package slack
 import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,14 +80,33 @@ func TestSlackFallbackListsOnlyCurrentProviderConversations(t *testing.T) {
 }
 
 func TestSlackFallbackEmitsNewMainMessagesAndThreadReplies(t *testing.T) {
-	threadID := "1788793712.361129"
-	stored := []models.Message{
-		{ProtocolMsgID: "already-known"},
-		{ProtocolMsgID: "new-main"},
-		{ProtocolMsgID: "new-reply", ThreadID: &threadID},
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	got := slackNewlyStoredMessages(stored, []string{"already-known"})
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-time.Hour)
+	threadID := "1788793712.361129"
+	known := models.Message{ProtocolConvID: "slack-1::C1", ProtocolMsgID: "already-known", Timestamp: since.Add(time.Minute), ThreadID: &threadID}
+	if err := database.Create(&known).Error; err != nil {
+		t.Fatal(err)
+	}
+	stored := []models.Message{
+		{ProtocolConvID: "slack-1::C1", ProtocolMsgID: "new-main", Timestamp: since.Add(2 * time.Minute)},
+		{ProtocolConvID: "slack-1::C1", ProtocolMsgID: "new-reply", ThreadID: &threadID, Timestamp: since.Add(3 * time.Minute)},
+		{ProtocolConvID: "teams-1::C1", ProtocolMsgID: "foreign", Timestamp: since.Add(4 * time.Minute)},
+		{ProtocolConvID: "slack-1::C2", ProtocolMsgID: "other-conversation", Timestamp: since.Add(4 * time.Minute)},
+		{ProtocolConvID: "slack-1::C1", ProtocolMsgID: "old-backfill", Timestamp: since.Add(-time.Minute)},
+	}
+	if err := database.Create(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := slackNewlyStoredMessages(database, "slack-1", "slack-1::C1", since, known.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("newly stored messages = %d, want 2", len(got))
 	}
@@ -95,5 +115,31 @@ func TestSlackFallbackEmitsNewMainMessagesAndThreadReplies(t *testing.T) {
 	}
 	if got[1].ThreadID == nil || *got[1].ThreadID != threadID {
 		t.Fatalf("thread reply was not preserved: %#v", got[1].ThreadID)
+	}
+	// Verify that an idle cycle seeks past existing replies instead of scanning
+	// their timestamps. Capture the actual helper query, including provider scope.
+	var statement *gorm.Statement
+	if err := database.Callback().Query().After("gorm:query").Register("test:capture_new_messages", func(tx *gorm.DB) {
+		statement = tx.Statement
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := slackNewlyStoredMessages(database.Session(&gorm.Session{DryRun: true}), "slack-1", "slack-1::C1", since, known.ID); err != nil {
+		t.Fatal(err)
+	}
+	var plan []struct{ Detail string }
+	if err := database.Raw("EXPLAIN QUERY PLAN "+statement.SQL.String(), statement.Vars...).Scan(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	seeksID := false
+	for _, step := range plan {
+		seeksID = seeksID || strings.Contains(step.Detail, "rowid>?")
+	}
+	if !seeksID {
+		t.Fatalf("polling does not seek by row ID: %v; %s; %v", plan, statement.SQL.String(), statement.Vars)
+	}
+	got, err = slackNewlyStoredMessages(database, "", "slack-1::C1", since, 0)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty instance must fail closed: %v, %v", got, err)
 	}
 }

@@ -22,13 +22,31 @@ func TestEnsureIndicesCreatesMessageQueryIndices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"idx_messages_conv_latest_jd", "idx_messages_active_calls"} {
+	for _, name := range []string{"idx_messages_conv_latest_jd", "idx_messages_active_calls", "idx_messages_conv_main"} {
 		var sql string
 		if err := database.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&sql).Error; err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(sql, "WHERE deleted_at IS NULL") {
 			t.Fatalf("index %s was not created as a partial non-deleted index: %q", name, sql)
+		}
+	}
+	for _, before := range []string{"", " AND timestamp < '2026-10-02'"} {
+		var plan []struct{ Detail string }
+		if err := database.Raw(`EXPLAIN QUERY PLAN SELECT * FROM messages
+			WHERE protocol_conv_id = 'conversation' AND deleted_at IS NULL
+			AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)` + before + ` ORDER BY timestamp DESC LIMIT 50`).Scan(&plan).Error; err != nil {
+			t.Fatal(err)
+		}
+		usesIndex := false
+		for _, step := range plan {
+			usesIndex = usesIndex || strings.Contains(step.Detail, "idx_messages_conv_main")
+			if strings.Contains(step.Detail, "TEMP B-TREE") {
+				t.Fatalf("timeline requires a temporary sort: %v", plan)
+			}
+		}
+		if !usesIndex {
+			t.Fatalf("timeline does not use the main-message index: %v", plan)
 		}
 	}
 }

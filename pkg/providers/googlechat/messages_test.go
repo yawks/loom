@@ -356,7 +356,13 @@ func TestPollReactionChangesFetchesOnlyMismatchedMessage(t *testing.T) {
 		requests = append(requests, req.URL.Path)
 		switch req.URL.Path {
 		case "/v1/spaces/scan-test/messages":
-			return jsonResponse(`{"messages":[{"name":"spaces/scan-test/messages/old-reply","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]}],"nextPageToken":"page-2"}`), nil
+			return jsonResponse(`{"messages":[
+				{"name":"spaces/scan-test/messages/unknown","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]},
+				{"name":"spaces/scan-test/messages/foreign","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]},
+				{"name":"spaces/scan-test/messages/deleted","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]},
+				{"name":"spaces/scan-test/messages/unchanged"},
+				{"name":"spaces/scan-test/messages/old-reply","emojiReactionSummaries":[{"emoji":{"unicode":"🙃"},"reactionCount":1}]}
+			],"nextPageToken":"page-2"}`), nil
 		case "/v1/spaces/scan-test/messages/old-reply/reactions":
 			return jsonResponse(`{"reactions":[{"user":{"name":"users/self"},"emoji":{"unicode":"🙃"}}]}`), nil
 		default:
@@ -383,11 +389,55 @@ func TestPollReactionChangesFetchesOnlyMismatchedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	foreignAccount := models.LinkedAccount{MetaContactID: meta.ID, Protocol: "googlechat", ProviderInstanceID: "googlechat-other", UserID: "spaces/scan-test"}
+	if err := db.DB.Create(&foreignAccount).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreignConversation := models.Conversation{LinkedAccountID: foreignAccount.ID, ProtocolConvID: "googlechat-other::spaces/scan-test"}
+	if err := db.DB.Create(&foreignConversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	foreign := models.Message{ConversationID: foreignConversation.ID, ProtocolConvID: "googlechat-other::spaces/scan-test", ProtocolMsgID: "spaces/scan-test/messages/foreign", Timestamp: time.Now()}
+	deleted := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/scan-test/messages/deleted", Timestamp: time.Now()}
+	unchanged := models.Message{ConversationID: conversation.ID, ProtocolConvID: convID, ProtocolMsgID: "spaces/scan-test/messages/unchanged", Timestamp: time.Now()}
+	for _, row := range []*models.Message{&foreign, &deleted, &unchanged} {
+		if err := db.DB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.DB.Delete(&deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	provider.pollReactionChanges("spaces/scan-test")
 	event := (<-provider.eventChan).(core.ReactionEvent)
 	if !event.Added || event.MessageID != message.ProtocolMsgID || event.UserID != "self" || event.Emoji != "🙃" {
 		t.Fatalf("unexpected reaction event: %#v", event)
 	}
+	if len(provider.eventChan) != 0 {
+		t.Fatal("unexpected events for unknown, deleted, unchanged or foreign messages")
+	}
+	var foreignAfter models.Message
+	if err := db.DB.Preload("Reactions").First(&foreignAfter, foreign.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if foreignAfter.ProtocolConvID != foreign.ProtocolConvID || len(foreignAfter.Reactions) != 0 {
+		t.Fatal("reaction poll mutated the other provider's message")
+	}
+	for _, id := range []string{"spaces/scan-test/messages/unknown", foreign.ProtocolMsgID, deleted.ProtocolMsgID} {
+		provider.emitReactionDiff("spaces/scan-test", id, []models.Reaction{{UserID: "self", Emoji: "🙃"}})
+	}
+	if len(provider.eventChan) != 0 {
+		t.Fatal("reaction diff emitted events for missing, foreign or deleted messages")
+	}
+	// Missing instance IDs fail closed before network or event work.
+	provider.config = core.ProviderConfig{}
+	provider.pollReactionChanges("spaces/scan-test")
+	provider.emitReactionDiff("spaces/scan-test", message.ProtocolMsgID, []models.Reaction{{UserID: "self", Emoji: "🙃"}})
+	if len(provider.eventChan) != 0 {
+		t.Fatal("unconfigured provider emitted a reaction event")
+	}
+
 	if len(requests) != 2 {
 		t.Fatalf("API request count = %d, want 2: %v", len(requests), requests)
 	}

@@ -55,6 +55,17 @@ func (scope ProviderScope) Messages() *gorm.DB {
 	)
 }
 
+// MessagesForConversation validates ownership before using an exact index seek.
+// Older SQLite planners can prefer Messages' provider range over an additional
+// conversation equality, preventing a seek on the index's trailing rowid.
+func (scope ProviderScope) MessagesForConversation(conversationID string) *gorm.DB {
+	query := scope.database.Model(&models.Message{})
+	if !scope.OwnsConversation(conversationID) {
+		return query.Where("1 = 0")
+	}
+	return query.Where("messages.protocol_conv_id = ?", conversationID)
+}
+
 func (scope ProviderScope) Conversations() *gorm.DB {
 	query := scope.database.Model(&models.Conversation{})
 	if scope.instanceID == "" {

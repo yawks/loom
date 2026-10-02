@@ -232,11 +232,16 @@ func ensureIndices(db *gorm.DB) error {
 	if err != nil {
 		fmt.Printf("Error creating index idx_messages_conv_latest: %v\n", err)
 	}
+	// Match both timeline pages so thread replies do not require table reads
+	// while SQLite searches for the next 50 top-level messages.
+	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_main ON messages(protocol_conv_id, timestamp DESC) WHERE deleted_at IS NULL AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)`).Error; err != nil {
+		fmt.Printf("Error creating index idx_messages_conv_main: %v\n", err)
+	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats_time ON messages(timestamp, protocol_conv_id, is_from_me) WHERE deleted_at IS NULL AND is_deleted = 0`).Error; err != nil {
 		fmt.Printf("Error creating index idx_messages_stats_time: %v\n", err)
 	}
 	// GetAllLastMessages orders by julianday(timestamp), so a plain timestamp
-	// index cannot provide the window's ordering. Include id to make ties
+	// index cannot provide the latest-message ordering. Include id to make ties
 	// deterministic without an additional temporary sort.
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_latest_jd ON messages(protocol_conv_id, julianday(timestamp) DESC, id DESC) WHERE deleted_at IS NULL`).Error; err != nil {
 		fmt.Printf("Error creating index idx_messages_conv_latest_jd: %v\n", err)

@@ -4484,29 +4484,29 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 	// them before comparison; ordering the raw TEXT values would compare wall-clock
 	// times and put e.g. 21:00+02:00 after 20:00+00:00 incorrectly.
 	// ID makes equal timestamps deterministic.
-	// Thread replies intentionally participate: activity in a thread makes its
-	// conversation recent too. Rank IDs using the expression index first, then
-	// load full rows for only the winning message in each conversation. Selecting
-	// every column inside the window forces a table lookup for every historical
-	// message even though all but one per conversation are discarded.
+	// Thread replies intentionally participate. Enumerate conversation keys from
+	// the index, then seek the first meaningful message in each conversation
+	// instead of ranking every historical message with a window function.
 	err := db.DB.Raw(`
 		SELECT messages.*
-		FROM messages
-		JOIN (
-			SELECT id FROM (
-				SELECT id, ROW_NUMBER() OVER (
-					PARTITION BY protocol_conv_id
-					ORDER BY julianday(timestamp) DESC, id DESC
-				) AS rn
-				FROM messages INDEXED BY idx_messages_conv_latest_jd
-				WHERE deleted_at IS NULL
-				  AND (
-					trim(coalesce(body, '')) != '' OR
-					trim(coalesce(attachments, '')) NOT IN ('', '[]', 'null') OR
-					trim(coalesce(call_type, '')) != ''
-				  )
-			) WHERE rn = 1
-		) AS latest ON latest.id = messages.id
+		FROM (
+			SELECT DISTINCT protocol_conv_id
+			FROM messages INDEXED BY idx_messages_conv_latest_jd
+			WHERE deleted_at IS NULL
+		) AS conversations
+		JOIN messages ON messages.id = (
+			SELECT id
+			FROM messages AS candidate INDEXED BY idx_messages_conv_latest_jd
+			WHERE candidate.protocol_conv_id = conversations.protocol_conv_id
+			  AND deleted_at IS NULL
+			  AND (
+				trim(coalesce(body, '')) != '' OR
+				trim(coalesce(attachments, '')) NOT IN ('', '[]', 'null') OR
+				trim(coalesce(call_type, '')) != ''
+			  )
+			ORDER BY julianday(timestamp) DESC, id DESC
+			LIMIT 1
+		)
 	`).Find(&messages).Error
 
 	if err != nil {
