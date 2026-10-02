@@ -653,3 +653,17 @@ func (p *Provider) removeVirtualConversations() error {
 	}
 	return nil
 }
+
+// removeStoredMeetingMetadata cleans rows saved before meeting metadata was
+// filtered at the Teams transport boundary.
+func (p *Provider) removeStoredMeetingMetadata() error {
+	if db.DB == nil {
+		return nil
+	}
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		return db.ForProvider(tx, p.instance).Messages().
+			Where("body LIKE ? AND body LIKE ? AND body LIKE ? AND body LIKE ?",
+				`%"scopeId":%`, `%"callId":%`, `%"iCalUid":%`, `%"meetingTenantId":%`).
+			Delete(&models.Message{}).Error
+	})
+}

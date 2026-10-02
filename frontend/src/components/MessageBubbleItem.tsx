@@ -5,9 +5,9 @@ import { getMessageDomId, getQuotedSenderDisplayName, getSenderDisplayName, isDi
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 import { CallMessage } from "./CallMessage";
-import { Input } from "@/components/ui/input";
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { MessageActions } from "./MessageActions";
+import { MessageEditComposer } from "./MessageEditComposer";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageDateSeparator } from "./MessageDateSeparator";
 import { MessageReactions } from "./MessageReactions";
@@ -40,9 +40,9 @@ export interface MessageHandlers {
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onContactAvatarClick: (message: models.Message, name: string) => void;
   onNavigateToEdit: (direction: "up" | "down", returnFocusToInput?: () => void) => void;
-  onEditKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onEditKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onEditBlur: (relatedTarget: EventTarget | null) => void;
-  editingInputRef: RefObject<HTMLInputElement | null>;
+  editingInputRef: RefObject<HTMLTextAreaElement | null>;
   setOpenActionsMessageId: (id: string | null) => void;
   showToast: (message: string, type?: "error" | "success" | "info", action?: { label: string; onClick: () => void }) => void;
 }
@@ -64,7 +64,7 @@ interface MessageBubbleItemProps {
   editingMessageId: string | null;
   editingText: string;
   setEditingText: (text: string) => void;
-  editingInputRef: RefObject<HTMLInputElement | null>;
+  editingInputRef: RefObject<HTMLTextAreaElement | null>;
   openActionsMessageId: string | null;
   currentUserId: string | undefined;
   groupParticipants?: models.GroupParticipant[];
@@ -264,21 +264,15 @@ export function MessageBubbleItem({
                 )}
                 {editingMessageId === messageId ? (
                   <div className="flex flex-col gap-2">
-                    <Input
-                      ref={editingInputRef}
+                    <MessageEditComposer
+                      providerInstanceId={providerInstanceId}
                       value={editingText}
-                      onChange={(e) => setEditingText(e.target.value)}
-                      onKeyDown={(e) => {
-                        handlers.onEditKeyDown(e);
-                        if (e.defaultPrevented) return;
-                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlers.onSaveEdit(); }
-                        else if (e.key === "Escape") { handlers.onCancelEdit(); }
-                      }}
-                      onBlur={(e) => {
-                        handlers.onEditBlur(e.relatedTarget);
-                      }}
-                      className="text-foreground"
-                      autoFocus
+                      onChange={setEditingText}
+                      onSave={() => handlers.onSaveEdit()}
+                      onCancel={handlers.onCancelEdit}
+                      onBlur={handlers.onEditBlur}
+                      onMarkdownKeyDown={handlers.onEditKeyDown}
+                      textareaRef={editingInputRef}
                     />
                     <div className="flex gap-2 justify-end">
                       <button onClick={handlers.onCancelEdit} className="text-xs px-2 py-1 rounded hover:bg-muted">{t("cancel")}</button>

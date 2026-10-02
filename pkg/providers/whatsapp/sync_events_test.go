@@ -158,6 +158,22 @@ func TestReclassifyOnDemandWhatsAppHistoryKeepsExistingMessagesRead(t *testing.T
 	}
 }
 
+func TestReclassifyWhatsAppHistoryKeepsEmptyArtifactsRead(t *testing.T) {
+	unread := []models.Message{
+		{ProtocolMsgID: "visible", Body: "hello", Timestamp: time.Unix(1, 0)},
+		{ProtocolMsgID: "empty-control", Timestamp: time.Unix(2, 0)},
+	}
+	forcedIDs := map[string]struct{}{"empty-control": {}}
+
+	read, unread := reclassifyNewIncomingWhatsAppMessages(nil, unread, nil, forcedIDs, false)
+	if len(read) != 1 || read[0].ProtocolMsgID != "empty-control" {
+		t.Fatalf("read messages = %#v", read)
+	}
+	if len(unread) != 1 || unread[0].ProtocolMsgID != "visible" {
+		t.Fatalf("unread messages = %#v", unread)
+	}
+}
+
 func TestEmptyWhatsAppSelfHistoryArtifact(t *testing.T) {
 	selfConversationID := "whatsapp-2::33677815440@s.whatsapp.net"
 	artifact := models.Message{

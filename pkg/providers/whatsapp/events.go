@@ -290,7 +290,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 		// If not found in cache, check database
 		if existingMsg == nil && db.DB != nil {
 			var dbMsg models.Message
-			if err := db.ForProvider(db.DB, w.getInstanceId()).Messages().Preload("Receipts").Preload("Reactions").Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, msgID).First(&dbMsg).Error; err == nil {
+			result := db.ForProvider(db.DB, w.getInstanceId()).Messages().Preload("Receipts").Preload("Reactions").Where("protocol_conv_id = ? AND protocol_msg_id = ?", convID, msgID).Find(&dbMsg)
+			if result.Error == nil && result.RowsAffected > 0 {
 				existingMsg = &dbMsg
 				verboseLogf("WhatsApp: Found existing message %s in database\n", msgID)
 				// Also add to cache if we found it in DB
@@ -309,8 +310,8 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 					}
 				}
 				w.mu.Unlock()
-			} else {
-				fmt.Printf("WhatsApp: Message %s not found in database: %v\n", msgID, err)
+			} else if result.Error != nil {
+				fmt.Printf("WhatsApp: Failed to look up message %s in database: %v\n", msgID, result.Error)
 			}
 		}
 
@@ -409,7 +410,10 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			if msg.Attachments == "" && (v.Message.GetImageMessage() != nil || v.Message.GetVideoMessage() != nil || v.Message.GetAudioMessage() != nil || v.Message.GetDocumentMessage() != nil || v.Message.GetStickerMessage() != nil) {
 				fmt.Printf("WhatsApp: WARNING - Message %s has media but no attachments were extracted! Chat: %s, Sender: %s\n", msg.ProtocolMsgID, v.Info.Chat.String(), v.Info.Sender.String())
 			}
-			w.appendMessageToConversation(msg)
+			if err := w.appendMessageToConversation(msg); err != nil {
+				w.log("WhatsApp: Failed to persist live message %s in %s: %v\n", msg.ProtocolMsgID, msg.ProtocolConvID, err)
+				break
+			}
 			if msg.QuotedMessageID != nil && *msg.QuotedMessageID != "" && msg.QuotedSenderID != nil && *msg.QuotedSenderID != "" {
 				go w.requestMissingQuotedMessage(msg.ProtocolConvID, *msg.QuotedMessageID, *msg.QuotedSenderID)
 			}
@@ -820,15 +824,17 @@ func (w *WhatsAppProvider) eventHandler(evt interface{}) {
 			w.log("WhatsApp: HistorySync type=%s conversations=%d callLogs=%d\n", v.Data.GetSyncType(), len(v.Data.GetConversations()), len(v.Data.GetCallLogRecords()))
 			w.cacheConversationsFromHistory(v.Data)
 			// Process history messages to populate previews and cache
-			w.cacheMessagesFromHistory(v.Data)
+			persistedHistory := w.cacheMessagesFromHistory(v.Data)
 			// Call summaries are separate from regular history messages. In particular,
 			// this is the only payload that contains the real start time, outcome and
 			// duration for calls that happened while Loom was offline.
 			w.processCallLogRecords(v.Data)
 
-			// Update last sync timestamp after successful history sync
-			now := time.Now()
-			w.saveLastSyncTimestamp(now)
+			// A failed batch must leave the old watermark in place so the next
+			// startup retries the same interval instead of cementing a hole.
+			if persistedHistory {
+				w.saveLastSyncTimestamp(time.Now())
+			}
 		}
 
 		// Message conversion and persistence above can dominate a large resync. Only

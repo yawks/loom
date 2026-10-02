@@ -20,7 +20,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t, focusCo
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [originalEditText, setOriginalEditText] = useState("");
-  const editingInputRef = useRef<HTMLInputElement>(null);
+  const editingInputRef = useRef<HTMLTextAreaElement>(null);
   const isNavigatingEditRef = useRef(false);
 
   const handleEditMessage = useCallback((message: models.Message) => {
@@ -152,7 +152,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t, focusCo
     [messages, editingMessageId, handleEditMessage, focusComposer]
   );
 
-  const handleEditKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
+  const handleEditKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (e.key === "ArrowUp" && (e.currentTarget.selectionStart === 0 || editingText.trim() === "")) {

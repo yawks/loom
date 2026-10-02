@@ -96,6 +96,40 @@ func TestStoreMessagesEditRestoresDeletedMessage(t *testing.T) {
 	}
 }
 
+func TestRemoveStoredMeetingMetadataIsProviderScoped(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	previous := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previous; sqlDB, _ := database.DB(); _ = sqlDB.Close() })
+
+	metadata := `{"scopeId":"scope","callId":"call","iCalUid":"ical","meetingTenantId":"tenant"}`
+	rows := []models.Message{
+		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "metadata", Body: metadata},
+		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "ordinary", Body: `{"scopeId":"scope","callId":"call"}`},
+		{ProtocolConvID: "teams-2::room", ProtocolMsgID: "other-provider", Body: metadata},
+	}
+	if err := database.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Provider{instance: "teams-1"}).removeStoredMeetingMetadata(); err != nil {
+		t.Fatal(err)
+	}
+
+	var remaining []models.Message
+	if err := database.Order("protocol_msg_id").Find(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 || remaining[0].ProtocolMsgID != "ordinary" || remaining[1].ProtocolMsgID != "other-provider" {
+		t.Fatalf("unexpected remaining messages: %#v", remaining)
+	}
+}
+
 func TestToModelMessagePreservesCanonicalMentions(t *testing.T) {
 	client, err := msteams.NewClient(msteams.ClientConfig{
 		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "test-refresh-token",

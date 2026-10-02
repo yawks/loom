@@ -5,9 +5,9 @@ import { getColorFromString, getMessageDomId, getQuotedSenderDisplayName, getSen
 import { mergePhotoGroupAttachments, mergePhotoGroupBody } from "@/lib/photoMessageGroups";
 
 import { CallMessage } from "./CallMessage";
-import { Input } from "@/components/ui/input";
 import { LinkPreviewCard } from "./LinkPreviewCard";
 import { MessageActions } from "./MessageActions";
+import { MessageEditComposer } from "./MessageEditComposer";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageDateSeparator } from "./MessageDateSeparator";
 import type { MessageHandlers } from "./MessageBubbleItem";
@@ -247,21 +247,15 @@ export function MessageIRCItem({
                     )}
                     {editingMessageId === messageId ? (
                       <div className="flex flex-col gap-2 w-full">
-                        <Input
-                          ref={editingMessageId === messageId ? handlers.editingInputRef : undefined}
+                        <MessageEditComposer
+                          providerInstanceId={providerInstanceId}
                           value={editingText}
-                          onChange={(e) => setEditingText(e.target.value)}
-                          onKeyDown={(e) => {
-                            handlers.onEditKeyDown(e);
-                            if (e.defaultPrevented) return;
-                            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlers.onSaveEdit(false); }
-                            else if (e.key === "Escape") { handlers.onCancelEdit(); }
-                          }}
-                          onBlur={(e) => {
-                            handlers.onEditBlur(e.relatedTarget);
-                          }}
-                          className="text-foreground"
-                          autoFocus
+                          onChange={setEditingText}
+                          onSave={() => handlers.onSaveEdit(false)}
+                          onCancel={handlers.onCancelEdit}
+                          onBlur={handlers.onEditBlur}
+                          onMarkdownKeyDown={handlers.onEditKeyDown}
+                          textareaRef={handlers.editingInputRef}
                         />
                         <div className="flex gap-2 justify-end">
                           <button onClick={handlers.onCancelEdit} className="text-xs px-2 py-1 rounded hover:bg-muted">{t("cancel")}</button>

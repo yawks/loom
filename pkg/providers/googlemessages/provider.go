@@ -242,7 +242,7 @@ func (p *Provider) conversationSyncSince(rawConversationID string, globalSince t
 		Where("messages.protocol_conv_id = ?", core.BuildConvID(p.instance, rawConversationID)).
 		Order("messages.timestamp DESC").
 		Limit(1).
-		Take(&newest).Error
+		Find(&newest).Error
 	if err != nil || newest.Timestamp.IsZero() {
 		return globalSince
 	}

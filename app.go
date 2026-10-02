@@ -1169,6 +1169,9 @@ func (a *App) domReady(ctx context.Context) {
 					a.emitSyncCycleStart([]string{providerStartup.instanceID})
 				}
 
+				// WhatsApp may emit Connected and HistorySync before Connect returns.
+				// Attach the consumer first so startup catch-up cannot lose that burst.
+				a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
 				if err := providerStartup.provider.Connect(); err != nil {
 					log.Printf("Warning: Failed to connect provider %s: %v", providerStartup.instanceID, err)
 					message := fmt.Sprintf("Connection failed: %v", err)
@@ -1178,7 +1181,6 @@ func (a *App) domReady(ctx context.Context) {
 					}
 					return
 				}
-				a.startEventListenerForProvider(ctx, providerStartup.instanceID, providerStartup.provider)
 
 				if providerStartup.since.IsZero() {
 					a.clearProviderError(providerStartup.instanceID)

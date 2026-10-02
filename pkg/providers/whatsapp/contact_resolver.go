@@ -233,9 +233,7 @@ func (w *WhatsAppProvider) updateLinkedAccountExtra(userID string, extraData Wha
 		return fmt.Errorf("failed to marshal extra data: %w", err)
 	}
 
-	// Update account
-	account.Extra = string(extraJSON)
-	if err := db.DB.Save(&account).Error; err != nil {
+	if err := db.DB.Model(&account).Update("extra", string(extraJSON)).Error; err != nil {
 		return fmt.Errorf("failed to update LinkedAccount extra: %w", err)
 	}
 
@@ -309,8 +307,7 @@ func (w *WhatsAppProvider) storeContactMapping(lid, phoneNumber string) error {
 				// But we want to keep the same DB record.
 
 				// Update user_id to phone number
-				account.UserID = phoneNumber
-				if err := db.DB.Save(&account).Error; err != nil {
+				if err := db.DB.Model(&account).Update("user_id", phoneNumber).Error; err != nil {
 					fmt.Printf("WhatsApp: Failed to update canonical ID for %s: %v\n", lid, err)
 				}
 				canonicalID = phoneNumber

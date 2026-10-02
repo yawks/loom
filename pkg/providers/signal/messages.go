@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -159,17 +160,17 @@ func (p *Provider) SendTypingIndicator(c string, on bool) error {
 	return result.Error
 }
 
-func (p *Provider) handleChatEvent(evt *events.ChatEvent) {
+func (p *Provider) handleChatEvent(evt *events.ChatEvent) bool {
 	if typing, ok := evt.Event.(*signalpb.TypingMessage); ok {
 		p.emit(core.TypingEvent{InstanceID: p.instanceID(), ConversationID: core.BuildConvID(p.instanceID(), evt.Info.ChatID), UserID: evt.Info.Sender.String(), IsTyping: typing.GetAction() == signalpb.TypingMessage_STARTED})
-		return
+		return true
 	}
 	dm, ok := evt.Event.(*signalpb.DataMessage)
 	if !ok {
 		if edit, isEdit := evt.Event.(*signalpb.EditMessage); isEdit {
 			dm = edit.GetDataMessage()
 		} else {
-			return
+			return true
 		}
 	}
 	conv := core.BuildConvID(p.instanceID(), evt.Info.ChatID)
@@ -182,12 +183,12 @@ func (p *Provider) handleChatEvent(evt *events.ChatEvent) {
 	}
 	if reaction := dm.GetReaction(); reaction != nil {
 		p.emit(core.ReactionEvent{InstanceID: p.instanceID(), ConversationID: conv, MessageID: strconv.FormatUint(reaction.GetTargetSentTimestamp(), 10), UserID: evt.Info.Sender.String(), Emoji: reaction.GetEmoji(), Added: !reaction.GetRemove(), Timestamp: int64(ts)})
-		return
+		return true
 	}
 	if del := dm.GetDelete(); del != nil {
 		m := models.Message{ProtocolConvID: conv, ProtocolMsgID: strconv.FormatUint(del.GetTargetSentTimestamp(), 10), SenderID: evt.Info.Sender.String(), Timestamp: time.UnixMilli(int64(ts)), IsDeleted: true, DeletedReason: "remote_delete"}
 		p.emit(core.MessageEvent{InstanceID: p.instanceID(), Message: m})
-		return
+		return true
 	}
 	m := models.Message{ProtocolConvID: conv, ProtocolMsgID: fmt.Sprintf("%s|%d", evt.Info.Sender, ts), SenderID: evt.Info.Sender.String(), Body: dm.GetBody(), Timestamp: time.UnixMilli(int64(ts))}
 	p.mu.RLock()
@@ -236,11 +237,15 @@ func (p *Provider) handleChatEvent(evt *events.ChatEvent) {
 		b, _ := json.Marshal(a)
 		m.Attachments = string(b)
 	}
-	p.remember(m)
 	// Realtime Signal events must cross the same canonical persistence boundary
 	// as transferred history; frontend events alone are intentionally transient.
-	_ = p.persistCanonicalMessages(evt.Info.ChatID, evt.Info.ChatID, len(evt.Info.ChatID) == 44, []models.Message{m})
+	if err := p.persistCanonicalMessages(evt.Info.ChatID, evt.Info.ChatID, len(evt.Info.ChatID) == 44, []models.Message{m}); err != nil {
+		log.Printf("signal %s: persist message %s in %s: %v", p.instanceID(), m.ProtocolMsgID, conv, err)
+		return false
+	}
+	p.remember(m)
 	p.emit(core.MessageEvent{InstanceID: p.instanceID(), Message: m})
+	return true
 }
 func (p *Provider) handleReceipt(evt *events.Receipt) {
 	typ := core.ReceiptTypeDelivery

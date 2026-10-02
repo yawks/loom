@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -212,6 +213,14 @@ func (w *WhatsAppProvider) downloadAndCacheAttachment(evt *events.Message, media
 		fmt.Printf("WhatsApp: Failed to download %s attachment for message %s: %v\n", mediaType, evt.Info.ID, err)
 		// Log more details about the error
 		fmt.Printf("WhatsApp: Download error details: %T, %s\n", err, err.Error())
+		// Old HistorySync media may no longer be downloadable even though WhatsApp
+		// still includes its thumbnail. Preserve that image instead of persisting an
+		// invisible empty message.
+		if mediaType == "image" && len(thumbnailData) > 0 {
+			if writeErr := os.WriteFile(cachePath, thumbnailData, 0600); writeErr == nil {
+				return &models.Attachment{Type: mediaType, URL: cachePath, FileName: fileName, FileSize: int64(len(thumbnailData)), MimeType: "image/jpeg"}
+			}
+		}
 		return nil
 	}
 	fmt.Printf("WhatsApp: Successfully downloaded %s attachment for message %s, size: %d bytes\n", mediaType, evt.Info.ID, len(data))
@@ -1491,17 +1500,25 @@ func (w *WhatsAppProvider) formatLegacyPersistedMentions(body string) string {
 	return body
 }
 
-func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages []models.Message) int {
+func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages []models.Message) (int, error) {
 	if convID == "" || len(messages) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	// Always store under the namespaced key so that two WhatsApp instances talking
 	// to the same contact produce distinct ProtocolConvID values in the database.
 	convID = core.BuildConvID(w.getInstanceId(), core.StripConvID(convID))
 
-	w.mu.Lock()
+	// SQLite is the source of truth. Do not publish/cache a message that failed
+	// to persist: doing so advances the live stream while leaving a permanent
+	// hole after restart.
+	if db.DB != nil {
+		if err := w.persistMessageBatch(convID, messages); err != nil {
+			return 0, err
+		}
+	}
 
+	w.mu.Lock()
 	existing := append([]models.Message{}, w.conversationMessages[convID]...)
 	combined := append(existing, messages...)
 
@@ -1535,14 +1552,7 @@ func (w *WhatsAppProvider) storeMessagesForConversation(convID string, messages 
 	total := len(w.conversationMessages[convID])
 	w.mu.Unlock()
 
-	// Persist messages to database
-	if db.DB != nil {
-		if err := w.persistMessageBatch(convID, messages); err != nil {
-			fmt.Printf("WhatsApp: Failed to persist message batch for %s: %v\n", convID, err)
-		}
-	}
-
-	return total
+	return total, nil
 }
 
 func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.Message) error {
@@ -1557,6 +1567,15 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 	}
 
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		var conversationID uint
+		var conversation models.Conversation
+		conversationErr := db.ForProvider(tx, w.getInstanceId()).Conversations().
+			Select("id").Where("protocol_conv_id = ?", convID).First(&conversation).Error
+		if conversationErr == nil {
+			conversationID = conversation.ID
+		} else if !errors.Is(conversationErr, gorm.ErrRecordNotFound) && !strings.Contains(conversationErr.Error(), "no such table: conversations") {
+			return fmt.Errorf("resolve conversation %s: %w", convID, conversationErr)
+		}
 		var stored []models.Message
 		if err := tx.Where("protocol_msg_id IN ?", messageIDs).Find(&stored).Error; err != nil {
 			return err
@@ -1573,6 +1592,12 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 			Emoji     string
 		}
 		existingReactions := make(map[reactionKey]struct{})
+		type receiptKey struct {
+			MessageID   uint
+			UserID      string
+			ReceiptType string
+		}
+		existingReceipts := make(map[receiptKey]struct{})
 		if len(storedDatabaseIDs) > 0 {
 			var reactions []models.Reaction
 			if err := tx.Where("message_id IN ?", storedDatabaseIDs).Find(&reactions).Error; err != nil {
@@ -1580,6 +1605,13 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 			}
 			for i := range reactions {
 				existingReactions[reactionKey{MessageID: reactions[i].MessageID, UserID: reactions[i].UserID, Emoji: reactions[i].Emoji}] = struct{}{}
+			}
+			var receipts []models.MessageReceipt
+			if err := tx.Where("message_id IN ?", storedDatabaseIDs).Find(&receipts).Error; err != nil {
+				return err
+			}
+			for i := range receipts {
+				existingReceipts[receiptKey{MessageID: receipts[i].MessageID, UserID: receipts[i].UserID, ReceiptType: receipts[i].ReceiptType}] = struct{}{}
 			}
 		}
 
@@ -1589,29 +1621,29 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 			}
 			msg := messages[i]
 			msg.ProtocolConvID = convID
+			if conversationID != 0 {
+				msg.ConversationID = conversationID
+			}
 			existing, found := storedByID[msg.ProtocolMsgID]
 			if !found {
-				if err := tx.Create(&msg).Error; err != nil {
+				msg.ID = 0
+				if err := tx.Omit("Reactions", "Receipts").Create(&msg).Error; err != nil {
 					return err
 				}
 				storedByID[msg.ProtocolMsgID] = msg
-				continue
-			}
-
-			if existing.IsEdited && !msg.IsEdited {
-				msg.Body = existing.Body
-				msg.IsEdited = true
-				msg.EditedTimestamp = existing.EditedTimestamp
-			}
-			if len(existing.PollEncKey) > 0 && len(msg.PollEncKey) == 0 {
-				msg.PollEncKey = existing.PollEncKey
-			}
-			msg.ID = existing.ID
-			// Reactions are persisted explicitly below after batch-prefetching their
-			// keys. Letting Save cascade this association would insert them once here
-			// and a second time in the deduplicated path.
-			if err := tx.Omit("Reactions").Save(&msg).Error; err != nil {
-				return err
+			} else {
+				if existing.IsEdited && !msg.IsEdited {
+					msg.Body = existing.Body
+					msg.IsEdited = true
+					msg.EditedTimestamp = existing.EditedTimestamp
+				}
+				if len(existing.PollEncKey) > 0 && len(msg.PollEncKey) == 0 {
+					msg.PollEncKey = existing.PollEncKey
+				}
+				msg.ID = existing.ID
+				if err := tx.Omit("Reactions", "Receipts").Save(&msg).Error; err != nil {
+					return err
+				}
 			}
 			for _, reaction := range msg.Reactions {
 				key := reactionKey{MessageID: msg.ID, UserID: reaction.UserID, Emoji: reaction.Emoji}
@@ -1622,6 +1654,17 @@ func (w *WhatsAppProvider) persistMessageBatch(convID string, messages []models.
 						return err
 					}
 					existingReactions[key] = struct{}{}
+				}
+			}
+			for _, receipt := range msg.Receipts {
+				key := receiptKey{MessageID: msg.ID, UserID: receipt.UserID, ReceiptType: receipt.ReceiptType}
+				if _, found := existingReceipts[key]; !found {
+					receipt.ID = 0
+					receipt.MessageID = msg.ID
+					if err := tx.Create(&receipt).Error; err != nil {
+						return err
+					}
+					existingReceipts[key] = struct{}{}
 				}
 			}
 		}
@@ -1666,15 +1709,16 @@ func (w *WhatsAppProvider) setCachedConversationMessagesLocked(convID string, me
 	w.conversationMessages[convID] = boundedMessages
 }
 
-func (w *WhatsAppProvider) appendMessageToConversation(msg *models.Message) {
+func (w *WhatsAppProvider) appendMessageToConversation(msg *models.Message) error {
 	if msg == nil {
-		return
+		return nil
 	}
 	if msg.CallType != "" {
 		fmt.Printf("WhatsApp: [CALL MSG] appendMessageToConversation called for call message: ProtocolMsgID=%s, ProtocolConvID=%s, CallType=%s\n",
 			msg.ProtocolMsgID, msg.ProtocolConvID, msg.CallType)
 	}
-	w.storeMessagesForConversation(msg.ProtocolConvID, []models.Message{*msg})
+	_, err := w.storeMessagesForConversation(msg.ProtocolConvID, []models.Message{*msg})
+	return err
 }
 
 func reconcileDuplicateMessage(existing, incoming *models.Message) {
@@ -2034,12 +2078,13 @@ func (w *WhatsAppProvider) hasConversationHistory(convID string) bool {
 	return false
 }
 
-func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.HistorySync) {
+func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.HistorySync) bool {
 	fmt.Printf("WhatsApp: [CACHE_MESSAGES] cacheMessagesFromHistory called\n")
 	if history == nil || w.client == nil {
 		fmt.Printf("WhatsApp: [CACHE_MESSAGES] Skipping - history=%v, client=%v\n", history != nil, w.client != nil)
-		return
+		return true
 	}
+	persistedAll := true
 
 	conversations := history.GetConversations()
 	fmt.Printf("WhatsApp: [CACHE_MESSAGES] Processing %d conversations for messages\n", len(conversations))
@@ -2200,7 +2245,12 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				w.inferGroupReceipts(converted, convID)
 			}
 
-			total := w.storeMessagesForConversation(convID, converted)
+			total, persistErr := w.storeMessagesForConversation(convID, converted)
+			if persistErr != nil {
+				w.log("WhatsApp: Failed to persist history batch for %s: %v\n", convID, persistErr)
+				persistedAll = false
+				continue
+			}
 			fmt.Printf("WhatsApp: Cached %d messages from history for %s (total stored: %d)\n", len(converted), convID, total)
 			if len(historyPollVotes) > 0 {
 				for _, msg := range converted {
@@ -2243,15 +2293,43 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			hasPreviousSync := w.hadSyncAtStartup
 			w.mu.RUnlock()
 			readMessages, unreadMessages := splitHistoryMessagesByUnreadCount(converted, conv.GetUnreadCount(), isOnDemand, hasPreviousSync)
-			if hasPreviousSync {
-				readThroughOwnMessage := w.historyMessagesReadThroughOwnActivity(converted)
-				forcedReadIDs := make(map[string]struct{}, len(readThroughOwnMessage))
-				for _, message := range readThroughOwnMessage {
-					forcedReadIDs[message.ProtocolMsgID] = struct{}{}
+			// Own activity is a stronger read boundary than WhatsApp's occasionally
+			// stale counter. Invisible legacy control rows must also never create a
+			// badge that the user has no message to open and acknowledge.
+			forcedReadMessages := w.historyMessagesReadThroughOwnActivity(converted)
+			forcedReadIDs := make(map[string]struct{}, len(forcedReadMessages))
+			for _, message := range forcedReadMessages {
+				forcedReadIDs[message.ProtocolMsgID] = struct{}{}
+			}
+			for _, message := range converted {
+				if isLegacyEmptyMessage(message) {
+					if _, exists := forcedReadIDs[message.ProtocolMsgID]; !exists {
+						forcedReadMessages = append(forcedReadMessages, message)
+						forcedReadIDs[message.ProtocolMsgID] = struct{}{}
+					}
 				}
+			}
+			if hasPreviousSync {
 				readMessages, unreadMessages = reclassifyNewIncomingWhatsAppMessages(
 					readMessages, unreadMessages, newMessageIDs, forcedReadIDs, isOnDemand,
 				)
+			} else {
+				readMessages, unreadMessages = reclassifyNewIncomingWhatsAppMessages(
+					readMessages, unreadMessages, nil, forcedReadIDs, false,
+				)
+			}
+			if len(forcedReadMessages) > 0 {
+				select {
+				case w.eventChan <- core.MessageBatchEvent{
+					InstanceID:     w.getInstanceId(),
+					ConversationID: core.BuildConvID(w.getInstanceId(), convID),
+					Messages:       forcedReadMessages,
+					IsHistorical:   true,
+					ForceRead:      true,
+				}:
+				case <-w.ctx.Done():
+					return false
+				}
 			}
 			// A targeted legacy backfill repairs rows that were already part of the
 			// user's history. It must never manufacture unread activity, including
@@ -2263,31 +2341,22 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				readMessages = converted
 				unreadMessages = nil
 			}
-			// WhatsApp may retain a stale unread count when another linked client
-			// read the conversation while Loom was offline. Sending a message is a
-			// stronger signal: the timeline up to that message was necessarily seen.
-			if readThroughOwnMessage := w.historyMessagesReadThroughOwnActivity(converted); len(readThroughOwnMessage) > 0 {
-				select {
-				case w.eventChan <- core.MessageBatchEvent{
-					InstanceID:     w.getInstanceId(),
-					ConversationID: core.BuildConvID(w.getInstanceId(), convID),
-					Messages:       readThroughOwnMessage,
-					IsHistorical:   true,
-					ForceRead:      true,
-				}:
-				default:
-				}
-			}
 			if len(readMessages) > 0 {
 				select {
 				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: readMessages, IsHistorical: true}:
-				default:
+				case <-w.ctx.Done():
+					return false
+				case <-time.After(1 * time.Second):
+					w.log("WhatsApp: WARNING - Failed to emit read MessageBatchEvent (channel full)\n")
 				}
 			}
 			if len(unreadMessages) > 0 {
 				select {
 				case w.eventChan <- core.MessageBatchEvent{InstanceID: w.getInstanceId(), ConversationID: core.BuildConvID(w.getInstanceId(), convID), Messages: unreadMessages, ForceUnread: true}:
-				default:
+				case <-w.ctx.Done():
+					return false
+				case <-time.After(1 * time.Second):
+					w.log("WhatsApp: WARNING - Failed to emit unread MessageBatchEvent (channel full)\n")
 				}
 			}
 		}
@@ -2340,6 +2409,7 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			}
 		}
 	}
+	return persistedAll
 }
 
 func whatsappMessageFieldNames(message *waE2E.Message) string {
@@ -2403,6 +2473,15 @@ func reclassifyNewIncomingWhatsAppMessages(
 		}
 		keptRead = append(keptRead, message)
 	}
+	keptUnread := make([]models.Message, 0, len(unreadMessages))
+	for _, message := range unreadMessages {
+		if _, isForcedRead := forcedReadIDs[message.ProtocolMsgID]; isForcedRead {
+			keptRead = append(keptRead, message)
+			continue
+		}
+		keptUnread = append(keptUnread, message)
+	}
+	unreadMessages = keptUnread
 	if isOnDemand {
 		// ON_DEMAND history has no trustworthy unread cursor. It is requested by
 		// Loom's global audit and commonly returns messages that were imported and
@@ -2927,28 +3006,30 @@ func (w *WhatsAppProvider) requestRecentLegacyMessageBackfills() {
 	}
 	var candidates []legacyConversation
 	instancePrefix := w.getInstanceId() + "::%"
-	cutoff := time.Now().AddDate(0, 0, -14)
-	err := db.DB.Model(&models.Message{}).
+	err := db.ForProvider(db.DB, w.getInstanceId()).Messages().
 		Select("protocol_conv_id, COUNT(*) AS empty_count").
-		Where("protocol_conv_id LIKE ? AND timestamp >= ? AND body = '' AND attachments = '' AND call_type = '' AND poll IS NULL AND is_deleted = ?", instancePrefix, cutoff, false).
+		Where("protocol_conv_id LIKE ? AND body = '' AND attachments = '' AND call_type = '' AND poll IS NULL AND is_deleted = ?", instancePrefix, false).
 		Group("protocol_conv_id").
 		Having("COUNT(*) >= ?", 3).
 		Order("empty_count DESC").
-		Limit(25).
 		Scan(&candidates).Error
 	if err != nil {
 		w.log("WhatsApp: Failed to find recent legacy-message backfill candidates: %v\n", err)
 		return
 	}
 
+	requested := 0
 	for _, candidate := range candidates {
+		if requested >= 25 {
+			break
+		}
 		rawConvID := core.StripConvID(candidate.ProtocolConvID)
 		chatJID, parseErr := types.ParseJID(rawConvID)
 		if parseErr != nil {
 			continue
 		}
 		var messages []models.Message
-		if queryErr := db.DB.Where("protocol_conv_id = ?", candidate.ProtocolConvID).
+		if queryErr := db.ForProvider(db.DB, w.getInstanceId()).Messages().Where("protocol_conv_id = ?", candidate.ProtocolConvID).
 			Order("timestamp DESC").Limit(100).Find(&messages).Error; queryErr != nil {
 			continue
 		}
@@ -2971,10 +3052,11 @@ func (w *WhatsAppProvider) requestRecentLegacyMessageBackfills() {
 			}
 		}
 		burst := legacyMessageBackfillBurst(messages, 10)
-		if !hasPollWithEmptyFollowers && (len(burst) < 3 || legacyBurstSenderCount(burst) < 3) {
+		if !hasPollWithEmptyFollowers && len(burst) < 3 {
 			continue
 		}
 		w.maybeRequestLegacyMessageBackfill(candidate.ProtocolConvID, chatJID, messages)
+		requested++
 		// The primary phone commonly drops concurrent on-demand history
 		// requests. Keep the recovery queue serialized and leave enough time for
 		// the HistorySync response before asking for another conversation.
@@ -3050,16 +3132,6 @@ func legacyHistoryAnchor(messages []models.Message) (models.Message, bool) {
 		}
 	}
 	return models.Message{}, false
-}
-
-func legacyBurstSenderCount(messages []models.Message) int {
-	senders := make(map[string]struct{})
-	for _, message := range messages {
-		if message.SenderID != "" {
-			senders[message.SenderID] = struct{}{}
-		}
-	}
-	return len(senders)
 }
 
 // updateLinkedAccountName updates the Username field of a LinkedAccount in the database

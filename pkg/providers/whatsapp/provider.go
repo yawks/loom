@@ -324,6 +324,7 @@ func (w *WhatsAppProvider) Init(config core.ProviderConfig) error {
 	// Create client
 	w.log("WhatsAppProvider.Init: Creating WhatsApp client...\n")
 	w.client = whatsmeow.NewClient(deviceStore, clientLog)
+	w.client.SynchronousAck = true
 	w.log("WhatsAppProvider.Init: WhatsApp client created successfully\n")
 
 	// Load cached messages from database on startup

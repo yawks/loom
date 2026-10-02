@@ -76,6 +76,7 @@ interface RichTextComposerProps {
   onPaste: (event: React.ClipboardEvent<HTMLElement>) => void;
   onHeightChange?: () => void;
   onMount?: (element: HTMLElement | null) => void;
+  onBlur?: (event: React.FocusEvent<HTMLElement>) => void;
   features: ReadonlySet<string>;
 }
 
@@ -89,6 +90,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
   onPaste,
   onHeightChange,
   onMount,
+  onBlur,
   features,
 }, ref) {
   const emittedValue = useRef(value);
@@ -204,6 +206,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
     <EditorContent
       editor={editor}
       onPaste={onPaste}
+      onBlur={onBlur}
       className={`rounded-md border border-input bg-background ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2${disabled ? " cursor-not-allowed opacity-50" : ""}`}
     />
   );

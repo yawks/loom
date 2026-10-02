@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
 import { AddReaction, DeleteMessage, GetCurrentUserID, GetHighlightedMessageRefs, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
+import { MessageEditComposer } from "./MessageEditComposer";
 import { MessageAttachments } from "./MessageAttachments";
 import { MessageReactions } from "./MessageReactions";
 import { MessageText } from "./MessageText";
 import { MessageThreadPreview } from "./MessageThreadPreview";
-import { Input } from "@/components/ui/input";
 import { ToastContainer, useToast } from "@/components/ui/toast";
 import {
   AlertDialog,
@@ -962,22 +962,14 @@ export function ThreadView() {
                     >
                       {editingMessageId === messageId ? (
                         <div className="flex flex-col gap-2">
-                          <Input
-                            ref={editingInputRef}
+                          <MessageEditComposer
+                            providerInstanceId={providerInstanceId}
                             value={editingText}
-                            onChange={(e) => setEditingText(e.target.value)}
-                            onKeyDown={(e) => {
-                              handleEditKeyDown(e);
-                              if (e.defaultPrevented) return;
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSaveEdit(false);
-                              } else if (e.key === "Escape") {
-                                handleCancelEdit();
-                              }
-                            }}
-                            className="text-foreground"
-                            autoFocus
+                            onChange={setEditingText}
+                            onSave={() => handleSaveEdit(false)}
+                            onCancel={handleCancelEdit}
+                            onMarkdownKeyDown={handleEditKeyDown}
+                            textareaRef={editingInputRef}
                           />
                           <div className="flex gap-2 justify-end">
                             <button
@@ -1147,22 +1139,14 @@ export function ThreadView() {
                     <div className="flex flex-col items-start ml-5 flex-1 min-w-0 text-left">
                       {editingMessageId === messageId ? (
                         <div className="flex flex-col gap-2 w-full mt-2">
-                          <Input
-                            ref={editingInputRef}
+                          <MessageEditComposer
+                            providerInstanceId={providerInstanceId}
                             value={editingText}
-                            onChange={(e) => setEditingText(e.target.value)}
-                            onKeyDown={(e) => {
-                              handleEditKeyDown(e);
-                              if (e.defaultPrevented) return;
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSaveEdit(false);
-                              } else if (e.key === "Escape") {
-                                handleCancelEdit();
-                              }
-                            }}
-                            className="text-foreground"
-                            autoFocus
+                            onChange={setEditingText}
+                            onSave={() => handleSaveEdit(false)}
+                            onCancel={handleCancelEdit}
+                            onMarkdownKeyDown={handleEditKeyDown}
+                            textareaRef={editingInputRef}
                           />
                           <div className="flex gap-2 justify-end">
                             <button

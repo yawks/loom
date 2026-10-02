@@ -40,7 +40,7 @@ func (w *WhatsAppProvider) cacheGroupParticipants(groupJID types.JID) {
 			if err := w.saveLIDMapping(participant.JID.String(), phoneStr); err != nil {
 				fmt.Printf("WhatsApp: Warning - Failed to save LID mapping for %s: %v\n", participant.JID.String(), err)
 			} else {
-				fmt.Printf("WhatsApp: Saved LID mapping: %s -> %s (from group %s)\n", participant.JID.String(), phoneStr, groupJID.String())
+				verboseLogf("WhatsApp: Saved LID mapping: %s -> %s (from group %s)\n", participant.JID.String(), phoneStr, groupJID.String())
 			}
 
 			// Also store in LinkedAccount.Extra for additional persistence
@@ -422,7 +422,7 @@ func (w *WhatsAppProvider) GetGroupParticipants(conversationID string) ([]models
 			if err := w.saveLIDMapping(participant.JID.String(), userID); err != nil {
 				fmt.Printf("WhatsApp: Warning - Failed to save LID mapping for %s: %v\n", participant.JID.String(), err)
 			} else {
-				fmt.Printf("WhatsApp: Saved LID mapping: %s -> %s (from GetGroupParticipants)\n", participant.JID.String(), userID)
+				verboseLogf("WhatsApp: Saved LID mapping: %s -> %s (from GetGroupParticipants)\n", participant.JID.String(), userID)
 			}
 
 			// Also store in LinkedAccount.Extra for persistence

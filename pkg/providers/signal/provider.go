@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -438,7 +439,9 @@ func (p *Provider) remember(m models.Message) {
 func (p *Provider) handleSignalEvent(raw events.SignalEvent) bool {
 	switch evt := raw.(type) {
 	case *events.ChatEvent:
-		p.handleChatEvent(evt)
+		return p.handleChatEvent(evt)
+	case *events.DecryptionError:
+		log.Printf("signal %s: decrypt message from %s at %d: %v", p.instanceID(), evt.Sender, evt.Timestamp, evt.Err)
 	case *events.ContactList:
 		// Receiving a contact list is a completed data notification, not the
 		// beginning of a long-running synchronization phase. Reporting

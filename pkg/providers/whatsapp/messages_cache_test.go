@@ -451,7 +451,7 @@ func TestPersistMessageBatchCreatesAndUpdatesWithoutRevertingEdits(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
+	if err := database.AutoMigrate(&models.Conversation{}, &models.Message{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
 		t.Fatal(err)
 	}
 	previousDB := db.DB
@@ -461,6 +461,10 @@ func TestPersistMessageBatchCreatesAndUpdatesWithoutRevertingEdits(t *testing.T)
 	provider := NewWhatsAppProvider()
 	provider.config["_instance_id"] = "whatsapp-1"
 	convID := "whatsapp-1::33600000000@s.whatsapp.net"
+	conversation := models.Conversation{ProtocolConvID: convID}
+	if err := database.Create(&conversation).Error; err != nil {
+		t.Fatal(err)
+	}
 	editTime := time.Unix(200, 0)
 	existing := models.Message{
 		ProtocolConvID: convID, ProtocolMsgID: "existing", Body: "edited",
@@ -472,7 +476,9 @@ func TestPersistMessageBatchCreatesAndUpdatesWithoutRevertingEdits(t *testing.T)
 
 	batch := []models.Message{
 		{ProtocolMsgID: "existing", Body: "stale original", Timestamp: time.Unix(100, 0), Reactions: []models.Reaction{{UserID: "alice", Emoji: "👍"}}},
-		{ProtocolMsgID: "new", Body: "new message", Timestamp: time.Unix(300, 0)},
+		{ID: 99999, ProtocolMsgID: "new", Body: "new message", Timestamp: time.Unix(300, 0),
+			Reactions: []models.Reaction{{ID: 99999, MessageID: 99999, UserID: "bob", Emoji: "❤️"}},
+			Receipts:  []models.MessageReceipt{{ID: 99999, MessageID: 99999, UserID: "bob", ReceiptType: "read"}}},
 	}
 	provider.storeMessagesForConversation(convID, batch)
 
@@ -496,7 +502,48 @@ func TestPersistMessageBatchCreatesAndUpdatesWithoutRevertingEdits(t *testing.T)
 		t.Fatal(err)
 	}
 	if reactionCount != 1 {
-		t.Fatalf("reaction count = %d, want 1", reactionCount)
+		t.Fatalf("existing reaction count = %d, want 1", reactionCount)
+	}
+	var newMessage models.Message
+	if err := database.Where("protocol_msg_id = ?", "new").First(&newMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if newMessage.ID == 99999 {
+		t.Fatal("new message retained stale database ID")
+	}
+	if newMessage.ConversationID != conversation.ID {
+		t.Fatalf("new message conversation ID = %d, want %d", newMessage.ConversationID, conversation.ID)
+	}
+	if err := database.Model(&models.Reaction{}).Where("message_id = ?", newMessage.ID).Count(&reactionCount).Error; err != nil || reactionCount != 1 {
+		t.Fatalf("new reaction count = %d, err = %v, want 1", reactionCount, err)
+	}
+	var receiptCount int64
+	if err := database.Model(&models.MessageReceipt{}).Where("message_id = ?", newMessage.ID).Count(&receiptCount).Error; err != nil || receiptCount != 1 {
+		t.Fatalf("new receipt count = %d, err = %v, want 1", receiptCount, err)
+	}
+}
+
+func TestStoreMessagesForConversationDoesNotCacheFailedPersistence(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = database // Deliberately omit migration so persistence fails.
+	t.Cleanup(func() { db.DB = previousDB })
+
+	provider := NewWhatsAppProvider()
+	provider.config["_instance_id"] = "whatsapp-1"
+	convID := "whatsapp-1::33600000000@s.whatsapp.net"
+	_, err = provider.storeMessagesForConversation(convID, []models.Message{{
+		ProtocolMsgID: "must-not-be-cached",
+		Timestamp:     time.Unix(100, 0),
+	}})
+	if err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if got := len(provider.conversationMessages[convID]); got != 0 {
+		t.Fatalf("cached %d messages after persistence failure, want 0", got)
 	}
 }
 

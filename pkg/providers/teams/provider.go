@@ -210,6 +210,9 @@ func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error
 	if err != nil {
 		return err
 	}
+	if err := p.removeStoredMeetingMetadata(); err != nil {
+		return err
+	}
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingContacts, Message: "Fetching Microsoft Teams conversations", Progress: 0})
 	chats, err := client.ListChats(context.Background())
 	if err != nil {

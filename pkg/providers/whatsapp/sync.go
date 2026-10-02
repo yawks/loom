@@ -86,7 +86,39 @@ func (w *WhatsAppProvider) saveLastSyncTimestamp(timestamp time.Time) {
 	}
 }
 
-func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
+func (w *WhatsAppProvider) waitForConnection(ctx context.Context, timeout time.Duration) error {
+	w.mu.RLock()
+	client := w.client
+	w.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if client.IsConnected() && client.IsLoggedIn() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-w.ctx.Done():
+			return fmt.Errorf("provider disconnected")
+		case <-timer.C:
+			if client.IsConnected() && client.IsLoggedIn() {
+				return nil
+			}
+			return fmt.Errorf("timeout waiting for WhatsApp connection")
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w *WhatsAppProvider) SyncHistoryContext(ctx context.Context, since time.Time) error {
 	w.mu.RLock()
 	client := w.client
 	w.mu.RUnlock()
@@ -95,18 +127,12 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 		return fmt.Errorf("client not initialized")
 	}
 
-	// Check if client is connected (Store.ID is set after successful login)
-	w.mu.RLock()
-	store := client.Store
-	w.mu.RUnlock()
-
-	if store == nil || store.ID == nil {
-		// Client is not connected yet, return without error
-		w.log("WhatsApp: SyncHistory called but client not connected yet, skipping...\n")
-		return nil
+	// Wait for WhatsApp connection and authentication before syncing history
+	if err := w.waitForConnection(ctx, 20*time.Second); err != nil {
+		w.log("WhatsApp: SyncHistoryContext failed waiting for connection: %v\n", err)
+		return err
 	}
 
-	// Use last sync timestamp if since is zero or very old
 	w.mu.RLock()
 	lastSync := w.lastSyncTimestamp
 	w.mu.RUnlock()
@@ -130,22 +156,15 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 	// Reconnecting normally recovers offline events, but WhatsApp can omit reactions
 	// that arrived while this linked device was asleep. Ask the primary phone for the
 	// recent conversations explicitly so their authoritative reaction list is replayed.
-	if lastSync != nil && db.DB != nil && client.IsConnected() && client.IsLoggedIn() {
-		baseCtx := w.ctx
-		if baseCtx == nil {
-			baseCtx = context.Background()
-		}
-		requestCtx, cancel := context.WithTimeout(baseCtx, 15*time.Second)
+	if db.DB != nil && client.IsConnected() && client.IsLoggedIn() {
+		requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		// Reactions have their own timestamp and may target a message older than
-		// the sync watermark. Use a bounded conversation window, not the message
-		// watermark alone, or the exact sleep gap remains invisible.
 		repairSince := since
-		if floor := time.Now().Add(-24 * time.Hour); repairSince.After(floor) {
+		if floor := time.Now().Add(-30 * 24 * time.Hour); repairSince.After(floor) {
 			repairSince = floor
 		}
 		if err := w.requestHistorySince(requestCtx, repairSince, "wake history repair"); err != nil {
-			return err
+			w.log("WhatsApp: Wake history repair returned: %v\n", err)
 		}
 	}
 
@@ -157,6 +176,14 @@ func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
 	}
 
 	return nil
+}
+
+func (w *WhatsAppProvider) SyncHistory(since time.Time) error {
+	baseCtx := w.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	return w.SyncHistoryContext(baseCtx, since)
 }
 
 // finishHistoryLookback closes the status transition opened by SyncHistory.
@@ -250,13 +277,17 @@ type historyAnchor struct {
 }
 
 func (w *WhatsAppProvider) loadHistoryAnchors(since time.Time, selfConversationID string) ([]historyAnchor, error) {
+	cutoff := since
+	if cutoff.IsZero() {
+		cutoff = time.Now().Add(-30 * 24 * time.Hour)
+	}
 	ranked := db.ForProvider(db.DB, w.getInstanceId()).Messages().
 		Select("protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me, ROW_NUMBER() OVER (PARTITION BY protocol_conv_id ORDER BY timestamp DESC, id DESC) AS row_num").
-		Where("protocol_conv_id != ? AND timestamp >= ? AND protocol_msg_id NOT LIKE 'call_%'", selfConversationID, since)
+		Where("protocol_conv_id != ? AND protocol_msg_id NOT LIKE 'call_%' AND is_deleted = ?", selfConversationID, false)
 	var anchors []historyAnchor
 	err := db.DB.Table("(?) AS ranked_messages", ranked).
 		Select("protocol_conv_id, protocol_msg_id, sender_id, timestamp, is_from_me").
-		Where("row_num = 1").Order("timestamp DESC").Scan(&anchors).Error
+		Where("row_num = 1 AND timestamp >= ?", cutoff).Order("timestamp DESC").Scan(&anchors).Error
 	return anchors, err
 }
 
@@ -276,6 +307,9 @@ func (w *WhatsAppProvider) requestHistorySince(ctx context.Context, since time.T
 	w.log("WhatsApp: %s requesting recent history for %d conversations\n", label, len(anchors))
 	requested, failed := 0, 0
 	for _, anchor := range anchors {
+		if ctx.Err() != nil {
+			break
+		}
 		rawConvID := strings.TrimPrefix(anchor.ProtocolConvID, w.getInstanceId()+"::")
 		chatJID, parseErr := types.ParseJID(rawConvID)
 		if parseErr != nil {
@@ -289,8 +323,14 @@ func (w *WhatsAppProvider) requestHistorySince(ctx context.Context, since time.T
 			}
 		}
 		request := client.BuildHistorySyncRequest(&types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chatJID, Sender: senderJID, IsFromMe: anchor.IsFromMe, IsGroup: chatJID.Server == types.GroupServer},
-			ID:            types.MessageID(anchor.ProtocolMsgID), Timestamp: anchor.Timestamp,
+			MessageSource: types.MessageSource{
+				Chat:     chatJID,
+				Sender:   senderJID,
+				IsFromMe: anchor.IsFromMe,
+				IsGroup:  chatJID.Server == types.GroupServer,
+			},
+			ID:        types.MessageID(anchor.ProtocolMsgID),
+			Timestamp: anchor.Timestamp,
 		}, 50)
 		if _, sendErr := client.SendPeerMessage(ctx, request); sendErr != nil {
 			failed++
@@ -298,6 +338,7 @@ func (w *WhatsAppProvider) requestHistorySince(ctx context.Context, since time.T
 			continue
 		}
 		requested++
+		time.Sleep(200 * time.Millisecond)
 	}
 	w.log("WhatsApp: %s sent %d requests (%d failed)\n", label, requested, failed)
 	if requested == 0 && failed > 0 {

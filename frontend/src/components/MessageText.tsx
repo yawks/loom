@@ -1,6 +1,6 @@
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { OpenConversation } from "../../wailsjs/go/main/App";
-import React, { type ReactElement, useMemo, memo } from "react";
+import { useMemo, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import { Emoji } from "./Emoji";
 import { CodeBlock } from "./CodeBlock";
@@ -16,6 +16,7 @@ import { htmlFragmentToText } from "@/lib/messageUtils";
 import { rehypeCanonicalBreaks } from "../lib/markdownBreaks";
 import { rehypeCanonicalUnderline } from "../lib/markdownUnderline";
 import { rehypeCanonicalStyle } from "../lib/markdownStyle";
+import { outsideMarkdownCode, repairLegacyCodeFences } from "../lib/markdownCode";
 import { emojiShortcodePattern } from "../lib/emojiShortcodes";
 import type { PluggableList } from "unified";
 import type { models } from "../../wailsjs/go/models";
@@ -310,129 +311,46 @@ export const MessageText = memo(function MessageText({
         const end = mention.start + mention.length;
         if (mention.start < 0 || mention.length <= 0 || end > canonicalText.length) continue;
         const visible = canonicalText.slice(mention.start, end);
-        const markdownLabel = visible.replace(/([\\\[\]])/g, "\\$1");
+        const markdownLabel = visible.replace(/([\\[\]])/g, "\\$1");
         canonicalText = canonicalText.slice(0, mention.start)
           + `[${markdownLabel}](loom://mention?userId=${encodeURIComponent(mention.userId)})`
           + canonicalText.slice(end);
       }
     }
-    const richProtected = canonicalText.replace(/<br\s*\/?\s*>|<\/?loom-style\b[^>]*>/gi, (tag) => {
-      const index = richTags.push(tag) - 1;
-      return `LOOM_RICH_TAG_${index}_`;
-    });
-    const underlineProtected = richProtected
-      .replace(/<u>/gi, "LOOM_UNDERLINE_OPEN")
-      .replace(/<\/u>/gi, "LOOM_UNDERLINE_CLOSE");
-    let processedText = transformUrls(htmlFragmentToText(underlineProtected))
-      .replaceAll("LOOM_UNDERLINE_OPEN", "<u>")
-      .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>")
-      .replace(/LOOM_RICH_TAG_(\d+)_/g, (_, index) => richTags[Number(index)] ?? "");
-    // Last-resort compatibility for cached serialized replies that reach this
-    // component without reply metadata. Do this before emoji splitting and
-    // Markdown parsing so neither stage can expose the protocol's `>` syntax.
-    if (/^\s*>\s*\*[^*\n]+\*\s*$/m.test(processedText)) {
-      processedText = processedText.replace(/^\s*>\s?/gm, "");
-    }
-    processedText = fixCodeBlocks(processedText);
-    processedText = annotateUnlabeledCodeFences(processedText);
-
-    if (preview && !multilinePreview) {
-      processedText = processedText.replace(/\n+/g, " ");
-    }
-
-    const textWithoutSkinTones = cleanEmoji(processedText);
-
-    // Keep formatted Markdown as one document, but encode emoji shortcodes as
-    // synthetic inline images. The custom `img` renderer above turns them into
-    // Emoji components without breaking emphasis or links.
-    if (/(\*\*|__|~~|`|\[[^\]]+\]\()/.test(textWithoutSkinTones)) {
-      return textWithoutSkinTones.replace(
-        emojiShortcodePattern(),
-        (match, name, offset, source) => {
-          const before = source.slice(0, offset);
-          const currentLine = before.slice(before.lastIndexOf("\n") + 1);
-          if (/https?:\/\/\S*$/.test(currentLine)) return match;
-          return `![${match}](loom-emoji://${encodeURIComponent(name)})`;
-        },
-      );
-    }
-
-    // Skip emoji parsing inside code blocks
-    const hasCodeBlocks = /```[\s\S]*?```/g.test(textWithoutSkinTones);
-    if (hasCodeBlocks) {
-      return textWithoutSkinTones;
-    }
-
-    // Markdown constructs such as serialized quoted replies span multiple lines.
-    // Passing each line independently makes react-markdown treat `>` as plain
-    // text, so keep the complete document intact when no emoji replacement is
-    // needed.
-    // A shortcode must be independently delimited. This prevents clock-like
-    // text (12:42 and 12:42:05) from exposing :42: as an emoji shortcode.
-    const emojiPattern = emojiShortcodePattern();
-    // Document-sharing URLs may contain path segments such as `/:p:/`. Do not
-    // turn those path segments into custom emojis before Markdown sees the URL.
-    const urlRanges = Array.from(textWithoutSkinTones.matchAll(/https?:\/\/[^\s<>"']+/g))
-      .map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
-    const isInsideUrl = (index: number) =>
-      urlRanges.some(({ start, end }) => index >= start && index < end);
-    const hasEmojiOutsideUrl = Array.from(textWithoutSkinTones.matchAll(emojiPattern))
-      .some((match) => !isInsideUrl(match.index ?? 0));
-
-    if (!hasEmojiOutsideUrl) {
-      return textWithoutSkinTones;
-    }
-    emojiPattern.lastIndex = 0;
-
-    const parts: (string | ReactElement)[] = [];
-    let lastIndex = 0;
-
-    let match: RegExpExecArray | null;
-    while (true) {
-      match = emojiPattern.exec(textWithoutSkinTones);
-      if (match === null) break;
-
-      const matchIndex = match.index;
-      const matchText = match[0];
-
-      if (isInsideUrl(matchIndex)) {
-        continue;
-      }
-
-      if (matchIndex > lastIndex) {
-        const textBefore = textWithoutSkinTones.substring(lastIndex, matchIndex);
-        const lines = textBefore.split("\n");
-        lines.forEach((line: string, lineIdx: number) => {
-          if (lineIdx > 0) parts.push(<br key={`br-${matchIndex}-${lineIdx}`} />);
-          if (line) parts.push(line);
-        });
-      }
-
-      const fullEmojiName = matchText;
-      parts.push(
-        <Emoji
-          key={`emoji-${matchIndex}`}
-          emoji={fullEmojiName}
-          providerInstanceId={providerInstanceId}
-          size={emojiSize}
-          className="inline align-baseline mx-0.5"
-        />
-      );
-
-      lastIndex = matchIndex + matchText.length;
-    }
-
-    if (lastIndex < textWithoutSkinTones.length) {
-      const remainingText = textWithoutSkinTones.substring(lastIndex);
-      const lines = remainingText.split("\n");
-      lines.forEach((line: string, lineIdx: number) => {
-        if (lineIdx > 0) parts.push(<br key={`br-end-${lineIdx}`} />);
-        if (line) parts.push(line);
+    let processedText = outsideMarkdownCode(repairLegacyCodeFences(canonicalText), (prose) => {
+      const richProtected = prose.replace(/<br\s*\/?\s*>|<\/?loom-style\b[^>]*>/gi, (tag) => {
+        const index = richTags.push(tag) - 1;
+        return `LOOM_RICH_TAG_${index}_`;
       });
-    }
-
-    return parts.length === 0 ? textWithoutSkinTones : parts;
-  }, [text, providerInstanceId, emojiSize, preview, multilinePreview, mentions]);
+      const underlineProtected = richProtected
+        .replace(/<u>/gi, "LOOM_UNDERLINE_OPEN")
+        .replace(/<\/u>/gi, "LOOM_UNDERLINE_CLOSE");
+      let processedText = transformUrls(htmlFragmentToText(underlineProtected))
+        .replaceAll("LOOM_UNDERLINE_OPEN", "<u>")
+        .replaceAll("LOOM_UNDERLINE_CLOSE", "</u>")
+        .replace(/LOOM_RICH_TAG_(\d+)_/g, (_, index) => richTags[Number(index)] ?? "");
+      // Last-resort compatibility for cached serialized replies that reach this
+      // component without reply metadata. Do this before emoji splitting and
+      // Markdown parsing so neither stage can expose the protocol's `>` syntax.
+      if (/^\s*>\s*\*[^*\n]+\*\s*$/m.test(processedText)) {
+        processedText = processedText.replace(/^\s*>\s?/gm, "");
+      }
+      processedText = fixCodeBlocks(processedText);
+      return processedText;
+    });
+    processedText = annotateUnlabeledCodeFences(processedText);
+    processedText = outsideMarkdownCode(processedText, (prose) => cleanEmoji(prose).replace(
+      emojiShortcodePattern(),
+      (match, name, offset, source) => {
+        const before = source.slice(0, offset);
+        const currentLine = before.slice(before.lastIndexOf("\n") + 1);
+        if (/https?:\/\/\S*$/.test(currentLine)) return match;
+        return `![${match}](loom-emoji://${encodeURIComponent(name)})`;
+      },
+    ));
+    if (preview && !multilinePreview) processedText = processedText.replace(/\n+/g, " ");
+    return processedText;
+  }, [text, preview, multilinePreview, mentions]);
 
   const blockComponents = useMemo(
     () => buildComponents(isFromMe, preview, false, providerInstanceId, emojiSize, multilinePreview),
@@ -485,21 +403,9 @@ export const MessageText = memo(function MessageText({
     );
   }
 
-  if (typeof parsedContent === "string") {
-    return (
-      <div className={cn(className, "max-w-full overflow-hidden")}>
-        {renderMarkdown(parsedContent, preview && !multilinePreview)}
-      </div>
-    );
-  }
-
   return (
     <div className={cn(className, "max-w-full overflow-hidden")}>
-      {parsedContent.map((part, index) => (
-        <React.Fragment key={index}>
-          {typeof part === "string" ? renderMarkdown(part, true) : part}
-        </React.Fragment>
-      ))}
+      {renderMarkdown(parsedContent, preview && !multilinePreview)}
     </div>
   );
 });
