@@ -2100,6 +2100,9 @@ func (p *SlackProvider) extractTextFromRichContent(msg slack.Message) string {
 
 	// Extract from top-level blocks (the modern way).
 	appendBlocks(msg.Blocks)
+	if len(parts) == 0 && len(msg.Files) > 0 && msg.Text != "" {
+		parts = append(parts, msg.Text)
+	}
 
 	// Apps frequently put Block Kit content inside a legacy attachment. Slack's
 	// fallback `text` can then be only "digest", while the attachment blocks are

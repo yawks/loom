@@ -271,6 +271,7 @@ export function MessageBubbleItem({
                       onSave={() => handlers.onSaveEdit()}
                       onCancel={handlers.onCancelEdit}
                       onBlur={handlers.onEditBlur}
+                      onNavigateToEdit={handlers.onNavigateToEdit}
                       onMarkdownKeyDown={handlers.onEditKeyDown}
                       textareaRef={editingInputRef}
                     />

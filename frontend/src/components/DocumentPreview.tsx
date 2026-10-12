@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut } from "lucide-react";
 import { GetAttachmentData, GetProviderAttachmentData } from "../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import { dataUrlToBytes } from "@/lib/attachmentData";
 import type { OfficeFormat } from "@/lib/officeDocument";
 import type { HyperlinkTarget } from "@silurus/ooxml/xlsx";

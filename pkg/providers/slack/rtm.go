@@ -280,6 +280,7 @@ func (p *SlackProvider) handleRTMMessageEvent(ev *slack.MessageEvent) {
 	}
 
 	// Build attachments from files attached to this RTM event (file_share subtype).
+	p.hydrateForwardedFiles(&ev.Msg, ev.Channel)
 	attachmentsJSON := "[]"
 	if len(ev.Files) > 0 {
 		var atts []models.Attachment

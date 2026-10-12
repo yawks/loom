@@ -16,7 +16,7 @@ import {
   Video,
   type LucideIcon,
 } from "lucide-react";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import { FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { cn } from "@/lib/utils";
 import {

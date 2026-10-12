@@ -1,8 +1,8 @@
-import { useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useAppStore } from "@/lib/store";
-import { RichTextComposer } from "./RichTextComposer";
+import { RichTextComposer, type RichTextComposerHandle } from "./RichTextComposer";
 
 interface MessageEditComposerProps {
   providerInstanceId?: string;
@@ -12,6 +12,7 @@ interface MessageEditComposerProps {
   onCancel: () => void;
   onBlur?: (relatedTarget: EventTarget | null) => void;
   onMarkdownKeyDown?: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
+  onNavigateToEdit?: (direction: "up" | "down") => void;
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
@@ -24,7 +25,9 @@ export function MessageEditComposer({
   onBlur,
   onMarkdownKeyDown,
   textareaRef,
+  onNavigateToEdit,
 }: MessageEditComposerProps) {
+  const richComposerRef = useRef<RichTextComposerHandle>(null);
   const { t } = useTranslation();
   const capabilities = useAppStore((state) => state.capabilities);
   const [mode, setMode] = useState<"wysiwyg" | "markdown">("wysiwyg");
@@ -34,6 +37,18 @@ export function MessageEditComposer({
   ), [capabilities, providerInstanceId]);
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey &&
+        !richComposerRef.current?.hasSelection() && onNavigateToEdit) {
+      const direction = event.key === "ArrowUp" && richComposerRef.current?.isAtStart()
+        ? "up"
+        : event.key === "ArrowDown" && richComposerRef.current?.isAtEnd() ? "down" : null;
+      if (direction) {
+        event.preventDefault();
+        event.stopPropagation();
+        onNavigateToEdit(direction);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       onSave();
@@ -54,12 +69,13 @@ export function MessageEditComposer({
       </button>
       {mode === "wysiwyg" ? (
         <RichTextComposer
+          ref={richComposerRef}
           value={value}
           onChange={onChange}
           onCursorPrefixChange={() => undefined}
           onKeyDown={handleKeyDown}
           onPaste={() => undefined}
-          onMount={(element) => element?.focus()}
+          onMount={(element) => { if (element) richComposerRef.current?.focus("end"); }}
           onBlur={(event) => onBlur?.(event.relatedTarget)}
           placeholder={t("edit_message")}
           features={features}
@@ -82,6 +98,7 @@ export function MessageEditComposer({
           onBlur={(event) => onBlur?.(event.relatedTarget)}
           className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-foreground whitespace-pre-wrap"
           rows={Math.min(8, Math.max(3, value.split("\n").length))}
+          onFocus={(event) => event.currentTarget.setSelectionRange(event.currentTarget.value.length, event.currentTarget.value.length)}
           autoFocus
         />
       )}

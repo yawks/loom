@@ -1,3 +1,25 @@
+import type { Root, Blockquote } from "mdast";
+
+// Markdown collapses consecutive blank lines. Message bodies retain them so
+// display and editing share the same number of visual line breaks.
+export function remarkCanonicalBlankLines() {
+  return (tree: Root) => {
+    const visit = (node: Root | Blockquote) => {
+      node.children.forEach((child, index) => {
+        const previous = node.children[index - 1];
+        if (child.type === "paragraph" && previous?.type === "paragraph") {
+          const gap = (child.position?.start.line ?? 0) - (previous.position?.end.line ?? 0);
+          for (let line = 1; line < gap; line += 1) {
+            child.children.unshift({ type: "break" });
+          }
+        }
+        if (child.type === "blockquote") visit(child);
+      });
+    };
+    visit(tree);
+  };
+}
+
 interface MarkdownNode {
   type: string;
   value?: string;

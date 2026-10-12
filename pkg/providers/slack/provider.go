@@ -165,7 +165,14 @@ func normalizeSlackResponse(body []byte) []byte {
 	}
 	errors, ok := response["errors"]
 	trimmedErrors := bytes.TrimSpace(errors)
+	changed := normalizeForwardedSlackFiles(response)
 	if !ok || len(trimmedErrors) == 0 || trimmedErrors[0] != '{' {
+		if changed {
+			normalized, err := json.Marshal(response)
+			if err == nil {
+				return normalized
+			}
+		}
 		return body
 	}
 	delete(response, "errors")
@@ -312,7 +319,7 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 			opts = append(opts, slack.OptionAppLevelToken(appToken))
 		}
 
-		apiHTTPClient := &http.Client{Timeout: 30 * time.Second}
+		apiHTTPClient := &http.Client{Timeout: 30 * time.Second, Transport: &cookieTransport{Transport: http.DefaultTransport}}
 		if dCookie != "" {
 			fmt.Printf("SlackProvider.SetConfig: setting up cookie transport with d cookie\n")
 			// Create custom HTTP client that sends the d cookie
@@ -333,8 +340,8 @@ func (p *SlackProvider) SetConfig(config core.ProviderConfig) error {
 				},
 			}
 			apiHTTPClient = client
-			opts = append(opts, slack.OptionHTTPClient(client))
 		}
+		opts = append(opts, slack.OptionHTTPClient(apiHTTPClient))
 
 		p.client = slack.New(token, opts...)
 		p.apiClientMu.Lock()

@@ -654,16 +654,36 @@ func (p *Provider) removeVirtualConversations() error {
 	return nil
 }
 
-// removeStoredMeetingMetadata cleans rows saved before meeting metadata was
-// filtered at the Teams transport boundary.
-func (p *Provider) removeStoredMeetingMetadata() error {
+// normalizeStoredMeetingRecordings converts legacy raw recording metadata.
+func (p *Provider) normalizeStoredMeetingRecordings() error {
+	if p.instance == "" {
+		return fmt.Errorf("empty Teams provider instance")
+	}
 	if db.DB == nil {
 		return nil
 	}
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
-		return db.ForProvider(tx, p.instance).Messages().
+		var messages []models.Message
+		if err := db.ForProvider(tx, p.instance).Messages().
 			Where("body LIKE ? AND body LIKE ? AND body LIKE ? AND body LIKE ?",
-				`%"scopeId":%`, `%"callId":%`, `%"iCalUid":%`, `%"meetingTenantId":%`).
-			Delete(&models.Message{}).Error
+				`%scopeId%`, `%callId%`, `%iCalUid%`, `%meetingTenantId%`).
+			Find(&messages).Error; err != nil {
+			return err
+		}
+		var ids []uint
+		for _, message := range messages {
+			body := message.Body
+			if looksLikeTeamsHTML(body) {
+				body = teamsHTMLToMarkdown(body)
+			}
+			if msteams.IsMeetingRecordingContent(body) {
+				ids = append(ids, message.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		return db.ForProvider(tx, p.instance).Messages().Where("id IN ?", ids).
+			Update("body", teamsRecordingStartedBody).Error
 	})
 }

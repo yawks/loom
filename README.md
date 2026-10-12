@@ -197,12 +197,12 @@ The layout draws heavily from [Element Web](https://github.com/element-hq/elemen
 
 ### Prerequisites
 
-- [Go 1.21+](https://golang.org/dl/)
+- [Go 1.26.6](https://golang.org/dl/) for Wails development (the module requires Go 1.26.2 or newer)
 - [Node.js LTS](https://nodejs.org/)
 - [Wails CLI v2](https://wails.io/docs/gettingstarted/installation)
 
 ```bash
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+GOTOOLCHAIN=go1.26.6 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 ```
 
 ### Run in dev mode
@@ -210,8 +210,12 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```bash
 cd frontend && npm install
 cd ..
-wails dev
+GOTOOLCHAIN=go1.26.6 wails dev
 ```
+
+Wails v2.13.0's CLI package loader cannot read Go 1.27's type export format.
+If startup reports `internal error: package "html" without types`, use the
+Go 1.26.6 command above; changing the application's imports will not fix it.
 
 ### Mock mode
 
@@ -219,7 +223,7 @@ Launch Loom with a fully isolated, deterministic set of fake accounts,
 conversations and messages:
 
 ```bash
-wails dev -appargs "--mock"
+GOTOOLCHAIN=go1.26.6 wails dev -appargs "--mock"
 ```
 
 For a built application, pass the flag directly:
@@ -237,6 +241,6 @@ accounts.
 ```bash
 cd frontend && npm install && npm run build
 cd ..
-wails build
+GOTOOLCHAIN=go1.26.6 wails build
 # output: build/bin/
 ```

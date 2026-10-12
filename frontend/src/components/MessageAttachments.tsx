@@ -23,7 +23,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-d
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import { GetAttachmentData, GetProviderAttachmentData, OpenFile, SaveAttachmentDimensions, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import { VoiceMessage } from "./VoiceMessage";
 import { MessageActions } from "./MessageActions";
 import type { MessageHandlers } from "./MessageBubbleItem";

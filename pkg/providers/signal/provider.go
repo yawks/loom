@@ -377,7 +377,9 @@ func (p *Provider) GetContactName(id string) (string, error) {
 	}
 	return "", fmt.Errorf("signal contact not found: %s", id)
 }
-func (p *Provider) RefreshContact(string) error { return p.SyncHistory(time.Time{}) }
+// Contact updates arrive through the live contact sync. Opening a conversation
+// must not reimport the transfer archive or emit provider-wide sync statuses.
+func (p *Provider) RefreshContact(string) error { return nil }
 
 func (p *Provider) GetConversationHistory(id string, limit int, before, since *time.Time) ([]models.Message, error) {
 	p.mu.RLock()

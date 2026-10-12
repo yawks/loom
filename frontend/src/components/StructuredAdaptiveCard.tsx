@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { GetAttachmentData } from "../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import { MessageText } from "./MessageText";

@@ -968,6 +968,7 @@ export function ThreadView() {
                             onChange={setEditingText}
                             onSave={() => handleSaveEdit(false)}
                             onCancel={handleCancelEdit}
+                            onNavigateToEdit={handleNavigateToEdit}
                             onMarkdownKeyDown={handleEditKeyDown}
                             textareaRef={editingInputRef}
                           />
@@ -1145,6 +1146,7 @@ export function ThreadView() {
                             onChange={setEditingText}
                             onSave={() => handleSaveEdit(false)}
                             onCancel={handleCancelEdit}
+                            onNavigateToEdit={handleNavigateToEdit}
                             onMarkdownKeyDown={handleEditKeyDown}
                             textareaRef={editingInputRef}
                           />

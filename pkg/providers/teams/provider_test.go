@@ -96,7 +96,7 @@ func TestStoreMessagesEditRestoresDeletedMessage(t *testing.T) {
 	}
 }
 
-func TestRemoveStoredMeetingMetadataIsProviderScoped(t *testing.T) {
+func TestInitNormalizesStoredMeetingRecordingsIsProviderScoped(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -113,11 +113,12 @@ func TestRemoveStoredMeetingMetadataIsProviderScoped(t *testing.T) {
 		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "metadata", Body: metadata},
 		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "ordinary", Body: `{"scopeId":"scope","callId":"call"}`},
 		{ProtocolConvID: "teams-2::room", ProtocolMsgID: "other-provider", Body: metadata},
+		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "wrapped", Body: "<p>" + strings.ReplaceAll(metadata, `"`, "&quot;") + "</p>"},
 	}
 	if err := database.Create(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := (&Provider{instance: "teams-1"}).removeStoredMeetingMetadata(); err != nil {
+	if err := NewProvider().Init(core.ProviderConfig{"_instance_id": "teams-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,7 +126,7 @@ func TestRemoveStoredMeetingMetadataIsProviderScoped(t *testing.T) {
 	if err := database.Order("protocol_msg_id").Find(&remaining).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 2 || remaining[0].ProtocolMsgID != "ordinary" || remaining[1].ProtocolMsgID != "other-provider" {
+	if len(remaining) != 4 || remaining[0].Body != teamsRecordingStartedBody || remaining[1].ProtocolMsgID != "ordinary" || remaining[2].Body != metadata || remaining[3].Body != teamsRecordingStartedBody {
 		t.Fatalf("unexpected remaining messages: %#v", remaining)
 	}
 }
@@ -920,5 +921,28 @@ func TestTeamsTableCellSourceNewlines(t *testing.T) {
 	want := "| Header continued | Status |\n| --- | --- |\n| First<br>Second | Open |"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestToModelMessageMeetingRecording(t *testing.T) {
+	client, err := msteams.NewClient(msteams.ClientConfig{
+		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "test-refresh-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	provider := &Provider{instance: "teams-1"}
+	for _, content := range []string{
+		`{"scopeId":"scope","callId":"call","iCalUid":"ical","meetingTenantId":"tenant","isExportedToOdsp":true}`,
+		`<p>{&quot;scopeId&quot;:&quot;scope&quot;,&quot;callId&quot;:&quot;call&quot;,&quot;iCalUid&quot;:&quot;ical&quot;,&quot;meetingTenantId&quot;:&quot;tenant&quot;}</p>`,
+	} {
+		message := provider.toModelMessage(client, msteams.Message{
+			ID: "recording", ContentType: "html", MessageType: "RichText/Html",
+			Content: content,
+		}, "room")
+		if message.Body != teamsRecordingStartedBody || message.CallType != "" || message.ProtocolConvID != "teams-1::room" {
+			t.Fatalf("unexpected recording message: %+v", message)
+		}
 	}
 }

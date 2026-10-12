@@ -1,6 +1,6 @@
 import { Clock, ExternalLink, Phone, PhoneOutgoing, Video, VideoOff, X } from "lucide-react";
 
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import type { models } from "../../wailsjs/go/models";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";

@@ -46,7 +46,7 @@ const CanonicalTextStyle = TextStyle.extend({
 });
 
 export interface RichTextComposerHandle {
-  focus: () => void;
+  focus: (position?: "end") => void;
   insertText: (text: string) => void;
   replaceTextBeforeCursor: (length: number, text: string) => void;
   hasSelection: () => boolean;
@@ -178,7 +178,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
   }, [editor]);
 
   useImperativeHandle(ref, () => ({
-    focus: () => editor?.commands.focus(),
+    focus: (position) => editor?.commands.focus(position),
     insertText: (text) => { editor?.chain().focus().insertContent(text).run(); },
     replaceTextBeforeCursor: (length, text) => {
       if (!editor) return;

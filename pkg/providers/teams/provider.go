@@ -81,6 +81,9 @@ func (p *Provider) Init(config core.ProviderConfig) error {
 	if p.instance == "" {
 		p.instance = providerID + "-1"
 	}
+	if err := p.normalizeStoredMeetingRecordings(); err != nil {
+		return err
+	}
 	return p.loadSessionLocked()
 }
 
@@ -210,7 +213,7 @@ func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error
 	if err != nil {
 		return err
 	}
-	if err := p.removeStoredMeetingMetadata(); err != nil {
+	if err := p.normalizeStoredMeetingRecordings(); err != nil {
 		return err
 	}
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingContacts, Message: "Fetching Microsoft Teams conversations", Progress: 0})
@@ -1467,8 +1470,15 @@ func mriLookupKey(mri string) string {
 	return strings.ReplaceAll(value, "-", "")
 }
 
+const teamsRecordingStartedBody = "🔴 Enregistrement de la réunion démarré"
+
 func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message, conversationID string) models.Message {
 	conversationID = core.BuildConvID(p.instance, core.StripConvID(conversationID))
+	if msteams.IsMeetingRecordingContent(remote.Content) {
+		remote.Content = teamsRecordingStartedBody
+		remote.ContentType = "text"
+		remote.MessageType = "Text"
+	}
 	if isTeamsCallMessage(remote) {
 		return p.toCallModelMessage(client, remote, conversationID)
 	}
@@ -1481,7 +1491,7 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	if template, ok := remote.Properties["forwardTemplateId"].(string); ok && strings.TrimSpace(template) != "" {
 		isForwarded = true
 	}
-	if remote.ContentType == "html" ||
+	if strings.EqualFold(remote.ContentType, "html") ||
 		strings.Contains(strings.ToLower(remote.MessageType), "richtext") ||
 		looksLikeTeamsHTML(remote.Content) {
 		if remote.ParentID == "" {
@@ -1489,6 +1499,9 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		}
 		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body))
 		body = teamsHTMLToMarkdown(cleanContent)
+	}
+	if msteams.IsMeetingRecordingContent(body) {
+		body = teamsRecordingStartedBody
 	}
 	body, canonicalMentions = materializeCanonicalTeamsMentions(body, canonicalMentions)
 	cardBody := teamsCardsToMarkdown(remote.Properties)

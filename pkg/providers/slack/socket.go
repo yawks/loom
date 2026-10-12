@@ -60,6 +60,17 @@ func (p *SlackProvider) startSocketMode(ctx context.Context, client *socketmode.
 					case *slackevents.MemberJoinedChannelEvent:
 						p.handleMembershipChange(ev.User)
 					case *slackevents.MessageEvent:
+						var raw map[string]json.RawMessage
+						payload, marshalErr := json.Marshal(eventsAPIEvent.Data)
+						if marshalErr == nil && json.Unmarshal(payload, &raw) == nil {
+							normalizeForwardedSlackFiles(raw)
+							if data := raw["event"]; len(data) > 0 {
+								var message slackevents.MessageEvent
+								if json.Unmarshal(data, &message) == nil {
+									ev = &message
+								}
+							}
+						}
 						p.log("SlackProvider.startSocketMode: received message event channel=%s subtype=%s ts=%s thread_ts=%s bot_id=%s\n",
 							ev.Channel, ev.SubType, ev.TimeStamp, ev.ThreadTimeStamp, ev.BotID)
 						p.handleMessageEvent(ev)

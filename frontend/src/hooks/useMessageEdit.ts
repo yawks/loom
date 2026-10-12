@@ -153,6 +153,7 @@ export function useMessageEdit({ messages, conversationId, showToast, t, focusCo
   );
 
   const handleEditKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.currentTarget.selectionStart !== e.currentTarget.selectionEnd) return;
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (e.key === "ArrowUp" && (e.currentTarget.selectionStart === 0 || editingText.trim() === "")) {

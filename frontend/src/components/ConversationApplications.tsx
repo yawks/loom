@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppWindow, ExternalLink, ShieldAlert, X } from "lucide-react";
 import { GetConversationApplications } from "../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import type { models } from "../../wailsjs/go/models";
 
 export function ConversationApplications({ conversationId }: { conversationId: string }) {

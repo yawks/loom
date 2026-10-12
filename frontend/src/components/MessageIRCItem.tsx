@@ -254,6 +254,7 @@ export function MessageIRCItem({
                           onSave={() => handlers.onSaveEdit(false)}
                           onCancel={handlers.onCancelEdit}
                           onBlur={handlers.onEditBlur}
+                          onNavigateToEdit={handlers.onNavigateToEdit}
                           onMarkdownKeyDown={handlers.onEditKeyDown}
                           textareaRef={handlers.editingInputRef}
                         />

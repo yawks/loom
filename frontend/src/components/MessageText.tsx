@@ -1,4 +1,4 @@
-import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
+import { BrowserOpenURL } from "../lib/browser";
 import { OpenConversation } from "../../wailsjs/go/main/App";
 import { useMemo, memo } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { useRenderCount } from "@/hooks/useRenderCount";
 import { useAppStore } from "@/lib/store";
 import { htmlFragmentToText } from "@/lib/messageUtils";
-import { rehypeCanonicalBreaks } from "../lib/markdownBreaks";
+import { rehypeCanonicalBreaks, remarkCanonicalBlankLines } from "../lib/markdownBreaks";
 import { rehypeCanonicalUnderline } from "../lib/markdownUnderline";
 import { rehypeCanonicalStyle } from "../lib/markdownStyle";
 import { outsideMarkdownCode, repairLegacyCodeFences } from "../lib/markdownCode";
@@ -229,7 +229,7 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean,
     p: ({ className, ...props }) => (
       isInline
         ? <span className={className} {...props} />
-        : <p className={cn("m-0", (!preview || multilinePreview) && "[&+p]:mt-[1.5em]", className)} {...props} />
+        : <p className={cn("m-0", className)} {...props} />
     ),
     br: ({ ...props }) => (preview && !multilinePreview ? <span> </span> : <br {...props} />),
     div: ({ ...props }) => (isInline ? <span {...props} /> : <div {...props} />),
@@ -362,7 +362,7 @@ export const MessageText = memo(function MessageText({
   );
 
   const remarkPlugins = useMemo(
-    () => (preview && !multilinePreview ? [remarkGfm] : [remarkGfm, remarkBreaks]),
+    () => (preview && !multilinePreview ? [remarkGfm] : [remarkGfm, remarkBreaks, remarkCanonicalBlankLines]),
     [preview, multilinePreview]
   );
   const rehypePlugins = useMemo<PluggableList>(

@@ -24,6 +24,18 @@ func TestCapabilitiesMatchImplementedSurface(t *testing.T) {
 	}
 }
 
+func TestRefreshContactDoesNotStartHistorySync(t *testing.T) {
+	p := NewProvider().(*Provider)
+	for range 3 {
+		if err := p.RefreshContact(core.BuildConvID("signal-test", "chat")); err != nil {
+			t.Fatalf("contact refresh attempted a network sync: %v", err)
+		}
+	}
+	if len(p.events) != 0 || len(p.history) != 0 {
+		t.Fatal("contact refresh emitted events or changed history")
+	}
+}
+
 func TestBackupConversationIdentityForContact(t *testing.T) {
 	aci := uuid.MustParse("11111111-2222-3333-4444-555555555555")
 	recipient := &backuppb.Recipient{Destination: &backuppb.Recipient_Contact{Contact: &backuppb.Contact{
