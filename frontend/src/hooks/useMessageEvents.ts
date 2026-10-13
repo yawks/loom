@@ -9,6 +9,7 @@ import { useTypingStore } from "@/lib/typingStore";
 import { timeToDate } from "@/lib/utils";
 import { normalizeReaction } from "@/lib/reactionUtils";
 import { addPendingMessage } from "@/lib/pendingMessages";
+import { mergeMessageBatch } from "@/lib/messageBatch";
 
 interface ReceiptEvent {
   instanceId: string;
@@ -307,6 +308,21 @@ export function useMessageEvents() {
             lastMessageByConv[convId] = keepLatestMessage(lastMessageByConv[convId], message);
             lastTSByConv[convId] = Math.max(lastTSByConv[convId] || 0, messageTime(message));
           }
+        }
+        const messagesByConversation = new Map<string, models.Message[]>();
+        for (const message of batch.messages) {
+          if (!message.protocolConvId) continue;
+          addPendingMessage(message.protocolConvId, message);
+          const messages = messagesByConversation.get(message.protocolConvId) ?? [];
+          messages.push(message);
+          messagesByConversation.set(message.protocolConvId, messages);
+        }
+        for (const [convId, messages] of messagesByConversation) {
+          // Update loaded timelines immediately; a refetch may race persistence.
+          queryClient.setQueryData<InfiniteData<models.Message[]>>(
+            ["messages", convId],
+            (current) => mergeMessageBatch(current, messages)
+          );
         }
         for (const convId of Object.keys(lastMessageByConv)) {
           // Batch events are used by incremental-sync fallbacks when streaming

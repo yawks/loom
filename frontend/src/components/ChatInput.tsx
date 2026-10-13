@@ -14,6 +14,8 @@ import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
+import { addPendingMessage } from "@/lib/pendingMessages";
+import { mergeMessageBatch } from "@/lib/messageBatch";
 import { resolveMentionPositions } from "@/lib/mentions";
 import { core, models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
@@ -383,7 +385,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       return await SendMessage(conversationId, text);
     },
     // Optimistic update: insert temp message immediately
-    onMutate: ({ conversationId, text, quotedMessageId, mentions }) => {
+    onMutate: async ({ conversationId, text, quotedMessageId, mentions }) => {
+      await queryClient.cancelQueries({
+        queryKey: threadId ? ["threads", conversationId, threadId] : ["messages", conversationId],
+        exact: true,
+      });
       const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const now = new Date();
 
@@ -536,24 +542,16 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
         return; // Don't do optimistic update for thread messages
       }
 
-      // Replace temp message with real one (only for main messages)
+      // A refetch or provider echo may already have removed the placeholder.
+      // Always upsert the confirmed message, even when the temporary ID is gone.
+      addPendingMessage(conversationId, message);
       queryClient.setQueryData<InfiniteData<models.Message[]>>(
         ["messages", conversationId],
-        (oldData) => {
-          if (!oldData || !Array.isArray(oldData.pages)) {
-            return oldData;
-          }
-          const pages = oldData.pages.map((page) => {
-            if (!Array.isArray(page)) return page;
-            return page.map((msg) => {
-              if (msg.protocolMsgId === tempId) {
-                return { ...(message as any), isPending: false, sendFailed: false };
-              }
-              return msg;
-            });
-          });
-          return { ...oldData, pages };
-        }
+        (current) => mergeMessageBatch(
+          current?.pages.length ? current : { pages: [[]], pageParams: [undefined] },
+          [{ ...message, isPending: false, sendFailed: false } as unknown as models.Message],
+          tempId,
+        )
       );
 
       // Update last message caches

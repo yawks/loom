@@ -57,6 +57,35 @@ func TestConvertMessageSkipsEncryptedReactionEnvelope(t *testing.T) {
 	}
 }
 
+func TestConvertMessageSkipsProtocolEnvelopes(t *testing.T) {
+	provider := NewWhatsAppProvider()
+	for _, kind := range []waE2E.ProtocolMessage_Type{
+		waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_MESSAGE,
+		waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_RESPONSE_MESSAGE,
+		waE2E.ProtocolMessage_HISTORY_SYNC_NOTIFICATION,
+		waE2E.ProtocolMessage_MESSAGE_EDIT,
+		waE2E.ProtocolMessage_REVOKE,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			event := &events.Message{Message: &waE2E.Message{
+				ProtocolMessage: &waE2E.ProtocolMessage{Type: kind.Enum()},
+			}}
+			if got := provider.convertMessage(event); got != nil {
+				t.Fatalf("protocol envelope converted to chat message: %#v", got)
+			}
+		})
+	}
+	message := provider.convertMessage(&events.Message{
+		Info: types.MessageInfo{MessageSource: types.MessageSource{
+			Chat: types.NewJID("33600000000", types.DefaultUserServer), IsFromMe: true,
+		}},
+		Message: &waE2E.Message{Conversation: proto.String("Note pour moi")},
+	})
+	if message == nil || message.Body != "Note pour moi" {
+		t.Fatalf("real message was discarded: %#v", message)
+	}
+}
+
 func TestReconcileDuplicateMessageBackfillsCaptionAndAttachmentWithoutEditing(t *testing.T) {
 	existing := &models.Message{ProtocolMsgID: "image-message"}
 	incoming := &models.Message{

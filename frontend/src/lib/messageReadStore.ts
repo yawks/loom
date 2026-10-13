@@ -116,6 +116,7 @@ export const latestOwnActivityTimestamp = (
   };
 
   messages.forEach((message) => {
+    if (isThreadReply(message)) return;
     if (message.isFromMe) include(message.timestamp);
     if (!currentUserId) return;
     (message.reactions ?? []).forEach((reaction) => {
@@ -312,8 +313,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           ? ((existingState as any)["_lastReadTS"] as string | undefined)
           : undefined;
 
-        // Sending or reacting proves the user has visited this conversation up
-        // to that activity. This is a canonical UI invariant, independent of
+        // Sending or reacting in the main timeline advances only that timeline
+        // up to that activity. This is a canonical UI invariant, independent of
         // provider receipt semantics.
         const ownActivityReadThrough = latestOwnActivityTimestamp(messages, currentUserId);
 
@@ -363,7 +364,7 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           return;
         }
 
-        const isReadThroughOwnActivity = ownActivityReadThrough !== undefined &&
+        const isReadThroughOwnActivity = !isThreadReply(message) && ownActivityReadThrough !== undefined &&
           timeToDate(message.timestamp).getTime() <= ownActivityReadThrough;
         if (isReadThroughOwnActivity && nextState[messageId] !== true) {
           nextState[messageId] = true;
@@ -719,9 +720,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         ...existingState,
         [messageId]: isRead,
       };
-      if (message.isFromMe) {
+      if (message.isFromMe && !isThreadReply(message)) {
         Object.keys(updatedConversation).forEach((id) => {
-          if (!id.startsWith("_") && updatedConversation[id] === false) {
+          if (!id.startsWith("_") && updatedConversation[threadMarker(id)] !== true && updatedConversation[id] === false) {
             updatedConversation[id] = true;
           }
         });
@@ -806,9 +807,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           updatedReadByConversation[conversationId] = updatedConversation;
         }
         updatedConversation[messageId] = isRead;
-        if (message.isFromMe) {
+        if (message.isFromMe && !isThreadReply(message)) {
           Object.keys(updatedConversation).forEach((id) => {
-            if (!id.startsWith("_") && updatedConversation![id] === false) {
+            if (!id.startsWith("_") && updatedConversation![threadMarker(id)] !== true && updatedConversation![id] === false) {
               updatedConversation![id] = true;
             }
           });

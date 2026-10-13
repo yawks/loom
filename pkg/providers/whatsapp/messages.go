@@ -826,6 +826,12 @@ func (w *WhatsAppProvider) convertMessage(evt *events.Message) *models.Message {
 	}
 	evt.Message = msg
 
+	// Protocol envelopes are handled separately in live and history ingestion;
+	// peer sync requests/responses must never become empty chat messages.
+	if msg.GetProtocolMessage() != nil {
+		return nil
+	}
+
 	// Reactions are conversation activity, not standalone messages. WhatsApp can
 	// deliver the same reaction as either a decrypted ReactionMessage or an
 	// EncReactionMessage control envelope. Persisting the latter creates a blank

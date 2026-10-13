@@ -751,9 +751,10 @@ export function ThreadView() {
       lastMsg?.isFromMe
     ) {
       shouldStickToThreadBottomRef.current = true;
+      markMultipleAsRead(conversationId, sortedThreadMessages.filter((msg) => !msg.isFromMe).map(getMessageDomId));
     }
     correctThreadBottomImmediately();
-  }, [sortedThreadMessages, correctThreadBottomImmediately]);
+  }, [conversationId, sortedThreadMessages, correctThreadBottomImmediately, markMultipleAsRead]);
 
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
