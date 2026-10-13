@@ -107,7 +107,7 @@ func TeamsHTML(markdown string) string {
 			}
 			label, suffix = target, match[len(target):]
 		}
-		return protect(`<a href="`+html.EscapeString(target)+`">`+html.EscapeString(label)+`</a>`) + suffix
+		return protect(`<a href="`+html.EscapeString(html.UnescapeString(target))+`">`+html.EscapeString(html.UnescapeString(label))+`</a>`) + suffix
 	})
 	markdown = loomStyleOpenPattern.ReplaceAllStringFunc(markdown, func(match string) string {
 		attributes := loomStyleAttributePattern.FindAllStringSubmatch(match, -1)
@@ -139,7 +139,9 @@ func TeamsHTML(markdown string) string {
 	const underlineClose = "LOOMUNDERLINECLOSE"
 	out := strings.ReplaceAll(markdown, "<u>", underlineOpen)
 	out = strings.ReplaceAll(out, "</u>", underlineClose)
-	out = html.EscapeString(out)
+	// Markdown text entities represent characters; decode once before escaping
+	// for the wire. Protected code fragments retain their literal entities.
+	out = html.EscapeString(html.UnescapeString(out))
 	out = strings.ReplaceAll(out, underlineOpen, "<u>")
 	out = strings.ReplaceAll(out, underlineClose, "</u>")
 	out = italicPattern.ReplaceAllString(out, `${1}<em>$2</em>`)

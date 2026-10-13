@@ -5,11 +5,12 @@ import Link from "@tiptap/extension-link";
 import Underline from "@tiptap/extension-underline";
 import { BackgroundColor, Color, FontSize, TextStyle } from "@tiptap/extension-text-style";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { composerInputMarkdown, composerMarkdown } from "../lib/composerMarkdown";
 
 const SAFE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
 const SAFE_SIZE = /^[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|%)$/i;
 
-const canonicalToEditorMarkdown = (markdown: string): string => markdown
+const canonicalToEditorMarkdown = (markdown: string): string => composerInputMarkdown(markdown)
   .replace(/<loom-style\b([^<>]*)>/gi, (_tag, rawAttributes: string) => {
     const styles: string[] = [];
     for (const match of rawAttributes.matchAll(/(color|background|size)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
@@ -148,7 +149,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
       },
     },
     onUpdate: ({ editor: currentEditor }) => {
-      const markdown = currentEditor.getMarkdown();
+      const markdown = composerMarkdown(currentEditor.getJSON(), (doc) => currentEditor.markdown!.serialize(doc));
       emittedValue.current = markdown;
       callbacks.current.onChange(markdown);
       reportCursor(currentEditor);

@@ -7,6 +7,20 @@ import (
 
 const sample = "**bold** *italic* <u>under</u> ~~gone~~ [site](https://example.com)\n- one\n1. first"
 
+func TestTeamsHTMLEntities(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"-&gt; &lt; &amp; &quot; &#39; &#62; &#x3e; &nbsp;", "-&gt; &lt; &amp; &#34; &#39; &gt; &gt; \u00a0"},
+		{"literal &amp;gt;", "literal &amp;gt;"},
+		{"`&gt;`", "<code>&amp;gt;</code>"},
+		{"```\n&gt;\n```", "<pre><code>&amp;gt;</code></pre>"},
+		{"[A &amp; B](https://example.com/?a=1&amp;b=2)", `<a href="https://example.com/?a=1&amp;b=2">A &amp; B</a>`},
+	} {
+		if got := TeamsHTML(tc.input); got != tc.want {
+			t.Errorf("TeamsHTML(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestTeamsHTMLLinks(t *testing.T) {
 	tests := []struct{ name, input, want string }{
 		{"bare URL", "https://example.com", `<a href="https://example.com">https://example.com</a>`},
