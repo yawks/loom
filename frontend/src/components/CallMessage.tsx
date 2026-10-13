@@ -14,6 +14,10 @@ const PhoneWithX = ({ className }: { className?: string }) => (
   </span>
 );
 
+const RecordingIcon = ({ className }: { className?: string }) => (
+  <span className={className} aria-hidden="true">🔴</span>
+);
+
 interface CallMessageProps {
   message: models.Message;
   layout: "bubble" | "irc";
@@ -66,7 +70,7 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
   // Determine call type and icon
   const getCallInfo = () => {
     const callType = message.callType || "";
-    const effectiveIsGroup = isGroup || callType.includes("group") || (message.protocolConvId ? message.protocolConvId.includes("@g.us") : false);
+    const effectiveIsGroup = isGroup || callType.includes("group");
     const isOutgoing = callType.startsWith("outgoing_");
     const isVideo = message.callIsVideo || callType.includes("video");
     const duration = message.callDurationSecs;
@@ -200,6 +204,9 @@ export function CallMessage({ message, layout, isGroup = false }: CallMessagePro
         duration: null,
         participantCount: 0,
       };
+    }
+    if (callType === "transcription_start") {
+      return { icon: RecordingIcon, text: t("call.transcriptionStart"), duration: null, participantCount: 0 };
     }
     if (callType === "scheduled_start") {
       return { icon: Phone, text: t("call.scheduledStart"), duration: null, participantCount: 0 };

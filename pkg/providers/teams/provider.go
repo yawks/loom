@@ -1470,14 +1470,31 @@ func mriLookupKey(mri string) string {
 	return strings.ReplaceAll(value, "-", "")
 }
 
-const teamsRecordingStartedBody = "🔴 Enregistrement de la réunion démarré"
+const teamsRecordingStartedBody = "🔴 Enregistrement de la réunion démarré" // Legacy placeholder.
+const teamsTranscriptionStartedBody = "🔴 Transcription de la réunion démarrée"
+
+// Meeting transcription metadata becomes a canonical call notification.
+func isTeamsMeetingMetadata(content string) bool {
+	if looksLikeTeamsHTML(content) {
+		content = teamsHTMLToMarkdown(content)
+	}
+	if msteams.IsMeetingRecordingContent(strings.TrimSpace(content)) {
+		return true
+	}
+	// Legacy Markdown bodies can contain single or double escaped JSON quotes.
+	content = strings.ReplaceAll(content, `\\"`, `"`)
+	content = strings.ReplaceAll(content, `\"`, `"`)
+	return msteams.IsMeetingRecordingContent(strings.TrimSpace(content))
+}
 
 func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message, conversationID string) models.Message {
 	conversationID = core.BuildConvID(p.instance, core.StripConvID(conversationID))
-	if msteams.IsMeetingRecordingContent(remote.Content) {
-		remote.Content = teamsRecordingStartedBody
-		remote.ContentType = "text"
-		remote.MessageType = "Text"
+	if isTeamsMeetingMetadata(remote.Content) {
+		remote.Content, remote.MessageType, remote.CallLog = "", "ThreadActivity/CallStarted", nil
+		message := p.toCallModelMessage(client, remote, conversationID)
+		message.CallType, message.Body = "transcription_start", teamsTranscriptionStartedBody
+		message.CallUrl, message.CallLinkAction = "", ""
+		return message
 	}
 	if isTeamsCallMessage(remote) {
 		return p.toCallModelMessage(client, remote, conversationID)
@@ -1499,9 +1516,6 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		}
 		cleanContent := msteams.StripAMSAttachments(msteams.StripReplyBlockquote(body))
 		body = teamsHTMLToMarkdown(cleanContent)
-	}
-	if msteams.IsMeetingRecordingContent(body) {
-		body = teamsRecordingStartedBody
 	}
 	body, canonicalMentions = materializeCanonicalTeamsMentions(body, canonicalMentions)
 	cardBody := teamsCardsToMarkdown(remote.Properties)

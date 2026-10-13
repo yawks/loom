@@ -439,6 +439,7 @@
     "outgoingNoAnswer": "Appel non décroché",
     "outgoingConnected": "Appel émis ({{duration}})",
     "ended": "Appel terminé",
+    "transcriptionStart": "Transcription de la réunion démarrée",
     "scheduledStart": "Appel planifié démarré",
     "open": "Ouvrir",
     "scheduledCancel": "Appel planifié annulé",

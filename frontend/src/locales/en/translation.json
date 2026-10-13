@@ -437,6 +437,7 @@
     "outgoingNoAnswer": "No answer",
     "outgoingConnected": "Call ({{duration}})",
     "ended": "Call ended",
+    "transcriptionStart": "Meeting transcription started",
     "scheduledStart": "Scheduled call started",
     "open": "Open",
     "scheduledCancel": "Scheduled call cancelled",

@@ -113,9 +113,16 @@ func TestInitNormalizesStoredMeetingRecordingsIsProviderScoped(t *testing.T) {
 		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "metadata", Body: metadata},
 		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "ordinary", Body: `{"scopeId":"scope","callId":"call"}`},
 		{ProtocolConvID: "teams-2::room", ProtocolMsgID: "other-provider", Body: metadata},
+		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "placeholder", Body: teamsRecordingStartedBody},
+		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "escaped", Body: strings.ReplaceAll(metadata, `"`, `\\"`)},
+		{ProtocolConvID: "teams-2::room", ProtocolMsgID: "other-placeholder", Body: teamsRecordingStartedBody},
 		{ProtocolConvID: "teams-1::room", ProtocolMsgID: "wrapped", Body: "<p>" + strings.ReplaceAll(metadata, `"`, "&quot;") + "</p>"},
 	}
 	if err := database.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	// The previous fix soft-deleted metadata; initialization must restore it.
+	if err := database.Delete(&rows[0]).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := NewProvider().Init(core.ProviderConfig{"_instance_id": "teams-1"}); err != nil {
@@ -126,8 +133,21 @@ func TestInitNormalizesStoredMeetingRecordingsIsProviderScoped(t *testing.T) {
 	if err := database.Order("protocol_msg_id").Find(&remaining).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 4 || remaining[0].Body != teamsRecordingStartedBody || remaining[1].ProtocolMsgID != "ordinary" || remaining[2].Body != metadata || remaining[3].Body != teamsRecordingStartedBody {
+	if len(remaining) != 7 {
 		t.Fatalf("unexpected remaining messages: %#v", remaining)
+	}
+	for _, message := range remaining {
+		if message.ProtocolConvID == "teams-2::room" {
+			if message.CallType != "" || (message.Body != metadata && message.Body != teamsRecordingStartedBody) {
+				t.Fatalf("other provider changed: %+v", message)
+			}
+		} else if message.ProtocolMsgID == "ordinary" {
+			if message.Body != `{"scopeId":"scope","callId":"call"}` || message.CallType != "" {
+				t.Fatalf("ordinary message changed: %+v", message)
+			}
+		} else if message.CallType != "transcription_start" || message.Body != "🔴 Transcription de la réunion démarrée" {
+			t.Fatalf("metadata not normalized: %+v", message)
+		}
 	}
 }
 
@@ -924,25 +944,32 @@ func TestTeamsTableCellSourceNewlines(t *testing.T) {
 	}
 }
 
-func TestToModelMessageMeetingRecording(t *testing.T) {
-	client, err := msteams.NewClient(msteams.ClientConfig{
-		TenantID: "tenant", UserMRI: "8:orgid:self", RefreshToken: "test-refresh-token",
-	})
+func TestMeetingMetadataBecomesTranscriptionNotification(t *testing.T) {
+	provider := NewProvider()
+	provider.instance = "teams-1"
+	client, err := msteams.NewClient(msteams.ClientConfig{UserMRI: "8:orgid:self"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
-	provider := &Provider{instance: "teams-1"}
-	for _, content := range []string{
-		`{"scopeId":"scope","callId":"call","iCalUid":"ical","meetingTenantId":"tenant","isExportedToOdsp":true}`,
-		`<p>{&quot;scopeId&quot;:&quot;scope&quot;,&quot;callId&quot;:&quot;call&quot;,&quot;iCalUid&quot;:&quot;ical&quot;,&quot;meetingTenantId&quot;:&quot;tenant&quot;}</p>`,
-	} {
+	defer client.Close()
+	content := `{"scopeId":"503dfc10-202e-4679-bdc9-38e72c35660e","storageId":"7b645402-1edd-4874-8a0b-41bb2477353b@1451a8d9-4008-46ea-9325-fa0c5b2b774d","callId":"503dfc10-202e-4679-bdc9-38e72c35660e","iCalUid":"040000008200E00074C5B7101A82E0080000000033505A04D557DD01000000000000000010000000A7D1DACEF300D64E9FC8D2B746BA0087","exchangeId":"","meetingTenantId":"1451a8d9-4008-46ea-9325-fa0c5b2b774d","modernGroupId":null,"meetingOrganizerId":"8:orgid:7b645402-1edd-4874-8a0b-41bb2477353b","isDeleted":false,"originatorParticipantId":"abdec750-3412-4a59-96f2-750f06a5f59a","isExportedToOdsp":true}`
+	for _, body := range []string{content, strings.ReplaceAll(content, `"`, `\"`), strings.ReplaceAll(content, `"`, `\\"`), "<p>" + strings.ReplaceAll(content, `"`, "&quot;") + "</p>"} {
+		if !isTeamsMeetingMetadata(body) {
+			t.Fatal("transcription metadata was not detected")
+		}
 		message := provider.toModelMessage(client, msteams.Message{
-			ID: "recording", ContentType: "html", MessageType: "RichText/Html",
-			Content: content,
-		}, "room")
-		if message.Body != teamsRecordingStartedBody || message.CallType != "" || message.ProtocolConvID != "teams-1::room" {
-			t.Fatalf("unexpected recording message: %+v", message)
+			ID: "transcription", From: "8:orgid:self", Created: time.Unix(1700000000, 0),
+			Content: body, ContentType: "html", MessageType: "RichText/Html",
+		}, "19:meeting@thread.v2")
+		if message.CallType != "transcription_start" || message.Body != "🔴 Transcription de la réunion démarrée" ||
+			message.ProtocolConvID != "teams-1::19:meeting@thread.v2" || message.ProtocolMsgID != "transcription" ||
+			!message.IsFromMe || !message.Timestamp.Equal(time.Unix(1700000000, 0)) || message.CallUrl != "" {
+			t.Fatalf("unexpected notification: %+v", message)
+		}
+	}
+	for _, body := range []string{`{"scopeId":"scope","callId":"call"}`, "ordinary text"} {
+		if isTeamsMeetingMetadata(body) {
+			t.Fatalf("ordinary message filtered: %s", body)
 		}
 	}
 }

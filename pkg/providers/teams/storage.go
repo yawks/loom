@@ -654,7 +654,7 @@ func (p *Provider) removeVirtualConversations() error {
 	return nil
 }
 
-// normalizeStoredMeetingRecordings converts legacy raw recording metadata.
+// normalizeStoredMeetingRecordings restores legacy metadata as canonical notifications.
 func (p *Provider) normalizeStoredMeetingRecordings() error {
 	if p.instance == "" {
 		return fmt.Errorf("empty Teams provider instance")
@@ -664,26 +664,24 @@ func (p *Provider) normalizeStoredMeetingRecordings() error {
 	}
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
 		var messages []models.Message
-		if err := db.ForProvider(tx, p.instance).Messages().
-			Where("body LIKE ? AND body LIKE ? AND body LIKE ? AND body LIKE ?",
-				`%scopeId%`, `%callId%`, `%iCalUid%`, `%meetingTenantId%`).
+		if err := db.ForProvider(tx, p.instance).Messages().Unscoped().
+			Where("(body LIKE ? AND body LIKE ? AND body LIKE ? AND body LIKE ?) OR body = ?",
+				`%scopeId%`, `%callId%`, `%iCalUid%`, `%meetingTenantId%`, teamsRecordingStartedBody).
 			Find(&messages).Error; err != nil {
 			return err
 		}
 		var ids []uint
 		for _, message := range messages {
-			body := message.Body
-			if looksLikeTeamsHTML(body) {
-				body = teamsHTMLToMarkdown(body)
-			}
-			if msteams.IsMeetingRecordingContent(body) {
+			if message.Body == teamsRecordingStartedBody || isTeamsMeetingMetadata(message.Body) {
 				ids = append(ids, message.ID)
 			}
 		}
 		if len(ids) == 0 {
 			return nil
 		}
-		return db.ForProvider(tx, p.instance).Messages().Where("id IN ?", ids).
-			Update("body", teamsRecordingStartedBody).Error
+		return db.ForProvider(tx, p.instance).Messages().Unscoped().Where("id IN ?", ids).
+			Updates(map[string]any{
+				"body": teamsTranscriptionStartedBody, "call_type": "transcription_start", "deleted_at": nil,
+			}).Error
 	})
 }

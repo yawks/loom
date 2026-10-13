@@ -9,7 +9,7 @@ ARCH="${1:-$(uname -m)}" # universal | amd64 | arm64
 [[ "$ARCH" == "x86_64" ]] && ARCH="amd64"
 
 echo "==> Building ${APP_NAME} (darwin/${ARCH})..."
-wails build -platform "darwin/${ARCH}" -clean
+GOTOOLCHAIN=go1.26.6 wails build -platform "darwin/${ARCH}" -clean
 
 APP_PATH="${BUILD_DIR}/${BUNDLE}"
 if [[ ! -d "$APP_PATH" ]]; then
