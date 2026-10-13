@@ -42,6 +42,7 @@ import { MessageIRCItem } from "./MessageIRCItem";
 import { CalendarClock, ChevronDown, ChevronUp, Trash2, UploadCloud } from "lucide-react";
 import { cn, timeToDate } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
+import { openingMessageScrollTop } from "@/lib/messageScroll";
 import { models } from "../../wailsjs/go/models";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { sameUserId } from "@/lib/userIdentity";
@@ -117,6 +118,7 @@ export function MessageList({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const nativeListRef = useRef<HTMLDivElement>(null);
   const pendingAnchorRef = useRef<{ messageId: string; viewportOffset: number } | null>(null);
+  const openingUnreadNodeRef = useRef<HTMLElement | null>(null);
   const positionedUnreadBoundaryRef = useRef<string>("");
   const liveEdgeSnapshotRef = useRef<{ conversationId: string; lastMessageId: string } | null>(null);
   const presentedConversationRef = useRef<string>("");
@@ -448,6 +450,7 @@ export function MessageList({
       setUnreadBoundary(null);
       setSeparatorDismissed(false);
       positionedUnreadBoundaryRef.current = "";
+      openingUnreadNodeRef.current = null;
       if (readMarkTimerRef.current) {
         clearTimeout(readMarkTimerRef.current);
         readMarkTimerRef.current = null;
@@ -632,6 +635,8 @@ export function MessageList({
     if (presentedConversationRef.current !== conversationId) {
       presentedConversationRef.current = conversationId;
       scrollInitializedRef.current = "";
+      positionedUnreadBoundaryRef.current = "";
+      openingUnreadNodeRef.current = null;
       pendingAnchorRef.current = null;
       atBottomRef.current = true;
       isStabilizingRef.current = true;
@@ -643,15 +648,14 @@ export function MessageList({
     if (scrollInitializedRef.current === conversationId) return;
     if (!virtuosoRef.current || !scrollerElementRef.current) return;
     scrollInitializedRef.current = conversationId;
-    virtuosoRef.current.scrollToIndex({ index: displayedMessageGroups.length - 1, align: 'end', behavior: 'auto' });
     const scroller = scrollerElementRef.current;
-    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTop = openingMessageScrollTop(scroller.scrollHeight, scroller.clientHeight);
   }, [conversationId, mainMessages.length, displayedMessageGroups.length, isLoading, isFetching]);
 
   const correctBottomImmediately = useCallback(() => {
     const el = scrollerElementRef.current;
     if (!el || !isStabilizingRef.current) return;
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = openingMessageScrollTop(el.scrollHeight, el.clientHeight);
   }, []);
 
   // Re-anchor to bottom when a pending message is added or confirmed.
@@ -670,6 +674,7 @@ export function MessageList({
     if (lastIndex < 0) return;
     // Sending a message always means returning to the live edge. Keep that
     // intent through both the optimistic and confirmed render.
+    openingUnreadNodeRef.current = null;
     isStabilizingRef.current = true;
     atBottomRef.current = true;
     setIsStabilizing(true);
@@ -722,6 +727,7 @@ export function MessageList({
     if (isStabilizingRef.current) correctBottomImmediately();
 
     const stopFollowingBottom = () => {
+      openingUnreadNodeRef.current = null;
       // Record the user's intent immediately, before the browser dispatches
       // the resulting scroll event. An incoming message can otherwise land
       // between wheel/touch input and scroll and incorrectly pull the user
@@ -743,6 +749,20 @@ export function MessageList({
       if (event.target === el) stopFollowingBottom();
     };
     const resizeObserver = new ResizeObserver(() => {
+      const unreadNode = openingUnreadNodeRef.current;
+      if (isStabilizingRef.current && unreadNode?.isConnected) {
+        const unreadTop = el.scrollTop + unreadNode.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        const targetTop = openingMessageScrollTop(el.scrollHeight, el.clientHeight, unreadTop);
+        if (targetTop < openingMessageScrollTop(el.scrollHeight, el.clientHeight)) {
+          // An initially small unread block can grow when its media loads.
+          isStabilizingRef.current = false;
+          atBottomRef.current = false;
+          setIsStabilizing(false);
+          setAtBottom(false);
+          el.scrollTop = targetTop;
+          saveVisibleAnchor();
+        }
+      }
       if (isStabilizingRef.current) correctBottomImmediately();
       else restoreVisibleAnchor();
     });
@@ -765,7 +785,7 @@ export function MessageList({
       el.removeEventListener("pointerdown", handlePointerDown);
       el.removeEventListener("keydown", handleKeyDown);
     };
-  }, [correctBottomImmediately, restoreVisibleAnchor]);
+  }, [correctBottomImmediately, restoreVisibleAnchor, saveVisibleAnchor]);
 
   useEffect(() => () => {
     scrollerCleanupRef.current?.();
@@ -792,6 +812,7 @@ export function MessageList({
     // genuine live-edge update: follow it only if the user was already at the
     // bottom before React committed the new message.
     if (!liveEdgeChanged || !wasFollowingLiveEdge) return;
+    openingUnreadNodeRef.current = null;
     pendingAnchorRef.current = null;
     isStabilizingRef.current = true;
     atBottomRef.current = true;
@@ -818,12 +839,13 @@ export function MessageList({
     );
     if (!firstUnreadNode) return;
 
+    openingUnreadNodeRef.current = firstUnreadNode;
     positionedUnreadBoundaryRef.current = positionKey;
     const viewportTop = scroller.getBoundingClientRect().top;
     const unreadTop = scroller.scrollTop + firstUnreadNode.getBoundingClientRect().top - viewportTop;
-    const unreadContentHeight = scroller.scrollHeight - unreadTop;
+    const targetTop = openingMessageScrollTop(scroller.scrollHeight, scroller.clientHeight, unreadTop);
 
-    if (unreadContentHeight <= scroller.clientHeight) {
+    if (targetTop === openingMessageScrollTop(scroller.scrollHeight, scroller.clientHeight)) {
       // All unread content fits: expose the latest message and eliminate any
       // residual empty space below it.
       pendingAnchorRef.current = null;
@@ -841,7 +863,7 @@ export function MessageList({
     atBottomRef.current = false;
     setIsStabilizing(false);
     setAtBottom(false);
-    scroller.scrollTop = Math.max(0, unreadTop);
+    scroller.scrollTop = targetTop;
     pendingAnchorRef.current = {
       messageId: displayedFirstUnreadMessageId,
       viewportOffset: 0,
@@ -1180,7 +1202,7 @@ export function MessageList({
             key={conversationId}
             ref={setScrollerElement}
             onScroll={handleNativeScroll}
-            className="message-list__native-scroller h-full overflow-y-auto scroll-area bg-background"
+            className="message-list__native-scroller relative z-0 isolate h-full overflow-y-auto scroll-area bg-background"
             style={{ overflowAnchor: "none" }}
           >
             <div
@@ -1284,9 +1306,13 @@ export function MessageList({
               className="message-list__scroll-to-bottom absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition-opacity hover:opacity-90"
               title={t("scroll_to_bottom")}
               onClick={() => {
+                openingUnreadNodeRef.current = null;
+                pendingAnchorRef.current = null;
                 isStabilizingRef.current = true;
                 setIsStabilizing(true);
-                virtuosoRef.current?.scrollToIndex({ index: displayedMessageGroups.length - 1, behavior: "smooth", align: "end" });
+                correctBottomImmediately();
+                atBottomRef.current = true;
+                setAtBottom(true);
               }}
             >
               <ChevronDown className="h-5 w-5" />
