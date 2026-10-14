@@ -2534,6 +2534,7 @@ export const unicodeEmojiMap: Record<string, string> = {
   "ginger": "👨‍🦰",
   "gingerbread": "🫚",
   "giraffe": "🦒",
+  "giraffe_face": "🦒",
   "girl": "👶",
   "girls": "👩",
   "give_up": "🏳️",

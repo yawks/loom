@@ -8,6 +8,7 @@ import (
 	"Loom/pkg/providers/messageformat"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"html"
@@ -281,6 +282,9 @@ func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error
 			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: account.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
+	if err := p.removeStoredPendingRecordings(client); err != nil {
+		return err
+	}
 	repairedFormatting, err := p.repairStoredHTMLFormatting()
 	if err != nil {
 		return err
@@ -489,14 +493,21 @@ func (p *Provider) GetGroupParticipants(conversationID string) ([]models.GroupPa
 	if err != nil {
 		return nil, err
 	}
-	participants := make([]models.GroupParticipant, 0, len(chat.Members))
-	for _, member := range chat.Members {
+	return teamsGroupParticipants(client, chat.Members), nil
+}
+
+func teamsGroupParticipants(client *msteams.Client, members []msteams.Member) []models.GroupParticipant {
+	participants := make([]models.GroupParticipant, 0, len(members))
+	for _, member := range members {
 		if member.MRI == "" {
 			continue
 		}
+		if name := strings.TrimSpace(member.DisplayName); name != "" && !isTechnicalConversationName(name, member.MRI) {
+			client.CacheDisplayName(member.MRI, name)
+		}
 		participants = append(participants, models.GroupParticipant{UserID: member.MRI, IsAdmin: strings.EqualFold(member.Role, "Admin") || strings.EqualFold(member.Role, "Owner"), IsSelf: strings.EqualFold(member.MRI, client.UserMRI())})
 	}
-	return participants, nil
+	return participants
 }
 
 func (p *Provider) CreateDirectConversation(participantID string) (*models.Conversation, error) {
@@ -779,6 +790,9 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 		}
 		p.cacheDisplayNames(client, senders)
 		for _, remote := range result.Messages {
+			if isTeamsPendingRecording(remote) {
+				continue
+			}
 			message := p.toModelMessage(client, remote, conversationID)
 			if before != nil && !message.Timestamp.Before(*before) {
 				continue
@@ -1473,7 +1487,41 @@ func mriLookupKey(mri string) string {
 const teamsRecordingStartedBody = "🔴 Enregistrement de la réunion démarré" // Legacy placeholder.
 const teamsTranscriptionStartedBody = "🔴 Transcription de la réunion démarrée"
 
-// Meeting transcription metadata becomes a canonical call notification.
+// Recorder lifecycle events without media links are not user-visible recordings.
+func isTeamsPendingRecording(remote msteams.Message) bool {
+	if remote.MessageType != "RichText/Media_CallRecording" {
+		return false
+	}
+	var recording struct {
+		XMLName xml.Name `xml:"URIObject"`
+		URI     string   `xml:"uri,attr"`
+		Status  struct {
+			Value string `xml:"status,attr"`
+		} `xml:"RecordingStatus"`
+		Items []struct {
+			URI string `xml:"uri,attr"`
+		} `xml:"RecordingContent>item"`
+		Links []struct {
+			Href string `xml:"href,attr"`
+		} `xml:"a"`
+	}
+	if xml.Unmarshal([]byte(remote.Content), &recording) != nil || recording.URI != "" ||
+		(recording.Status.Value != "Initial" && recording.Status.Value != "ChunkFinished") {
+		return false
+	}
+	for _, item := range recording.Items {
+		if item.URI != "" {
+			return false
+		}
+	}
+	for _, link := range recording.Links {
+		if link.Href != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func isTeamsMeetingMetadata(content string) bool {
 	if looksLikeTeamsHTML(content) {
 		content = teamsHTMLToMarkdown(content)
@@ -1843,7 +1891,7 @@ func (p *Provider) forwardEvents(ctx context.Context, client *msteams.Client) {
 func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event) {
 	switch event.Type {
 	case msteams.EventTypeNewMessage, msteams.EventTypeEditMessage, msteams.EventTypeDeleteMessage, msteams.EventTypeCall:
-		if event.Message == nil {
+		if event.Message == nil || isTeamsPendingRecording(*event.Message) {
 			return
 		}
 		if discovered, err := p.ensureConversationStored(client, event.ThreadID); err == nil && discovered {

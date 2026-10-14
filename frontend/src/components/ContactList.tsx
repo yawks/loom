@@ -40,6 +40,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   const markAsReadSilently = useMessageReadStore((state) => state.markAsReadSilently);
   const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
   const setUnreadNavigationTarget = useAppStore((state) => state.setUnreadNavigationTarget);
+  const setShowThreads = useAppStore((state) => state.setShowThreads);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const setMetaContacts = useAppStore((state) => state.setMetaContacts);
@@ -704,9 +705,13 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                   !isSelected && unreadCount > 0 && "bg-sidebar-hover/60"
                 )}
                 onClick={async () => {
-                  // In the Unread view, opening a conversation means opening its
-                  // oldest unread message, including replies hidden in a thread.
-                  if (sortBy === "unread" && conversationId) {
+                  // Open the oldest unread message across the main timeline and threads,
+                  // regardless of the conversation list sort order.
+                  setUnreadNavigationTarget(null);
+                  setMessageSearchTargetId(null);
+                  setSelectedThreadId(null);
+                  setShowThreads(false);
+                  if (unreadCount > 0 && conversationId) {
                     const unreadIds = Object.entries(readStateByConversation[conversationId] ?? {})
                       .filter(([key, isRead]) => !key.startsWith("_") && !isRead)
                       .map(([messageId]) => messageId);
@@ -726,16 +731,12 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                           setSelectedThreadParentMessage(null);
                           setSelectedThreadId(oldest.threadId);
                         } else {
-                          setSelectedThreadId(null);
                           setMessageSearchTargetId(oldest.messageId);
                         }
                       }
                     } catch (error) {
                       console.error("Failed to locate oldest unread message:", error);
                     }
-                  } else {
-                    setUnreadNavigationTarget(null);
-                    setSelectedThreadId(null);
                   }
                   setSelectedContact(selectedContactForAccount);
                 }}

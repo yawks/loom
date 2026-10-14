@@ -77,6 +77,8 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 	messages := []models.Message{
 		{ProtocolConvID: conversationID, ProtocolMsgID: "newer-main", IsFromMe: true, Timestamp: base.Add(2 * time.Minute)},
 		{ProtocolConvID: conversationID, ProtocolMsgID: "oldest-reply", ThreadID: &threadID, Timestamp: base},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "middle-main", Timestamp: base.Add(time.Minute)},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "latest-reply", ThreadID: &threadID, Timestamp: base.Add(3 * time.Minute)},
 		{ProtocolConvID: "other::conversation", ProtocolMsgID: "foreign", ThreadID: &threadID, Timestamp: base.Add(-time.Minute)},
 	}
 	for i := range messages {
@@ -85,17 +87,23 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 		}
 	}
 
-	locations, err := (&App{}).GetUnreadMessageLocations(conversationID, []string{"newer-main", "oldest-reply", "foreign", "missing"})
+	locations, err := (&App{}).GetUnreadMessageLocations(conversationID, []string{"latest-reply", "newer-main", "middle-main", "oldest-reply", "foreign", "missing"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locations) != 2 {
-		t.Fatalf("got %d locations, want 2: %+v", len(locations), locations)
+	if len(locations) != 4 {
+		t.Fatalf("got %d locations, want 4: %+v", len(locations), locations)
 	}
 	if locations[0].MessageID != "oldest-reply" || locations[0].ThreadID != threadID {
 		t.Fatalf("oldest location = %+v, want thread reply", locations[0])
 	}
-	if locations[1].MessageID != "newer-main" || locations[1].ThreadID != "" || !locations[1].IsFromMe {
+	if locations[1].MessageID != "middle-main" || locations[1].ThreadID != "" {
+		t.Fatalf("middle location = %+v, want main message", locations[1])
+	}
+	if locations[3].MessageID != "latest-reply" || locations[3].ThreadID != threadID {
+		t.Fatalf("latest location = %+v, want thread reply", locations[3])
+	}
+	if locations[2].MessageID != "newer-main" || locations[2].ThreadID != "" || !locations[2].IsFromMe {
 		t.Fatalf("main location = %+v, want top-level message", locations[1])
 	}
 }

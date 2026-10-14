@@ -541,6 +541,9 @@ func (p *Provider) repairStoredCards(client *msteams.Client) (map[string][]model
 		if err != nil {
 			continue
 		}
+		if isTeamsPendingRecording(*remote) {
+			continue
+		}
 		message := p.toModelMessage(client, *remote, rawConversationID)
 		if isTeamsUnsupportedCardPlaceholder(message.Body) || strings.TrimSpace(message.Body) == "" {
 			continue
@@ -683,5 +686,37 @@ func (p *Provider) normalizeStoredMeetingRecordings() error {
 			Updates(map[string]any{
 				"body": teamsTranscriptionStartedBody, "call_type": "transcription_start", "deleted_at": nil,
 			}).Error
+	})
+}
+
+// Legacy recording placeholders lost their wire type; verify remotely before hiding.
+func (p *Provider) removeStoredPendingRecordings(client *msteams.Client) error {
+	if p.instance == "" {
+		return fmt.Errorf("empty Teams provider instance")
+	}
+	if db.DB == nil {
+		return nil
+	}
+	var candidates []models.Message
+	if err := db.ForProvider(db.DB, p.instance).Messages().Where("body LIKE ? AND COALESCE(call_type, '') = ''", "%Play").Find(&candidates).Error; err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var ids []uint
+	for _, message := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		remote, err := client.FetchMessage(ctx, core.StripConvID(message.ProtocolConvID), message.ProtocolMsgID)
+		if err == nil && isTeamsPendingRecording(*remote) {
+			ids = append(ids, message.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		return db.ForProvider(tx, p.instance).Messages().Where("id IN ?", ids).Delete(&models.Message{}).Error
 	})
 }

@@ -116,6 +116,9 @@ func (p *Provider) resolvePinMessage(client *msteams.Client, conversationID, mes
 	if err != nil {
 		return nil, fmt.Errorf("%s: resolve pinned message: %w", providerID, err)
 	}
+	if isTeamsPendingRecording(*remote) {
+		return nil, fmt.Errorf("%s: recording is not available yet", providerID)
+	}
 	message := p.toModelMessage(client, *remote, rawConvID)
 	_ = p.storeMessages([]models.Message{message})
 	return &message, nil
