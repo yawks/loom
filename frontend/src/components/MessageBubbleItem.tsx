@@ -116,7 +116,6 @@ export function MessageBubbleItem({
     (participant) => participant.userId === message.senderId
   )?.avatarUrl;
   const { t } = useTranslation();
-  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const capabilities = useAppStore((state) => state.capabilities);
   // Older cache rows can contain Loom's serialized quote representation instead
   // of canonical reply fields. Normalize at the final render boundary.
@@ -138,7 +137,7 @@ export function MessageBubbleItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
-  const isHighlighted = showHighlights && (
+  const isHighlighted = (
     highlightedMessageIds.has(message.protocolMsgId) ||
     (message.highlightReasons?.length ?? 0) > 0 ||
     (photoGroupMessages?.some((item) =>
@@ -192,10 +191,10 @@ export function MessageBubbleItem({
 
   if (message.callType) {
     return (
-      <div className="space-y-2">
+      <div className="flow-root space-y-2">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
         {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
-        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-xl", isHighlighted && "bg-amber-400/10 ring-2 ring-amber-400/70")}>
+        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-xl", isHighlighted && "mt-2 bg-amber-400/10 ring-2 ring-amber-400/70")}>
           <CallMessage message={message} layout="bubble" isGroup={isGroupConversation} />
         </div>
       </div>
@@ -203,14 +202,14 @@ export function MessageBubbleItem({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flow-root space-y-2">
       {showDateSeparator && <MessageDateSeparator date={messageDate} />}
       {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
       <div
         data-message-id={messageId}
         className={cn(
           "space-y-2 scroll-mt-28 group rounded-xl transition-colors",
-          isHighlighted && "bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
+          isHighlighted && "mt-2 bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
         )}
         onMouseEnter={() => handlers.setOpenActionsMessageId(messageId)}
         onMouseLeave={() => handlers.setOpenActionsMessageId(null)}

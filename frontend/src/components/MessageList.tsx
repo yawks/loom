@@ -76,7 +76,6 @@ export function MessageList({
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const messageSearchTargetId = useAppStore((state) => state.messageSearchTargetId);
   const messageSearchTargetAlign = useAppStore((state) => state.messageSearchTargetAlign);
-  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
 
   // When a provider filter is active, prefer the linked account from that provider.
@@ -98,7 +97,6 @@ export function MessageList({
   const { data: highlightedMessageRefs = [] } = useQuery({
     queryKey: ["highlightedMessageRefs"],
     queryFn: () => GetHighlightedMessageRefs().catch(() => []),
-    enabled: showHighlights,
     staleTime: 5000,
   });
   const highlightedMessageIds = useMemo(() => new Set(

@@ -93,7 +93,6 @@ export function MessageIRCItem({
     (participant) => participant.userId === message.senderId
   )?.avatarUrl;
   const { t } = useTranslation();
-  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const capabilities = useAppStore((state) => state.capabilities);
   message = normalizeSerializedQuotedReply(message);
   const messageId = getMessageDomId(message);
@@ -113,7 +112,7 @@ export function MessageIRCItem({
   const showDeletedPlaceholder = isDeleted && !isDeletedRevealed;
   const isPending = Boolean((message as unknown as Record<string, unknown>).isPending);
   const sendFailed = Boolean((message as unknown as Record<string, unknown>).sendFailed);
-  const isHighlighted = showHighlights && (
+  const isHighlighted = (
     highlightedMessageIds.has(message.protocolMsgId) ||
     (message.highlightReasons?.length ?? 0) > 0 ||
     (photoGroupMessages?.some((item) =>
@@ -168,10 +167,10 @@ export function MessageIRCItem({
 
   if (message.callType) {
     return (
-      <div className="space-y-1">
+      <div className="flow-root space-y-1">
         {showDateSeparator && <MessageDateSeparator date={messageDate} />}
         {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
-        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-md", isHighlighted && "bg-amber-400/10 ring-2 ring-inset ring-amber-400/70")}>
+        <div data-message-id={messageId} className={cn("scroll-mt-28 rounded-md", isHighlighted && "mt-2 bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 py-2")}>
           <CallMessage message={message} layout="irc" isGroup={isGroupConversation} />
         </div>
       </div>
@@ -179,7 +178,7 @@ export function MessageIRCItem({
   }
 
   return (
-    <div>
+    <div className="flow-root">
       {showDateSeparator && <MessageDateSeparator date={messageDate} className="mt-2" />}
       {showUnreadDivider && <MessageUnreadDivider count={unreadMessageCount} />}
       <div
@@ -190,7 +189,7 @@ export function MessageIRCItem({
           openActionsMessageId === messageId && "z-20",
           isPending && "opacity-70",
           sendFailed && "border-l-2 border-destructive pl-1",
-          isHighlighted && "rounded-md bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 pb-2"
+          isHighlighted && "rounded-md mt-2 bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 py-2"
         )}
         data-message-id={messageId}
         onMouseEnter={() => handlers.setOpenActionsMessageId(messageId)}

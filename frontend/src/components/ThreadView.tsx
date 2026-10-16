@@ -217,7 +217,6 @@ export function ThreadView() {
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
   const messageLayout = useAppStore((state) => state.messageLayout);
-  const showHighlights = useAppStore((state) => state.contactSortBy === "highlighted");
   const selectedThreadParentMessage = useAppStore((state) => state.selectedThreadParentMessage);
   const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
   const unreadNavigationTarget = useAppStore((state) => state.unreadNavigationTarget);
@@ -243,7 +242,6 @@ export function ThreadView() {
   const { data: highlightedMessageRefs = [] } = useQuery({
     queryKey: ["highlightedMessageRefs"],
     queryFn: () => GetHighlightedMessageRefs().catch(() => []),
-    enabled: showHighlights,
     staleTime: 5000,
   });
   const highlightedMessageIds = useMemo(() => new Set(
@@ -913,7 +911,7 @@ export function ThreadView() {
                   className={cn(
                     "flex items-start gap-3 group relative rounded-xl transition-colors",
                     message.isFromMe && "justify-end",
-                    showHighlights && highlightedMessageIds.has(message.protocolMsgId) && "bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
+                    (highlightedMessageIds.has(message.protocolMsgId) || (message.highlightReasons?.length ?? 0) > 0) && "mt-2 bg-amber-400/10 ring-2 ring-amber-400/70 p-2"
                   )}
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}
@@ -1090,7 +1088,7 @@ export function ThreadView() {
                   data-thread-message-id={messageId}
                   className={cn(
                     "space-y-1 group relative rounded-md transition-colors",
-                    showHighlights && highlightedMessageIds.has(message.protocolMsgId) && "bg-amber-400/10 ring-2 ring-inset ring-amber-400/70"
+                    (highlightedMessageIds.has(message.protocolMsgId) || (message.highlightReasons?.length ?? 0) > 0) && "mt-2 bg-amber-400/10 ring-2 ring-inset ring-amber-400/70 py-2"
                   )}
                   onMouseEnter={() => setOpenActionsMessageId(messageId)}
                   onMouseLeave={() => setOpenActionsMessageId(null)}
