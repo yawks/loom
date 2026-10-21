@@ -47,6 +47,11 @@ func teamsHTMLToMarkdown(input string) string {
 	var render func(*html.Node)
 	render = func(node *html.Node) {
 		if node.Type == html.TextNode {
+			// HTML source indentation between blocks is not a visible line break.
+			if strings.TrimSpace(node.Data) == "" && strings.ContainsAny(node.Data, "\r\n") &&
+				(teamsHTMLBlockElement(node.PrevSibling) || teamsHTMLBlockElement(node.NextSibling)) {
+				return
+			}
 			out.WriteString(node.Data)
 			return
 		}
@@ -173,6 +178,17 @@ func teamsHTMLToMarkdown(input string) string {
 		return repaired
 	}
 	return normalized
+}
+
+func teamsHTMLBlockElement(node *html.Node) bool {
+	if node == nil || node.Type != html.ElementNode {
+		return false
+	}
+	switch node.Data {
+	case "p", "div", "li", "ul", "ol", "table", "pre", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6":
+		return true
+	}
+	return false
 }
 
 func teamsPreformattedText(node *html.Node) string {

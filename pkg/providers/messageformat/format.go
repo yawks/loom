@@ -161,6 +161,9 @@ func TeamsHTML(markdown string) string {
 		isBullet := bulletPattern.MatchString(line)
 		isOrdered := orderedPattern.MatchString(line)
 		if isBullet || isOrdered {
+			if listType == "" && index > 0 {
+				result.WriteString("<br>")
+			}
 			wanted := "ul"
 			content := bulletPattern.ReplaceAllString(line, "")
 			if isOrdered {
@@ -175,8 +178,10 @@ func TeamsHTML(markdown string) string {
 			result.WriteString("<li>" + content + "</li>")
 			continue
 		}
+		// The final list item already supplies the line break at the boundary.
+		wasList := listType != ""
 		closeList()
-		if index > 0 {
+		if index > 0 && !wasList {
 			result.WriteString("<br>")
 		}
 		result.WriteString(line)
