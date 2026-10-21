@@ -13,6 +13,8 @@ import (
 	"Loom/pkg/core"
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"github.com/google/uuid"
+	"go.mau.fi/mautrix-signal/pkg/libsignalgo"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow"
 	"go.mau.fi/mautrix-signal/pkg/signalmeow/types"
 )
@@ -20,6 +22,40 @@ import (
 type groupAvatarClient interface {
 	RetrieveGroupByID(context.Context, types.GroupIdentifier, uint32) (*signalmeow.Group, *signalmeow.SendEndorsementCache, error)
 	DownloadGroupAvatar(context.Context, string, types.SerializedGroupMasterKey) ([]byte, error)
+}
+
+type avatarClient interface {
+	groupAvatarClient
+	RetrieveProfileByID(context.Context, uuid.UUID, time.Duration) (*types.Profile, error)
+	DownloadUserAvatar(context.Context, string, libsignalgo.ProfileKey) ([]byte, error)
+}
+
+func contactAvatar(client avatarClient, userID string) (string, error) {
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	profile, err := client.RetrieveProfileByID(ctx, id, time.Hour)
+	if err != nil {
+		return "", err
+	}
+	if profile == nil || profile.AvatarPath == "" {
+		return "", fmt.Errorf("signal: profile avatar unavailable")
+	}
+	if profile.AvatarPath == "clear" {
+		return "", nil
+	}
+	data, err := client.DownloadUserAvatar(ctx, profile.AvatarPath, profile.Key)
+	if err != nil {
+		return "", err
+	}
+	mimeType := http.DetectContentType(data)
+	if !strings.HasPrefix(mimeType, "image/") || len(data) > 4<<20 {
+		return "", fmt.Errorf("signal: invalid contact avatar")
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func groupAvatar(client groupAvatarClient, chatID string, revision uint32) (string, error) {
@@ -66,7 +102,7 @@ func (p *Provider) refreshGroupAvatar(chatID string, revision uint32) {
 	p.emit(core.GroupChangeEvent{InstanceID: instance, ConversationID: core.BuildConvID(instance, chatID), ChangeType: core.GroupChangeUpdated, Timestamp: time.Now().Unix()})
 }
 
-func (p *Provider) enrichGroupAvatars(client groupAvatarClient, accounts []models.LinkedAccount) {
+func (p *Provider) enrichAvatars(client avatarClient, accounts []models.LinkedAccount) {
 	instance := p.instanceID()
 	if instance == "" {
 		return
@@ -79,9 +115,15 @@ func (p *Provider) enrichGroupAvatars(client groupAvatarClient, accounts []model
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				avatar, err := groupAvatar(client, accounts[index].UserID, 0)
+				var avatar string
+				var err error
+				if accounts[index].IsGroup {
+					avatar, err = groupAvatar(client, accounts[index].UserID, 0)
+				} else {
+					avatar, err = contactAvatar(client, accounts[index].UserID)
+				}
 				if err != nil {
-					log.Printf("signal: download group avatar: %v", err)
+					log.Printf("signal: download avatar: %v", err)
 					if cached, ok := db.ContactStore.FindByProviderUser(instance, accounts[index].UserID); ok {
 						avatar = cached.AvatarURL
 					}
@@ -92,9 +134,7 @@ func (p *Provider) enrichGroupAvatars(client groupAvatarClient, accounts []model
 		}()
 	}
 	for index := range accounts {
-		if accounts[index].IsGroup {
-			jobs <- index
-		}
+		jobs <- index
 	}
 	close(jobs)
 	workers.Wait()

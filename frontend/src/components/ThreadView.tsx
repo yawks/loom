@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { Button } from "@/components/ui/button";
 import { ChatInput } from "./ChatInput";
+import { canReadVisibleMessages } from "@/lib/windowFocus";
 import { AddReaction, DeleteMessage, GetCurrentUserID, GetHighlightedMessageRefs, GetMessagesForConversation, GetMessagesForConversationBefore, GetThreadMessages, GetUnreadMessageLocations, RemoveReaction } from "../../wailsjs/go/main/App";
 import { MessageActions } from "./MessageActions";
 import { MessageEditComposer } from "./MessageEditComposer";
@@ -518,9 +519,11 @@ export function ThreadView() {
     // Consume that exact unread ID before clearing the navigation state; the
     // broader thread-read effect may run earlier while contact selection and
     // the thread query are still settling.
-    markMultipleAsRead(conversationId, [unreadNavigationTarget.messageId]);
-    setUnreadNavigationTarget(null);
-  }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, markMultipleAsRead, setUnreadNavigationTarget]);
+    if (canReadVisibleMessages()) {
+      markMultipleAsRead(conversationId, [unreadNavigationTarget.messageId]);
+      setUnreadNavigationTarget(null);
+    }
+  }, [conversationId, selectedThreadId, sortedThreadMessages, unreadNavigationTarget, markMultipleAsRead, setUnreadNavigationTarget, hasWindowFocus]);
 
   const { data: providerCurrentUserId } = useQuery<string>({
     queryKey: ["current-user-id", conversationId],
@@ -749,14 +752,16 @@ export function ThreadView() {
       lastMsg?.isFromMe
     ) {
       shouldStickToThreadBottomRef.current = true;
-      markMultipleAsRead(conversationId, sortedThreadMessages.filter((msg) => !msg.isFromMe).map(getMessageDomId));
+      if (canReadVisibleMessages()) {
+        markMultipleAsRead(conversationId, sortedThreadMessages.filter((msg) => !msg.isFromMe).map(getMessageDomId));
+      }
     }
     correctThreadBottomImmediately();
   }, [conversationId, sortedThreadMessages, correctThreadBottomImmediately, markMultipleAsRead]);
 
   useEffect(() => {
     if (!selectedThreadId || !conversationId || sortedThreadMessages.length === 0) return;
-    if (!hasWindowFocus || !hasThreadFocus || !isAtThreadBottom) return;
+    if (!hasWindowFocus || !hasThreadFocus || !isAtThreadBottom || !canReadVisibleMessages()) return;
     const unreadIds = sortedThreadMessages
       .filter((msg) => !msg.isFromMe)
       .map((msg) => getMessageDomId(msg));

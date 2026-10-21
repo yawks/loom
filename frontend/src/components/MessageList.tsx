@@ -30,6 +30,7 @@ import type { VirtuosoHandle } from "react-virtuoso";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
+import { canReadVisibleMessages } from "@/lib/windowFocus";
 import { FileUploadModal } from "./FileUploadModal";
 import { ForwardMessageModal } from "./ForwardMessageModal";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -488,7 +489,7 @@ export function MessageList({
   );
   useEffect(() => {
     if (!conversationId) return;
-    if (!hasWindowFocus) return;
+    if (!hasWindowFocus || !canReadVisibleMessages()) return;
     // Selecting a conversation is not enough to prove that its newest messages
     // were seen. When the reader has scrolled up, keep live arrivals unread
     // until the viewport returns to the live edge.
@@ -515,6 +516,7 @@ export function MessageList({
 
     readMarkTimerRef.current = setTimeout(() => {
       readMarkTimerRef.current = null;
+      if (!canReadVisibleMessages()) return;
       // Reading in Loom is a local viewport action and must not remain blocked
       // behind a provider request. Each local update also sends its individual
       // receipt; the conversation-level call is a best-effort remote cursor

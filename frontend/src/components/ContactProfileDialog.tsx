@@ -1,6 +1,6 @@
 import { GetContactExchangeStats, GetContactProfile } from "../../wailsjs/go/main/App";
 import { Activity, AtSign, BriefcaseBusiness, Building2, CalendarDays, Clock3, MapPin, MessageCircle, Paperclip, Phone, SmilePlus } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type { models } from "../../wailsjs/go/models";
@@ -140,12 +140,29 @@ export function ContactProfileDialog({ conversationId, participant, onClose }: C
         {participant && (
           <div className="space-y-6">
             <div className="flex flex-col items-center text-center">
-              <Avatar className="h-32 w-32 border shadow-sm">
-                <AvatarImage src={avatar} alt={name} className="object-cover" />
-                <AvatarFallback className="text-3xl">
-                  {name.substring(0, 2).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={!avatar}
+                    aria-label={name}
+                    className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring enabled:cursor-zoom-in"
+                  >
+                    <Avatar className="h-32 w-32 border shadow-sm">
+                      <AvatarImage src={avatar} alt={name} className="object-cover" />
+                      <AvatarFallback className="text-3xl">
+                        {name.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                  </button>
+                </DialogTrigger>
+                <DialogContent className="max-w-4xl" aria-describedby={undefined}>
+                  <DialogTitle className="sr-only">{name}</DialogTitle>
+                  <Avatar className="h-auto w-full justify-center rounded-none">
+                    <AvatarImage src={avatar} alt={name} className="aspect-auto h-[80vh] w-full object-contain" />
+                  </Avatar>
+                </DialogContent>
+              </Dialog>
               {!participant.isSelf && (
                 <PresenceBadge
                   presence={participant.status || profile?.presence}
