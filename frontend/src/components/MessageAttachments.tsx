@@ -1295,6 +1295,7 @@ export function MessageAttachments({
                   fileName: attachment.fileName,
                   transcription: attachment.transcription
                 }}
+                onDownload={() => { void handleDownload(attachment); }}
                 conversationID={conversationID}
                 messageID={messageID}
                 providerInstanceId={providerInstanceId}
@@ -1315,6 +1316,7 @@ export function MessageAttachments({
                   fileName: attachment.fileName,
                   transcription: attachment.transcription
                 }}
+                onDownload={() => { void handleDownload(attachment); }}
                 conversationID={conversationID}
                 messageID={messageID}
                 providerInstanceId={providerInstanceId}

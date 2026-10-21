@@ -2,7 +2,7 @@ import { GetAttachmentData, GetProviderAttachmentData, GetSpeechTranscriptionLoc
 import type { main } from "../../wailsjs/go/models";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Captions, Check, ChevronDown, Globe, Loader2, Pause, Play, RefreshCw, ShieldCheck } from "lucide-react";
+import { Captions, Check, ChevronDown, Download, Globe, Loader2, Pause, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "@/lib/store";
@@ -31,6 +31,7 @@ interface VoiceMessageProps {
     messageID: string;
     providerInstanceId?: string;
     isFromMe: boolean;
+    onDownload: () => void;
     layout?: "bubble" | "irc";
 }
 
@@ -40,6 +41,7 @@ export function VoiceMessage({
     messageID,
     providerInstanceId,
     isFromMe,
+    onDownload,
     layout = "bubble"
 }: VoiceMessageProps) {
     const { t } = useTranslation();
@@ -534,6 +536,19 @@ export function VoiceMessage({
                 {!audioUrl && !loadRequested && <Play className="h-5 w-5 fill-current ml-0.5" />}
                 {audioUrl && isPlaying && <Pause className="h-5 w-5 fill-current" />}
                 {audioUrl && !isPlaying && <Play className="h-5 w-5 fill-current ml-0.5" />}
+            </button>
+
+            <button
+                type="button"
+                onClick={(event) => { event.stopPropagation(); onDownload(); }}
+                title={t("download")}
+                aria-label={t("download")}
+                className={`flex items-center justify-center h-8 w-8 rounded-full shrink-0 transition-colors ${isFromMe
+                    ? "bg-white/20 hover:bg-white/30 text-white"
+                    : "bg-primary/10 hover:bg-primary/20 text-primary"
+                    }`}
+            >
+                <Download className="h-4 w-4" />
             </button>
 
             {canTranscribe && (
