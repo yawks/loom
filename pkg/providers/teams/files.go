@@ -16,16 +16,18 @@ import (
 )
 
 func (p *Provider) sharePointUploadLocation(client *msteams.Client) (msteams.SharedFile, error) {
+	if strings.TrimSpace(p.instance) == "" {
+		return msteams.SharedFile{}, fmt.Errorf("%s: provider instance ID is unavailable", providerID)
+	}
 	if db.DB == nil {
 		return msteams.SharedFile{}, fmt.Errorf("%s: message database is unavailable", providerID)
 	}
 	var messages []models.Message
-	err := db.DB.Where("protocol_conv_id LIKE ? AND attachments <> ''", p.instance+"::%").
+	err := db.ForProvider(db.DB, p.instance).Messages().Where("attachments <> ''").
 		Order("is_from_me DESC, timestamp DESC").Limit(100).Find(&messages).Error
 	if err != nil {
 		return msteams.SharedFile{}, err
 	}
-	var fallback msteams.SharedFile
 	for _, stored := range messages {
 		remote, fetchErr := client.FetchMessage(context.Background(), core.StripConvID(stored.ProtocolConvID), stored.ProtocolMsgID)
 		if fetchErr != nil {
@@ -35,26 +37,9 @@ func (p *Provider) sharePointUploadLocation(client *msteams.Client) (msteams.Sha
 			if shared.SiteURL == "" || shared.FileURL == "" {
 				continue
 			}
-			if fallback.SiteURL == "" {
-				fallback = shared
-			}
-			if stored.IsFromMe || strings.EqualFold(remote.From, client.UserMRI()) {
-				return shared, nil
-			}
-		}
-	}
-	// If Loom has only seen files owned by another participant, their URL still
-	// reveals the tenant's OneDrive host. Derive the signed-in user's personal
-	// site and use the standard Documents library as the upload location.
-	if fallback.SiteURL != "" {
-		profile, profileErr := client.GetUser(context.Background(), client.UserMRI())
-		if profileErr == nil && profile != nil && profile.Email != "" {
-			u, parseErr := url.Parse(fallback.SiteURL)
-			if parseErr == nil && u.Host != "" {
-				account := strings.NewReplacer("@", "_", ".", "_", "-", "_").Replace(strings.ToLower(profile.Email))
-				siteURL := u.Scheme + "://" + u.Host + "/personal/" + account
-				return msteams.SharedFile{SiteURL: siteURL, FileURL: siteURL + "/Documents/location"}, nil
-			}
+			// A sent or forwarded file can still belong to another participant.
+			// Resolve the signed-in user's site instead of writing beside that file.
+			return client.PersonalSharedFileLocation(context.Background(), shared.SiteURL)
 		}
 	}
 	return msteams.SharedFile{}, fmt.Errorf("%s: no SharePoint chat-file location could be discovered; send one document once from Teams, then retry", providerID)
