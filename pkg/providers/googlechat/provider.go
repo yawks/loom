@@ -426,3 +426,8 @@ func (p *GoogleChatProvider) getSelfID() string {
 	defer p.mu.RUnlock()
 	return p.selfID
 }
+
+// CurrentUserID exposes the canonical self identity for optimistic actions.
+func (p *GoogleChatProvider) CurrentUserID() string {
+	return p.recoverSelfID(p.getSelfID())
+}

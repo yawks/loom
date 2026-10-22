@@ -2,7 +2,7 @@ import { EditMessage } from "../../wailsjs/go/main/App";
 import { useCallback, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import type { InfiniteData } from "@tanstack/react-query";
+import { updateCachedMessage } from "@/lib/messageCache";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { models } from "../../wailsjs/go/models";
 import { useQueryClient } from "@tanstack/react-query";
@@ -54,26 +54,11 @@ export function useMessageEdit({ messages, conversationId, showToast, t, focusCo
     setOriginalEditText("");
     setTimeout(() => focusComposer?.(), 0);
 
-    // Reflect the edit immediately. The protocol call can take long enough for
-    // a refetch issued beforehand to return the old message.
-    queryClient.setQueryData<InfiniteData<models.Message[]>>(
-      ["messages", conversationId],
-      (oldData) => {
-        if (!oldData || !Array.isArray(oldData.pages)) return oldData;
-        return {
-          ...oldData,
-          pages: oldData.pages.map((page) =>
-            Array.isArray(page)
-              ? page.map((msg) =>
-                msg.protocolMsgId === messageId
-                  ? ({ ...msg, body: newText, isEdited: true } as models.Message)
-                  : msg
-              )
-              : page
-          ),
-        };
-      }
-    );
+    await Promise.all([
+      queryClient.cancelQueries({ queryKey: ["messages", conversationId] }),
+      queryClient.cancelQueries({ queryKey: ["threads", conversationId] }),
+    ]);
+    updateCachedMessage(queryClient, conversationId, messageId, newText, true);
 
     try {
       await EditMessage(conversationId, messageId, newText);
@@ -81,23 +66,11 @@ export function useMessageEdit({ messages, conversationId, showToast, t, focusCo
       // with the persisted message and any provider-side normalization.
       await Promise.all([
         queryClient.refetchQueries({ queryKey: ["messages", conversationId] }),
-        queryClient.refetchQueries({ queryKey: ["threads"] }),
+        queryClient.refetchQueries({ queryKey: ["threads", conversationId] }),
       ]);
     } catch (error) {
       console.error("Failed to edit message:", error);
-      queryClient.setQueryData<InfiniteData<models.Message[]>>(
-        ["messages", conversationId],
-        (oldData) => {
-          if (!oldData || !Array.isArray(oldData.pages)) return oldData;
-          const pages = oldData.pages.map((page) => {
-            if (!Array.isArray(page)) return page as models.Message[];
-            return (page as models.Message[]).map((msg) =>
-              msg.protocolMsgId === messageId ? { ...msg, body: originalText, isEdited: message.isEdited } : msg
-            );
-          });
-          return { ...oldData, pages: pages as models.Message[][] };
-        }
-      );
+      updateCachedMessage(queryClient, conversationId, messageId, originalText, message.isEdited);
       showToast(t("edit_failed"), "error");
     }
   }, [editingMessageId, editingText, originalEditText, conversationId, messages, queryClient, t, showToast, focusComposer]);

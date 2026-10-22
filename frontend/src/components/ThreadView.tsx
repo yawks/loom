@@ -588,6 +588,7 @@ export function ThreadView() {
       });
 
       const threadQueryKey = ["threads", conversationId, selectedThreadId || ""];
+      await queryClient.cancelQueries({ queryKey: threadQueryKey, exact: true });
       const previousThreadMessages = queryClient.getQueryData<models.Message[]>(threadQueryKey);
       const previousParentMessage = selectedThreadParentMessage;
       if (currentUserId) {

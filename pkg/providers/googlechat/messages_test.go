@@ -633,3 +633,12 @@ func TestSendFileUploadsAndAttachesFile(t *testing.T) {
 		t.Fatalf("HTTP call count = %d, want 2", call)
 	}
 }
+
+func TestCurrentUserID(t *testing.T) {
+	provider := NewGoogleChatProvider()
+	var currentUser core.CurrentUserProvider = provider
+	provider.selfID = "self-123"
+	if got := currentUser.CurrentUserID(); got != "self-123" {
+		t.Fatalf("CurrentUserID() = %q, want self-123", got)
+	}
+}
