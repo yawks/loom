@@ -815,7 +815,7 @@ func (p *Provider) GetConversationHistory(conversationID string, limit int, befo
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
 	p.enrichReplyMetadata(out)
-	return out, nil
+	return p.excludeLocallyDeletedMessages(out)
 }
 
 func oldestTeamsMessageTime(messages []msteams.Message) time.Time {
@@ -1914,8 +1914,12 @@ func (p *Provider) handleRemoteEvent(client *msteams.Client, event msteams.Event
 			deleted := event.Timestamp
 			message.DeletedTimestamp = &deleted
 		}
-		_ = p.storeMessages([]models.Message{message})
-		p.emit(core.MessageEvent{InstanceID: p.instance, Message: message})
+		messages[0] = message
+		if err := p.storeMessages(messages); err != nil {
+			fmt.Printf("[Teams] Failed to store message event: %v\n", err)
+			return
+		}
+		p.emit(core.MessageEvent{InstanceID: p.instance, Message: messages[0]})
 	case msteams.EventTypeReaction:
 		if event.Message == nil {
 			return
@@ -2137,6 +2141,24 @@ func teamsPresenceStatus(availability, activity string) string {
 }
 
 func (p *Provider) emit(event core.ProviderEvent) {
+	switch e := event.(type) {
+	case core.MessageEvent:
+		if e.Message.DeletedAt.Valid {
+			return
+		}
+	case core.MessageBatchEvent:
+		messages := make([]models.Message, 0, len(e.Messages))
+		for _, message := range e.Messages {
+			if !message.DeletedAt.Valid {
+				messages = append(messages, message)
+			}
+		}
+		if len(messages) == 0 {
+			return
+		}
+		e.Messages = messages
+		event = e
+	}
 	select {
 	case p.eventChan <- event:
 	default:

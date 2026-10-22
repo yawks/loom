@@ -290,11 +290,44 @@ func (p *Provider) discoverNewConversations(ctx context.Context, client *msteams
 	return discovered, nil
 }
 
+// History can still contain a message after its successful local deletion.
+func (p *Provider) excludeLocallyDeletedMessages(messages []models.Message) ([]models.Message, error) {
+	if len(messages) == 0 || db.DB == nil {
+		return messages, nil
+	}
+	if p.instance == "" {
+		return nil, fmt.Errorf("missing Teams provider instance ID")
+	}
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ProtocolMsgID)
+	}
+	var deleted []models.Message
+	if err := db.ForProvider(db.DB, p.instance).Messages().Unscoped().
+		Select("protocol_conv_id", "protocol_msg_id").
+		Where("deleted_at IS NOT NULL AND protocol_msg_id IN ?", ids).Find(&deleted).Error; err != nil {
+		return nil, err
+	}
+	tombstones := make(map[[2]string]bool, len(deleted))
+	for _, message := range deleted {
+		tombstones[[2]string{message.ProtocolConvID, message.ProtocolMsgID}] = true
+	}
+	visible := messages[:0]
+	for _, message := range messages {
+		if !tombstones[[2]string{message.ProtocolConvID, message.ProtocolMsgID}] {
+			visible = append(visible, message)
+		}
+	}
+	return visible, nil
+}
+
 func (p *Provider) storeMessages(messages []models.Message) error {
 	if db.DB == nil {
 		return nil
 	}
+	originals := append([]models.Message(nil), messages...)
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
+		copy(messages, originals)
 		for index := range messages {
 			message := &messages[index]
 			if message.ProtocolMsgID == "" || message.ProtocolConvID == "" {
@@ -316,6 +349,11 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 			).First(&stored).Error
 			switch err {
 			case nil:
+				// Local deletions remain authoritative over delayed Teams echoes.
+				if stored.DeletedAt.Valid {
+					*message = stored
+					continue
+				}
 				stored.Body = message.Body
 				stored.IsForwarded = stored.IsForwarded || message.IsForwarded
 				stored.Mentions = message.Mentions
@@ -348,7 +386,8 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				stored.CallUrl = message.CallUrl
 				stored.CallLinkAction = message.CallLinkAction
 				stored.IsEdited = stored.IsEdited || message.IsEdited
-				if message.IsEdited {
+				if message.IsEdited && !message.IsDeleted && message.EditedTimestamp != nil &&
+					(stored.DeletedTimestamp == nil || message.EditedTimestamp.After(*stored.DeletedTimestamp)) {
 					stored.IsDeleted = false
 					stored.DeletedBy = ""
 					stored.DeletedReason = ""
@@ -359,13 +398,15 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 				if message.EditedTimestamp != nil {
 					stored.EditedTimestamp = message.EditedTimestamp
 				}
-				if !message.IsEdited && message.DeletedTimestamp != nil {
+				if message.IsDeleted && message.DeletedTimestamp != nil {
 					stored.DeletedTimestamp = message.DeletedTimestamp
 				}
 				if err := tx.Save(&stored).Error; err != nil {
 					return err
 				}
 				message.ID = stored.ID
+				message.IsDeleted = stored.IsDeleted
+				message.DeletedTimestamp = stored.DeletedTimestamp
 			case gorm.ErrRecordNotFound:
 				// protocol_msg_id has a global unique index. A soft-deleted row
 				// or an exceptional Teams ID reused in another conversation
