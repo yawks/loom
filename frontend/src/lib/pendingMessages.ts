@@ -1,4 +1,4 @@
-import { models } from "../../wailsjs/go/models";
+import type { models } from "../../wailsjs/go/models";
 
 // Module-level store of messages received via event but not yet confirmed in the DB.
 // The queryFn in useMessageData merges these into every refetch result until the DB
@@ -7,6 +7,16 @@ import { models } from "../../wailsjs/go/models";
 const pending = new Map<string, models.Message[]>();
 const MAX_PENDING_PER_CONVERSATION = 50;
 const MAX_PENDING_MESSAGES = 500;
+
+export function threadPendingKey(conversationId: string, threadId: string): string {
+  return JSON.stringify(["threads", conversationId, threadId]);
+}
+
+export function removePendingMessage(key: string, messageId: string): void {
+  const remaining = pending.get(key)?.filter((message) => message.protocolMsgId !== messageId);
+  if (remaining?.length) pending.set(key, remaining);
+  else pending.delete(key);
+}
 
 function boundPendingMessages(): void {
   let total = 0;

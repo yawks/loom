@@ -14,7 +14,8 @@ import { ScheduledMessagesDialog } from "@/components/ScheduledMessagesDialog";
 import type { EmojiClickData, Theme } from "emoji-picker-react";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
-import { addPendingMessage } from "@/lib/pendingMessages";
+import { addPendingMessage, removePendingMessage, threadPendingKey } from "@/lib/pendingMessages";
+import { confirmThreadMessage } from "@/lib/messageCache";
 import { mergeMessageBatch } from "@/lib/messageBatch";
 import { resolveMentionPositions } from "@/lib/mentions";
 import { core, models } from "../../wailsjs/go/models";
@@ -356,9 +357,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     draftSaveRef.current = null;
   }, [draftStorageKey]);
 
-  // Focus textarea when a conversation is selected
+  // Contact refreshes must not steal focus from message edits or reaction searches.
   useEffect(() => {
-    if (selectedContact) {
+    if (conversationId) {
       // Small delay to ensure the component is fully rendered
       const timeoutId = setTimeout(() => {
         if (composerMode === "wysiwyg") richComposerRef.current?.focus();
@@ -366,7 +367,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       }, 100);
       return () => clearTimeout(timeoutId);
     }
-  }, [composerMode, selectedContact]);
+  }, [composerMode, conversationId]);
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ conversationId, text, quotedMessageId, mentions }: { conversationId: string; text: string; quotedMessageId?: string; mentions: core.Mention[] }) => {
@@ -441,6 +442,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       // Thread replies use their own cache, but should appear just as immediately
       // as messages in the main conversation.
       if (threadId) {
+        addPendingMessage(threadPendingKey(conversationId, threadId), optimisticMessage);
         const previousTimestamp = queryClient.getQueryData<Record<string, string | number | null>>(
           ["allLastMessageTimestamps"]
         )?.[conversationId];
@@ -452,7 +454,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
           ["allLastMessageTimestamps"],
           (old) => ({ ...(old || {}), [conversationId]: now.toISOString() })
         );
-        return { tempId, conversationId, isThreadMessage: true, previousTimestamp };
+        return { tempId, conversationId, threadId, isThreadMessage: true, previousTimestamp };
       }
 
       // Update messages cache (append to last page to keep chronological order)
@@ -507,19 +509,19 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const tempId = context?.tempId;
       const isThreadMessage = context?.isThreadMessage;
 
-      // If we sent to an actual thread (threadId prop set), invalidate and refetch the thread cache
       if (isThreadMessage) {
-        console.log(`[ChatInput] Sent message to thread ${threadId}, invalidating thread cache`);
-        if (message?.protocolMsgId && threadId) {
+        const sentThreadId = context.threadId;
+        if (message?.protocolMsgId && sentThreadId) {
+          const pendingKey = threadPendingKey(conversationId, sentThreadId);
+          if (tempId) removePendingMessage(pendingKey, tempId);
+          addPendingMessage(pendingKey, message);
           queryClient.setQueryData<models.Message[]>(
-            ["threads", conversationId, threadId],
-            (current = []) => current.map((item) =>
-              item.protocolMsgId === tempId ? message : item
-            )
+            ["threads", conversationId, sentThreadId],
+            (current = []) => confirmThreadMessage(current, message, tempId)
           );
           queryClient.setQueriesData<models.ThreadSummary[]>(
             { queryKey: ["thread-summaries", conversationId] },
-            (current) => current?.map((summary) => summary.parentMessageId === threadId
+            (current) => current?.map((summary) => summary.parentMessageId === sentThreadId
               ? models.ThreadSummary.createFrom({ ...summary, replyCount: summary.replyCount + 1 })
               : summary)
           );
@@ -534,12 +536,11 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
             (old) => ({ ...(old || {}), [conversationId]: message })
           );
         }
-        queryClient.invalidateQueries({ queryKey: ["threads", conversationId, threadId] });
-        queryClient.refetchQueries({ queryKey: ["threads", conversationId, threadId] });
+        queryClient.invalidateQueries({ queryKey: ["threads", conversationId, sentThreadId] });
         queryClient.invalidateQueries({ queryKey: ["thread-summaries", conversationId] });
         // Also invalidate main messages to update thread count badge
         queryClient.invalidateQueries({ queryKey: ["messages", conversationId] });
-        return; // Don't do optimistic update for thread messages
+        return;
       }
 
       // A refetch or provider echo may already have removed the placeholder.
@@ -578,8 +579,9 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
       const conversationId = variables.conversationId;
       const tempId = context?.tempId;
       if (context?.isThreadMessage) {
+        if (tempId && context.threadId) removePendingMessage(threadPendingKey(conversationId, context.threadId), tempId);
         queryClient.setQueryData<models.Message[]>(
-          ["threads", conversationId, threadId || ""],
+          ["threads", conversationId, context.threadId || ""],
           (current = []) => current.map((msg) => msg.protocolMsgId === tempId
             ? ({ ...(msg as any), isPending: false, sendFailed: true } as models.Message)
             : msg)

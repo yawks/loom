@@ -36,11 +36,13 @@ import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { usePresenceStore } from "@/lib/presenceStore";
 import { useMessageEdit } from "@/hooks/useMessageEdit";
+import { mergePendingMessages, threadPendingKey } from "@/lib/pendingMessages";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 const fetchThreads = async (conversationID: string, threadID: string) => {
-  return GetThreadMessages(conversationID, threadID);
+  const messages = await GetThreadMessages(conversationID, threadID);
+  return mergePendingMessages(threadPendingKey(conversationID, threadID), messages ?? []);
 };
 
 const fetchMessages = async (conversationID: string, beforeTimestamp?: Date): Promise<models.Message[]> => {

@@ -2,7 +2,34 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { QueryClient } from "@tanstack/react-query";
 import type { models } from "../wailsjs/go/models";
-import { updateCachedMessage } from "../src/lib/messageCache.ts";
+import { confirmThreadMessage, updateCachedMessage } from "../src/lib/messageCache.ts";
+import { addPendingMessage, mergePendingMessages, removePendingMessage, threadPendingKey } from "../src/lib/pendingMessages.ts";
+
+test("thread send survives stale refetches and confirmation without its placeholder", () => {
+  const key = threadPendingKey("send-conversation", "parent");
+  const temporary = { protocolMsgId: "temp-send", body: "reply" } as models.Message;
+  const confirmed = { protocolMsgId: "confirmed", body: "reply" } as models.Message;
+  addPendingMessage(key, temporary);
+  assert.deepEqual(mergePendingMessages(key, []), [temporary]);
+  assert.deepEqual(mergePendingMessages(threadPendingKey("send-conversation", "other"), []), []);
+  assert.deepEqual(mergePendingMessages(threadPendingKey("other", "parent"), []), []);
+
+  removePendingMessage(key, temporary.protocolMsgId);
+  addPendingMessage(key, confirmed);
+  assert.deepEqual(confirmThreadMessage([], confirmed, temporary.protocolMsgId), [confirmed]);
+  assert.deepEqual(confirmThreadMessage([temporary, confirmed], confirmed, temporary.protocolMsgId), [confirmed]);
+  assert.deepEqual(mergePendingMessages(key, []), [confirmed]);
+  assert.deepEqual(mergePendingMessages(key, [confirmed]), [confirmed]);
+  // Once persistence confirms the message, it no longer lives in the bridge.
+  assert.deepEqual(mergePendingMessages(key, []), []);
+});
+
+test("failed thread sends can remove their pending placeholder", () => {
+  const key = threadPendingKey("failed-send", "parent");
+  addPendingMessage(key, { protocolMsgId: "temp-failed" } as models.Message);
+  removePendingMessage(key, "temp-failed");
+  assert.deepEqual(mergePendingMessages(key, []), []);
+});
 
 test("edits and rollback reach conversation and thread caches without changing other conversations", () => {
   const client = new QueryClient();
