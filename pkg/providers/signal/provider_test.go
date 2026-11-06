@@ -87,3 +87,30 @@ func TestMessageTimestamp(t *testing.T) {
 		}
 	}
 }
+
+func TestReactionEventUsesCanonicalUnixSeconds(t *testing.T) {
+	p := NewProvider().(*Provider)
+	p.config = core.ProviderConfig{"_instance_id": "signal-test"}
+	sender := uuid.New()
+	event := &events.ChatEvent{
+		Info: events.MessageInfo{ChatID: "chat", Sender: sender},
+		Event: &signalpb.DataMessage{
+			Timestamp: proto.Uint64(1793000000123),
+			Reaction: &signalpb.DataMessage_Reaction{
+				Emoji: proto.String("👍"), TargetSentTimestamp: proto.Uint64(1792000000123),
+			},
+		},
+	}
+	if !p.handleChatEvent(event) {
+		t.Fatal("reaction was not handled")
+	}
+	select {
+	case raw := <-p.events:
+		reaction, ok := raw.(core.ReactionEvent)
+		if !ok || reaction.Timestamp != 1793000000 || reaction.MessageID != "1792000000123" || reaction.UserID != sender.String() {
+			t.Fatalf("reaction contract not normalized: %+v", raw)
+		}
+	default:
+		t.Fatal("missing reaction event")
+	}
+}

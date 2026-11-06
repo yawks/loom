@@ -1129,6 +1129,7 @@ export function MessageAttachments({
   const galleryReactions = selectedGalleryMessage?.reactions?.length ? (
     <div className="message-attachment__gallery-reactions absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg bg-black/65 px-2 py-1 shadow-lg backdrop-blur-sm">
       <MessageReactions
+        message={selectedGalleryMessage}
         reactions={selectedGalleryMessage.reactions}
         isGroup={isGroupConversation}
         participantNames={participantNames}

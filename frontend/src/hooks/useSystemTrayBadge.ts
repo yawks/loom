@@ -4,6 +4,7 @@ import { useAppStore } from "@/lib/store";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { countUnreadMessages } from "@/lib/unreadBadgeCounts";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { useReactionActivities } from "./useReactionActivities";
 
 // Helper function to call UpdateSystemTrayBadge via Wails runtime
 const updateSystemTrayBadge = (count: number): Promise<void> => {
@@ -52,6 +53,7 @@ const updateSystemTrayBadge = (count: number): Promise<void> => {
  * This hook listens to changes in the message read store and updates the badge accordingly.
  */
 export function useSystemTrayBadge() {
+  const reactionActivities = useReactionActivities();
   const readStateByConversation = useMessageReadStore(
     (state) => state.readByConversation
   );
@@ -91,11 +93,12 @@ export function useSystemTrayBadge() {
         countedConversations.add(conversationId);
         if (badgeUntrackedConversationIds[conversationId]) return;
         total += countUnreadMessages(readStateByConversation[conversationId]);
+        total += reactionActivities[conversationId]?.unreadCount ?? 0;
       });
     });
 
     return total;
-  }, [badgeUntrackedConversationIds, readStateByConversation, contacts]);
+  }, [badgeUntrackedConversationIds, readStateByConversation, contacts, reactionActivities]);
 
   // Update system tray badge when unread count changes — debounced to avoid
   // hammering the macOS badge API during bulk sync (hundreds of messages arrive in burst).

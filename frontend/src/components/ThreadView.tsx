@@ -1046,6 +1046,7 @@ export function ThreadView() {
                     </div>
                     {message.reactions && message.reactions.length > 0 && (
                       <MessageReactions
+                        message={message}
                         reactions={message.reactions}
                         isGroup={false}
                         currentUserId={currentUserId}
@@ -1233,6 +1234,7 @@ export function ThreadView() {
                       )}
                       {message.reactions && message.reactions.length > 0 && (
                         <MessageReactions
+                          message={message}
                           reactions={message.reactions}
                           isGroup={false}
                           currentUserId={currentUserId}

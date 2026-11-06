@@ -3,7 +3,8 @@ import type { InfiniteData } from "@tanstack/react-query";
 import { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
 import { useEffect } from "react";
-import { useMessageReadStore } from "@/lib/messageReadStore";
+import { useMessageReadStore, reconcilePersistedUnreadMessages } from "@/lib/messageReadStore";
+import { GetUnreadMessageLocations } from "../../wailsjs/go/main/App";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTypingStore } from "@/lib/typingStore";
 import { timeToDate } from "@/lib/utils";
@@ -65,6 +66,9 @@ const keepLatestMessage = (
 };
 
 export function useMessageEvents() {
+  useEffect(() => {
+    void reconcilePersistedUnreadMessages(GetUnreadMessageLocations);
+  }, []);
   const queryClient = useQueryClient();
   const selectedContact = useAppStore((state) => state.selectedContact);
   const registerIncomingMessage = useMessageReadStore(
@@ -111,7 +115,7 @@ export function useMessageEvents() {
           setNotTyping(conversationId, message.senderId);
         }
 
-        if (!event.isUpdate) registerIncomingMessage(message);
+        if (!event.isUpdate || message.isDeleted) registerIncomingMessage(message);
 
         // Update last message in cache directly for immediate UI update
         // Note: ContactList.tsx handles allLastMessages/Timestamps/activeCalls/allMessageCounts

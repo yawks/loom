@@ -425,6 +425,11 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed loading recovered messages for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
+		// This emits its own batch; snapshot main-history recovery first to avoid
+		// publishing the same replies twice. Empty bootstraps have no parents yet.
+		if !bootstrap {
+			p.refreshThreadReplies(ctx, conversation.ProtocolConvID)
+		}
 		if len(newMessages) == 0 {
 			continue
 		}

@@ -2147,6 +2147,10 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 			// been persisted below.
 			if reactionMsg := evt.Message.GetReactionMessage(); reactionMsg != nil {
 				if key := reactionMsg.GetKey(); key != nil && key.GetID() != "" {
+					reactedAt := evt.Info.Timestamp
+					if timestampMS := reactionMsg.GetSenderTimestampMS(); timestampMS > 0 {
+						reactedAt = time.UnixMilli(timestampMS)
+					}
 					senderID := w.canonicalReactionUserID(evt.Info.Sender.String())
 					if evt.Info.IsFromMe && w.client.Store != nil && w.client.Store.ID != nil {
 						senderID = w.canonicalReactionUserID(w.client.Store.ID.String())
@@ -2158,7 +2162,8 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 						UserID:         senderID,
 						Emoji:          reactionMsg.GetText(),
 						Added:          reactionMsg.GetText() != "",
-						Timestamp:      evt.Info.Timestamp.Unix(),
+						Historical:     true,
+						Timestamp:      reactedAt.Unix(),
 					})
 				}
 				continue
@@ -2202,8 +2207,12 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 				// Extract reactions from WebMessageInfo
 				reactions := webMsgInfo.GetReactions()
 				if len(reactions) > 0 {
-					fmt.Printf("WhatsApp: Found %d reactions in history for message %s\n", len(reactions), msg.ProtocolMsgID)
-					msg.Reactions = w.convertHistoryReactions(reactions, msg.ProtocolMsgID)
+					w.log("WhatsApp: Found %d reactions in history for message %s\n", len(reactions), msg.ProtocolMsgID)
+					var reactionEvents []core.ReactionEvent
+					msg.Reactions, reactionEvents = w.historyReactionSnapshot(reactions, msg.ProtocolMsgID, msg.ProtocolConvID)
+					// Some history payloads carry only the target message's reaction
+					// snapshot, without a standalone reaction envelope.
+					historyReactions = append(historyReactions, reactionEvents...)
 				}
 
 				// Extract message status from WebMessageInfo
@@ -2375,44 +2384,9 @@ func (w *WhatsAppProvider) cacheMessagesFromHistory(history *waHistorySync.Histo
 		// Process standalone reactions only after storing this history batch. This
 		// lets the app resolve reactions whose target message is part of the same
 		// sync, while also supporting targets already present in the database.
-		for _, reaction := range historyReactions {
-			if db.DB != nil {
-				var target models.Message
-				if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", reaction.MessageID, reaction.ConversationID).First(&target).Error; err == nil {
-					if reaction.Added {
-						row := models.Reaction{
-							MessageID: target.ID,
-							UserID:    reaction.UserID,
-							Emoji:     reaction.Emoji,
-							CreatedAt: time.Unix(reaction.Timestamp, 0),
-							UpdatedAt: time.Unix(reaction.Timestamp, 0),
-						}
-						db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", target.ID, reaction.UserID, reaction.Emoji).FirstOrCreate(&row)
-						if reaction.UserID != target.SenderID {
-							timestamp := time.Unix(reaction.Timestamp, 0)
-							if reaction.Timestamp <= 0 {
-								timestamp = time.Now()
-							}
-							var receipt models.MessageReceipt
-							if err := db.DB.Where("message_id = ? AND user_id = ? AND receipt_type = ?", target.ID, reaction.UserID, string(core.ReceiptTypeRead)).First(&receipt).Error; err != nil {
-								db.DB.Create(&models.MessageReceipt{
-									MessageID:   target.ID,
-									UserID:      reaction.UserID,
-									ReceiptType: string(core.ReceiptTypeRead),
-									Timestamp:   timestamp,
-								})
-							}
-						}
-					} else {
-						db.DB.Where("message_id = ? AND user_id = ?", target.ID, reaction.UserID).Delete(&models.Reaction{})
-					}
-				}
-			}
-			select {
-			case w.eventChan <- reaction:
-			default:
-				fmt.Printf("WhatsApp: WARNING - Failed to emit history reaction for message %s (channel full)\n", reaction.MessageID)
-			}
+		if err := w.storeHistoryReactionBatch(core.BuildConvID(w.getInstanceId(), convID), historyReactions); err != nil {
+			w.log("WhatsApp: Failed to persist history reactions for %s: %v\n", convID, err)
+			persistedAll = false
 		}
 	}
 	return persistedAll

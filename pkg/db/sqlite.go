@@ -134,6 +134,7 @@ func initDatabase(dsn string) error {
 		&models.NotificationSettings{},
 		&models.MessagePin{},
 		&models.Reaction{},
+		&models.ReactionActivity{},
 		&models.MessageReceipt{},
 		&models.ProviderConfiguration{},
 		&models.ContactAlias{},

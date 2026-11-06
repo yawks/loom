@@ -1530,6 +1530,52 @@ export namespace models {
 	
 	
 	
+	export class ReactionActivity {
+	    id: number;
+	    providerInstanceId: string;
+	    conversationId: string;
+	    messageId: string;
+	    threadId?: string;
+	    userId: string;
+	    emoji: string;
+	    timestamp: time.Time;
+	    userName: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReactionActivity(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.conversationId = source["conversationId"];
+	        this.messageId = source["messageId"];
+	        this.threadId = source["threadId"];
+	        this.userId = source["userId"];
+	        this.emoji = source["emoji"];
+	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
+	        this.userName = source["userName"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ScheduledMessage {
 	    id: string;
 	    providerInstanceId: string;
@@ -1627,6 +1673,7 @@ export namespace models {
 	    threadId?: string;
 	    timestamp: time.Time;
 	    isFromMe: boolean;
+	    isDeleted: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new UnreadMessageLocation(source);
@@ -1638,6 +1685,7 @@ export namespace models {
 	        this.threadId = source["threadId"];
 	        this.timestamp = this.convertValues(source["timestamp"], time.Time);
 	        this.isFromMe = source["isFromMe"];
+	        this.isDeleted = source["isDeleted"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

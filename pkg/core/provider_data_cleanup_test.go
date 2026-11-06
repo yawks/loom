@@ -18,7 +18,7 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 		&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{},
 		&models.GroupParticipant{}, &models.Message{}, &models.MessagePin{},
 		&models.MessageWatchRule{}, &models.MessageWatchMatch{},
-		&models.Reaction{}, &models.MessageReceipt{}, &models.ProviderConfiguration{},
+		&models.Reaction{}, &models.ReactionActivity{}, &models.MessageReceipt{}, &models.ProviderConfiguration{},
 		&models.ContactAlias{}, &models.LIDMapping{},
 	); err != nil {
 		t.Fatal(err)
@@ -51,6 +51,8 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 	}
 	database.Delete(&targetMessage) // soft-deleted messages must also be purged
 	database.Create(&models.Reaction{MessageID: targetMessage.ID, UserID: "member"})
+	database.Create(&models.ReactionActivity{ProviderInstanceID: "wa-work", MessageID: targetMessage.ID, UserID: "member"})
+	database.Create(&models.ReactionActivity{ProviderInstanceID: "wa-home", MessageID: keptMessage.ID, UserID: "member"})
 	database.Create(&models.MessageReceipt{MessageID: targetMessage.ID, UserID: "member"})
 	database.Create(&models.MessagePin{ProviderInstanceID: "wa-work", ProtocolMsgID: "target-message"})
 	watchRule := models.MessageWatchRule{ConversationID: targetConv.ID, Pattern: "urgent"}
@@ -82,6 +84,8 @@ func TestDeleteProviderDataRemovesCompleteOwnedGraph(t *testing.T) {
 	assertCount(&models.Conversation{}, "id = ?", []any{targetConv.ID}, 0)
 	assertCount(&models.Message{}, "protocol_msg_id IN ?", []any{[]string{"target-message", "orphan-message"}}, 0)
 	assertCount(&models.Reaction{}, "message_id = ?", []any{targetMessage.ID}, 0)
+	assertCount(&models.ReactionActivity{}, "message_id = ?", []any{targetMessage.ID}, 0)
+	assertCount(&models.ReactionActivity{}, "message_id = ?", []any{keptMessage.ID}, 1)
 	assertCount(&models.MessageReceipt{}, "message_id = ?", []any{targetMessage.ID}, 0)
 	assertCount(&models.GroupParticipant{}, "conversation_id = ?", []any{targetConv.ID}, 0)
 	assertCount(&models.MessagePin{}, "provider_instance_id = ?", []any{"wa-work"}, 0)

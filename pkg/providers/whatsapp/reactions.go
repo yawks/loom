@@ -8,27 +8,14 @@ import (
 	"strings"
 	"time"
 
-	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
-	"google.golang.org/protobuf/proto"
 )
 
-func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, emoji string) error {
-	if w.client == nil {
-		return fmt.Errorf("client not initialized")
-	}
-
-	rawConvID := core.StripConvID(conversationID)
-	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
-
-	// Parse conversation ID (JID)
-	jid, err := types.ParseJID(rawConvID)
-	if err != nil {
-		return fmt.Errorf("invalid conversation ID: %w", err)
-	}
-
-	// Find the message to get its key
+// reactionMessage is shared by additions and removals: both must identify the
+// original author for incoming group messages, not just the chat and message ID.
+func (w *WhatsAppProvider) reactionMessage(jid types.JID, messageID, emoji string) (*waE2E.Message, error) {
+	nsConvID := core.BuildConvID(w.getInstanceId(), jid.String())
 	var message *models.Message
 	w.mu.RLock()
 	if msgs, ok := w.conversationMessages[nsConvID]; ok {
@@ -44,31 +31,41 @@ func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, 
 	// If not found in cache, try database
 	if message == nil && db.DB != nil {
 		var dbMsg models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
+		if err := db.ForProvider(db.DB, w.getInstanceId()).MessagesForConversation(nsConvID).
+			Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
 			message = &dbMsg
 		}
 	}
 
 	if message == nil {
-		return fmt.Errorf("message not found: %s", messageID)
+		return nil, fmt.Errorf("message not found: %s", messageID)
 	}
 
-	// Parse the message ID to get the key
-	msgKey := &waProto.MessageKey{
-		RemoteJID: proto.String(rawConvID),
-		FromMe:    proto.Bool(message.IsFromMe),
-		ID:        proto.String(messageID),
+	sender := types.EmptyJID
+	if !message.IsFromMe {
+		var err error
+		sender, err = types.ParseJID(message.SenderID)
+		if err != nil || sender.User == "" || sender.Server == "" {
+			return nil, fmt.Errorf("invalid sender for reaction target %s: %q", messageID, message.SenderID)
+		}
+	}
+	return w.client.BuildReaction(jid, sender, messageID, emoji), nil
+}
+
+func (w *WhatsAppProvider) AddReaction(conversationID string, messageID string, emoji string) error {
+	if w.client == nil {
+		return fmt.Errorf("client not initialized")
 	}
 
-	// Create reaction message (trim any outer colons if present)
-	reactionEmoji := strings.Trim(emoji, ":")
-	reactionMsg := &waE2E.Message{
-		ReactionMessage: &waE2E.ReactionMessage{
-			Key:               msgKey,
-			Text:              proto.String(reactionEmoji),
-			GroupingKey:       proto.String(messageID),
-			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
-		},
+	rawConvID := core.StripConvID(conversationID)
+	nsConvID := core.BuildConvID(w.getInstanceId(), rawConvID)
+	jid, err := types.ParseJID(rawConvID)
+	if err != nil {
+		return fmt.Errorf("invalid conversation ID: %w", err)
+	}
+	reactionMsg, err := w.reactionMessage(jid, messageID, strings.Trim(emoji, ":"))
+	if err != nil {
+		return err
 	}
 
 	// Send reaction
@@ -115,46 +112,10 @@ func (w *WhatsAppProvider) RemoveReaction(conversationID string, messageID strin
 		return fmt.Errorf("invalid conversation ID: %w", err)
 	}
 
-	// Find the message to get its key
-	var message *models.Message
-	w.mu.RLock()
-	if msgs, ok := w.conversationMessages[nsConvID]; ok {
-		for _, msg := range msgs {
-			if msg.ProtocolMsgID == messageID {
-				message = &msg
-				break
-			}
-		}
-	}
-	w.mu.RUnlock()
-
-	// If not found in cache, try database
-	if message == nil && db.DB != nil {
-		var dbMsg models.Message
-		if err := db.DB.Where("protocol_msg_id = ?", messageID).First(&dbMsg).Error; err == nil {
-			message = &dbMsg
-		}
-	}
-
-	if message == nil {
-		return fmt.Errorf("message not found: %s", messageID)
-	}
-
-	// Parse the message ID to get the key
-	msgKey := &waProto.MessageKey{
-		RemoteJID: proto.String(rawConvID),
-		FromMe:    proto.Bool(message.IsFromMe),
-		ID:        proto.String(messageID),
-	}
-
-	// Create reaction message with empty text to remove reaction
-	reactionMsg := &waE2E.Message{
-		ReactionMessage: &waE2E.ReactionMessage{
-			Key:               msgKey,
-			Text:              proto.String(""), // Empty text removes the reaction
-			GroupingKey:       proto.String(messageID),
-			SenderTimestampMS: proto.Int64(time.Now().UnixMilli()),
-		},
+	// Empty text removes the reaction, using the same target key as additions.
+	reactionMsg, err := w.reactionMessage(jid, messageID, "")
+	if err != nil {
+		return err
 	}
 
 	// Send reaction removal

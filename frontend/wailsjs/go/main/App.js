@@ -262,6 +262,10 @@ export function GetProviderSchema(arg1) {
   return window['go']['main']['App']['GetProviderSchema'](arg1);
 }
 
+export function GetReactionActivitySummaries() {
+  return window['go']['main']['App']['GetReactionActivitySummaries']();
+}
+
 export function GetScheduledMessages(arg1) {
   return window['go']['main']['App']['GetScheduledMessages'](arg1);
 }
@@ -294,6 +298,10 @@ export function IsSpeechTranscriptionAvailable() {
   return window['go']['main']['App']['IsSpeechTranscriptionAvailable']();
 }
 
+export function IsWindowActive() {
+  return window['go']['main']['App']['IsWindowActive']();
+}
+
 export function LeaveGroup(arg1) {
   return window['go']['main']['App']['LeaveGroup'](arg1);
 }
@@ -312,6 +320,10 @@ export function MarkMessageAsPlayed(arg1, arg2) {
 
 export function MarkMessageAsRead(arg1, arg2) {
   return window['go']['main']['App']['MarkMessageAsRead'](arg1, arg2);
+}
+
+export function MarkReactionActivitiesSeen(arg1, arg2) {
+  return window['go']['main']['App']['MarkReactionActivitiesSeen'](arg1, arg2);
 }
 
 export function OpenConversation(arg1) {

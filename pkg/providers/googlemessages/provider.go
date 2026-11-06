@@ -1405,7 +1405,7 @@ func (p *Provider) reactionsForMessage(protocolMessageID string) map[string]mode
 		return nil
 	}
 	var message models.Message
-	if err := db.DB.Where("protocol_msg_id = ?", protocolMessageID).First(&message).Error; err != nil {
+	if err := db.ForProvider(db.DB, p.instance).Messages().Where("protocol_msg_id = ?", protocolMessageID).First(&message).Error; err != nil {
 		return nil
 	}
 	var reactions []models.Reaction
@@ -1425,7 +1425,9 @@ func (p *Provider) emitReactionChanges(message models.Message, previous map[stri
 		key := reaction.UserID + "\x00" + reaction.Emoji
 		current[key] = reaction
 		if _, exists := previous[key]; !exists {
-			p.emit(core.ReactionEvent{InstanceID: p.instance, ConversationID: message.ProtocolConvID, MessageID: message.ProtocolMsgID, UserID: reaction.UserID, Emoji: reaction.Emoji, Added: true, Timestamp: message.Timestamp.Unix()})
+			// The remote snapshot has no reaction time. A newly observed change is
+			// activity now, even when it targets a much older message.
+			p.emit(core.ReactionEvent{InstanceID: p.instance, ConversationID: message.ProtocolConvID, MessageID: message.ProtocolMsgID, UserID: reaction.UserID, Emoji: reaction.Emoji, Added: true, Timestamp: time.Now().Unix()})
 		}
 	}
 	for key, reaction := range previous {

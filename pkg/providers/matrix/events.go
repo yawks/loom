@@ -58,6 +58,7 @@ func (p *Provider) syncLoop(ctx context.Context) {
 		for roomID, room := range response.Rooms.Join {
 			avatarRooms[roomID] = [][]matrixEvent{room.State.Events, room.Timeline.Events}
 			roomMessages := make([]models.Message, 0, len(room.Timeline.Events))
+			var reactions []core.ReactionEvent
 			for _, event := range room.Timeline.Events {
 				p.mu.Lock()
 				p.eventRooms[event.EventID] = roomID
@@ -73,7 +74,7 @@ func (p *Provider) syncLoop(ctx context.Context) {
 						p.mu.Lock()
 						p.reactionEvents[reactionKey(roomID, c.Rel.EventID, c.Rel.Key, event.Sender)] = event.EventID
 						p.mu.Unlock()
-						p.emit(core.ReactionEvent{InstanceID: p.getInstanceID(), ConversationID: p.namespacedRoom(roomID), MessageID: c.Rel.EventID, UserID: event.Sender, Emoji: c.Rel.Key, Added: true, Timestamp: event.OriginServerTS / 1000})
+						reactions = append(reactions, core.ReactionEvent{InstanceID: p.getInstanceID(), ConversationID: p.namespacedRoom(roomID), MessageID: c.Rel.EventID, UserID: event.Sender, Emoji: c.Rel.Key, Added: true, Historical: initial, Timestamp: event.OriginServerTS / 1000})
 					}
 					continue
 				}
@@ -85,6 +86,9 @@ func (p *Provider) syncLoop(ctx context.Context) {
 				}
 			}
 			p.storeMessages(roomID, roomMessages)
+			for _, reaction := range reactions {
+				p.emit(reaction)
+			}
 			for _, event := range room.Ephemeral.Events {
 				if event.Type == "m.typing" {
 					var c struct {

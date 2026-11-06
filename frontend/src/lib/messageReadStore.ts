@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "./utils";
 import { sameUserId } from "./userIdentity";
+import { confirmReadWindowFocus } from "./windowFocus";
 
 // Extend Window interface to include Wails runtime
 declare global {
@@ -371,10 +372,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
           hasChanged = true;
         }
 
-        if (message.isFromMe && nextState[messageId] === false) {
-          // Provider echoes can arrive before self identity is fully resolved.
-          // Once the persisted message confirms ownership, it must not remain
-          // an unread navigation target.
+        if ((message.isFromMe || message.isDeleted) && nextState[messageId] === false) {
+          // Deleted messages and confirmed own echoes cannot be unread targets.
           nextState[messageId] = true;
           hasChanged = true;
         }
@@ -445,10 +444,11 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedMap };
     });
   },
-  markAsRead: (conversationId, messageId) => {
+  markAsRead: async (conversationId, messageId) => {
     if (!conversationId || !messageId || messageId.startsWith("temp-")) {
       return;
     }
+    if (!await confirmReadWindowFocus()) return;
     set((state) => {
       const conversationState = state.readByConversation[conversationId];
       if (!conversationState || conversationState[messageId] === true) {
@@ -471,8 +471,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       return { readByConversation: updatedMap };
     });
   },
-  markMultipleAsRead: (conversationId, messageIds) => {
+  markMultipleAsRead: async (conversationId, messageIds) => {
     if (!conversationId || messageIds.length === 0) return;
+    if (!await confirmReadWindowFocus()) return;
     set((state) => {
       const conversationState = state.readByConversation[conversationId];
       if (!conversationState) return state;
@@ -689,9 +690,9 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       const marker = threadMarker(messageId);
       const needsThreadMarker =
         isThreadReply(message) && existingState[marker] !== true;
-      const repairsOwnMessage = message.isFromMe && existingState[messageId] === false;
+      const repairsUnreadMessage = (message.isFromMe || message.isDeleted) && existingState[messageId] === false;
 
-      if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsOwnMessage) {
+      if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadMessage) {
         return state;
       }
 
@@ -701,9 +702,8 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
       // They have their own badge indicator. Messages sent by the current user are always marked as read.
       const isCallMessage = message.callType && message.callType.trim() !== "";
 
-      if (message.isFromMe && isRead === false) {
-        // Repair an earlier provider echo that was temporarily classified as
-        // incoming before the sender identity was resolved.
+      if (message.isDeleted || (message.isFromMe && isRead === false)) {
+        // A deletion also consumes an unread reply hidden from the timeline.
         isRead = true;
       } else if (isRead !== undefined) {
         // Preserve the existing read state when this pass only adds legacy
@@ -767,13 +767,13 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
         // provider read-through signal may overwrite an existing unread state.
         const repairsUnreadState =
           forceRead && existingState[messageId] === false;
-        const repairsOwnMessage = message.isFromMe && existingState[messageId] === false;
-        if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState && !repairsOwnMessage) continue;
+        const repairsUnreadMessage = (message.isFromMe || message.isDeleted) && existingState[messageId] === false;
+        if (existingState[messageId] !== undefined && !needsThreadMarker && !repairsUnreadState && !repairsUnreadMessage) continue;
 
         const lastReadTS = (existingState as any)["_lastReadTS"] as string | undefined;
         let isRead = existingState[messageId];
         const isCallMessage = message.callType && message.callType.trim() !== "";
-        if (repairsUnreadState) {
+        if (message.isDeleted || repairsUnreadState) {
           // An action by the current user proves this history prefix was seen
           // on another linked client. This updates local state only.
           isRead = true;
@@ -946,3 +946,23 @@ export const useMessageReadStore = create<MessageReadStore>((set) => {
   },
   };
 });
+
+// Repair persisted unread replies even when refreshed thread history omits them.
+// Only confirmed deletions are removed: missing rows may still be synchronizing.
+export async function reconcilePersistedUnreadMessages(
+  loadLocations: (conversationId: string, messageIds: string[]) => Promise<Pick<models.UnreadMessageLocation, "messageId" | "isDeleted">[]>,
+): Promise<void> {
+  const snapshot = useMessageReadStore.getState().readByConversation;
+  for (const [conversationId, state] of Object.entries(snapshot)) {
+    const ids = Object.keys(state).filter(id => !id.startsWith("_") && state[id] === false);
+    if (ids.length === 0) continue;
+    try {
+      const locations = await loadLocations(conversationId, ids);
+      for (const location of locations) {
+        if (location.isDeleted) useMessageReadStore.getState().removeMessage(conversationId, location.messageId);
+      }
+    } catch (error) {
+      console.warn("Failed to reconcile persisted unread messages:", conversationId, error);
+    }
+  }
+}

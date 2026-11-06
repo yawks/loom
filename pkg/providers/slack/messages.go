@@ -1062,10 +1062,9 @@ func (p *SlackProvider) getThreadReplies(channelID string, threadTS string, olde
 			return nil, fmt.Errorf("failed to get thread replies: %w", err)
 		}
 
-		// Convert thread messages (skip the first one as it's the parent message)
-		for i, msg := range messages {
-			// Skip the parent message (first one) as it's already in the main messages
-			if i == 0 {
+		// Filter by ID: cursor-filtered replies and later pages may omit the parent.
+		for _, msg := range messages {
+			if msg.Timestamp == threadTS {
 				continue
 			}
 			convertedMsg := p.convertMessage(msg, channelID)

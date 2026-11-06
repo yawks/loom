@@ -1354,14 +1354,33 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 							runtime.EventsEmit(a.ctx, "system-notification-batch", string(notificationsJSON))
 						}
 					}
+				case core.ReactionBatchEvent:
+					a.invalidateMessageCaches()
+					if a.ctx != nil {
+						batchJSON, _ := json.Marshal(struct {
+							InstanceID     string `json:"instanceId"`
+							ConversationID string `json:"conversationId"`
+						}{e.InstanceID, e.ConversationID})
+						runtime.EventsEmit(a.ctx, "reactions-batch", string(batchJSON))
+					}
 				case core.ReactionEvent:
+					if e.Timestamp <= 0 {
+						e.Timestamp = time.Now().Unix()
+					}
 					if normalizer, ok := provider.(core.ParticipantIdentityNormalizer); ok {
 						e.UserID = normalizer.NormalizeParticipantID(e.UserID)
 					}
 					// Basic DB saving/removing for reactions
 					if db.DB != nil {
 						var message models.Message
-						if err := db.DB.Where("protocol_msg_id = ? AND protocol_conv_id = ?", e.MessageID, e.ConversationID).First(&message).Error; err == nil {
+						if err := db.ForProvider(db.DB, e.InstanceID).MessagesForConversation(e.ConversationID).Where("protocol_msg_id = ?", e.MessageID).First(&message).Error; err == nil {
+							currentUserID := ""
+							if self, ok := provider.(core.CurrentUserProvider); ok {
+								currentUserID = self.CurrentUserID()
+							}
+							if err := persistReactionActivity(db.DB, message, e, currentUserID); err != nil {
+								fmt.Printf("Failed to persist reaction activity: %v\n", err)
+							}
 							if e.Added {
 								var existing models.Reaction
 								if db.DB.Where("message_id = ? AND user_id = ? AND emoji = ?", message.ID, e.UserID, e.Emoji).First(&existing).Error != nil {
@@ -2746,15 +2765,29 @@ func (a *App) GetThreadSummaries(conversationID string, parentMessageIDs []strin
 // GetUnreadMessageLocations resolves renderer-owned unread IDs against SQLite.
 // Results are chronological so the first entry is the navigation target.
 func (a *App) GetUnreadMessageLocations(conversationID string, messageIDs []string) ([]models.UnreadMessageLocation, error) {
-	if db.DB == nil || conversationID == "" || len(messageIDs) == 0 {
+	if conversationID == "" || len(messageIDs) == 0 {
 		return []models.UnreadMessageLocation{}, nil
+	}
+	// Binding calls can arrive while startup is still initializing SQLite.
+	// An empty success here would permanently skip persisted unread repair.
+	if a.databaseReady != nil {
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-a.databaseReady:
+		case <-timer.C:
+			return []models.UnreadMessageLocation{}, fmt.Errorf("timed out waiting for database initialization")
+		}
+	}
+	if db.DB == nil {
+		return []models.UnreadMessageLocation{}, fmt.Errorf("database unavailable")
 	}
 
 	// Keep the Wails contract stable: an empty result must be encoded as [] and
 	// not null, since renderer callers iterate over the returned collection.
 	locations := make([]models.UnreadMessageLocation, 0)
 	err := db.DB.Model(&models.Message{}).
-		Select("protocol_msg_id AS message_id, CASE WHEN thread_id IS NOT NULL AND thread_id <> '' AND thread_id <> protocol_msg_id THEN thread_id ELSE '' END AS thread_id, timestamp, is_from_me").
+		Select("protocol_msg_id AS message_id, CASE WHEN thread_id IS NOT NULL AND thread_id <> '' AND thread_id <> protocol_msg_id THEN thread_id ELSE '' END AS thread_id, timestamp, is_from_me, is_deleted").
 		Where("protocol_conv_id = ? AND protocol_msg_id IN ?", conversationID, messageIDs).
 		Order("timestamp ASC").
 		Scan(&locations).Error
@@ -3915,6 +3948,9 @@ func (a *App) DeleteMessage(conversationID, messageID string) error {
 }
 
 func (a *App) MarkMessageAsRead(conversationID, messageID string) error {
+	if a.ctx != nil && !a.IsWindowActive() {
+		return fmt.Errorf("Loom window is not active")
+	}
 	conversationID = a.resolveMessageConversation(conversationID, messageID)
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
@@ -3932,6 +3968,9 @@ func (a *App) SendTypingIndicator(conversationID string, isTyping bool) error {
 }
 
 func (a *App) MarkConversationAsRead(conversationID string) error {
+	if a.ctx != nil && !a.IsWindowActive() {
+		return fmt.Errorf("Loom window is not active")
+	}
 	provider := a.getProviderForConversation(conversationID)
 	if provider == nil {
 		return fmt.Errorf("no provider for conversation %s", conversationID)

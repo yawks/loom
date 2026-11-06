@@ -377,6 +377,7 @@ type UnreadMessageLocation struct {
 	ThreadID  string    `json:"threadId,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	IsFromMe  bool      `json:"isFromMe"`
+	IsDeleted bool      `json:"isDeleted"`
 }
 
 // ScheduledMessage is a provider-neutral representation of a message queued
@@ -496,6 +497,30 @@ type LIDMapping struct {
 // TableName overrides the table name used by LIDMapping to 'lid_mappings'
 func (LIDMapping) TableName() string {
 	return "lid_mappings"
+}
+
+// ReactionActivity is local attention state, separate from provider read receipts.
+// Removed entries remain as deduplication tombstones. History creates no activity.
+type ReactionActivity struct {
+	ID                 uint      `gorm:"primarykey" json:"id"`
+	ProviderInstanceID string    `gorm:"not null;index" json:"providerInstanceId"`
+	ConversationID     string    `gorm:"not null;index" json:"conversationId"`
+	MessageID          uint      `gorm:"not null;index;uniqueIndex:idx_reaction_activity_event" json:"-"`
+	ProtocolMessageID  string    `json:"messageId"`
+	ThreadID           string    `json:"threadId,omitempty"`
+	UserID             string    `gorm:"not null;uniqueIndex:idx_reaction_activity_event" json:"userId"`
+	Emoji              string    `gorm:"not null;uniqueIndex:idx_reaction_activity_event" json:"emoji"`
+	Timestamp          time.Time `gorm:"not null;uniqueIndex:idx_reaction_activity_event" json:"timestamp"`
+	Active             bool      `gorm:"not null" json:"-"`
+	Seen               bool      `gorm:"not null" json:"-"`
+	UserName           string    `gorm:"->;-:migration" json:"userName"`
+}
+
+// ReactionActivitySummary is the bounded, provider-neutral conversation preview.
+type ReactionActivitySummary struct {
+	Latest      ReactionActivity `json:"latest"`
+	UnreadCount int              `json:"unreadCount"`
+	ThroughID   uint             `json:"throughId"`
 }
 
 // Reaction represents a reaction to a message.

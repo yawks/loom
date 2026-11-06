@@ -76,7 +76,7 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 	base := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	messages := []models.Message{
 		{ProtocolConvID: conversationID, ProtocolMsgID: "newer-main", IsFromMe: true, Timestamp: base.Add(2 * time.Minute)},
-		{ProtocolConvID: conversationID, ProtocolMsgID: "oldest-reply", ThreadID: &threadID, Timestamp: base},
+		{ProtocolConvID: conversationID, ProtocolMsgID: "oldest-reply", ThreadID: &threadID, IsDeleted: true, Timestamp: base},
 		{ProtocolConvID: conversationID, ProtocolMsgID: "middle-main", Timestamp: base.Add(time.Minute)},
 		{ProtocolConvID: conversationID, ProtocolMsgID: "latest-reply", ThreadID: &threadID, Timestamp: base.Add(3 * time.Minute)},
 		{ProtocolConvID: "other::conversation", ProtocolMsgID: "foreign", ThreadID: &threadID, Timestamp: base.Add(-time.Minute)},
@@ -96,6 +96,9 @@ func TestGetUnreadMessageLocationsOrdersAndResolvesThreads(t *testing.T) {
 	}
 	if locations[0].MessageID != "oldest-reply" || locations[0].ThreadID != threadID {
 		t.Fatalf("oldest location = %+v, want thread reply", locations[0])
+	}
+	if !locations[0].IsDeleted || locations[1].IsDeleted {
+		t.Fatalf("deletion flags not preserved: %+v", locations)
 	}
 	if locations[1].MessageID != "middle-main" || locations[1].ThreadID != "" {
 		t.Fatalf("middle location = %+v, want main message", locations[1])
@@ -182,5 +185,50 @@ func TestGetMessagesForConversationPaginatesMainMessages(t *testing.T) {
 		if message.ProtocolMsgID == "parent-54" && message.ThreadReplyCount != 40 {
 			t.Fatalf("parent thread count = %d, want 40", message.ThreadReplyCount)
 		}
+	}
+}
+
+func TestGetUnreadMessageLocationsWaitsForDatabasePublication(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	message := models.Message{
+		ProtocolConvID: "test::startup", ProtocolMsgID: "deleted-reply",
+		IsDeleted: true, Timestamp: time.Now(),
+	}
+	if err := database.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	previousDB := db.DB
+	db.DB = nil
+	t.Cleanup(func() { db.DB = previousDB })
+	app := &App{databaseReady: make(chan struct{})}
+	type result struct {
+		locations []models.UnreadMessageLocation
+		err       error
+	}
+	results := make(chan result, 1)
+	go func() {
+		locations, err := app.GetUnreadMessageLocations("test::startup", []string{"deleted-reply"})
+		results <- result{locations, err}
+	}()
+	select {
+	case got := <-results:
+		t.Fatalf("returned before database publication: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	db.DB = database
+	close(app.databaseReady)
+	select {
+	case got := <-results:
+		if got.err != nil || len(got.locations) != 1 || !got.locations[0].IsDeleted {
+			t.Fatalf("deleted reply was not resolved after startup: %+v, %v", got.locations, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("unread lookup did not resume after database publication")
 	}
 }

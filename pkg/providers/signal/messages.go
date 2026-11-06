@@ -182,7 +182,7 @@ func (p *Provider) handleChatEvent(evt *events.ChatEvent) bool {
 		ts = evt.Info.ServerTimestamp
 	}
 	if reaction := dm.GetReaction(); reaction != nil {
-		p.emit(core.ReactionEvent{InstanceID: p.instanceID(), ConversationID: conv, MessageID: strconv.FormatUint(reaction.GetTargetSentTimestamp(), 10), UserID: evt.Info.Sender.String(), Emoji: reaction.GetEmoji(), Added: !reaction.GetRemove(), Timestamp: int64(ts)})
+		p.emit(core.ReactionEvent{InstanceID: p.instanceID(), ConversationID: conv, MessageID: strconv.FormatUint(reaction.GetTargetSentTimestamp(), 10), UserID: evt.Info.Sender.String(), Emoji: reaction.GetEmoji(), Added: !reaction.GetRemove(), Timestamp: int64(ts / 1000)})
 		return true
 	}
 	if del := dm.GetDelete(); del != nil {

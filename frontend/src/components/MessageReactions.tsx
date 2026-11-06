@@ -15,6 +15,7 @@ import { normalizeReaction } from "@/lib/reactionUtils";
 import { cn } from "@/lib/utils";
 import { canonicalUserId, sameUserId } from "@/lib/userIdentity";
 import type { models } from "../../wailsjs/go/models";
+import { useReactionHalo } from "@/hooks/useReactionHalo";
 
 // Get display name for a user ID (same logic as in ConversationDetailsView)
 function getDisplayName(
@@ -74,6 +75,7 @@ function getUserAvatarUrl(userId: string, allMessages?: models.Message[]): strin
 }
 
 interface MessageReactionsProps {
+  message?: Pick<models.Message, "protocolConvId" | "protocolMsgId">;
   reactions: models.Reaction[];
   isGroup?: boolean;
   participantNames?: Map<string, string>;
@@ -91,6 +93,7 @@ interface ReactionGroup {
 }
 
 export function MessageReactions({
+  message,
   reactions,
   isGroup: _isGroup,
   participantNames,
@@ -194,7 +197,10 @@ export function MessageReactions({
         );
 
         const button = (
-          <button
+          <ReactionButton
+            conversationId={message?.protocolConvId ?? ""}
+            messageId={message?.protocolMsgId ?? ""}
+            emoji={group.emoji}
             onClick={() => onReactionClick?.(group.emoji)}
             className={cn(
               "inline-flex items-center gap-1 px-2 h-[1.375rem] rounded-md text-[0.55rem] transition-colors",
@@ -204,7 +210,7 @@ export function MessageReactions({
             )}
           >
             {buttonContent}
-          </button>
+          </ReactionButton>
         );
 
         if (group.userIds.length > 0) {
@@ -237,6 +243,27 @@ export function MessageReactions({
         return <div key={group.emoji}>{button}</div>;
       })}
     </div>
+  );
+}
+
+function ReactionButton({ conversationId, messageId, emoji, children, className, onClick }: {
+  conversationId: string;
+  messageId: string;
+  emoji: string;
+  children: React.ReactNode;
+  className?: string;
+  onClick: () => void;
+}) {
+  const { ref, highlighted } = useReactionHalo(conversationId, messageId, emoji);
+  return (
+    <button
+      ref={ref}
+      onClick={onClick}
+      data-new-reaction={highlighted || undefined}
+      className={cn(className, highlighted && "message-reaction--new")}
+    >
+      {children}
+    </button>
   );
 }
 

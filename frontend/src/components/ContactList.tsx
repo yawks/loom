@@ -11,7 +11,7 @@ import { MessageText } from "./MessageText";
 import { NewConversationModal } from "./NewConversationModal";
 import { CommunicationStatsDialog } from "./CommunicationStatsDialog";
 import { HighlightedMessagesInbox } from "./HighlightedMessagesInbox";
-import { cn } from "@/lib/utils";
+import { cn, timeToDate } from "@/lib/utils";
 import { getContactStatusEmoji } from "@/lib/statusEmoji";
 import type { models } from "../../wailsjs/go/models";
 import { useAppStore } from "@/lib/store";
@@ -25,6 +25,7 @@ import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnre
 import { getFirstAttachmentFileName } from "@/lib/messageUtils";
 import { Virtuoso } from "react-virtuoso";
 import { ToastContainer, useToast } from "@/components/ui/toast";
+import { useTrackReactionActivities } from "@/hooks/useReactionActivities";
 
 // Wrapper function to use Wails with React Query's suspense mode
 const fetchMetaContacts = async () => {
@@ -32,6 +33,7 @@ const fetchMetaContacts = async () => {
 };
 
 export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
+  useTrackReactionActivities();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { toasts, showToast, closeToast } = useToast();
@@ -251,7 +253,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   }, [contacts, setMetaContacts]);
 
   // Use shared hook for sorted contacts
-  const { sortedContacts: sortedContactsBase, lastMessages, areLastMessagesFetched } = useSortedContacts(sortBy);
+  const { sortedContacts: sortedContactsBase, lastMessages, areLastMessagesFetched, reactionActivities } = useSortedContacts(sortBy);
 
   // Safety net: ensure all last messages are registered in the message read store
   const registerBatchMessages = useMessageReadStore((state) => state.registerBatchMessages);
@@ -341,11 +343,11 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
         visited.add(conversationId);
         counts[conversationId] = countUnreadMessages(
           readStateByConversation[conversationId]
-        );
+        ) + (reactionActivities[conversationId]?.unreadCount ?? 0);
       });
     });
     return counts;
-  }, [readStateByConversation, selectedProviderFilter, sortedContacts]);
+  }, [readStateByConversation, selectedProviderFilter, sortedContacts, reactionActivities]);
 
   const unreadBadgeCounts = useMemo(() => {
     const counts = emptyUnreadBadgeCounts();
@@ -733,6 +735,16 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                         } else {
                           setMessageSearchTargetId(oldest.messageId);
                         }
+                      } else {
+                        const reaction = reactionActivities[conversationId]?.latest;
+                        if (reaction) {
+                          if (reaction.threadId) {
+                            setSelectedThreadParentMessage(null);
+                            setSelectedThreadId(reaction.threadId);
+                          } else {
+                            setMessageSearchTargetId(reaction.messageId);
+                          }
+                        }
                       }
                     } catch (error) {
                       console.error("Failed to locate oldest unread message:", error);
@@ -870,6 +882,21 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
                       return <TypingIndicator conversationId={typingConversationId} variant="list" />;
                     }
                     const lastMessage = lastMessages[conversationId];
+                    const reaction = reactionActivities[conversationId]?.latest;
+                    if (reaction && (!lastMessage || timeToDate(reaction.timestamp) >= timeToDate(lastMessage.timestamp))) {
+                      const actor = reaction.userName?.trim() || (!isGroup ? contact.displayName : reaction.userId || t("contact"));
+                      return (
+                        <div className={cn(
+                          "contact-list__item-preview mt-0.5 flex h-4 max-h-4 min-w-0 items-baseline gap-1 overflow-hidden whitespace-nowrap text-left text-xs leading-4",
+                          isSelected ? "opacity-75" : "text-sidebar-muted-foreground"
+                        )}>
+                          <span className="max-w-[35%] shrink-0 truncate text-[11px] font-medium" title={actor}>{actor}</span>
+                          <span className="shrink-0">{t("reaction_preview_action")}</span>
+                          <Emoji emoji={reaction.emoji} providerInstanceId={reaction.providerInstanceId} size={12} />
+                          <span className="min-w-0 truncate">{t("reaction_preview_target")}</span>
+                        </div>
+                      );
+                    }
                     const previewText = lastMessage?.body?.trim() ||
                       getFirstAttachmentFileName(lastMessage?.attachments);
                     if (previewText) {

@@ -781,27 +781,28 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 		return 0
 	}
 
-	// Collect the most recent parent messages (non-thread-reply) from the last 14 days.
+	scope := db.ForProvider(db.DB, p.getInstanceId())
+	if !scope.OwnsConversation(convID) {
+		return 0
+	}
+	// A reply can target an older parent even when main history has not moved.
+	// shortcut: inspect ten parents from fourteen days; widen discovery if older threads need polling recovery.
 	var parentRows []struct {
 		ProtocolMsgID string
-		MaxReplyTS    *time.Time
+		MaxReplyTS    string
 	}
 	cutoff := time.Now().AddDate(0, 0, -14)
-	db.DB.Raw(`
-		SELECT m.protocol_msg_id,
-		       MAX(r.timestamp) AS max_reply_ts
-		FROM messages m
-		LEFT JOIN messages r
-		       ON r.protocol_conv_id = m.protocol_conv_id
-		      AND r.thread_id        = m.protocol_msg_id
-		      AND r.protocol_msg_id != m.protocol_msg_id
-		WHERE m.protocol_conv_id = ?
-		  AND (m.thread_id IS NULL OR m.thread_id = '' OR m.thread_id = m.protocol_msg_id)
-		  AND m.timestamp >= ?
-		GROUP BY m.protocol_msg_id
-		ORDER BY m.timestamp DESC
-		LIMIT 10
-	`, convID, cutoff).Scan(&parentRows)
+	if err := scope.MessagesForConversation(convID).
+		Select("messages.protocol_msg_id, COALESCE(MAX(r.timestamp), '') AS max_reply_ts").
+		Joins(`LEFT JOIN messages r ON r.protocol_conv_id = messages.protocol_conv_id
+			AND r.thread_id = messages.protocol_msg_id AND r.protocol_msg_id != messages.protocol_msg_id`).
+		Where("messages.thread_id IS NULL OR messages.thread_id = '' OR messages.thread_id = messages.protocol_msg_id").
+		Where("messages.timestamp >= ?", cutoff).
+		Group("messages.protocol_msg_id").Order("messages.timestamp DESC").Limit(10).
+		Scan(&parentRows).Error; err != nil {
+		p.log("SlackProvider.refreshThreadReplies: failed loading parents for %s: %v\n", convID, err)
+		return 0
+	}
 
 	if len(parentRows) == 0 {
 		return 0
@@ -831,8 +832,8 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 			return 0
 		}
 		var oldest time.Time
-		if row.MaxReplyTS != nil {
-			oldest = *row.MaxReplyTS
+		if row.MaxReplyTS != "" {
+			oldest = time.UnixMilli(db.ParseTimeMillis(row.MaxReplyTS))
 		}
 		replies, err := p.getThreadReplies(actualChannelID, row.ProtocolMsgID, oldest)
 		if err != nil {
@@ -858,8 +859,8 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 	}
 	var existingIDs []string
 	if len(messageIDs) > 0 {
-		db.DB.Model(&models.Message{}).
-			Where("protocol_conv_id = ? AND protocol_msg_id IN ?", convID, messageIDs).
+		scope.MessagesForConversation(convID).
+			Where("protocol_msg_id IN ?", messageIDs).
 			Pluck("protocol_msg_id", &existingIDs)
 	}
 	existing := make(map[string]struct{}, len(existingIDs))

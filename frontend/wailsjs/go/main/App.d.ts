@@ -135,6 +135,8 @@ export function GetProviderQRCode(arg1:string):Promise<string>;
 
 export function GetProviderSchema(arg1:string):Promise<Record<string, any>>;
 
+export function GetReactionActivitySummaries():Promise<Record<string, models.ReactionActivitySummary>>;
+
 export function GetScheduledMessages(arg1:string):Promise<Array<models.ScheduledMessage>>;
 
 export function GetSpeechTranscriptionLocales():Promise<Array<main.SpeechLocale>>;
@@ -151,6 +153,8 @@ export function GetUnreadMessageLocations(arg1:string,arg2:Array<string>):Promis
 
 export function IsSpeechTranscriptionAvailable():Promise<boolean>;
 
+export function IsWindowActive():Promise<boolean>;
+
 export function LeaveGroup(arg1:string):Promise<void>;
 
 export function ListConversationInvitations():Promise<Array<models.ConversationInvitation>>;
@@ -160,6 +164,8 @@ export function MarkConversationAsRead(arg1:string):Promise<void>;
 export function MarkMessageAsPlayed(arg1:string,arg2:string):Promise<void>;
 
 export function MarkMessageAsRead(arg1:string,arg2:string):Promise<void>;
+
+export function MarkReactionActivitiesSeen(arg1:string,arg2:number):Promise<Array<models.ReactionActivity>>;
 
 export function OpenConversation(arg1:models.OpenConversationRequest):Promise<models.ConversationResolution>;
 

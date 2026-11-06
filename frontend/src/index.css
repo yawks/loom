@@ -1,6 +1,25 @@
 @import "tailwindcss";
 @import "highlight.js/styles/atom-one-light.css";
 
+/* New reactions retain a halo until they have been visible in the focused
+   window for a few seconds. Reduced motion keeps the same static outline. */
+.message-reaction--new {
+  outline: 2px solid var(--color-blue-500);
+  outline-offset: 2px;
+  box-shadow: 0 0 8px 3px color-mix(in srgb, var(--color-blue-500) 35%, transparent);
+  animation: reaction-halo 1.6s ease-in-out infinite;
+}
+
+@keyframes reaction-halo {
+  50% {
+    box-shadow: 0 0 12px 5px color-mix(in srgb, var(--color-blue-500) 55%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-reaction--new { animation: none; }
+}
+
 @font-face {
   font-family: "Inter Variable";
   font-style: normal;

@@ -7,6 +7,18 @@ package main
 #cgo LDFLAGS: -framework Cocoa
 #import <Cocoa/Cocoa.h>
 
+int LoomWindowIsActive(void) {
+    __block BOOL active = NO;
+    void (^check)(void) = ^{
+        NSApplication *app = [NSApplication sharedApplication];
+        active = app.isActive && app.keyWindow != nil &&
+                 app.keyWindow.isVisible && !app.keyWindow.isMiniaturized;
+    };
+    if ([NSThread isMainThread]) check();
+    else dispatch_sync(dispatch_get_main_queue(), check);
+    return active;
+}
+
 void SetWindowCornerRadius(double radius) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = [[NSApplication sharedApplication] keyWindow];
@@ -33,4 +45,8 @@ import "C"
 
 func setWindowCornerRadius(radius float64) {
 	C.SetWindowCornerRadius(C.double(radius))
+}
+
+func (a *App) IsWindowActive() bool {
+	return C.LoomWindowIsActive() != 0
 }

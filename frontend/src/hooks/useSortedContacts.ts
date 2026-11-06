@@ -5,11 +5,13 @@ import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useReactionActivities } from "./useReactionActivities";
 
 
 type SortOption = "alphabetical" | "last_message" | "unread" | "highlighted";
 
 export function useSortedContacts(sortBy: SortOption = "last_message") {
+  const reactionActivities = useReactionActivities();
   const metaContacts = useAppStore((state) => state.metaContacts);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const { data: aliases = {} } = useQuery<Record<string, string>, Error>({
@@ -31,7 +33,7 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
 
   // Récupérer tous les timestamps des derniers messages en une seule requête
   // Toujours activé pour que les données soient disponibles immédiatement lors du basculement vers "Récents"
-  const { data: allLastMessageTimestamps = {} } = useQuery<Record<string, any>, Error>({
+  const { data: allLastMessageTimestamps = {} } = useQuery<Record<string, string | number>, Error>({
     queryKey: ["allLastMessageTimestamps"],
     queryFn: async () => {
       try {
@@ -82,8 +84,12 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
         }
       }
     }
+    for (const [conversationId, summary] of Object.entries(reactionActivities)) {
+      const date = timeToDate(summary.latest.timestamp);
+      if (!dates[conversationId] || date > dates[conversationId]) dates[conversationId] = date;
+    }
     return dates;
-  }, [allLastMessageTimestamps]);
+  }, [allLastMessageTimestamps, reactionActivities]);
 
   // Créer un map des derniers messages par conversation ID
   // Utilise les messages récupérés en une seule requête
@@ -149,5 +155,5 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
     return sorted;
   }, [contactsWithAliases, sortBy, lastMessageDates, selectedProviderFilter]);
 
-  return { sortedContacts, lastMessages, areLastMessagesFetched };
+  return { sortedContacts, lastMessages, areLastMessagesFetched, reactionActivities };
 }

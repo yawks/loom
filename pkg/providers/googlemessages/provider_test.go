@@ -13,6 +13,32 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestNewReactionOnOldMessageUsesObservationTime(t *testing.T) {
+	provider := NewProvider()
+	provider.instance = "googlemessages-1"
+	message := models.Message{
+		ProtocolConvID: "googlemessages-1::chat", ProtocolMsgID: "old-message",
+		Timestamp: time.Unix(100, 0), Reactions: []models.Reaction{{UserID: "alice", Emoji: "👍"}},
+	}
+	before := time.Now().Unix()
+	provider.emitReactionChanges(message, nil)
+	select {
+	case raw := <-provider.eventChan:
+		event, ok := raw.(core.ReactionEvent)
+		if !ok || event.Timestamp < before || event.Timestamp > time.Now().Unix() || !event.Added {
+			t.Fatalf("new reaction has wrong activity time: %+v", raw)
+		}
+	default:
+		t.Fatal("missing reaction event")
+	}
+	provider.emitReactionChanges(message, map[string]models.Reaction{"alice\x00👍": message.Reactions[0]})
+	select {
+	case event := <-provider.eventChan:
+		t.Fatalf("unchanged snapshot emitted activity: %+v", event)
+	default:
+	}
+}
+
 func TestToModelMessageUsesDMSenderName(t *testing.T) {
 	provider := NewProvider()
 	provider.instance = "googlemessages-1"

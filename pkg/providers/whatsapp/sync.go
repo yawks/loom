@@ -21,6 +21,7 @@ func (w *WhatsAppProvider) loadLastSyncTimestamp() {
 }
 
 func (w *WhatsAppProvider) loadLastSyncTimestampLocked() {
+	w.reactionCatchUpSince = nil
 	if db.DB == nil {
 		return
 	}
@@ -34,6 +35,8 @@ func (w *WhatsAppProvider) loadLastSyncTimestampLocked() {
 	err := db.DB.Where("instance_id = ?", instanceID).First(&config).Error
 	if err == nil && config.LastSyncAt != nil {
 		w.lastSyncTimestamp = config.LastSyncAt
+		startupTimestamp := *config.LastSyncAt
+		w.reactionCatchUpSince = &startupTimestamp
 		w.hadSyncAtStartup = true
 		w.log("WhatsApp: Loaded last sync timestamp: %s\n", config.LastSyncAt.Format("2006-01-02 15:04:05"))
 	} else {
@@ -497,11 +500,17 @@ func (w *WhatsAppProvider) emitStoredReadThroughOwnMessage(conversationID string
 
 // convertHistoryReactions converts WhatsApp reaction data from history sync to our Reaction model.
 func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction, messageID string) []models.Reaction {
+	converted, _ := w.historyReactionSnapshot(reactions, messageID, "")
+	return converted
+}
+
+func (w *WhatsAppProvider) historyReactionSnapshot(reactions []*waProto.Reaction, messageID, conversationID string) ([]models.Reaction, []core.ReactionEvent) {
 	if len(reactions) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	converted := make([]models.Reaction, 0, len(reactions))
+	rows := make([]models.Reaction, 0, len(reactions))
+	converted := make([]core.ReactionEvent, 0, len(reactions))
 	for _, reaction := range reactions {
 		if reaction == nil {
 			continue
@@ -547,27 +556,22 @@ func (w *WhatsAppProvider) convertHistoryReactions(reactions []*waProto.Reaction
 		// Get emoji text
 		emoji := reaction.GetText()
 
-		// Empty emoji means the reaction was removed - skip it
-		if emoji == "" {
-			w.log("WhatsApp: Reaction with empty emoji (removed), skipping\n")
-			continue
-		}
-
 		// Get timestamp
 		timestampMS := reaction.GetSenderTimestampMS()
 		timestamp := time.Unix(0, timestampMS*int64(time.Millisecond))
 
 		w.log("WhatsApp: Converting history reaction: user=%s, emoji=%s, timestamp=%v\n", userID, emoji, timestamp)
+		if emoji != "" {
+			rows = append(rows, models.Reaction{UserID: userID, Emoji: emoji, CreatedAt: timestamp, UpdatedAt: timestamp})
+		}
 
-		converted = append(converted, models.Reaction{
-			UserID:    userID,
-			Emoji:     emoji,
-			CreatedAt: timestamp,
-			UpdatedAt: timestamp,
+		converted = append(converted, core.ReactionEvent{
+			InstanceID: w.getInstanceId(), ConversationID: conversationID, MessageID: messageID,
+			UserID: userID, Emoji: emoji, Added: emoji != "", Historical: true, Timestamp: timestamp.Unix(),
 		})
 	}
 
-	return converted
+	return rows, converted
 }
 
 // convertMessageStatus converts WhatsApp message status from history sync to MessageReceipt models.

@@ -18,6 +18,8 @@ const (
 	EventTypeMessageBatch EventType = "message_batch"
 	// EventTypeReaction represents a reaction added/removed event.
 	EventTypeReaction EventType = "reaction"
+	// EventTypeReactionBatch contains canonical reactions already persisted together.
+	EventTypeReactionBatch EventType = "reaction_batch"
 	// EventTypeTyping represents a typing indicator event.
 	EventTypeTyping EventType = "typing"
 	// EventTypeContactStatus represents a contact status change event.
@@ -75,6 +77,18 @@ func ValidateProviderEventOwnership(sourceInstanceID string, event ProviderEvent
 		}
 	case ReactionEvent:
 		return validate(e.InstanceID, e.ConversationID)
+	case ReactionBatchEvent:
+		if err := validate(e.InstanceID, e.ConversationID); err != nil {
+			return err
+		}
+		for _, reaction := range e.Reactions {
+			if err := validate(reaction.InstanceID, reaction.ConversationID); err != nil {
+				return err
+			}
+			if reaction.InstanceID != e.InstanceID || reaction.ConversationID != e.ConversationID {
+				return fmt.Errorf("reaction batch contains a different conversation or instance")
+			}
+		}
 	case TypingEvent:
 		return validate(e.InstanceID, e.ConversationID)
 	case ContactStatusEvent:
@@ -133,6 +147,16 @@ func (e MessageBatchEvent) Type() EventType {
 	return EventTypeMessageBatch
 }
 
+// ReactionBatchEvent is emitted after reactions, read receipts and attention
+// activities have been committed atomically by StoreReactionBatch.
+type ReactionBatchEvent struct {
+	InstanceID     string          `json:"instanceId"`
+	ConversationID string          `json:"conversationId"`
+	Reactions      []ReactionEvent `json:"reactions"`
+}
+
+func (e ReactionBatchEvent) Type() EventType { return EventTypeReactionBatch }
+
 // ReactionEvent represents a reaction to a message.
 type ReactionEvent struct {
 	InstanceID     string `json:"instanceId"`
@@ -141,6 +165,7 @@ type ReactionEvent struct {
 	UserID         string `json:"userId"`         // User who reacted
 	Emoji          string `json:"emoji"`          // Emoji reaction (e.g., "👍", "❤️")
 	Added          bool   `json:"added"`          // true if reaction added, false if removed
+	Historical     bool   `json:"historical"`     // imported history must not create new attention
 	Timestamp      int64  `json:"timestamp"`      // Unix timestamp
 }
 

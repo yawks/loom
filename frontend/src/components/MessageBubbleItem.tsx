@@ -382,6 +382,7 @@ export function MessageBubbleItem({
             )}
             {message.reactions && message.reactions.length > 0 && (
               <MessageReactions
+                message={message}
                 reactions={message.reactions}
                 isGroup={isGroupConversation}
                 participantNames={participantNames}

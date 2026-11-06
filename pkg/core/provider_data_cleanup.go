@@ -59,6 +59,11 @@ func deleteProviderData(database *gorm.DB, instanceID string) ([]string, error) 
 		}
 
 		if len(messageIDs) > 0 {
+			if tx.Migrator().HasTable(&models.ReactionActivity{}) {
+				if err := tx.Where("message_id IN ?", messageIDs).Delete(&models.ReactionActivity{}).Error; err != nil {
+					return err
+				}
+			}
 			if tx.Migrator().HasTable(&models.MessageWatchMatch{}) {
 				if err := tx.Unscoped().Where("message_id IN ?", messageIDs).Delete(&models.MessageWatchMatch{}).Error; err != nil {
 					return err

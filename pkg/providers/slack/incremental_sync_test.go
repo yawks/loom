@@ -181,3 +181,116 @@ func TestSlackConversationBootstrapLookbackIsBounded(t *testing.T) {
 		t.Fatalf("bootstrap lookback = %s, want 30 days", slackConversationBootstrapLookback)
 	}
 }
+
+func TestThreadRepliesKeepsFirstReplyOnFilteredAndPaginatedResponses(t *testing.T) {
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.URL.Path {
+		case "/conversations.info":
+			fmt.Fprint(w, `{"ok":true,"channel":{"id":"D123","is_im":true,"user":"U123"}}`)
+		case "/conversations.replies":
+			if r.Form.Get("cursor") == "" {
+				fmt.Fprint(w, `{"ok":true,"messages":[{"ts":"200.000001","thread_ts":"100.000001","text":"first"}],"has_more":true,"response_metadata":{"next_cursor":"page2"}}`)
+			} else {
+				fmt.Fprint(w, `{"ok":true,"messages":[{"ts":"201.000001","thread_ts":"100.000001","text":"second"}],"has_more":false}`)
+			}
+		default:
+			t.Errorf("unexpected API %s", r.URL.Path)
+		}
+	})
+	replies, err := p.getThreadReplies("D123", "100.000001", time.Unix(199, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replies) != 2 || replies[0].ProtocolMsgID != "200.000001" || replies[1].ProtocolMsgID != "201.000001" {
+		t.Fatalf("replies = %#v, want both replies without a parent", replies)
+	}
+}
+
+func TestHistoryFallbackRecoversReplyOlderThanMainCursor(t *testing.T) {
+	previousDB := db.DB
+	t.Cleanup(func() { db.DB = previousDB })
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.DB = database
+	if err := database.AutoMigrate(&models.Message{}, &models.LinkedAccount{}, &models.Conversation{}, &models.MetaContact{}, &models.Reaction{}, &models.MessageReceipt{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec("CREATE INDEX IF NOT EXISTS idx_messages_deleted_conv ON messages(deleted_at, protocol_conv_id)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ContactStore.Load(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	parentTS := fmt.Sprintf("%d.000001", now.Add(-time.Hour).Unix())
+	previousReplyTS := fmt.Sprintf("%d.000001", now.Add(-30*time.Minute).Unix())
+	replyTS := fmt.Sprintf("%d.000001", now.Add(-20*time.Minute).Unix())
+	rows := []models.Message{
+		{ProtocolConvID: "slack-1::U123", ProtocolMsgID: parentTS, Timestamp: now.Add(-time.Hour)},
+		{ProtocolConvID: "slack-1::U123", ProtocolMsgID: previousReplyTS, ThreadID: &parentTS, Timestamp: now.Add(-30 * time.Minute)},
+		{ProtocolConvID: "slack-1::U123", ProtocolMsgID: "latest", Timestamp: now.Add(-5 * time.Minute)},
+		{ProtocolConvID: "slack-2::Uforeign", ProtocolMsgID: "foreign", Body: "untouched", Timestamp: now},
+	}
+	if err := database.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.URL.Path {
+		case "/conversations.open":
+			if r.Form.Get("users") != "U123" {
+				t.Errorf("foreign conversation fetched: %v", r.Form)
+			}
+			fmt.Fprint(w, `{"ok":true,"channel":{"id":"D123"}}`)
+		case "/conversations.history":
+			fmt.Fprint(w, `{"ok":true,"messages":[],"has_more":false}`)
+		case "/conversations.replies":
+			if r.Form.Get("channel") != "D123" {
+				t.Errorf("wrong channel: %v", r.Form)
+			}
+			if r.Form.Get("ts") == parentTS {
+				if r.Form.Get("oldest") == "" {
+					t.Error("missing existing reply cursor")
+				}
+				fmt.Fprintf(w, `{"ok":true,"messages":[{"ts":%q,"thread_ts":%q,"text":"recovered"}],"has_more":false}`, replyTS, parentTS)
+			} else {
+				fmt.Fprint(w, `{"ok":true,"messages":[],"has_more":false}`)
+			}
+		case "/users.info":
+			fmt.Fprint(w, `{"ok":true,"user":{"id":"Uself","name":"self"}}`)
+		default:
+			t.Errorf("unexpected API %s", r.URL.Path)
+			fmt.Fprint(w, `{"ok":false,"error":"unexpected"}`)
+		}
+	})
+	p.dmChannelCache["D123"] = "U123"
+	p.pollKnownConversationHistoryFallback(context.Background(), 0, 100)
+	var stored models.Message
+	if err := database.Where("protocol_msg_id = ?", replyTS).First(&stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ProtocolConvID != "slack-1::U123" {
+		t.Fatalf("wrong conversation: %s", stored.ProtocolConvID)
+	}
+	select {
+	case event := <-p.eventChan:
+		batch, ok := event.(core.MessageBatchEvent)
+		if !ok || !batch.ForceUnread || len(batch.Messages) != 1 || batch.Messages[0].ProtocolMsgID != replyTS {
+			t.Fatalf("unexpected event %#v", event)
+		}
+	default:
+		t.Fatal("missing unread event")
+	}
+	select {
+	case event := <-p.eventChan:
+		t.Fatalf("duplicate event: %#v", event)
+	default:
+	}
+	var foreign models.Message
+	if err := database.First(&foreign, rows[3].ID).Error; err != nil || foreign.Body != "untouched" {
+		t.Fatalf("foreign row changed: %#v %v", foreign, err)
+	}
+}

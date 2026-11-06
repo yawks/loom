@@ -91,6 +91,7 @@ type WhatsAppProvider struct {
 	avatarFailures        map[string]bool                 // Track avatars that failed to load (401 errors) to avoid retrying
 	avatarFailuresMu      sync.RWMutex                    // Mutex for avatarFailures map
 	lastSyncTimestamp     *time.Time                      // Timestamp of last successful sync (loaded from DB)
+	reactionCatchUpSince  *time.Time                      // Startup watermark, unchanged while history chunks advance lastSyncTimestamp
 	hadSyncAtStartup      bool                            // Immutable for this process: separates a fresh import from later startups
 	groupsCacheTimestamp  *time.Time                      // Timestamp when groups were last fetched (to avoid repeated API calls)
 	groupsCache           []models.LinkedAccount          // Cached groups from GetJoinedGroups

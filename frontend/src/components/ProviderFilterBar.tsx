@@ -11,6 +11,7 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import { useTranslation } from "react-i18next";
 import { addUnreadCount, countUnreadMessages, emptyUnreadBadgeCounts, formatUnreadCount, type UnreadBadgeCounts } from "@/lib/unreadBadgeCounts";
 import { getProviderInstanceColorStyle } from "@/lib/providerPresentation";
+import { useReactionActivities } from "@/hooks/useReactionActivities";
 
 interface ProviderFilterBarProps {
   onOpenSettings: () => void;
@@ -32,6 +33,7 @@ function SidebarSyncRing({ sync }: { sync?: ProviderSyncStatus }) {
 export function ProviderFilterBar({
   onOpenSettings,
 }: ProviderFilterBarProps) {
+  const reactionActivities = useReactionActivities();
   const { t } = useTranslation();
   const [configuredProviders, setConfiguredProviders] = useState<
     core.ProviderInfo[]
@@ -67,7 +69,8 @@ export function ProviderFilterBar({
         // conversationId is valid for unread state.
         const conversationId = account.conversationId;
         if (!conversationId || countedConversations.has(conversationId)) return;
-        const unread = countUnreadMessages(readStateByConversation[conversationId]);
+        const unread = countUnreadMessages(readStateByConversation[conversationId]) +
+          (reactionActivities[conversationId]?.unreadCount ?? 0);
         if (unread > 0) {
           countedConversations.add(conversationId);
           const instanceCounts = counts[account.providerInstanceId] ?? emptyUnreadBadgeCounts();
@@ -81,7 +84,7 @@ export function ProviderFilterBar({
       });
     });
     return counts;
-  }, [badgeUntrackedConversationIds, metaContacts, readStateByConversation]);
+  }, [badgeUntrackedConversationIds, metaContacts, readStateByConversation, reactionActivities]);
 
   const loadProviders = async () => {
     try {

@@ -1,4 +1,6 @@
 {
+  "reaction_preview_action": "reacted",
+  "reaction_preview_target": "to your message",
   "office_preview": "Document preview",
   "office_previous": "Previous",
   "office_next": "Next",
