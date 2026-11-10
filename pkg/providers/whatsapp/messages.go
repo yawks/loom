@@ -3137,34 +3137,50 @@ func (w *WhatsAppProvider) updateLinkedAccountName(userID, name string) {
 
 	// Update LinkedAccount in database
 	var account models.LinkedAccount
-	err := db.DB.Where("provider_instance_id = ? AND user_id = ?", instanceID, userID).First(&account).Error
+	err := db.ForProvider(db.DB, instanceID).LinkedAccounts().Where("user_id = ?", userID).First(&account).Error
 	if err == nil {
 		// Account exists, update if name is better (not empty, not just the ID)
 		oldName := account.Username
 		if account.Username == "" || account.Username == userID || (account.Username != name && name != userID) {
 			account.Username = name
 			account.UpdatedAt = time.Now()
-			if err := db.DB.Save(&account).Error; err == nil {
+			// Only update the discovered name. Legacy unlinked accounts may have
+			// meta_contact_id=0; a full Save would rewrite that invalid foreign key
+			// and could also overwrite concurrent presence/contact changes.
+			if err := db.ForProvider(db.DB, instanceID).LinkedAccounts().
+				Where("id = ?", account.ID).
+				Updates(map[string]interface{}{"username": name, "updated_at": account.UpdatedAt}).Error; err == nil {
 				fmt.Printf("WhatsApp: Updated LinkedAccount name for %s: '%s' -> '%s'\n", userID, oldName, name)
 			} else {
 				fmt.Printf("WhatsApp: Failed to update LinkedAccount name for %s: %v\n", userID, err)
 			}
 		}
-	} else {
+	} else if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Account doesn't exist yet, but we have a name - create it
 		// This can happen if a message arrives before the contact is in GetContacts
-		newAccount := models.LinkedAccount{
-			Protocol:           "whatsapp",
-			ProviderInstanceID: instanceID,
-			UserID:             userID,
-			Username:           name,
-			IsGroup:            false,
-			Status:             "offline",
-			CreatedAt:          time.Now(),
-			UpdatedAt:          time.Now(),
-		}
-		if err := db.DB.Create(&newAccount).Error; err == nil {
+		if err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+			// A competing message may have created this account since the read.
+			var existing models.LinkedAccount
+			lookup := db.ForProvider(tx, instanceID).LinkedAccounts().Where("user_id = ?", userID).First(&existing).Error
+			if lookup == nil {
+				return tx.Model(&existing).Updates(map[string]interface{}{"username": name, "updated_at": time.Now()}).Error
+			}
+			if !errors.Is(lookup, gorm.ErrRecordNotFound) {
+				return lookup
+			}
+			meta := models.MetaContact{DisplayName: name}
+			if err := tx.Create(&meta).Error; err != nil {
+				return err
+			}
+			newAccount := models.LinkedAccount{
+				MetaContactID: meta.ID, Protocol: "whatsapp", ProviderInstanceID: instanceID,
+				UserID: userID, Username: name, Status: "offline",
+			}
+			return tx.Create(&newAccount).Error
+		}); err == nil {
 			fmt.Printf("WhatsApp: Created LinkedAccount for %s with name '%s'\n", userID, name)
+		} else {
+			fmt.Printf("WhatsApp: Failed to create LinkedAccount for %s: %v\n", userID, err)
 		}
 	}
 

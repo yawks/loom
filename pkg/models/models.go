@@ -185,18 +185,21 @@ type ConversationInvitation struct {
 // conversation. Patterns are interpreted either literally or with Go's RE2
 // regular-expression engine.
 type MessageWatchRule struct {
-	ID             uint                `gorm:"primarykey" json:"id"`
-	ConversationID uint                `gorm:"not null;index" json:"conversationId"`
-	Pattern        string              `gorm:"not null" json:"pattern"`
-	IsRegex        bool                `gorm:"not null;default:false" json:"isRegex"`
-	Matches        []MessageWatchMatch `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"-"`
-	CreatedAt      time.Time           `json:"createdAt"`
-	UpdatedAt      time.Time           `json:"updatedAt"`
+	// Progress is persisted so attention reads only evaluate newly inserted messages.
+	LastScannedMessageID uint                `gorm:"not null;default:0" json:"-"`
+	DeletedAt            gorm.DeletedAt      `gorm:"index" json:"-"`
+	ID                   uint                `gorm:"primarykey" json:"id"`
+	ConversationID       uint                `gorm:"not null;index" json:"conversationId"`
+	Pattern              string              `gorm:"not null" json:"pattern"`
+	IsRegex              bool                `gorm:"not null;default:false" json:"isRegex"`
+	Matches              []MessageWatchMatch `gorm:"foreignKey:RuleID;constraint:OnDelete:CASCADE" json:"-"`
+	CreatedAt            time.Time           `json:"createdAt"`
+	UpdatedAt            time.Time           `json:"updatedAt"`
 }
 
 // MessageWatchMatch records why a message appears in the attention inbox.
-// Keeping this relation separate from HighlightReasons makes rule edits and
-// deletion independent from canonical reasons such as direct mentions.
+// Matches are durable: editing or soft-deleting a rule does not revoke earlier
+// highlights. Hard conversation/provider cleanup still removes them.
 type MessageWatchMatch struct {
 	ID        uint             `gorm:"primarykey" json:"id"`
 	RuleID    uint             `gorm:"not null;uniqueIndex:idx_watch_rule_message" json:"ruleId"`

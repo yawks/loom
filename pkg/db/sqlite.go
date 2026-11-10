@@ -211,6 +211,8 @@ func ensureIndices(db *gorm.DB) error {
 		{"idx_conversations_linked_account_id", "conversations", "linked_account_id"},
 		{"idx_conversations_protocol_conv_id", "conversations", "protocol_conv_id"},
 		{"idx_messages_protocol_conv_id_ts", "messages", "protocol_conv_id, timestamp"},
+		{"idx_messages_conversation_id_id", "messages", "conversation_id, id"},
+		{"idx_messages_highlight_reasons", "messages", "highlight_reasons, id"},
 		{"idx_messages_timestamp", "messages", "timestamp"},
 		{"idx_reactions_message_id", "reactions", "message_id"},
 		// LID canonicalization filters reactions by author before restricting them

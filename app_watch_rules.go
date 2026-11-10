@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GetMessageWatchRules returns the local watch rules for a canonical
@@ -46,10 +48,13 @@ func (a *App) CreateMessageWatchRule(conversationID, pattern string, isRegex boo
 		rule = attemptRule
 		return nil
 	})
+	if err == nil {
+		err = reconcileAllWatchRules(db.DB)
+	}
 	return rule, err
 }
 
-// UpdateMessageWatchRule replaces a rule and recalculates all of its matches.
+// UpdateMessageWatchRule backfills the new pattern without revoking old matches.
 func (a *App) UpdateMessageWatchRule(ruleID uint, pattern string, isRegex bool) (models.MessageWatchRule, error) {
 	pattern = strings.TrimSpace(pattern)
 	if err := validateWatchPattern(pattern, isRegex); err != nil {
@@ -62,6 +67,7 @@ func (a *App) UpdateMessageWatchRule(ruleID uint, pattern string, isRegex bool) 
 			return err
 		}
 		attemptRule.Pattern, attemptRule.IsRegex = pattern, isRegex
+		attemptRule.LastScannedMessageID = 0
 		if err := tx.Save(&attemptRule).Error; err != nil {
 			return err
 		}
@@ -71,15 +77,15 @@ func (a *App) UpdateMessageWatchRule(ruleID uint, pattern string, isRegex bool) 
 		rule = attemptRule
 		return nil
 	})
+	if err == nil {
+		err = reconcileAllWatchRules(db.DB)
+	}
 	return rule, err
 }
 
-// DeleteMessageWatchRule removes a rule and its materialized matches.
+// DeleteMessageWatchRule disables future matching, preserving existing highlights.
 func (a *App) DeleteMessageWatchRule(ruleID uint) error {
 	return db.Transaction(db.DB, func(tx *gorm.DB) error {
-		if err := tx.Where("rule_id = ?", ruleID).Delete(&models.MessageWatchMatch{}).Error; err != nil {
-			return err
-		}
 		result := tx.Delete(&models.MessageWatchRule{}, ruleID)
 		if result.Error != nil {
 			return result.Error
@@ -172,26 +178,33 @@ func reconcileWatchRule(tx *gorm.DB, rule models.MessageWatchRule) error {
 	if err != nil {
 		return err
 	}
-	if err := tx.Where("rule_id = ?", rule.ID).Delete(&models.MessageWatchMatch{}).Error; err != nil {
-		return err
-	}
 	var messages []models.Message
-	if err := tx.Where("conversation_id = ? AND deleted_at IS NULL AND is_deleted = ?", rule.ConversationID, false).Find(&messages).Error; err != nil {
+	if err := tx.Where("conversation_id = ? AND id > ?", rule.ConversationID, rule.LastScannedMessageID).Order("id ASC").Limit(500).Find(&messages).Error; err != nil {
 		return err
 	}
 	matches := make([]models.MessageWatchMatch, 0)
 	for _, message := range messages {
-		if matcher(messageWatchText(message)) {
+		if !message.IsDeleted && matcher(messageWatchText(message)) {
 			matches = append(matches, models.MessageWatchMatch{RuleID: rule.ID, MessageID: message.ID})
 		}
 	}
-	if len(matches) == 0 {
+	if len(matches) > 0 {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&matches, 100).Error; err != nil {
+			return err
+		}
+	}
+	if len(messages) == 0 {
 		return nil
 	}
-	return tx.Create(&matches).Error
+	return tx.Model(&models.MessageWatchRule{}).Where("id = ?", rule.ID).
+		UpdateColumn("last_scanned_message_id", messages[len(messages)-1].ID).Error
 }
 
+var watchReconcileMu sync.Mutex
+
 func reconcileAllWatchRules(database *gorm.DB) error {
+	watchReconcileMu.Lock()
+	defer watchReconcileMu.Unlock()
 	if database == nil {
 		return nil
 	}
@@ -202,14 +215,37 @@ func reconcileAllWatchRules(database *gorm.DB) error {
 	if err := database.Find(&rules).Error; err != nil {
 		return err
 	}
-	return db.Transaction(database, func(tx *gorm.DB) error {
-		for _, rule := range rules {
-			if err := reconcileWatchRule(tx, rule); err != nil {
+	for _, rule := range rules {
+		for {
+			// Do not acquire a writer connection at all when there is no new work.
+			var pending []uint
+			if err := database.Model(&models.Message{}).Where("conversation_id = ? AND id > ?", rule.ConversationID, rule.LastScannedMessageID).Limit(1).Pluck("id", &pending).Error; err != nil {
+				return err
+			}
+			if len(pending) == 0 {
+				break
+			}
+			if err := db.Transaction(database, func(tx *gorm.DB) error {
+				var current models.MessageWatchRule
+				if err := tx.First(&current, rule.ID).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return nil
+					}
+					return err
+				}
+				return reconcileWatchRule(tx, current)
+			}); err != nil {
+				return err
+			}
+			if err := database.First(&rule, rule.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					break
+				}
 				return err
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func highlightedMessagesWhere(database *gorm.DB) (string, []any) {
@@ -218,7 +254,12 @@ func highlightedMessagesWhere(database *gorm.DB) (string, []any) {
 	if database == nil || !database.Migrator().HasTable(&models.MessageWatchMatch{}) {
 		return canonical, args
 	}
-	return `deleted_at IS NULL AND is_deleted = ? AND ((highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)) OR EXISTS (SELECT 1 FROM message_watch_matches WHERE message_watch_matches.message_id = messages.id))`, args
+	// Build the small candidate set first instead of probing matches for every
+	// message in the database on each attention-inbox refresh.
+	return `deleted_at IS NULL AND is_deleted = ? AND id IN (
+		SELECT id FROM messages WHERE highlight_reasons IS NOT NULL AND highlight_reasons NOT IN (?, ?, ?)
+		UNION SELECT message_id FROM message_watch_matches
+	)`, args
 }
 
 func deleteConversationWatchData(database *gorm.DB, conversationID string) error {
@@ -230,7 +271,7 @@ func deleteConversationWatchData(database *gorm.DB, conversationID string) error
 		return err
 	}
 	var ruleIDs []uint
-	if err := database.Model(&models.MessageWatchRule{}).Where("conversation_id = ?", conversation.ID).Pluck("id", &ruleIDs).Error; err != nil {
+	if err := database.Unscoped().Model(&models.MessageWatchRule{}).Where("conversation_id = ?", conversation.ID).Pluck("id", &ruleIDs).Error; err != nil {
 		return err
 	}
 	return db.Transaction(database, func(tx *gorm.DB) error {
@@ -239,6 +280,6 @@ func deleteConversationWatchData(database *gorm.DB, conversationID string) error
 				return err
 			}
 		}
-		return tx.Where("conversation_id = ?", conversation.ID).Delete(&models.MessageWatchRule{}).Error
+		return tx.Unscoped().Where("conversation_id = ?", conversation.ID).Delete(&models.MessageWatchRule{}).Error
 	})
 }

@@ -194,14 +194,21 @@ func (w *WhatsAppProvider) updateLinkedAccountExtra(userID string, extraData Wha
 		return nil
 	}
 
+	instanceID := w.getInstanceId()
+	if instanceID == "" {
+		return fmt.Errorf("missing provider instance ID")
+	}
 	var account models.LinkedAccount
-	err := db.DB.Where(
-		"protocol = ? AND provider_instance_id = ? AND user_id = ?",
-		"whatsapp", w.getInstanceId(), userID,
+	err := db.ForProvider(db.DB, instanceID).LinkedAccounts().Where(
+		"protocol = ? AND user_id = ?",
+		"whatsapp", userID,
 	).First(&account).Error
 	if err != nil {
 		// Account doesn't exist yet, that's okay
-		return nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to load LinkedAccount extra: %w", err)
 	}
 
 	// Parse existing extra data if present
@@ -232,8 +239,11 @@ func (w *WhatsAppProvider) updateLinkedAccountExtra(userID string, extraData Wha
 	if err != nil {
 		return fmt.Errorf("failed to marshal extra data: %w", err)
 	}
+	if string(extraJSON) == account.Extra {
+		return nil
+	}
 
-	if err := db.DB.Model(&account).Update("extra", string(extraJSON)).Error; err != nil {
+	if err := db.ForProvider(db.DB, instanceID).LinkedAccounts().Where("id = ?", account.ID).Update("extra", string(extraJSON)).Error; err != nil {
 		return fmt.Errorf("failed to update LinkedAccount extra: %w", err)
 	}
 
