@@ -1,18 +1,12 @@
 import { Check, ChevronDown, ChevronUp, Copy } from "lucide-react";
-import { Children, cloneElement, isValidElement, memo, type ReactElement, type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Children, isValidElement, memo, type ReactElement, type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { codeBlockLines, nodeText } from "../lib/codeBlockLines";
 
 const MAX_HEIGHT_PX = 480;
 
 interface CodeBlockProps {
   children: React.ReactNode;
-}
-
-function nodeText(node: ReactNode): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(nodeText).join("");
-  if (isValidElement<{ children?: ReactNode }>(node)) return nodeText(node.props.children);
-  return "";
 }
 
 type CodeElement = ReactElement<{ className?: string; children?: ReactNode }>;
@@ -28,28 +22,6 @@ function findCodeElement(node: ReactNode): CodeElement | undefined {
   return undefined;
 }
 
-function appendSplitNode(lines: ReactNode[][], node: ReactNode): void {
-  if (typeof node === "string" || typeof node === "number") {
-    String(node).split("\n").forEach((part, index) => {
-      if (index > 0) lines.push([]);
-      if (part) lines[lines.length - 1].push(part);
-    });
-    return;
-  }
-  if (Array.isArray(node)) {
-    node.forEach((child) => appendSplitNode(lines, child));
-    return;
-  }
-  if (!isValidElement<{ children?: ReactNode }>(node)) return;
-
-  const childLines: ReactNode[][] = [[]];
-  Children.forEach(node.props.children, (child) => appendSplitNode(childLines, child));
-  childLines.forEach((line, index) => {
-    if (index > 0) lines.push([]);
-    lines[lines.length - 1].push(cloneElement(node as ReactElement<{ children?: ReactNode }>, { key: index }, line));
-  });
-}
-
 export const CodeBlock = memo(function CodeBlock({ children }: CodeBlockProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [isTall, setIsTall] = useState(false);
@@ -57,11 +29,7 @@ export const CodeBlock = memo(function CodeBlock({ children }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const codeElement = findCodeElement(children);
   const codeText = useMemo(() => nodeText(codeElement?.props.children ?? children).replace(/\n$/, ""), [children, codeElement]);
-  const codeLines = useMemo(() => {
-    const lines: ReactNode[][] = [[]];
-    Children.forEach(codeElement?.props.children ?? children, (child) => appendSplitNode(lines, child));
-    return lines;
-  }, [children, codeElement]);
+  const codeLines = useMemo(() => codeBlockLines(codeElement?.props.children ?? children), [children, codeElement]);
 
   useLayoutEffect(() => {
     if (wrapperRef.current) {

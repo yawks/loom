@@ -1194,7 +1194,7 @@ export function MessageAttachments({
       <div className="mt-2 space-y-2">
         {parsedAttachments.map((attachment, index) => {
 		  if (isStructuredAdaptiveCardAttachment(attachment) && attachment.cardJson) {
-			return <StructuredAdaptiveCard key={`adaptive-card-${index}`} cardJson={attachment.cardJson} />;
+			return <StructuredAdaptiveCard key={`adaptive-card-${index}`} cardJson={attachment.cardJson} title={attachment.fileName} icon={attachment.thumbnail} />;
 		  }
 		  if (isStructuredEventCardAttachment(attachment) && attachment.cardJson) {
 			return <StructuredEventCard key={`event-card-${index}`} cardJson={attachment.cardJson} providerInstanceId={providerInstanceId} />;

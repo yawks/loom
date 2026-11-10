@@ -556,6 +556,9 @@ type Attachment struct {
 	ContactName   string     `json:"contactName,omitempty"`
 	ContactPhones []string   `json:"contactPhones,omitempty"`
 	CardJSON      string     `json:"cardJson,omitempty"` // Structured provider card payload (e.g. Teams Adaptive Card)
+	// Supplementary cards accompany independent message text. Other structured
+	// cards use Body as their searchable fallback, which should not render twice.
+	IsSupplementary bool `json:"isSupplementary,omitempty"`
 }
 
 // ProviderConfiguration stores the configuration of a provider instance.

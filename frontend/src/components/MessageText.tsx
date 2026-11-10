@@ -193,6 +193,13 @@ function buildComponents(isFromMe: boolean, preview: boolean, isInline: boolean,
     },
     strong: ({ ...props }) => <strong className="font-bold" {...props} />,
     em: ({ ...props }) => <em className="italic" {...props} />,
+    h1: ({ ...props }) => <h1 className="my-1 text-xl font-semibold" {...props} />,
+    h2: ({ ...props }) => <h2 className="my-1 text-lg font-semibold" {...props} />,
+    h3: ({ ...props }) => <h3 className="my-1 text-base font-semibold" {...props} />,
+    h4: ({ ...props }) => <h4 className="my-1 font-semibold" {...props} />,
+    h5: ({ ...props }) => <h5 className="my-1 font-semibold" {...props} />,
+    h6: ({ ...props }) => <h6 className="my-1 font-semibold" {...props} />,
+    hr: ({ ...props }) => <hr className="my-2 border-current/20" {...props} />,
     pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
     code: ({ className, children, ...props }) => {
       const isBlock = className?.includes("hljs");

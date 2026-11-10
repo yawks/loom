@@ -29,6 +29,44 @@ func teamsCardsToMarkdown(properties map[string]any) string {
 	return uniqueTeamsCardLines(lines)
 }
 
+// Property cards are used by message extensions and link unfurls, not just by
+// standalone bot messages. Keep their structure instead of flattening columns
+// and action labels into unrelated Markdown paragraphs.
+func teamsStructuredPropertyCards(properties map[string]any) ([]models.Attachment, string) {
+	var value any
+	for key, raw := range properties {
+		if strings.EqualFold(key, "cards") {
+			value = decodeTeamsCardJSON(raw)
+			break
+		}
+	}
+	entries, ok := value.([]any)
+	if !ok && value != nil {
+		entries = []any{value}
+	}
+	var attachments []models.Attachment
+	var fallback []string
+	for _, entry := range entries {
+		wrapper, _ := decodeTeamsCardJSON(entry).(map[string]any)
+		content, _ := decodeTeamsCardJSON(wrapper["content"]).(map[string]any)
+		if !strings.EqualFold(cardString(wrapper, "contentType"), "application/vnd.microsoft.card.adaptive") ||
+			!strings.EqualFold(cardString(content, "type"), "AdaptiveCard") {
+			fallback = append(fallback, renderTeamsCardValue(entry)...)
+			continue
+		}
+		encoded, err := json.Marshal(content)
+		if err != nil {
+			fallback = append(fallback, renderTeamsCardValue(entry)...)
+			continue
+		}
+		attachments = append(attachments, models.Attachment{
+			Type: "adaptive_card", MimeType: "application/vnd.microsoft.card.adaptive",
+			CardJSON: string(encoded), FileName: cardString(wrapper, "appName"), Thumbnail: cardString(wrapper, "appIcon"),
+		})
+	}
+	return attachments, uniqueTeamsCardLines(fallback)
+}
+
 func teamsAudioCardAttachments(properties map[string]any) []models.Attachment {
 	cards, _ := decodeTeamsCardJSON(properties["cards"]).([]any)
 	var attachments []models.Attachment

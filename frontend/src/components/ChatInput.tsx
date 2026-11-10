@@ -1455,6 +1455,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
                 autoCorrect="off"
                 autoComplete="off"
                 spellCheck="false"
+                {...{ writingsuggestions: "false" }}
               />
             )}
           </div>

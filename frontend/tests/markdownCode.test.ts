@@ -42,3 +42,21 @@ test("legacy escaped outer fences recover one block with nested fences preserved
   const literalExample = `~~~~\n${escapedFence}\ncode\n${escapedFence}\n~~~~`;
   assert.equal(repairLegacyCodeFences(literalExample), literalExample);
 });
+
+test("legacy escaped commands recover filenames and remote targets without link markup", () => {
+  const fence = "\\`".repeat(3);
+  const command = "./build.sh --all --upload almalinux@www2.vicinorum-priv.com:./dist";
+  const linked = "./[build.sh](http://build.sh) --all --upload [almalinux@www2.vicinorum-priv.com](mailto:almalinux@www2.vicinorum-priv.com):./dist";
+  const repaired = repairLegacyCodeFences(`${fence}  \n${linked}  \n${fence}`);
+  assert.equal(repaired, `~~~\n${command}  \n~~~`);
+  const html = render(repaired);
+  assert.ok(html.includes(command));
+  assert.ok(!html.includes("<a "));
+  assert.ok(!html.includes("[build.sh]"));
+  assert.equal(repairLegacyCodeFences(repaired), repaired);
+  for (const text of [linked, `\`${linked}\``, `~~~\n${linked}\n~~~`]) {
+    assert.equal(repairLegacyCodeFences(text), text);
+  }
+  const example = "[documentation](https://example.com)";
+  assert.equal(repairLegacyCodeFences(`${fence}\n${example}\n${fence}`), `~~~\n${example}\n~~~`);
+});

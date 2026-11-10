@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mau.fi/mautrix-teams/pkg/msteams"
@@ -508,19 +509,26 @@ func (p *Provider) enrichReplyMetadata(messages []models.Message) {
 	}
 }
 
-func (p *Provider) repairStoredHTMLFormatting() (map[string][]models.Message, error) {
+func (p *Provider) repairStoredHTMLFormatting(client *msteams.Client) (map[string][]models.Message, error) {
 	repaired := make(map[string][]models.Message)
 	if db.DB == nil {
 		return repaired, nil
 	}
+	if strings.TrimSpace(p.instance) == "" {
+		return nil, fmt.Errorf("%s: empty provider instance for formatting repair", providerID)
+	}
 	var stored []models.Message
-	if err := db.DB.Where(
-		"protocol_conv_id LIKE ? AND (body LIKE '%<%' OR body LIKE ? OR body LIKE ?)",
-		p.instance+"::%", `%\|%`, `%| --- %`,
+	if err := db.ForProvider(db.DB, p.instance).Messages().Where(
+		"(body LIKE '%<%' OR body LIKE ? OR body LIKE ? OR body LIKE ?)",
+		`%\|%`, `%| --- %`, "%\n\n%",
 	).Find(&stored).Error; err != nil {
 		return nil, fmt.Errorf("%s: find stored formatted messages: %w", providerID, err)
 	}
-	converted := make([]bool, len(stored))
+	// Old conversions counted both <br> and the following source CRLF. The
+	// resulting Markdown has lost the distinction between source whitespace
+	// and intentional blank lines, so recover it from Teams, never by halving
+	// or collapsing all local newline runs.
+	converted := p.repairStoredLineBreaks(client, stored)
 	for index := range stored {
 		message := &stored[index]
 		rawBody := message.Body
@@ -535,28 +543,88 @@ func (p *Provider) repairStoredHTMLFormatting() (map[string][]models.Message, er
 		} else {
 			message.Body = normalizeTeamsEscapedTable(rawBody)
 		}
-		converted[index] = message.Body != rawBody
+		converted[index] = converted[index] || message.Body != rawBody
 	}
 	p.enrichReplyMetadata(stored)
+	err := db.Transaction(db.DB, func(tx *gorm.DB) error {
+		for index := range stored {
+			if !converted[index] {
+				continue
+			}
+			message := &stored[index]
+			if err := db.ForProvider(tx, p.instance).Messages().Where("id = ?", message.ID).Updates(map[string]any{
+				"body":               message.Body,
+				"thread_id":          message.ThreadID,
+				"quoted_message_id":  message.QuotedMessageID,
+				"quoted_sender_id":   message.QuotedSenderID,
+				"quoted_sender_name": message.QuotedSenderName,
+				"quoted_body":        message.QuotedBody,
+			}).Error; err != nil {
+				return fmt.Errorf("%s: repair stored formatted message: %w", providerID, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	for index := range stored {
 		if !converted[index] {
 			continue
 		}
 		message := &stored[index]
-		if err := db.DB.Model(&models.Message{}).Where("id = ?", message.ID).Updates(map[string]any{
-			"body":               message.Body,
-			"thread_id":          message.ThreadID,
-			"quoted_message_id":  message.QuotedMessageID,
-			"quoted_sender_id":   message.QuotedSenderID,
-			"quoted_sender_name": message.QuotedSenderName,
-			"quoted_body":        message.QuotedBody,
-		}).Error; err != nil {
-			return nil, fmt.Errorf("%s: repair stored formatted message: %w", providerID, err)
-		}
 		rawConversationID := core.StripConvID(message.ProtocolConvID)
 		repaired[rawConversationID] = append(repaired[rawConversationID], *message)
 	}
 	return repaired, nil
+}
+
+func (p *Provider) repairStoredLineBreaks(client *msteams.Client, stored []models.Message) []bool {
+	converted := make([]bool, len(stored))
+	if client == nil {
+		return converted
+	}
+	// Bound both concurrency and the total synchronization delay. Failed reads
+	// leave the original body intact and can be retried on the next sync.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	jobs := make(chan int, 50)
+	for index, message := range stored {
+		if len(jobs) == cap(jobs) {
+			break
+		}
+		if !message.IsDeleted && looksLikeLegacyDoubledLineBreaks(message.Body) {
+			jobs <- index
+		}
+	}
+	close(jobs)
+	var workers sync.WaitGroup
+	workerCount := min(4, len(jobs))
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				message := &stored[index]
+				remote, err := client.FetchMessage(ctx, core.StripConvID(message.ProtocolConvID), message.ProtocolMsgID)
+				if err != nil || remote == nil || !(strings.EqualFold(remote.ContentType, "html") || looksLikeTeamsHTML(remote.Content)) {
+					continue
+				}
+				body := teamsHTMLToMarkdown(msteams.StripAMSAttachments(msteams.StripReplyBlockquote(remote.Content)))
+				// Do not replace a locally edited or otherwise divergent message.
+				// Repairs may only change whitespace, not its textual content.
+				if body != message.Body && strings.Join(strings.Fields(body), " ") == strings.Join(strings.Fields(message.Body), " ") {
+					message.Body = body
+					converted[index] = true
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	return converted
 }
 
 // repairStoredCards revisits messages saved before card rendering was

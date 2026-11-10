@@ -39,11 +39,17 @@ func teamsHTMLToMarkdown(input string) string {
 	input = msteams.ReplaceInlineEmojis(input)
 	input = normalizeTeamsMarkdown(input)
 	canonicalTable := teamsMarkdownTableSeparator.MatchString(input)
+	htmlSource := looksLikeTeamsHTML(input) && !canonicalTable
 	root, err := html.Parse(strings.NewReader("<body>" + input + "</body>"))
 	if err != nil {
 		return input
 	}
 	out := &strings.Builder{}
+	blockBoundary := func() {
+		if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") {
+			out.WriteByte('\n')
+		}
+	}
 	var render func(*html.Node)
 	render = func(node *html.Node) {
 		if node.Type == html.TextNode {
@@ -52,7 +58,20 @@ func teamsHTMLToMarkdown(input string) string {
 				(teamsHTMLBlockElement(node.PrevSibling) || teamsHTMLBlockElement(node.NextSibling)) {
 				return
 			}
-			out.WriteString(node.Data)
+			text := node.Data
+			if htmlSource && strings.ContainsAny(text, "\r\n") {
+				// Source newlines collapse to spaces in HTML; only <br> and block
+				// boundaries introduce visible line breaks. Do not apply this to
+				// already-canonical Markdown or preformatted code.
+				text = teamsHTMLSourceWhitespace.ReplaceAllString(text, " ")
+				if teamsHTMLLineBoundary(node.PrevSibling) {
+					text = strings.TrimLeft(text, " ")
+				}
+				if teamsHTMLBlockElement(node.NextSibling) {
+					text = strings.TrimRight(text, " ")
+				}
+			}
+			out.WriteString(text)
 			return
 		}
 		tag := strings.ToLower(node.Data)
@@ -60,9 +79,37 @@ func teamsHTMLToMarkdown(input string) string {
 			return
 		}
 		if tag == "table" {
-			out.WriteString(tableToMarkdown(node))
-			out.WriteByte('\n')
+			blockBoundary()
+			table := tableToMarkdown(node, func(cell *html.Node) string {
+				previousOut := out
+				out = &strings.Builder{}
+				for child := cell.FirstChild; child != nil; child = child.NextSibling {
+					render(child)
+				}
+				value := strings.TrimSpace(out.String())
+				out = previousOut
+				return strings.ReplaceAll(value, "\n", "<br>")
+			})
+			out.WriteString(table)
+			// GFM otherwise treats the following prose (e.g. "Lecture") as
+			// another table row, even when it contains no pipe at all.
+			out.WriteString("\n\n")
 			return
+		}
+		if tag == "hr" {
+			blockBoundary()
+			// Blank lines prevent a rule from becoming a setext heading or
+			// being swallowed by the preceding list.
+			if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n\n") {
+				out.WriteByte('\n')
+			}
+			out.WriteString("---\n\n")
+			return
+		}
+		heading := len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6'
+		if heading {
+			blockBoundary()
+			out.WriteString(strings.Repeat("#", int(tag[1]-'0')) + " ")
 		}
 		if tag == "pre" {
 			// A Teams CodeBlockEditor stores syntax colouring in nested spans.
@@ -158,7 +205,15 @@ func teamsHTMLToMarkdown(input string) string {
 		case "code":
 			out.WriteByte('`')
 		case "p", "div", "li":
-			out.WriteByte('\n')
+			// A trailing <br> already supplies the boundary. Likewise, a
+			// wrapper around blocks must not add another visible blank line.
+			last := node.LastChild
+			for last != nil && last.Type == html.TextNode && strings.TrimSpace(last.Data) == "" {
+				last = last.PrevSibling
+			}
+			if !teamsHTMLLineBoundary(last) {
+				out.WriteByte('\n')
+			}
 		case "a":
 			if href := htmlAttribute(node, "href"); href != "" {
 				out.WriteString("](")
@@ -169,6 +224,9 @@ func teamsHTMLToMarkdown(input string) string {
 		if style != "" {
 			out.WriteString("</loom-style>")
 		}
+		if heading {
+			out.WriteByte('\n')
+		}
 	}
 	render(root)
 	normalized := strings.TrimSpace(strings.ReplaceAll(out.String(), "\u00a0", " "))
@@ -178,6 +236,32 @@ func teamsHTMLToMarkdown(input string) string {
 		return repaired
 	}
 	return normalized
+}
+
+var teamsHTMLSourceWhitespace = regexp.MustCompile(`[ \t\r\n]+`)
+
+var legacyTeamsNewlineRun = regexp.MustCompile(`\n(?:[ \t]*\n)+`)
+
+// This is only a candidate detector for re-reading the authoritative HTML.
+// Never collapse canonical Markdown based on this heuristic alone.
+func looksLikeLegacyDoubledLineBreaks(body string) bool {
+	if looksLikeTeamsHTML(body) || strings.Contains(body, "```") || strings.Contains(body, "~~~") {
+		return false
+	}
+	runs := legacyTeamsNewlineRun.FindAllString(body, -1)
+	if len(runs) < 3 {
+		return false
+	}
+	for _, run := range runs {
+		if strings.Count(run, "\n") >= 4 {
+			return true
+		}
+	}
+	return false
+}
+
+func teamsHTMLLineBoundary(node *html.Node) bool {
+	return teamsHTMLBlockElement(node) || (node != nil && node.Type == html.ElementNode && node.Data == "br")
 }
 
 func teamsHTMLBlockElement(node *html.Node) bool {
@@ -318,6 +402,25 @@ func normalizeTeamsEscapedTable(input string) string {
 		return input
 	}
 	lines := strings.Split(strings.ReplaceAll(input, "\r\n", "\n"), "\n")
+	// Legacy conversions omitted the boundary before an HTML table, gluing
+	// its pipe-prefixed header to the preceding prose. Only split when the
+	// following separator confirms a complete header of the expected width.
+	for index := 1; index < len(lines); index++ {
+		if !teamsMarkdownTableSeparator.MatchString(lines[index]) {
+			continue
+		}
+		header := lines[index-1]
+		pipe := strings.IndexByte(header, '|')
+		if pipe <= 0 || strings.TrimSpace(header[:pipe]) == "" || strings.HasPrefix(strings.TrimSpace(header), `\|`) ||
+			!strings.HasSuffix(strings.TrimSpace(header), "|") ||
+			len(markdownTableCells(header[pipe:])) != len(markdownTableCells(lines[index])) {
+			continue
+		}
+		prefix := strings.TrimRight(header[:pipe], " \t")
+		lines[index-1] = header[pipe:]
+		lines = append(lines[:index-1], append([]string{prefix}, lines[index-1:]...)...)
+		index++
+	}
 	separatorIndex := -1
 	for index, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -327,7 +430,12 @@ func normalizeTeamsEscapedTable(input string) string {
 		if !strings.HasPrefix(trimmed, `\|`) && !strings.HasPrefix(trimmed, "|") {
 			continue
 		}
-		line = strings.ReplaceAll(line, `\|`, "|")
+		// A leading escaped pipe identifies a pasted/escaped table row.
+		// Native canonical rows may contain escaped literal pipes inside
+		// cells: unescaping those would silently introduce extra columns.
+		if strings.HasPrefix(trimmed, `\|`) {
+			line = strings.ReplaceAll(line, `\|`, "|")
+		}
 		line = strings.TrimSuffix(strings.TrimRight(line, " \t"), `\`)
 		trimmed = strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "|") && !strings.HasSuffix(trimmed, "|") {
@@ -614,7 +722,7 @@ func htmlFontSize(value string) string {
 	return fmt.Sprintf("%dpx", []int{10, 13, 16, 18, 24, 32, 48}[n-1])
 }
 
-func tableToMarkdown(table *html.Node) string {
+func tableToMarkdown(table *html.Node, renderCell func(*html.Node) string) string {
 	rows := make([][]string, 0)
 	var walkRows func(*html.Node)
 	walkRows = func(node *html.Node) {
@@ -623,7 +731,7 @@ func tableToMarkdown(table *html.Node) string {
 			for child := node.FirstChild; child != nil; child = child.NextSibling {
 				if child.Type == html.ElementNode &&
 					(strings.EqualFold(child.Data, "th") || strings.EqualFold(child.Data, "td")) {
-					value := strings.ReplaceAll(strings.TrimSpace(tableCellText(child)), "|", `\|`)
+					value := strings.ReplaceAll(strings.TrimSpace(renderCell(child)), "|", `\|`)
 					cells = append(cells, value)
 				}
 			}
@@ -664,26 +772,6 @@ func tableToMarkdown(table *html.Node) string {
 	for _, row := range rows[1:] {
 		writeRow(row)
 	}
-	return strings.TrimSpace(out.String())
-}
-
-func tableCellText(node *html.Node) string {
-	var out strings.Builder
-	var walk func(*html.Node)
-	walk = func(current *html.Node) {
-		if current.Type == html.TextNode {
-			out.WriteString(strings.ReplaceAll(strings.ReplaceAll(current.Data, "\r", ""), "\n", " "))
-			return
-		}
-		if current.Type == html.ElementNode && strings.EqualFold(current.Data, "br") {
-			out.WriteString("<br>")
-			return
-		}
-		for child := current.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-	walk(node)
 	return strings.TrimSpace(out.String())
 }
 

@@ -30,6 +30,31 @@ export function outsideMarkdownCode(text: string, transform: (text: string) => s
   return result + transform(text.slice(offset));
 }
 
+// Old rich-text conversions linkified filenames and user@host targets even
+// inside escaped code blocks. Recover only self-labelled automatic links,
+// not arbitrary Markdown examples, and only in that legacy representation.
+function restoreLegacyCodeLinks(text: string): string {
+  const replacements: Array<{ start: number; end: number; label: string }> = [];
+  const visit = (node: RootContent) => {
+    if (node.type === "link" && node.children.every((child) => child.type === "text")) {
+      const label = node.children.map((child) => "value" in child ? child.value : "").join("");
+      const target = node.url.replace(/^(?:https?:\/\/|mailto:)/i, "");
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (/^(?:https?:\/\/|mailto:)/i.test(node.url) && target === label && start !== undefined && end !== undefined) {
+        replacements.push({ start, end, label });
+      }
+    } else if ("children" in node) {
+      node.children.forEach(visit);
+    }
+  };
+  parser.parse(text).children.forEach(visit);
+  for (const { start, end, label } of replacements.reverse()) {
+    text = text.slice(0, start) + label + text.slice(end);
+  }
+  return text;
+}
+
 // Legacy cached Markdown sometimes escaped an entire pasted code block.
 // Only paired, standalone escaped fences qualify; inline examples stay literal.
 export function repairLegacyCodeFences(text: string): string {
@@ -39,7 +64,7 @@ export function repairLegacyCodeFences(text: string): string {
     (match, prefix, language, code: string, offset: number) => {
       const start = offset + prefix.length;
       if (ranges.some(([from, to]) => start >= from && start < to)) return match;
-      const literal = code.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, "$1");
+      const literal = restoreLegacyCodeLinks(code.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, "$1"));
       const fence = "~".repeat(Math.max(3, ...Array.from(literal.matchAll(/~+/g), (match) => match[0].length + 1)));
       return `${prefix}${fence}${language}\n${literal}\n${fence}`;
     },

@@ -142,6 +142,11 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
         class: "rich-message-composer min-h-[38px] max-h-[198px] overflow-y-auto px-3 py-2 text-sm leading-5 outline-none",
         "aria-label": placeholder,
         "data-placeholder": placeholder,
+        spellcheck: "false",
+        autocorrect: "off",
+        autocomplete: "off",
+        // WebKit's inline predictions are independent of spellcheck/autocorrect.
+        writingsuggestions: "false",
       },
       handleKeyDown: (_view, event) => {
         onKeyDownRef.current(event);

@@ -17,7 +17,7 @@ import { MessageThreadPreview } from "./MessageThreadPreview";
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { PollMessage } from "./PollMessage";
 import type { VirtuosoHandle } from "react-virtuoso";
-import { hasStructuredAdaptiveCard } from "./StructuredAdaptiveCard";
+import { hasStructuredAdaptiveCard, shouldHideAdaptiveCardBody } from "./StructuredAdaptiveCard";
 import { models } from "../../wailsjs/go/models";
 import { sameUserId } from "@/lib/userIdentity";
 import { useAppStore } from "@/lib/store";
@@ -312,7 +312,7 @@ export function MessageBubbleItem({
                         </div>
                       </div>
                     )}
-					{displayedBody?.trim() && !hasStructuredCard && !message.poll && (
+					{displayedBody?.trim() && !shouldHideAdaptiveCardBody(message.attachments) && !message.poll && (
                       <>
                         <MessageText text={displayedBody} mentions={displayedBody === message.body ? message.mentions : undefined} providerInstanceId={providerInstanceId} className="whitespace-pre-wrap" isFromMe={message.isFromMe} />
 						{previewUrl && !hasStructuredCard && <LinkPreviewCard url={previewUrl} isFromMe={message.isFromMe} />}

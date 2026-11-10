@@ -285,7 +285,7 @@ func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error
 	if err := p.removeStoredPendingRecordings(client); err != nil {
 		return err
 	}
-	repairedFormatting, err := p.repairStoredHTMLFormatting()
+	repairedFormatting, err := p.repairStoredHTMLFormatting(client)
 	if err != nil {
 		return err
 	}
@@ -1567,6 +1567,15 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 	}
 	body, canonicalMentions = materializeCanonicalTeamsMentions(body, canonicalMentions)
 	cardBody := teamsCardsToMarkdown(remote.Properties)
+	propertyCards, otherCardBody := teamsStructuredPropertyCards(remote.Properties)
+	if len(propertyCards) > 0 && strings.TrimSpace(body) != "" && !isTeamsUnsupportedCardPlaceholder(body) {
+		// The message text is independent of its preview cards. Only append
+		// fallback text for card formats that have no structured renderer.
+		cardBody = otherCardBody
+		for index := range propertyCards {
+			propertyCards[index].IsSupplementary = true
+		}
+	}
 	if swiftBody := teamsSwiftCardsToMarkdown(remote.Content); swiftBody != "" {
 		if cardBody == "" {
 			cardBody = swiftBody
@@ -1627,6 +1636,7 @@ func (p *Provider) toModelMessage(client *msteams.Client, remote msteams.Message
 		message.QuotedMessageID = &parent
 	}
 	attachments := make([]models.Attachment, 0, len(remote.Attachments)+len(remote.SharedFiles))
+	attachments = append(attachments, propertyCards...)
 	for _, attachment := range teamsAudioCardAttachments(remote.Properties) {
 		p.rememberAttachmentURL(attachment.URL)
 		attachments = append(attachments, attachment)

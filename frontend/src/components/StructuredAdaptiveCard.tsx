@@ -1,18 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { ExternalLink } from "lucide-react";
 import { GetAttachmentData } from "../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../lib/browser";
 import { cn } from "@/lib/utils";
 import { htmlFragmentToText } from "@/lib/messageUtils";
 import { MessageText } from "./MessageText";
-
-type CardNode = Record<string, unknown>;
-
-type StructuredCardAttachment = { type?: string; cardJson?: string };
-
-export function isStructuredAdaptiveCardAttachment(attachment: StructuredCardAttachment): boolean {
-  return attachment.type === "adaptive_card" && Boolean(attachment.cardJson);
-}
+import { adaptiveColumnStyle, adaptiveImageStyle, adaptiveSpacingClass, safeAdaptiveActionURL, type CardNode } from "../lib/adaptiveCard";
+export { isStructuredAdaptiveCardAttachment, hasStructuredAdaptiveCard, shouldHideAdaptiveCardBody } from "../lib/adaptiveCard";
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -44,7 +38,7 @@ function normalizeAdaptiveMarkdown(value: unknown): string {
   return result;
 }
 
-function CardImage({ url, alt }: { url: string; alt: string }) {
+function CardImage({ url, alt, style, className }: { url: string; alt: string; style?: CSSProperties; className?: string }) {
   const [source, setSource] = useState("");
 
   useEffect(() => {
@@ -62,7 +56,7 @@ function CardImage({ url, alt }: { url: string; alt: string }) {
     };
   }, [url]);
 
-  return source ? <img src={source} alt={alt} className="mt-2 max-h-48 max-w-full rounded object-contain" /> : null;
+  return source ? <img src={source} alt={alt} style={style} className={cn("max-h-48 max-w-full rounded object-contain", className)} /> : null;
 }
 
 function CardElement({ element }: { element: CardNode }) {
@@ -78,9 +72,10 @@ function CardElement({ element }: { element: CardNode }) {
         size === "large" || size === "extralarge" ? "text-lg" : size === "medium" ? "text-base" : "text-sm",
         weight === "bolder" || weight === "bold" ? "font-semibold" : "font-normal",
         color === "accent" && "text-indigo-600 dark:text-indigo-400",
-		Boolean(element.separator) && "border-t border-border pt-3 mt-3",
-        element.spacing === "none" ? "mt-0" : "mt-2",
-		)}><MessageText text={normalizeAdaptiveMarkdown(element.text)} /></div>
+        Boolean(element.isSubtle) && "text-muted-foreground",
+        Boolean(element.separator) && "border-t border-border pt-3 mt-3",
+        adaptiveSpacingClass(element),
+      )}><MessageText text={normalizeAdaptiveMarkdown(element.text)} /></div>
     );
   }
 
@@ -89,8 +84,8 @@ function CardElement({ element }: { element: CardNode }) {
       <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-7 gap-y-2.5 text-sm">
         {nodes(element.facts).map((fact, index) => (
           <div className="contents" key={`${text(fact.title)}-${index}`}>
-			<dt className="font-semibold text-foreground"><MessageText text={normalizeAdaptiveMarkdown(fact.title).replace(/:\s*$/, "")} /></dt>
-			<dd className="min-w-0 whitespace-pre-wrap text-foreground/90"><MessageText text={normalizeAdaptiveMarkdown(fact.value)} /></dd>
+            <dt className="font-semibold text-foreground"><MessageText text={normalizeAdaptiveMarkdown(fact.title).replace(/:\s*$/, "")} /></dt>
+            <dd className="min-w-0 whitespace-pre-wrap text-foreground/90"><MessageText text={normalizeAdaptiveMarkdown(fact.value)} /></dd>
           </div>
         ))}
       </dl>
@@ -98,56 +93,54 @@ function CardElement({ element }: { element: CardNode }) {
   }
 
   if (type === "action.openurl") {
-    const url = text(element.url);
+    const url = safeAdaptiveActionURL(element.url);
     return (
-      <button type="button" onClick={() => url && BrowserOpenURL(url)} className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-semibold text-foreground shadow-sm transition-colors hover:bg-muted">
+      <button type="button" disabled={!url} onClick={() => url && BrowserOpenURL(url)} className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-semibold text-foreground shadow-sm transition-colors hover:bg-muted disabled:opacity-50">
         <ExternalLink className="h-4 w-4" />{text(element.title)}
       </button>
     );
   }
 
+  if (type.startsWith("action.")) {
+    return <button type="button" disabled title="Cette action nécessite l’application d’origine. Ouvrez le lien de la carte pour continuer."
+      className="rounded-md border border-border bg-muted px-3 py-2 text-sm font-semibold text-muted-foreground opacity-60">{text(element.title)}</button>;
+  }
+
   if (type === "image") {
     const url = text(element.url);
-    return url ? <CardImage url={url} alt={text(element.altText)} /> : null;
+    return url ? <CardImage url={url} alt={text(element.altText)} style={adaptiveImageStyle(element)} className={adaptiveSpacingClass(element)} /> : null;
   }
 
   const children = [element.items, element.columns, element.body].flatMap(nodes);
   const actions = nodes(element.actions);
   if (type === "columnset") {
-    return <div className="mt-2 flex flex-wrap gap-4">{children.map((child, index) => <div className="min-w-0 flex-1" key={index}><CardElement element={child} /></div>)}</div>;
+    return <div className={cn("flex flex-wrap gap-x-2 gap-y-1", adaptiveSpacingClass(element))}>{children.map((child, index) => <div style={adaptiveColumnStyle(child)} key={index}><CardElement element={child} /></div>)}</div>;
   }
   if (type === "actionset") {
     return <div className="mt-3 flex flex-wrap gap-2">{actions.map((action, index) => <CardElement element={action} key={index} />)}</div>;
   }
   return (
-    <div className={cn(type === "container" && "mt-3 rounded-lg border border-border bg-muted/20 p-4")}>
+    <div className={cn(type === "container" && adaptiveSpacingClass(element), element.style === "emphasis" && "rounded-lg border border-border bg-muted/20 p-4")}>
       {children.map((child, index) => <CardElement element={child} key={index} />)}
       {actions.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{actions.map((action, index) => <CardElement element={action} key={index} />)}</div>}
     </div>
   );
 }
 
-export function StructuredAdaptiveCard({ cardJson }: { cardJson: string }) {
+export function StructuredAdaptiveCard({ cardJson, title, icon }: { cardJson: string; title?: string; icon?: string }) {
   let card: CardNode;
   try {
-    card = JSON.parse(cardJson) as CardNode;
+    const parsed: unknown = JSON.parse(cardJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    card = parsed as CardNode;
   } catch {
     return null;
   }
   return (
-	<div className="mt-2 w-[720px] max-w-[min(82vw,calc(100vw-6rem))] rounded-xl border border-border bg-background p-4 text-foreground shadow-sm">
+    <div className="mt-2 w-[720px] max-w-[min(82vw,calc(100vw-6rem))] rounded-xl border border-border bg-background p-4 text-foreground shadow-sm">
+      {title && <div className="mb-3 flex items-center gap-2 text-sm font-semibold">{icon && <CardImage url={icon} alt="" style={{ width: 24, height: 24 }} />}<span>{title}</span></div>}
       {nodes(card.body).map((element, index) => <CardElement element={element} key={index} />)}
       {nodes(card.actions).length > 0 && <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">{nodes(card.actions).map((action, index) => <CardElement element={action} key={index} />)}</div>}
     </div>
   );
-}
-
-export function hasStructuredAdaptiveCard(attachments?: string): boolean {
-  if (!attachments?.trim()) return false;
-  try {
-    const parsed = JSON.parse(attachments) as Array<{ type?: string; cardJson?: string }>;
-    return parsed.some(isStructuredAdaptiveCardAttachment);
-  } catch {
-    return false;
-  }
 }
