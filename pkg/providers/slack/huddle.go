@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
+	"gorm.io/gorm"
 )
 
 // slackHuddleRoom backports the stable subset of slack.HuddleRoom introduced
@@ -164,12 +165,13 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 	if db.DB == nil {
 		return
 	}
+	instanceID := p.getInstanceId()
+	if strings.TrimSpace(instanceID) == "" {
+		p.log("SlackProvider.pollActiveHuddles: missing provider instance ID\n")
+		return
+	}
 	var active []models.Message
-	if err := db.ForProvider(db.DB, p.getInstanceId()).Messages().Where(
-		"call_type IN ? AND timestamp >= ?",
-		[]string{"incoming_call", "incoming_group_call"},
-		time.Now().Add(-24*time.Hour),
-	).Find(&active).Error; err != nil {
+	if err := slackActiveHuddles(db.DB.WithContext(ctx), instanceID, time.Now().Add(-24*time.Hour)).Find(&active).Error; err != nil {
 		p.log("SlackProvider.pollActiveHuddles: failed loading active huddles: %v\n", err)
 		return
 	}
@@ -193,6 +195,17 @@ func (p *SlackProvider) pollActiveHuddles(ctx context.Context) {
 			p.handleHuddleRoomUpdate(channelID, message.ProtocolMsgID, room)
 		}
 	}
+}
+
+func slackActiveHuddles(database *gorm.DB, instanceID string, since time.Time) *gorm.DB {
+	// Prefer the call-type/time range, not the provider's entire history. The
+	// provider scope remains part of the SQL predicate, before rows are loaded.
+	return db.ForProvider(database, instanceID).Messages().
+		Table("messages INDEXED BY idx_messages_active_calls").Where(
+		"call_type IN ? AND timestamp >= ?",
+		[]string{"incoming_call", "incoming_group_call"},
+		since,
+	)
 }
 
 // pollLatestConversationUpdates recovers messages omitted or delayed by

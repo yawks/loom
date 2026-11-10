@@ -4565,6 +4565,18 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 
 	return result, nil
 }
+
+// The expression index supplies julianday(timestamp) without fetching every
+// message body. SQLite otherwise prefers the generic deleted_at index.
+const allLastMessageTimestampsSQL = `
+	SELECT
+		protocol_conv_id,
+		CAST(ROUND(MAX(julianday(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS max_time_ms
+	FROM messages INDEXED BY idx_messages_conv_latest_jd
+	WHERE deleted_at IS NULL
+	GROUP BY protocol_conv_id
+`
+
 func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 	if db.DB == nil {
 		fmt.Println("[GetAllLastMessageTimestamps] No database connection")
@@ -4581,14 +4593,7 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 
 	result := make(map[string]int64)
 
-	rows, err := db.DB.Raw(`
-		SELECT
-			protocol_conv_id,
-			CAST(ROUND(MAX(julianday(timestamp)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS max_time_ms
-		FROM messages
-		WHERE deleted_at IS NULL
-		GROUP BY protocol_conv_id
-	`).Rows()
+	rows, err := db.DB.Raw(allLastMessageTimestampsSQL).Rows()
 	if err != nil {
 		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
 		return map[string]int64{}, err

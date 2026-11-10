@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	googleChatWebOrigin    = "https://chat.google.com"
-	createUnsentMessageURL = "https://chat.google.com/u/0/api/create_unsent_message?c=32"
+	googleChatWebOrigin       = "https://chat.google.com"
+	createUnsentMessageURL    = "https://chat.google.com/u/0/api/create_unsent_message?c=32"
+	webSessionRefreshInterval = 5 * time.Minute
 )
 
 // webAPIHeaderMeta is the fixed metadata header sent in all Google Chat web API calls.
@@ -56,6 +57,14 @@ type googleChatWebClient struct {
 	instanceID    string
 	onAuthExpired func()
 
+	// A stale/unsupported endpoint must not launch Chrome on every background
+	// scheduled-message poll. Serialize refreshes per account and bound retries,
+	// including failed attempts. Reconnecting explicitly resets this cooldown.
+	refreshMu      sync.Mutex
+	lastRefresh    time.Time
+	lastRefreshErr error
+	refreshCookies func(context.Context, map[string]string) (map[string]string, error)
+
 	// scheduledMu guards scheduledByConv and serverRefByID.
 	scheduledMu     sync.RWMutex
 	scheduledByConv map[string][]models.ScheduledMessage // rawConvID → messages
@@ -74,6 +83,10 @@ func newGoogleChatWebClient(instanceID string, cookies map[string]string, onAuth
 }
 
 func (w *googleChatWebClient) SetCookies(cookies map[string]string) {
+	w.refreshMu.Lock()
+	defer w.refreshMu.Unlock()
+	w.lastRefresh = time.Time{}
+	w.lastRefreshErr = nil
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cookies = cookies
@@ -86,13 +99,26 @@ func (w *googleChatWebClient) HasCookies() bool {
 }
 
 func (w *googleChatWebClient) refreshWebSession() error {
+	w.refreshMu.Lock()
+	defer w.refreshMu.Unlock()
+	if !w.lastRefresh.IsZero() && time.Since(w.lastRefresh) < webSessionRefreshInterval {
+		return w.lastRefreshErr
+	}
 	w.mu.RLock()
 	snapshot := make(map[string]string, len(w.cookies))
 	for key, value := range w.cookies {
 		snapshot[key] = value
 	}
 	w.mu.RUnlock()
-	updated, err := SilentRefreshWebSession(context.Background(), snapshot)
+	refresh := w.refreshCookies
+	if refresh == nil {
+		refresh = SilentRefreshWebSession
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	updated, err := refresh(ctx, snapshot)
+	w.lastRefresh = time.Now()
+	w.lastRefreshErr = err
 	if err != nil {
 		return err
 	}

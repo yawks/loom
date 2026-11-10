@@ -21,6 +21,8 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp()
 	app.mockMode = slices.Contains(os.Args[1:], "--mock")
+	stopProfiling := startDiagnosticCPUProfile(func() bool { return len(app.GetSyncingProviderIDs()) == 0 })
+	defer stopProfiling()
 
 	// Create application with options
 	err := wails.Run(&options.App{

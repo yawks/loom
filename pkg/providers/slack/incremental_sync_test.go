@@ -221,6 +221,9 @@ func TestHistoryFallbackRecoversReplyOlderThanMainCursor(t *testing.T) {
 	if err := database.Exec("CREATE INDEX IF NOT EXISTS idx_messages_deleted_conv ON messages(deleted_at, protocol_conv_id)").Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.EnsureMessagePollingIndices(database); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.ContactStore.Load(); err != nil {
 		t.Fatal(err)
 	}

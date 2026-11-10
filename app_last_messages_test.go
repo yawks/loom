@@ -3,6 +3,7 @@ package main
 import (
 	"Loom/pkg/db"
 	"Loom/pkg/models"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,61 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestGetAllLastMessageTimestampsUsesExpressionIndex(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := database.AutoMigrate(&models.Message{}, &models.Reaction{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`CREATE INDEX idx_messages_conv_latest_jd ON messages(protocol_conv_id, julianday(timestamp) DESC, id DESC) WHERE deleted_at IS NULL`).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 29, 18, 0, 0, 123000000, time.UTC)
+	rows := []models.Message{
+		{ProtocolConvID: "one", ProtocolMsgID: "utc", Timestamp: base},
+		{ProtocolConvID: "one", ProtocolMsgID: "offset-older", Timestamp: base.Add(-time.Hour).In(time.FixedZone("east", 7200))},
+		{ProtocolConvID: "two", ProtocolMsgID: "with-reaction", Timestamp: base},
+		{ProtocolConvID: "deleted", ProtocolMsgID: "deleted", Timestamp: base, DeletedAt: gorm.DeletedAt{Time: base, Valid: true}},
+	}
+	if err := database.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	reactionTime := base.Add(time.Minute)
+	if err := database.Create(&models.Reaction{MessageID: rows[2].ID, UserID: "user", Emoji: "👍", CreatedAt: reactionTime}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var plan []struct{ Detail string }
+	if err := database.Raw("EXPLAIN QUERY PLAN " + allLastMessageTimestampsSQL).Scan(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	usedIndex := false
+	for _, step := range plan {
+		usedIndex = usedIndex || strings.Contains(step.Detail, "USING INDEX idx_messages_conv_latest_jd")
+	}
+	if !usedIndex {
+		t.Fatalf("timestamp aggregation must use expression index: %#v", plan)
+	}
+	previous := db.DB
+	db.DB = database
+	t.Cleanup(func() { db.DB = previous })
+	app := &App{}
+	got, err := app.GetAllLastMessageTimestamps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["one"] != base.UnixMilli() || got["two"] != reactionTime.UnixMilli() {
+		t.Fatalf("unexpected timestamps: %v", got)
+	}
+}
 
 func TestGetAllLastMessagesCollapsesConcurrentCacheMisses(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})

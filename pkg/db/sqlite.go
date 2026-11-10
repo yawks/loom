@@ -235,10 +235,8 @@ func ensureIndices(db *gorm.DB) error {
 	if err != nil {
 		fmt.Printf("Error creating index idx_messages_conv_latest: %v\n", err)
 	}
-	// Match both timeline pages so thread replies do not require table reads
-	// while SQLite searches for the next 50 top-level messages.
-	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_conv_main ON messages(protocol_conv_id, timestamp DESC) WHERE deleted_at IS NULL AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)`).Error; err != nil {
-		fmt.Printf("Error creating index idx_messages_conv_main: %v\n", err)
+	if err := EnsureMessagePollingIndices(db); err != nil {
+		return err
 	}
 	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats_time ON messages(timestamp, protocol_conv_id, is_from_me) WHERE deleted_at IS NULL AND is_deleted = 0`).Error; err != nil {
 		fmt.Printf("Error creating index idx_messages_stats_time: %v\n", err)
@@ -261,12 +259,23 @@ func ensureIndices(db *gorm.DB) error {
 			fmt.Printf("Error rebuilding index idx_messages_conv_latest_jd: %v\n", err)
 		}
 	}
-	// Active-call polling first narrows messages by call type and a recent time
-	// range. The conversation prefix is checked after that small index scan.
-	if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_active_calls ON messages(call_type, timestamp, protocol_conv_id) WHERE deleted_at IS NULL`).Error; err != nil {
-		fmt.Printf("Error creating index idx_messages_active_calls: %v\n", err)
-	}
+	return nil
+}
 
+// EnsureMessagePollingIndices installs the indexes explicitly selected by idle
+// polling queries. Keep these definitions shared with isolated provider tests:
+// AutoMigrate alone does not create these partial indexes.
+func EnsureMessagePollingIndices(database *gorm.DB) error {
+	for _, statement := range []string{
+		// Covers timeline aggregation without reading message bodies or replies.
+		`CREATE INDEX IF NOT EXISTS idx_messages_conv_main ON messages(protocol_conv_id, timestamp DESC) WHERE deleted_at IS NULL AND (thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id)`,
+		// Narrow to recent calls before checking the provider namespace.
+		`CREATE INDEX IF NOT EXISTS idx_messages_active_calls ON messages(call_type, timestamp, protocol_conv_id) WHERE deleted_at IS NULL`,
+	} {
+		if err := database.Exec(statement).Error; err != nil {
+			return fmt.Errorf("ensure message polling index: %w", err)
+		}
+	}
 	return nil
 }
 

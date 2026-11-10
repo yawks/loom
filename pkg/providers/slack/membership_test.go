@@ -184,6 +184,9 @@ func TestOfficialLeftChannelCannotBeRecreatedByEventsOrPolling(t *testing.T) {
 	if err := database.AutoMigrate(&models.Message{}, &models.LinkedAccount{}, &models.Conversation{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.EnsureMessagePollingIndices(database); err != nil {
+		t.Fatal(err)
+	}
 	rows := []models.Message{
 		{ProtocolConvID: "slack-1::Cleft", ProtocolMsgID: "1.0", Body: "old", Timestamp: time.Now().Add(-time.Hour)},
 		{ProtocolConvID: "slack-2::Cforeign", ProtocolMsgID: "2.0", Body: "foreign", Timestamp: time.Now()},

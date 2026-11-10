@@ -48,15 +48,22 @@ func slackNewlyStoredMessages(database *gorm.DB, instanceID, conversationID stri
 	return messages, err
 }
 
-func slackFallbackConversations(database *gorm.DB, instanceID string) ([]slackFallbackConversation, error) {
-	var conversations []slackFallbackConversation
-	err := db.ForProvider(database, instanceID).Messages().
+func slackFallbackMessageQuery(database *gorm.DB, instanceID string) *gorm.DB {
+	return db.ForProvider(database, instanceID).Messages().
+		// The generic deleted_at/conversation index makes SQLite fetch every
+		// message body to test thread_id. This partial index contains only main
+		// messages and covers both the grouping key and timestamp.
+		Table("messages INDEXED BY idx_messages_conv_main").
 		Select("protocol_conv_id, MAX(timestamp) AS last_timestamp").
 		Where("deleted_at IS NULL").
 		Where("thread_id IS NULL OR thread_id = '' OR thread_id = protocol_msg_id").
 		Group("protocol_conv_id").
-		Order("last_timestamp DESC").
-		Scan(&conversations).Error
+		Order("last_timestamp DESC")
+}
+
+func slackFallbackConversations(database *gorm.DB, instanceID string) ([]slackFallbackConversation, error) {
+	var conversations []slackFallbackConversation
+	err := slackFallbackMessageQuery(database, instanceID).Scan(&conversations).Error
 	if err != nil {
 		return nil, err
 	}

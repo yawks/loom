@@ -1,14 +1,98 @@
 package googlechat
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"Loom/pkg/core"
 )
+
+func TestWebSessionRefreshCoalescesAndThrottlesPerAccount(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure=%v", fails), func(t *testing.T) {
+			client := newGoogleChatWebClient("one", map[string]string{"SAPISID": "one"}, nil)
+			var calls atomic.Int32
+			client.refreshCookies = func(ctx context.Context, cookies map[string]string) (map[string]string, error) {
+				calls.Add(1)
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("refresh must have a deadline")
+				}
+				if cookies["SAPISID"] != "one" {
+					t.Error("wrong account cookies")
+				}
+				if fails {
+					return nil, fmt.Errorf("refresh unavailable")
+				}
+				return map[string]string{"X-API-URL-Base": "updated"}, nil
+			}
+			var wg sync.WaitGroup
+			for range 8 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if err := client.refreshWebSession(); (err != nil) != fails {
+						t.Errorf("unexpected refresh error: %v", err)
+					}
+				}()
+			}
+			wg.Wait()
+			if calls.Load() != 1 {
+				t.Fatalf("launched %d refreshes, want 1", calls.Load())
+			}
+			client.refreshMu.Lock()
+			client.lastRefresh = time.Now().Add(-webSessionRefreshInterval)
+			client.refreshMu.Unlock()
+			_ = client.refreshWebSession()
+			if calls.Load() != 2 {
+				t.Fatal("refresh did not rearm after cooldown")
+			}
+			client.SetCookies(map[string]string{"SAPISID": "one"})
+			_ = client.refreshWebSession()
+			if calls.Load() != 3 {
+				t.Fatal("reconnect did not reset cooldown")
+			}
+			other := newGoogleChatWebClient("two", map[string]string{"SAPISID": "two"}, nil)
+			other.refreshCookies = func(_ context.Context, cookies map[string]string) (map[string]string, error) {
+				if cookies["SAPISID"] != "two" {
+					t.Fatal("cross-account refresh")
+				}
+				calls.Add(1)
+				return cookies, nil
+			}
+			if err := other.refreshWebSession(); err != nil || calls.Load() != 4 {
+				t.Fatalf("account cooldowns not isolated: %v", err)
+			}
+		})
+	}
+}
+
+func TestScheduledMessage404DoesNotRepeatedlyLaunchBrowser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer server.Close()
+	client := newGoogleChatWebClient("one", map[string]string{"SAPISID": "one", "X-Framework-Xsrf-Token": "xsrf", "X-API-URL-Base": server.URL + "/create_unsent_message"}, nil)
+	refreshes := 0
+	client.refreshCookies = func(context.Context, map[string]string) (map[string]string, error) {
+		refreshes++
+		return nil, fmt.Errorf("unavailable")
+	}
+	for range 8 {
+		if _, err := client.ListScheduledMessages("spaces/one", "one", "thread"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if refreshes != 1 {
+		t.Fatalf("background polling launched %d refreshes, want 1", refreshes)
+	}
+}
 
 func TestGoogleChatScheduledMessageCapabilities(t *testing.T) {
 	provider := NewGoogleChatProvider()

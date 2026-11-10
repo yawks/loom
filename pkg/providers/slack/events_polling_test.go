@@ -38,6 +38,9 @@ func TestSlackFallbackListsOnlyCurrentProviderConversations(t *testing.T) {
 	if err := database.AutoMigrate(&models.Message{}, &models.LinkedAccount{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.EnsureMessagePollingIndices(database); err != nil {
+		t.Fatal(err)
+	}
 	messages := []models.Message{
 		{ProtocolConvID: "slack-1::U1", ProtocolMsgID: "slack-message", Timestamp: time.Now()},
 		{ProtocolConvID: "teams-1::19:chat", ProtocolMsgID: "teams-message", Timestamp: time.Now()},
