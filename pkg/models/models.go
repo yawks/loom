@@ -302,6 +302,8 @@ type MessageMention struct {
 
 // Message contains the content of a message.
 type Message struct {
+	// ReplacesMessageID links an asynchronous confirmation to its local echo.
+	ReplacesMessageID     string              `json:"replacesMessageId,omitempty"`
 	ID                    uint                `gorm:"primarykey" json:"id"`
 	ConversationID        uint                `json:"conversationId"`
 	ProtocolConvID        string              `gorm:"index:idx_protocol_conv_id_timestamp,priority:1;index:idx_protocol_conv_id;index:idx_messages_deleted_conv,priority:2;index:idx_msg_conv_ts_del,priority:1" json:"protocolConvId"` // Conversation ID on the platform

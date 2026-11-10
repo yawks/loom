@@ -169,6 +169,13 @@ export function useMessageEvents() {
 
               const messageId = message.protocolMsgId || "";
 
+              if (message.replacesMessageId || safeData.pages.some(page =>
+                page.some(m => m.replacesMessageId === messageId)
+              )) {
+                state.isNewMessage = !safeData.pages.some(page => page.some(m => m.protocolMsgId === messageId));
+                return mergeMessageBatch(safeData, [message]);
+              }
+
               // Check for duplicates
               const existsInCache = messageId && safeData.pages.some(page =>
                 page.some(m => m.protocolMsgId === messageId)

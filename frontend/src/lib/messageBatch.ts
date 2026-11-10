@@ -7,9 +7,15 @@ export function mergeMessageBatch(
   replacedMessageId?: string,
 ): InfiniteData<models.Message[]> | undefined {
   if (!current?.pages.length) return current;
-  const incoming = new Map(messages.map((message) => [message.protocolMsgId, message]));
+  // Confirmations can precede the send response. Keep the canonical row in
+  // either order, using only the backend's explicit replacement contract.
+  const replaced = new Set([...current.pages.flat(), ...messages]
+    .map((message) => message.replacesMessageId).filter(Boolean));
+  const incoming = new Map(messages.filter((message) => !replaced.has(message.protocolMsgId))
+    .map((message) => [message.protocolMsgId, message]));
   const pages = current.pages.map((page) => page.filter((message) =>
-    !replacedMessageId || message.protocolMsgId !== replacedMessageId
+    (!replacedMessageId || message.protocolMsgId !== replacedMessageId)
+    && !replaced.has(message.protocolMsgId)
   ).map((message) => {
     const updated = incoming.get(message.protocolMsgId);
     incoming.delete(message.protocolMsgId);

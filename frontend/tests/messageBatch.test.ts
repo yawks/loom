@@ -6,6 +6,28 @@ import { addPendingMessage, mergePendingMessages } from "../src/lib/pendingMessa
 
 const message = (id: string, body = id) => ({ protocolMsgId: id, body }) as models.Message;
 
+for (const confirmationFirst of [false, true]) {
+  test(`asynchronous confirmation replaces only its local echo (confirmation first: ${confirmationFirst})`, () => {
+    const local = message("local-send");
+    const canonical = { ...message("remote-send"), replacesMessageId: local.protocolMsgId } as models.Message;
+    const unrelated = message("another-send", local.body);
+    const [first, second] = confirmationFirst ? [canonical, local] : [local, canonical];
+    const initial = { pages: [[unrelated], [first]], pageParams: [undefined, "cursor"] };
+    const result = mergeMessageBatch(initial, [second])!;
+    assert.deepEqual(result.pages.flat(), [unrelated, canonical]);
+    assert.deepEqual(result.pageParams, initial.pageParams);
+
+    const key = `async-send-${confirmationFirst}`;
+    addPendingMessage(key, first);
+    addPendingMessage(key, second);
+    assert.deepEqual(mergePendingMessages(key, []), [canonical]);
+    assert.deepEqual(mergePendingMessages(key, [canonical]), [canonical]);
+    // A late send response must not resurrect the echo after a DB refetch.
+    addPendingMessage(key, local);
+    assert.deepEqual(mergePendingMessages(key, [canonical]), [canonical]);
+  });
+}
+
 test("incoming batch appears immediately and survives a stale database response", () => {
   const old = message("old");
   const incoming = message("incoming");

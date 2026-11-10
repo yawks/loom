@@ -793,6 +793,7 @@ export namespace models {
 	    }
 	}
 	export class Message {
+	    replacesMessageId?: string;
 	    id: number;
 	    conversationId: number;
 	    protocolConvId: string;
@@ -841,6 +842,7 @@ export namespace models {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.replacesMessageId = source["replacesMessageId"];
 	        this.id = source["id"];
 	        this.conversationId = source["conversationId"];
 	        this.protocolConvId = source["protocolConvId"];

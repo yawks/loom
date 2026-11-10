@@ -1,4 +1,5 @@
 import type { models } from "../../wailsjs/go/models";
+import { mergeMessageBatch } from "./messageBatch";
 
 // Module-level store of messages received via event but not yet confirmed in the DB.
 // The queryFn in useMessageData merges these into every refetch result until the DB
@@ -31,11 +32,12 @@ function boundPendingMessages(): void {
 
 export function addPendingMessage(convId: string, message: models.Message): void {
   const existing = pending.get(convId) ?? [];
+  if (existing.some((m) => m.replacesMessageId === message.protocolMsgId)) return;
   if (!existing.some((m) => m.protocolMsgId && m.protocolMsgId === message.protocolMsgId)) {
     // This is only a short bridge while SQLite commits the event. Do not let a
     // resume sync turn it into a second, unbounded message store.
     pending.delete(convId);
-    pending.set(convId, [...existing, message].slice(-MAX_PENDING_PER_CONVERSATION));
+    pending.set(convId, [...existing.filter((m) => m.protocolMsgId !== message.replacesMessageId), message].slice(-MAX_PENDING_PER_CONVERSATION));
     boundPendingMessages();
   }
 }
@@ -50,14 +52,17 @@ export function mergePendingMessages(
   if (!msgs || msgs.length === 0) return dbMessages;
 
   const dbIds = new Set(dbMessages.map((m) => m.protocolMsgId).filter(Boolean));
+  const replacedIds = new Set(dbMessages.map((m) => m.replacesMessageId).filter(Boolean));
 
   // Keep in pending only those that the DB hasn't confirmed yet
-  const stillPending = msgs.filter((m) => m.protocolMsgId && !dbIds.has(m.protocolMsgId));
+  const stillPending = msgs.filter((m) => m.protocolMsgId && !dbIds.has(m.protocolMsgId) && !replacedIds.has(m.protocolMsgId));
   if (stillPending.length === 0) {
     pending.delete(convId);
   } else if (stillPending.length !== msgs.length) {
     pending.set(convId, stillPending);
   }
 
-  return stillPending.length > 0 ? [...dbMessages, ...stillPending] : dbMessages;
+  return stillPending.length > 0
+    ? mergeMessageBatch({ pages: [dbMessages], pageParams: [] }, stillPending)!.pages[0]
+    : dbMessages;
 }

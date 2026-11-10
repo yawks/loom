@@ -137,7 +137,7 @@ func TestStoreMessagesUsesConversationFromProviderInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}, &models.Message{}); err != nil {
+	if err := database.AutoMigrate(&models.MetaContact{}, &models.LinkedAccount{}, &models.Conversation{}, &models.Message{}, &models.Reaction{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestStoreMessagesUsesConversationFromProviderInstance(t *testing.T) {
 	db.DB = database
 	t.Cleanup(func() { db.DB = previousDB })
 	provider := &Provider{instance: "googlemessages-1"}
-	message := models.Message{ProtocolConvID: "googlemessages-1::conversation-1", ProtocolMsgID: "message-1", Timestamp: time.Now()}
+	message := models.Message{ProtocolConvID: "googlemessages-1::conversation-1", ProtocolMsgID: "message-1", Timestamp: time.Now(), ReplacesMessageID: "temp-send-uuid"}
 	if err := provider.storeMessages([]models.Message{message}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,5 +174,20 @@ func TestStoreMessagesUsesConversationFromProviderInstance(t *testing.T) {
 	}
 	if stored.ConversationID != conversation.ID {
 		t.Fatalf("message conversation ID = %d, want %d", stored.ConversationID, conversation.ID)
+	}
+	if stored.ReplacesMessageID != message.ReplacesMessageID {
+		t.Fatalf("replacement link was not persisted: %q", stored.ReplacesMessageID)
+	}
+	// A history snapshot may omit the send token; it must not erase the link
+	// needed to reconcile a late send response after a database refetch.
+	message.ReplacesMessageID = ""
+	if err := provider.storeMessages([]models.Message{message}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.First(&stored, stored.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.ReplacesMessageID != "temp-send-uuid" {
+		t.Fatalf("history erased replacement link: %q", stored.ReplacesMessageID)
 	}
 }

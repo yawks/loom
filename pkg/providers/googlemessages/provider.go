@@ -694,6 +694,9 @@ func (p *Provider) storeMessages(messages []models.Message) error {
 					existing.LocalIdentityID, existing.LocalIdentityLabel, existing.LocalIdentityAddress = message.LocalIdentityID, message.LocalIdentityLabel, message.LocalIdentityAddress
 				}
 				existing.LocalIdentityApplicable = true
+				if message.ReplacesMessageID != "" {
+					existing.ReplacesMessageID = message.ReplacesMessageID
+				}
 				existing.Body, existing.Timestamp, existing.SenderID, existing.SenderName, existing.IsFromMe, existing.QuotedMessageID = message.Body, message.Timestamp, message.SenderID, message.SenderName, message.IsFromMe, message.QuotedMessageID
 				if message.Attachments != "" {
 					existing.Attachments = message.Attachments
@@ -780,6 +783,9 @@ func (p *Provider) toModelMessage(remote *gmproto.Message, fallbackConversationI
 	}
 	message := models.Message{ProtocolMsgID: remote.GetMessageID(), ProtocolConvID: conversationID, SenderID: googleMessagesParticipantID(senderID), SenderName: senderName, Body: strings.Join(parts, "\n"), Timestamp: timestamp, IsFromMe: fromMe, Attachments: p.mediaAttachmentsJSON(remote)}
 	p.setMessageIdentity(&message, remote)
+	if remote.GetTmpID() != "" {
+		message.ReplacesMessageID = "temp-" + remote.GetTmpID()
+	}
 	if fromMe {
 		message.Receipts = googleMessagesReceipts(remote.GetMessageStatus().GetStatus(), conversationID, timestamp)
 	}
