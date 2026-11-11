@@ -117,6 +117,8 @@ export function GetMessagesForConversation(arg1:string):Promise<Array<models.Mes
 
 export function GetMessagesForConversationBefore(arg1:string,arg2:time.Time):Promise<Array<models.Message>>;
 
+export function GetMetaContactChanges(arg1:string):Promise<models.ContactChanges>;
+
 export function GetMetaContacts():Promise<Array<models.MetaContact>>;
 
 export function GetNotificationSettings(arg1:string):Promise<models.NotificationSettings>;

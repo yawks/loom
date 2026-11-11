@@ -29,7 +29,7 @@ const sqliteConnectionOptions = "?_txlock=immediate&_pragma=busy_timeout(30000)&
 func Transaction(database *gorm.DB, fn func(*gorm.DB) error) error {
 	var err error
 	for attempt := 0; attempt < sqliteBusyRetryAttempts; attempt++ {
-		err = database.Transaction(fn)
+		err = transactionWithTableChanges(database, fn)
 		if !isSQLiteBusy(err) || attempt == sqliteBusyRetryAttempts-1 {
 			return err
 		}
@@ -174,6 +174,9 @@ func initDatabase(dsn string) error {
 		fmt.Printf("Warning: Failed to ensure some indices: %v\n", err)
 	}
 
+	if err := EnableChangeTracking(db); err != nil {
+		return fmt.Errorf("failed to enable database change tracking: %w", err)
+	}
 	DB = db
 	fmt.Println("Database connection successful and schema migrated.")
 

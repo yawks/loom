@@ -7,7 +7,8 @@ import { useMessageReadStore } from "@/lib/messageReadStore";
 import i18n from "@/i18n";
 import { initializeSystemNotifications } from "@/lib/systemNotifications";
 import { authorizeSystemNotifications } from "@/lib/systemNotifications";
-import { GetConfiguredProviders, GetMetaContacts, GetNotificationSettings } from "../../wailsjs/go/main/App";
+import { GetConfiguredProviders, GetNotificationSettings } from "../../wailsjs/go/main/App";
+import { fetchMetaContacts } from "@/lib/metaContacts";
 import { useAppStore } from "@/lib/store";
 import type { models } from "../../wailsjs/go/models";
 
@@ -35,7 +36,7 @@ function selectNotificationTarget(target: NotificationNavigationTarget): boolean
 
 async function openNotificationTarget(target: NotificationNavigationTarget): Promise<void> {
   if (selectNotificationTarget(target)) return;
-  const contacts = await GetMetaContacts();
+  const contacts = await fetchMetaContacts();
   useAppStore.getState().setMetaContacts(contacts ?? []);
   if (!selectNotificationTarget(target)) {
     console.warn("Unable to find notification conversation", target.conversationId);

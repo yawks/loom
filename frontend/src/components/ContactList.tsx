@@ -1,6 +1,6 @@
 import { ArrowDownAZ, BadgeAlert, BellOff, Calendar, ChartNoAxesCombined, Check, Clock, Inbox, MessageSquarePlus, Phone, Search, UserPlus, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { AcceptConversationInvitation, DeclineConversationInvitation, GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetHighlightedMessageRefs, GetMetaContacts, GetUnreadMessageLocations, ListConversationInvitations } from "../../wailsjs/go/main/App";
+import { AcceptConversationInvitation, DeclineConversationInvitation, GetAllActiveCalls, GetAllMessageCounts, GetCapabilities, GetConfiguredProviders, GetHighlightedMessageRefs, GetUnreadMessageLocations, ListConversationInvitations } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -26,11 +26,7 @@ import { getFirstAttachmentFileName } from "@/lib/messageUtils";
 import { Virtuoso } from "react-virtuoso";
 import { ToastContainer, useToast } from "@/components/ui/toast";
 import { useTrackReactionActivities } from "@/hooks/useReactionActivities";
-
-// Wrapper function to use Wails with React Query's suspense mode
-const fetchMetaContacts = async () => {
-  return GetMetaContacts();
-};
+import { fetchMetaContacts } from "@/lib/metaContacts";
 
 export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
   useTrackReactionActivities();

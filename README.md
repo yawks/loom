@@ -277,3 +277,13 @@ For a repeatable contact-payload benchmark using a read-only database:
 ```bash
 LOOM_BENCHMARK_DATABASE=/path/to/loom.db go test . -run '^$' -bench BenchmarkContactBridge -benchtime=20x
 ```
+
+The `incremental-unchanged` case includes fingerprint computation and measures
+the revision-only contact response. It reduces bridge traffic, but need not
+reduce Go preparation time; measure the interface/whole process separately.
+For a synthetic 10,000-message comparison of Slack's local snapshot rebuild
+versus an unchanged warm-cache tick (no network or polling cadence changes):
+
+```bash
+go test ./pkg/providers/slack -run '^$' -bench BenchmarkPollingSnapshot -benchtime=100x
+```

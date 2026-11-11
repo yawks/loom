@@ -93,6 +93,7 @@ type App struct {
 	pendingProviderStartups []pendingProviderStartup // network work deferred until domReady
 	metaContactsCache       metaContactsCache
 	avatarReferences        avatarReferenceCache
+	contactChanges          contactChangesCache
 	mu                      sync.RWMutex
 	providerRestoreReady    chan struct{}
 	databaseReady           chan struct{}

@@ -479,6 +479,138 @@ export namespace models {
 		    return a;
 		}
 	}
+	export class LinkedAccount {
+	    id: number;
+	    metaContactId: number;
+	    protocol: string;
+	    providerInstanceId: string;
+	    userId: string;
+	    username: string;
+	    avatarUrl?: string;
+	    status: string;
+	    isGroup: boolean;
+	    lastSeen?: time.Time;
+	    extra?: string;
+	    conversationId?: string;
+	    createdAt: time.Time;
+	    updatedAt: time.Time;
+
+	    static createFrom(source: any = {}) {
+	        return new LinkedAccount(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.metaContactId = source["metaContactId"];
+	        this.protocol = source["protocol"];
+	        this.providerInstanceId = source["providerInstanceId"];
+	        this.userId = source["userId"];
+	        this.username = source["username"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.status = source["status"];
+	        this.isGroup = source["isGroup"];
+	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
+	        this.extra = source["extra"];
+	        this.conversationId = source["conversationId"];
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MetaContact {
+	    id: number;
+	    displayName: string;
+	    avatarUrl: string;
+	    linkedAccounts: LinkedAccount[];
+	    createdAt: time.Time;
+	    updatedAt: time.Time;
+
+	    static createFrom(source: any = {}) {
+	        return new MetaContact(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.displayName = source["displayName"];
+	        this.avatarUrl = source["avatarUrl"];
+	        this.linkedAccounts = this.convertValues(source["linkedAccounts"], LinkedAccount);
+	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
+	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ContactChanges {
+	    revision: string;
+	    reset: boolean;
+	    contacts?: MetaContact[];
+	    removedIds?: number[];
+
+	    static createFrom(source: any = {}) {
+	        return new ContactChanges(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.revision = source["revision"];
+	        this.reset = source["reset"];
+	        this.contacts = this.convertValues(source["contacts"], MetaContact);
+	        this.removedIds = source["removedIds"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class ContactExchangeStats {
 	    isGroup: boolean;
@@ -1043,102 +1175,6 @@ export namespace models {
 	        this.invitedById = source["invitedById"];
 	        this.invitedByName = source["invitedByName"];
 	    }
-	}
-	export class LinkedAccount {
-	    id: number;
-	    metaContactId: number;
-	    protocol: string;
-	    providerInstanceId: string;
-	    userId: string;
-	    username: string;
-	    avatarUrl?: string;
-	    status: string;
-	    isGroup: boolean;
-	    lastSeen?: time.Time;
-	    extra?: string;
-	    conversationId?: string;
-	    createdAt: time.Time;
-	    updatedAt: time.Time;
-	
-	    static createFrom(source: any = {}) {
-	        return new LinkedAccount(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.metaContactId = source["metaContactId"];
-	        this.protocol = source["protocol"];
-	        this.providerInstanceId = source["providerInstanceId"];
-	        this.userId = source["userId"];
-	        this.username = source["username"];
-	        this.avatarUrl = source["avatarUrl"];
-	        this.status = source["status"];
-	        this.isGroup = source["isGroup"];
-	        this.lastSeen = this.convertValues(source["lastSeen"], time.Time);
-	        this.extra = source["extra"];
-	        this.conversationId = source["conversationId"];
-	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
-	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class MetaContact {
-	    id: number;
-	    displayName: string;
-	    avatarUrl: string;
-	    linkedAccounts: LinkedAccount[];
-	    createdAt: time.Time;
-	    updatedAt: time.Time;
-	
-	    static createFrom(source: any = {}) {
-	        return new MetaContact(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.displayName = source["displayName"];
-	        this.avatarUrl = source["avatarUrl"];
-	        this.linkedAccounts = this.convertValues(source["linkedAccounts"], LinkedAccount);
-	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
-	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class ConversationResolution {
 	    matches: MetaContact[];
@@ -1727,4 +1763,3 @@ export namespace time {
 	}
 
 }
-

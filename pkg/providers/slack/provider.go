@@ -63,12 +63,13 @@ type SlackProvider struct {
 	eventStreamStarted    bool                    // Whether event stream has been started
 	searchUnavailable     bool                    // search.messages lacks scope; use bounded history polling
 	historyFallbackCursor int                     // Rotating history cursor; survives event-stream reconnects
-	connectionCancel      context.CancelFunc      // Stops Socket Mode across reconnects
-	dmChannelCache        map[string]string       // Cache: DM channel ID (D...) -> User ID (U...)
-	dmChannelCacheMu      sync.RWMutex            // Mutex for DM channel cache
-	selfUserID            string                  // Cached authenticated user ID (from AuthTest)
-	selfDMChannelID       string                  // Cached channel ID for Slack's DM with yourself
-	teamID                string                  // Cached workspace ID used to build Slack web conversation links
+	pollingSnapshot       slackPollingSnapshot
+	connectionCancel      context.CancelFunc // Stops Socket Mode across reconnects
+	dmChannelCache        map[string]string  // Cache: DM channel ID (D...) -> User ID (U...)
+	dmChannelCacheMu      sync.RWMutex       // Mutex for DM channel cache
+	selfUserID            string             // Cached authenticated user ID (from AuthTest)
+	selfDMChannelID       string             // Cached channel ID for Slack's DM with yourself
+	teamID                string             // Cached workspace ID used to build Slack web conversation links
 }
 
 // userStatus represents the cached status information for a user

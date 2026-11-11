@@ -2,6 +2,7 @@ package main
 
 import (
 	"Loom/pkg/db"
+	"Loom/pkg/models"
 	"encoding/json"
 	"os"
 	"testing"
@@ -70,4 +71,33 @@ func BenchmarkContactBridge(b *testing.B) {
 			}
 		})
 	}
+	b.Run("incremental-unchanged", func(b *testing.B) {
+		cache := &contactChangesCache{}
+		load := func(revision string) models.ContactChanges {
+			contacts := db.ContactStore.GetAll()
+			app.compactContactAvatars(contacts)
+			changes, err := cache.changes(contacts, revision)
+			if err != nil {
+				b.Fatal(err)
+			}
+			return changes
+		}
+		initial := load("")
+		b.ReportAllocs()
+		b.ResetTimer()
+		var payload []byte
+		for range b.N {
+			changes := load(initial.Revision)
+			var err error
+			payload, err = json.Marshal(changes)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if changes.Reset || len(changes.Contacts) != 0 || len(changes.RemovedIDs) != 0 {
+				b.Fatal("unchanged snapshot produced changes")
+			}
+		}
+		b.StopTimer()
+		b.ReportMetric(float64(len(payload)), "payload-B")
+	})
 }

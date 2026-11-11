@@ -15,7 +15,8 @@ import { ContactListSkeleton } from "@/components/ContactListSkeleton";
 import { ConversationDetailsView } from "./ConversationDetailsView";
 import { ConversationDetailsViewSkeleton } from "./ConversationDetailsViewSkeleton";
 import { EventsOn, WindowToggleMaximise } from "../../wailsjs/runtime/runtime";
-import { GetConfig, GetConfiguredProviders, GetMetaContacts } from "../../wailsjs/go/main/App";
+import { GetConfig, GetConfiguredProviders } from "../../wailsjs/go/main/App";
+import { fetchMetaContacts } from "@/lib/metaContacts";
 import { MessageList } from "./MessageList";
 import { MessageListSkeleton } from "@/components/MessageListSkeleton";
 import { ProviderFilterBar } from "./ProviderFilterBar";
@@ -67,7 +68,7 @@ export function ChatLayout() {
     void (async () => {
       const config = await GetConfig();
       if (config?.mockMode) {
-        const contacts = await GetMetaContacts();
+        const contacts = await fetchMetaContacts();
         if (contacts?.length > 0) {
           setSelectedContact(contacts[0], true);
         }

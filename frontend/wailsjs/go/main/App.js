@@ -226,6 +226,10 @@ export function GetMessagesForConversationBefore(arg1, arg2) {
   return window['go']['main']['App']['GetMessagesForConversationBefore'](arg1, arg2);
 }
 
+export function GetMetaContactChanges(arg1) {
+  return window['go']['main']['App']['GetMetaContactChanges'](arg1);
+}
+
 export function GetMetaContacts() {
   return window['go']['main']['App']['GetMetaContacts']();
 }

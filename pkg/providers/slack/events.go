@@ -378,7 +378,7 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 		return cursor
 	}
 
-	conversations, err := slackFallbackConversations(db.DB, instanceID)
+	conversations, err := p.cachedFallbackConversations(db.DB)
 	if err != nil {
 		p.log("SlackProvider.pollKnownConversationHistoryFallback: failed listing local conversations: %v\n", err)
 		return cursor
