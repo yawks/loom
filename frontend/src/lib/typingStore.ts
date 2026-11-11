@@ -73,6 +73,7 @@ export const useTypingStore = create<TypingState>((set) => ({
   setNotTyping: (conversationId, userId) => {
     set((state) => {
       const currentTyping = state.typingByConversation[conversationId] || [];
+      if (!currentTyping.some((user) => user.userId === userId)) return state;
       const filteredTyping = currentTyping.filter((u) => u.userId !== userId);
       
       if (filteredTyping.length === 0) {
@@ -118,10 +119,32 @@ export const useTypingStore = create<TypingState>((set) => ({
   },
 }));
 
-// Periodically clear expired typing indicators
-if (typeof window !== "undefined") {
-  setInterval(() => {
-    useTypingStore.getState().clearExpired();
-  }, 1000);
+// No permanent interval at idle: one timer targets the earliest actual expiry.
+// A new typing event extends that user's deadline; removals cancel unused work.
+export function startTypingExpiryTimer() {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const schedule = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    let next = Infinity;
+    for (const users of Object.values(useTypingStore.getState().typingByConversation)) {
+      for (const user of users) next = Math.min(next, user.timestamp + TYPING_TIMEOUT_MS);
+    }
+    if (next === Infinity) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      useTypingStore.getState().clearExpired();
+      schedule();
+    }, Math.max(0, next - Date.now()));
+  };
+  const unsubscribe = useTypingStore.subscribe(schedule);
+  schedule();
+  return () => {
+    unsubscribe();
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }
 
+if (typeof window !== "undefined") {
+  startTypingExpiryTimer();
+}

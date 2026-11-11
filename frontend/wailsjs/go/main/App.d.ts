@@ -69,6 +69,8 @@ export function GetAvailableProviders():Promise<Array<core.ProviderInfo>>;
 
 export function GetAvatar(arg1:string):Promise<string>;
 
+export function GetBridgeDiagnosticsEnabled():Promise<boolean>;
+
 export function GetCapabilities(arg1:string):Promise<core.Capabilities>;
 
 export function GetCaptureProtectionSettings():Promise<main.CaptureProtectionSettings>;
@@ -180,6 +182,8 @@ export function RemoveGroupParticipants(arg1:string,arg2:Array<string>):Promise<
 export function RemoveProvider(arg1:string):Promise<void>;
 
 export function RemoveReaction(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function ReportBridgeDiagnostics(arg1:string):Promise<void>;
 
 export function ResetProviderAuthentication(arg1:string):Promise<void>;
 

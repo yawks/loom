@@ -130,6 +130,10 @@ export function GetAvatar(arg1) {
   return window['go']['main']['App']['GetAvatar'](arg1);
 }
 
+export function GetBridgeDiagnosticsEnabled() {
+  return window['go']['main']['App']['GetBridgeDiagnosticsEnabled']();
+}
+
 export function GetCapabilities(arg1) {
   return window['go']['main']['App']['GetCapabilities'](arg1);
 }
@@ -352,6 +356,10 @@ export function RemoveProvider(arg1) {
 
 export function RemoveReaction(arg1, arg2, arg3) {
   return window['go']['main']['App']['RemoveReaction'](arg1, arg2, arg3);
+}
+
+export function ReportBridgeDiagnostics(arg1) {
+  return window['go']['main']['App']['ReportBridgeDiagnostics'](arg1);
 }
 
 export function ResetProviderAuthentication(arg1) {

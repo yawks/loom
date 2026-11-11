@@ -10,8 +10,8 @@ import (
 )
 
 type cpuProfileConfig struct {
-	path            string
-	delay, duration time.Duration
+	path                     string
+	delay, duration, maxWait time.Duration
 }
 
 // Profiling is opt-in and writes locally; no diagnostic HTTP server is exposed.
@@ -27,6 +27,7 @@ func diagnosticCPUProfileConfig(getenv func(string) string) (cpuProfileConfig, e
 	}{
 		{"LOOM_CPU_PROFILE_DELAY", &c.delay, true},
 		{"LOOM_CPU_PROFILE_DURATION", &c.duration, false},
+		{"LOOM_CPU_PROFILE_MAX_WAIT", &c.maxWait, true},
 	} {
 		if raw := getenv(setting.name); raw != "" {
 			value, err := time.ParseDuration(raw)
@@ -39,7 +40,7 @@ func diagnosticCPUProfileConfig(getenv func(string) string) (cpuProfileConfig, e
 	return c, nil
 }
 
-func startDiagnosticCPUProfile(ready func() bool) func() {
+func startDiagnosticCPUProfile(ready func() bool, observers ...func(bool)) func() {
 	c, err := diagnosticCPUProfileConfig(os.Getenv)
 	if err != nil {
 		log.Printf("[CPUProfile] %v", err)
@@ -64,6 +65,7 @@ func startDiagnosticCPUProfile(ready func() bool) func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var idleSince time.Time
+		waitStarted := time.Now()
 		for {
 			if ready() {
 				if idleSince.IsZero() {
@@ -74,6 +76,10 @@ func startDiagnosticCPUProfile(ready func() bool) func() {
 				}
 			} else {
 				idleSince = time.Time{}
+			}
+			if c.maxWait > 0 && time.Since(waitStarted) >= c.maxWait {
+				log.Printf("[CPUProfile] Synchronization did not become idle within %s; recording background activity, not strict idle", c.maxWait)
+				break
 			}
 			select {
 			case <-ctx.Done():
@@ -93,12 +99,18 @@ func startDiagnosticCPUProfile(ready func() bool) func() {
 			return
 		}
 		log.Printf("[CPUProfile] Recording %s to %s", c.duration, c.path)
+		for _, observer := range observers {
+			observer(true)
+		}
 		timer.Reset(c.duration)
 		select {
 		case <-ctx.Done():
 		case <-timer.C:
 		}
 		pprof.StopCPUProfile()
+		for _, observer := range observers {
+			observer(false)
+		}
 		log.Printf("[CPUProfile] Saved %s", c.path)
 	}()
 	return func() { cancel(); <-done }

@@ -212,6 +212,7 @@ export function MessageList({
     queryFn: () => GetScheduledMessages(conversationId),
     enabled: Boolean(conversationId && supportsListScheduledMessages),
     refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
   });
   const scheduledMessages = rawScheduledMessages ?? [];
 

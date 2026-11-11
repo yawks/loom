@@ -87,6 +87,7 @@ export function ConversationDetailsView({
     queryFn: () => GetGroupDetails(conversationId),
     enabled: Boolean(supportsDetails && conversationId),
     refetchInterval: 15000,
+    refetchOnWindowFocus: true,
   });
   // Direct conversations require explicit per-conversation permission as well as
   // provider support. Older group providers retain capability-based behavior.

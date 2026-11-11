@@ -21,7 +21,7 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp()
 	app.mockMode = slices.Contains(os.Args[1:], "--mock")
-	stopProfiling := startDiagnosticCPUProfile(func() bool { return len(app.GetSyncingProviderIDs()) == 0 })
+	stopProfiling := startDiagnosticCPUProfile(func() bool { return len(app.GetSyncingProviderIDs()) == 0 }, app.setBridgeDiagnosticsRecording)
 	defer stopProfiling()
 
 	// Create application with options
@@ -35,6 +35,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        app.startup,
 		OnDomReady: func(ctx context.Context) {
+			go app.watchWindowActivity(ctx)
 			app.domReady(ctx)
 			setWindowCornerRadius(6)
 		},

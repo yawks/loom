@@ -68,6 +68,7 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
     queryKey: ["conversationInvitations"],
     queryFn: ListConversationInvitations,
     refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
   // Older/running backends can serialize a nil Go slice as null. Keep the UI
   // safe during rolling upgrades as well as when there are no invitations.

@@ -1,6 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Loader2, Plus, ShieldCheck, ShieldMinus, UserMinus, X } from "lucide-react";
-import { AddGroupParticipants, DemoteGroupAdmins, GetGroupParticipants, GetParticipantNamesForConversation, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAliasForConversation } from "../../wailsjs/go/main/App";
+import { AddGroupParticipants, DemoteGroupAdmins, GetParticipantNamesForConversation, PromoteGroupAdmins, SearchProviderContacts, RemoveGroupParticipants, SetContactAliasForConversation } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 
@@ -22,6 +22,7 @@ import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { usePresenceStore } from "@/lib/presenceStore";
 import { useTranslation } from "react-i18next";
+import { groupParticipantsQuery } from "@/lib/groupParticipantsQuery";
 
 interface ParticipantsListProps {
   conversationId: string;
@@ -35,29 +36,6 @@ interface ParticipantsListProps {
   canAddMembers: boolean;
   canRemoveMembers: boolean;
   canManageAdmins: boolean;
-}
-
-// Load membership separately from display-name enrichment. Name resolution may
-// contact remote providers and must not keep the whole participant list behind
-// the Suspense fallback when one of those lookups is slow or unavailable.
-async function fetchGroupParticipants(
-  conversationId: string,
-  isGroup: boolean
-): Promise<models.GroupParticipant[]> {
-  // Direct conversations derive their participants from messages. Calling the
-  // provider's group endpoint for them is both unnecessary and an error for
-  // providers that use separate conversation and participant identifiers.
-  if (!isGroup) {
-    return [];
-  }
-
-  try {
-    const groupParticipants = await GetGroupParticipants(conversationId);
-    return Array.isArray(groupParticipants) ? groupParticipants : [];
-  } catch (err) {
-    console.error("Failed to get group participants:", err);
-    return [];
-  }
 }
 
 // Get display name for a message sender
@@ -105,11 +83,7 @@ export function ParticipantsList({
   const [participantToRemove, setParticipantToRemove] = useState<{ id: string; name: string } | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
 
-  const { data: groupParticipantsData } = useSuspenseQuery<models.GroupParticipant[], Error>({
-    queryKey: ["participantsData", conversationId, isGroup],
-    queryFn: () => fetchGroupParticipants(conversationId, isGroup),
-    refetchInterval: 15000,
-  });
+  const { data: groupParticipantsData } = useSuspenseQuery(groupParticipantsQuery(conversationId, isGroup));
 
   const participantIDs = useMemo(
     () => groupParticipantsData.map((participant) => participant.userId).filter(Boolean),

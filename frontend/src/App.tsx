@@ -1,11 +1,14 @@
 import { useEffect } from "react";
 import { ChatLayout } from "@/components/ChatLayout";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAppStore } from "@/lib/store";
 import i18n from "@/i18n";
 import "./App.css";
 import { useSystemNotifications } from "@/hooks/useSystemNotifications";
 import { CaptureProtectionProvider } from "@/components/CaptureProtection";
+import { EventsOn } from "../wailsjs/runtime/runtime";
+import { IsWindowActive } from "../wailsjs/go/main/App";
+import { watchQueryActivity } from "@/lib/queryActivity";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +21,10 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+focusManager.setEventListener((focused) => watchQueryActivity(
+  focused, EventsOn, IsWindowActive,
+));
 
 function AppContent() {
   useSystemNotifications();

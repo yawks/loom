@@ -258,6 +258,7 @@ export function ChatInput({ onFileUploadRequest, replyingToMessage, onCancelRepl
     queryFn: () => GetGroupDetails(conversationId ?? ""),
     enabled: Boolean(activeAccount?.isGroup && conversationId),
     refetchInterval: 15000,
+    refetchOnWindowFocus: true,
   });
   const canSendMessages = !activeAccount?.isGroup || groupDetails?.canSendMessages !== false;
   const draftStorageKey = useMemo(

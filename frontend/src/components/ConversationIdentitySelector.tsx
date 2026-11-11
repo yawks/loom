@@ -12,6 +12,7 @@ export function ConversationIdentitySelector({ conversationId }: { conversationI
     queryFn: () => GetConversationIdentities(conversationId),
     staleTime: 15_000,
     refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
     retry: false,
   });
   // Discovery can also hydrate identity metadata on already stored messages.

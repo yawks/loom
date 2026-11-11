@@ -42,23 +42,24 @@ type session struct {
 type Provider struct {
 	unsupportedProvider
 
-	mu             sync.RWMutex
-	historySyncMu  sync.Mutex
-	recoveryMu     sync.Mutex
-	recoveryActive bool
-	recoverySince  time.Time
-	fileMu         sync.RWMutex
-	config         core.ProviderConfig
-	instance       string
-	session        *session
-	client         *msteams.Client
-	cancel         context.CancelFunc
-	eventChan      chan core.ProviderEvent
-	sharedFiles    map[string]msteams.SharedFile
-	attachmentURLs map[string]struct{}
-	avatarFailures map[string]struct{}
-	metadataMu     sync.Mutex
-	metadataPages  map[string]struct{}
+	mu               sync.RWMutex
+	historySyncMu    sync.Mutex
+	legacyRepairNext time.Time // protected by historySyncMu
+	recoveryMu       sync.Mutex
+	recoveryActive   bool
+	recoverySince    time.Time
+	fileMu           sync.RWMutex
+	config           core.ProviderConfig
+	instance         string
+	session          *session
+	client           *msteams.Client
+	cancel           context.CancelFunc
+	eventChan        chan core.ProviderEvent
+	sharedFiles      map[string]msteams.SharedFile
+	attachmentURLs   map[string]struct{}
+	avatarFailures   map[string]struct{}
+	metadataMu       sync.Mutex
+	metadataPages    map[string]struct{}
 }
 
 var _ core.Provider = (*Provider)(nil)
@@ -207,20 +208,21 @@ func (p *Provider) SyncAllHistory(since time.Time) error {
 	return p.syncHistory(since, true)
 }
 
-func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error {
+func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) (syncErr error) {
 	p.historySyncMu.Lock()
 	defer p.historySyncMu.Unlock()
 	client, instance, err := p.connectedClient()
 	if err != nil {
 		return err
 	}
-	if err := p.normalizeStoredMeetingRecordings(); err != nil {
-		return err
-	}
+	defer func() {
+		if syncErr != nil {
+			p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusError, Message: "Microsoft Teams history synchronization failed", Progress: -1})
+		}
+	}()
 	p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusFetchingContacts, Message: "Fetching Microsoft Teams conversations", Progress: 0})
 	chats, err := client.ListChats(context.Background())
 	if err != nil {
-		p.emit(core.SyncStatusEvent{InstanceID: instance, Status: core.SyncStatusError, Message: "Unable to fetch Microsoft Teams conversations", Progress: -1})
 		return fmt.Errorf("%s: list chats: %w", providerID, err)
 	}
 	if err := p.removeVirtualConversations(); err != nil {
@@ -282,28 +284,8 @@ func (p *Provider) syncHistory(since time.Time, auditRequestedWindow bool) error
 			p.emit(core.MessageBatchEvent{InstanceID: instance, ConversationID: account.ConversationID, Messages: readThrough, ForceRead: true})
 		}
 	}
-	if err := p.removeStoredPendingRecordings(client); err != nil {
+	if err := p.runLegacyRepairs(time.Now(), func() error { return p.repairLegacyMessages(client) }); err != nil {
 		return err
-	}
-	repairedFormatting, err := p.repairStoredHTMLFormatting(client)
-	if err != nil {
-		return err
-	}
-	for conversationID, messages := range repairedFormatting {
-		p.emit(core.MessageBatchEvent{
-			InstanceID: p.instance, ConversationID: conversationID,
-			Messages: messages, IsHistorical: true,
-		})
-	}
-	repairedCards, err := p.repairStoredCards(client)
-	if err != nil {
-		return err
-	}
-	for conversationID, messages := range repairedCards {
-		p.emit(core.MessageBatchEvent{
-			InstanceID: p.instance, ConversationID: conversationID,
-			Messages: messages, IsHistorical: true,
-		})
 	}
 	completionMessage := "Microsoft Teams sync completed"
 	if skipped > 0 {

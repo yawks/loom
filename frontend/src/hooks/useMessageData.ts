@@ -1,4 +1,4 @@
-import { GetCurrentUserID, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNamesForConversation, GetGroupParticipants, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
+import { GetCurrentUserID, GetMessagesForConversation, GetMessagesForConversationBefore, GetParticipantNamesForConversation, GetThreadSummaries, FetchLinkPreview } from "../../wailsjs/go/main/App";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -7,6 +7,7 @@ import { models } from "../../wailsjs/go/models";
 import { timeToDate, extractFirstUrl } from "@/lib/utils";
 import { useMessageReadStore } from "@/lib/messageReadStore";
 import { mergePendingMessages } from "@/lib/pendingMessages";
+import { EMPTY_GROUP_PARTICIPANTS, groupParticipantsQuery } from "@/lib/groupParticipantsQuery";
 
 // SQLite is the source of truth. Keep a small LRU window of conversation
 // histories in the renderer so browsing many conversations cannot grow the
@@ -38,7 +39,6 @@ export function useMessageData(
   const cleanupObsoleteMessages = useMessageReadStore((state) => state.cleanupObsoleteMessages);
   const readByConversation = useMessageReadStore((state) => state.readByConversation);
   const [participantNames, setParticipantNames] = useState<Map<string, string>>(new Map());
-  const [groupParticipants, setGroupParticipants] = useState<models.GroupParticipant[]>([]);
 
   const conversationReadState = useMemo(
     () => readByConversation[conversationId] ?? {},
@@ -183,36 +183,10 @@ export function useMessageData(
   });
   const currentUserId = providerCurrentUserId || messages.find((msg) => msg.isFromMe && msg.senderId)?.senderId;
 
-  useEffect(() => {
-    if (!conversationId) {
-      setGroupParticipants([]);
-      return;
-    }
-    if (isGroupFromProvider || isGroupConversation) {
-      let cancelled = false;
-      const loadParticipants = () => {
-        GetGroupParticipants(conversationId)
-          .then((res) => {
-            if (!cancelled && Array.isArray(res)) {
-              setGroupParticipants(res);
-            }
-          })
-          .catch((err) => {
-            console.error("Failed to load group participants:", err);
-          });
-      };
-      loadParticipants();
-      // Provider metadata such as participant avatars may arrive asynchronously.
-      // Refresh the canonical participant contract while the conversation is open.
-      const interval = window.setInterval(loadParticipants, 15000);
-      return () => {
-        cancelled = true;
-        window.clearInterval(interval);
-      };
-    } else {
-      setGroupParticipants([]);
-    }
-  }, [conversationId, isGroupFromProvider, isGroupConversation]);
+  const { data: groupParticipants = EMPTY_GROUP_PARTICIPANTS } = useQuery({
+    ...groupParticipantsQuery(conversationId, isGroupFromProvider || isGroupConversation),
+    enabled: Boolean(conversationId && (isGroupFromProvider || isGroupConversation)),
+  });
 
   useEffect(() => {
     if (!conversationId) return;

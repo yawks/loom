@@ -13,6 +13,7 @@ export function ConversationApplications({ conversationId }: { conversationId: s
     queryFn: () => GetConversationApplications(conversationId),
     enabled: Boolean(conversationId),
     refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   });
 
   if (!data.length && !selected) return null;

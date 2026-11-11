@@ -637,10 +637,12 @@ func (p *Provider) repairStoredCards(client *msteams.Client) (map[string][]model
 	if db.DB == nil {
 		return repaired, nil
 	}
+	if strings.TrimSpace(p.instance) == "" {
+		return nil, fmt.Errorf("%s: empty provider instance for card repair", providerID)
+	}
 	var stored []models.Message
-	if err := db.DB.Where(
-		"protocol_conv_id LIKE ? AND LOWER(body) LIKE ?",
-		p.instance+"::%", "%go.skype.com/cards.unsupported%",
+	if err := db.ForProvider(db.DB, p.instance).Messages().Where(
+		"LOWER(body) LIKE ?", "%go.skype.com/cards.unsupported%",
 	).Find(&stored).Error; err != nil {
 		return nil, fmt.Errorf("%s: find stored card placeholders: %w", providerID, err)
 	}

@@ -244,3 +244,36 @@ cd ..
 GOTOOLCHAIN=go1.26.6 wails build
 # output: build/bin/
 ```
+
+### Measuring idle/background CPU (macOS)
+
+After building, run:
+
+```bash
+python3 scripts/profile_idle.py --restart --output /path/to/private/measurements
+```
+
+The opt-in diagnostic build waits two minutes and 30 seconds without active
+synchronization, then records two minutes of Go CPU, OS process CPU and aggregate
+Go/interface call counts, durations and string volumes. It leaves the built app
+running and does not replace `/Applications/Loom.app`. An idle-sleep assertion is
+held only for the measurement process; the display can still sleep.
+
+`--max-wait 60` explicitly permits capturing background synchronization if strict
+idle cannot be reached. Such a capture is **not** an idle baseline. Check
+`quality.json`: sleep/wake or delayed captures are marked non-comparable. Compare
+the same window state, duration and provider activity before/after; do not infer
+total CPU savings from individual query or serialization benchmarks.
+
+Profiling is otherwise disabled. `LOOM_CPU_PROFILE` names a new local output
+file; `LOOM_CPU_PROFILE_DELAY`, `LOOM_CPU_PROFILE_DURATION` and optional
+`LOOM_CPU_PROFILE_MAX_WAIT` accept Go durations. `LOOM_BRIDGE_DIAGNOSTICS=1`
+enables aggregate bridge metrics during that capture. These metrics do not log
+message contents or arguments, but the separate provider/application log may
+contain personal data: do not share it without redaction.
+
+For a repeatable contact-payload benchmark using a read-only database:
+
+```bash
+LOOM_BENCHMARK_DATABASE=/path/to/loom.db go test . -run '^$' -bench BenchmarkContactBridge -benchtime=20x
+```

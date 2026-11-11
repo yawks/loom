@@ -1,0 +1,33 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import { startTypingExpiryTimer, useTypingStore } from "../src/lib/typingStore";
+
+test("typing expiry is event-driven and extends only active users", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  const timeout = t.mock.method(globalThis, "setTimeout");
+  useTypingStore.setState({ typingByConversation: {} });
+  const stop = startTypingExpiryTimer();
+  assert.equal(timeout.mock.callCount(), 0);
+  t.after(stop);
+  const store = useTypingStore.getState();
+  const empty = useTypingStore.getState();
+  store.setNotTyping("conversation", "absent");
+  assert.equal(useTypingStore.getState(), empty);
+  t.mock.timers.tick(60_000);
+  assert.equal(timeout.mock.callCount(), 0);
+  assert.equal(useTypingStore.getState(), empty);
+  store.setTyping("conversation", "one");
+  t.mock.timers.tick(2000);
+  store.setTyping("conversation", "two");
+  t.mock.timers.tick(2000);
+  store.setTyping("conversation", "one");
+  t.mock.timers.tick(3000);
+  assert.deepEqual(useTypingStore.getState().typingByConversation.conversation.map((user) => user.userId), ["one"]);
+  t.mock.timers.tick(2000);
+  assert.deepEqual(useTypingStore.getState().typingByConversation, {});
+  store.setTyping("conversation", "one");
+  store.setNotTyping("conversation", "one");
+  const cleared = useTypingStore.getState();
+  t.mock.timers.tick(60_000);
+  assert.equal(useTypingStore.getState(), cleared);
+});

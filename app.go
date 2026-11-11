@@ -58,15 +58,14 @@ type metaContactsCache struct {
 	mu        sync.RWMutex
 }
 
-// queryCache is a generic short-lived cache for expensive DB read results.
-// The frontend fires GetAllLastMessages, GetAllLastMessageTimestamps and
-// GetAllMessageCounts simultaneously on every React mount; a 5-second TTL
-// collapses startup bursts into a single DB hit per query type.
+// queryCache caches message summaries until a relevant event invalidates them.
+// A bounded TTL is a safety net for out-of-band writes, not a polling cadence.
 type queryCache[T any] struct {
-	mu        sync.RWMutex
-	loadMu    sync.Mutex
-	data      T
-	expiresAt time.Time
+	mu         sync.RWMutex
+	loadMu     sync.Mutex
+	data       T
+	expiresAt  time.Time
+	generation uint64
 }
 
 // LinkPreview holds Open Graph metadata for a URL.
@@ -93,16 +92,14 @@ type App struct {
 	systemTray              *menu.Menu
 	pendingProviderStartups []pendingProviderStartup // network work deferred until domReady
 	metaContactsCache       metaContactsCache
+	avatarReferences        avatarReferenceCache
 	mu                      sync.RWMutex
 	providerRestoreReady    chan struct{}
 	databaseReady           chan struct{}
 	providerRestoreStarted  bool
 	providerRestoreComplete bool
 
-	// Short-lived server-side caches for expensive full-table-scan queries.
-	// The frontend has 30s staleTime but mounts multiple components simultaneously
-	// at startup, producing a burst of identical queries on the same DB connection.
-	// A 5s TTL collapses each burst into a single DB hit.
+	// Event-invalidated caches for expensive conversation summary queries.
 	lastMessagesCache   queryCache[map[string]models.Message]
 	lastTimestampsCache queryCache[map[string]int64]
 	messageCountsCache  queryCache[map[string]int]
@@ -1492,7 +1489,8 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					}
 				case core.ReceiptEvent:
 					persistMessageReceipt(e)
-					a.invalidateMessageCaches()
+					// Receipts modify message_receipts, not the message summaries or
+					// counts. Forward the event without invalidating all history scans.
 					receiptJSON, _ := json.Marshal(e)
 					if a.ctx != nil {
 						runtime.EventsEmit(a.ctx, "receipt", string(receiptJSON))
@@ -1507,6 +1505,7 @@ func (a *App) startEventListenerForProvider(ctx context.Context, instanceID stri
 					// Refresh independently of provider-specific contact events so a newly
 					// paired account is immediately visible without restarting Loom.
 					if e.Status == core.SyncStatusCompleted {
+						a.invalidateMessageCaches()
 						a.emitContactsRefresh()
 					}
 					a.emitSyncStatusCoordinated(e)
@@ -1655,10 +1654,7 @@ func (a *App) GetAvatar(path string) string {
 		}
 		return ""
 	}
-	mimeType := "image/jpeg"
-	if strings.HasSuffix(strings.ToLower(path), ".png") {
-		mimeType = "image/png"
-	}
+	mimeType := http.DetectContentType(data)
 	encoded := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
 }
@@ -1847,6 +1843,7 @@ func (a *App) GetMetaContacts() ([]models.MetaContact, error) {
 
 	// Load contacts from the in-memory store — zero DB queries.
 	metaContacts := db.ContactStore.GetAll()
+	a.compactContactAvatars(metaContacts)
 
 	// Apply conversation IDs from the in-memory store — O(1), no DB query needed.
 	// Avatars are NOT converted to base64 here; the frontend loads them on-demand via GetAvatar.
@@ -2438,22 +2435,13 @@ func (a *App) persistCreatedConversation(instanceID, protocol, conversationType,
 	return &meta, nil
 }
 
-// invalidateMessageCaches clears the three short-lived message caches so the next
+// invalidateMessageCaches clears the three message summary caches so the next
 // call to GetAllLastMessages / GetAllLastMessageTimestamps / GetAllMessageCounts
 // hits the DB. Called whenever a new message is saved.
 func (a *App) invalidateMessageCaches() {
-	now := time.Time{} // zero = expired
-	a.lastMessagesCache.mu.Lock()
-	a.lastMessagesCache.expiresAt = now
-	a.lastMessagesCache.mu.Unlock()
-
-	a.lastTimestampsCache.mu.Lock()
-	a.lastTimestampsCache.expiresAt = now
-	a.lastTimestampsCache.mu.Unlock()
-
-	a.messageCountsCache.mu.Lock()
-	a.messageCountsCache.expiresAt = now
-	a.messageCountsCache.mu.Unlock()
+	a.lastMessagesCache.invalidate()
+	a.lastTimestampsCache.invalidate()
+	a.messageCountsCache.invalidate()
 }
 
 // invalidateMetaContactsCache clears the GetMetaContacts cache so the next call hits the DB.
@@ -4439,40 +4427,29 @@ func (a *App) GetAllMessageCounts() (map[string]int, error) {
 		return map[string]int{}, nil
 	}
 
-	a.messageCountsCache.mu.RLock()
-	if time.Now().Before(a.messageCountsCache.expiresAt) {
-		cached := a.messageCountsCache.data
-		a.messageCountsCache.mu.RUnlock()
-		return cached, nil
-	}
-	a.messageCountsCache.mu.RUnlock()
+	return a.messageCountsCache.getOrLoad(messageSummaryCacheTTL, func() (map[string]int, error) {
+		type Result struct {
+			ProtocolConvID string
+			Count          int64
+		}
 
-	type Result struct {
-		ProtocolConvID string
-		Count          int64
-	}
+		var results []Result
+		err := db.DB.Model(&models.Message{}).
+			Select("protocol_conv_id, COUNT(*) as count").
+			Group("protocol_conv_id").
+			Scan(&results).Error
 
-	var results []Result
-	err := db.DB.Model(&models.Message{}).
-		Select("protocol_conv_id, COUNT(*) as count").
-		Group("protocol_conv_id").
-		Scan(&results).Error
+		if err != nil {
+			return map[string]int{}, err
+		}
 
-	if err != nil {
-		return map[string]int{}, err
-	}
+		result := make(map[string]int, len(results))
+		for _, r := range results {
+			result[r.ProtocolConvID] = int(r.Count)
+		}
 
-	result := make(map[string]int, len(results))
-	for _, r := range results {
-		result[r.ProtocolConvID] = int(r.Count)
-	}
-
-	a.messageCountsCache.mu.Lock()
-	a.messageCountsCache.data = result
-	a.messageCountsCache.expiresAt = time.Now().Add(5 * time.Second)
-	a.messageCountsCache.mu.Unlock()
-
-	return result, nil
+		return result, nil
+	})
 }
 
 // GetConversationsWithMessages returns a list of ProtocolConvIDs that have messages
@@ -4495,38 +4472,16 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 		return map[string]models.Message{}, nil
 	}
 
-	a.lastMessagesCache.mu.RLock()
-	if time.Now().Before(a.lastMessagesCache.expiresAt) {
-		cached := a.lastMessagesCache.data
-		a.lastMessagesCache.mu.RUnlock()
-		return cached, nil
-	}
-	a.lastMessagesCache.mu.RUnlock()
-
-	// Only one caller may refill an expired cache. React components can mount at
-	// the same time, and without this lock each cache miss runs the same full
-	// message query concurrently. Re-check after acquiring the lock because a
-	// preceding caller may have populated the cache while this one was waiting.
-	a.lastMessagesCache.loadMu.Lock()
-	defer a.lastMessagesCache.loadMu.Unlock()
-
-	a.lastMessagesCache.mu.RLock()
-	if time.Now().Before(a.lastMessagesCache.expiresAt) {
-		cached := a.lastMessagesCache.data
-		a.lastMessagesCache.mu.RUnlock()
-		return cached, nil
-	}
-	a.lastMessagesCache.mu.RUnlock()
-
-	var messages []models.Message
-	// Providers persist timestamps with different UTC offsets. julianday normalizes
-	// them before comparison; ordering the raw TEXT values would compare wall-clock
-	// times and put e.g. 21:00+02:00 after 20:00+00:00 incorrectly.
-	// ID makes equal timestamps deterministic.
-	// Thread replies intentionally participate. Enumerate conversation keys from
-	// the index, then seek the first meaningful message in each conversation
-	// instead of ranking every historical message with a window function.
-	err := db.DB.Raw(`
+	return a.lastMessagesCache.getOrLoad(messageSummaryCacheTTL, func() (map[string]models.Message, error) {
+		var messages []models.Message
+		// Providers persist timestamps with different UTC offsets. julianday normalizes
+		// them before comparison; ordering the raw TEXT values would compare wall-clock
+		// times and put e.g. 21:00+02:00 after 20:00+00:00 incorrectly.
+		// ID makes equal timestamps deterministic.
+		// Thread replies intentionally participate. Enumerate conversation keys from
+		// the index, then seek the first meaningful message in each conversation
+		// instead of ranking every historical message with a window function.
+		err := db.DB.Raw(`
 		SELECT messages.*
 		FROM (
 			SELECT DISTINCT protocol_conv_id
@@ -4548,22 +4503,18 @@ func (a *App) GetAllLastMessages() (map[string]models.Message, error) {
 		)
 	`).Find(&messages).Error
 
-	if err != nil {
-		fmt.Printf("[GetAllLastMessages] Error: %v\n", err)
-		return map[string]models.Message{}, err
-	}
+		if err != nil {
+			fmt.Printf("[GetAllLastMessages] Error: %v\n", err)
+			return map[string]models.Message{}, err
+		}
 
-	result := make(map[string]models.Message, len(messages))
-	for _, msg := range messages {
-		result[msg.ProtocolConvID] = msg
-	}
+		result := make(map[string]models.Message, len(messages))
+		for _, msg := range messages {
+			result[msg.ProtocolConvID] = msg
+		}
 
-	a.lastMessagesCache.mu.Lock()
-	a.lastMessagesCache.data = result
-	a.lastMessagesCache.expiresAt = time.Now().Add(5 * time.Second)
-	a.lastMessagesCache.mu.Unlock()
-
-	return result, nil
+		return result, nil
+	})
 }
 
 // The expression index supplies julianday(timestamp) without fetching every
@@ -4583,71 +4534,60 @@ func (a *App) GetAllLastMessageTimestamps() (map[string]int64, error) {
 		return map[string]int64{}, nil
 	}
 
-	a.lastTimestampsCache.mu.RLock()
-	if time.Now().Before(a.lastTimestampsCache.expiresAt) {
-		cached := a.lastTimestampsCache.data
-		a.lastTimestampsCache.mu.RUnlock()
-		return cached, nil
-	}
-	a.lastTimestampsCache.mu.RUnlock()
+	return a.lastTimestampsCache.getOrLoad(messageSummaryCacheTTL, func() (map[string]int64, error) {
+		result := make(map[string]int64)
 
-	result := make(map[string]int64)
-
-	rows, err := db.DB.Raw(allLastMessageTimestampsSQL).Rows()
-	if err != nil {
-		fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
-		return map[string]int64{}, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var protocolConvID string
-		var maxTimeMillis int64
-		if err := rows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
-			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning message row: %v\n", err)
-			continue
+		rows, err := db.DB.Raw(allLastMessageTimestampsSQL).Rows()
+		if err != nil {
+			fmt.Printf("[GetAllLastMessageTimestamps] Error getting message timestamps: %v\n", err)
+			return map[string]int64{}, err
 		}
-		if maxTimeMillis > 0 {
-			result[protocolConvID] = maxTimeMillis
-		}
-	}
+		defer rows.Close()
 
-	// A newly added reaction is conversation activity as well. Keep the latest
-	// surviving reaction date so the ordering is identical after a restart.
-	reactionRows, err := db.DB.Table("reactions").
-		Joins("JOIN messages ON messages.id = reactions.message_id").
-		Select(`
+		for rows.Next() {
+			var protocolConvID string
+			var maxTimeMillis int64
+			if err := rows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
+				fmt.Printf("[GetAllLastMessageTimestamps] Error scanning message row: %v\n", err)
+				continue
+			}
+			if maxTimeMillis > 0 {
+				result[protocolConvID] = maxTimeMillis
+			}
+		}
+
+		// A newly added reaction is conversation activity as well. Keep the latest
+		// surviving reaction date so the ordering is identical after a restart.
+		reactionRows, err := db.DB.Table("reactions").
+			Joins("JOIN messages ON messages.id = reactions.message_id").
+			Select(`
 			messages.protocol_conv_id,
 			CAST(ROUND(MAX(julianday(reactions.created_at)) * 86400000.0 - 210866760000000.0) AS INTEGER) AS max_time_ms
 		`).
-		Where("messages.deleted_at IS NULL").
-		Group("messages.protocol_conv_id").
-		Rows()
-	if err != nil {
-		fmt.Printf("[GetAllLastMessageTimestamps] Error getting reaction timestamps: %v\n", err)
-		return map[string]int64{}, err
-	}
-	defer reactionRows.Close()
-
-	for reactionRows.Next() {
-		var protocolConvID string
-		var maxTimeMillis int64
-		if err := reactionRows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
-			fmt.Printf("[GetAllLastMessageTimestamps] Error scanning reaction row: %v\n", err)
-			continue
+			Where("messages.deleted_at IS NULL").
+			Group("messages.protocol_conv_id").
+			Rows()
+		if err != nil {
+			fmt.Printf("[GetAllLastMessageTimestamps] Error getting reaction timestamps: %v\n", err)
+			return map[string]int64{}, err
 		}
-		if maxTimeMillis > result[protocolConvID] {
-			result[protocolConvID] = maxTimeMillis
+		defer reactionRows.Close()
+
+		for reactionRows.Next() {
+			var protocolConvID string
+			var maxTimeMillis int64
+			if err := reactionRows.Scan(&protocolConvID, &maxTimeMillis); err != nil {
+				fmt.Printf("[GetAllLastMessageTimestamps] Error scanning reaction row: %v\n", err)
+				continue
+			}
+			if maxTimeMillis > result[protocolConvID] {
+				result[protocolConvID] = maxTimeMillis
+			}
 		}
-	}
 
-	a.lastTimestampsCache.mu.Lock()
-	a.lastTimestampsCache.data = result
-	a.lastTimestampsCache.expiresAt = time.Now().Add(5 * time.Second)
-	a.lastTimestampsCache.mu.Unlock()
-
-	fmt.Printf("[GetAllLastMessageTimestamps] Returning %d total conversations with timestamps\n", len(result))
-	return result, nil
+		fmt.Printf("[GetAllLastMessageTimestamps] Returning %d total conversations with timestamps\n", len(result))
+		return result, nil
+	})
 }
 
 func (a *App) GetParticipantNames(userIDs []string) (map[string]string, error) {
