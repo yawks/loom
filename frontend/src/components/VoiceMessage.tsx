@@ -53,6 +53,7 @@ export function VoiceMessage({
     const [hasPlayedAndMarked, setHasPlayedAndMarked] = useState(false);
     const [waveform, setWaveform] = useState<number[]>([]);
     const [loadRequested, setLoadRequested] = useState(false);
+    const [loadError, setLoadError] = useState("");
     const [playWhenReady, setPlayWhenReady] = useState(false);
     const globalSpeechLocale = useAppStore((state) => state.speechTranscriptionLocale);
     const [speechLocales, setSpeechLocales] = useState<main.SpeechLocale[]>([]);
@@ -256,6 +257,11 @@ export function VoiceMessage({
                 }
             } catch (err) {
                 console.error("Failed to load voice message:", err);
+                if (active) {
+                    setLoadError(String(err));
+                    setPlayWhenReady(false);
+                    setLoadRequested(false);
+                }
             }
         };
         loadAudio();
@@ -339,6 +345,7 @@ export function VoiceMessage({
 
     const togglePlay = async () => {
         if (!loadRequested) {
+            setLoadError("");
             setLoadRequested(true);
             setPlayWhenReady(true);
             return;
@@ -508,6 +515,7 @@ export function VoiceMessage({
     return (
         <div className={`flex flex-col gap-1 px-3 ${layout === "bubble" ? "py-1" : "py-2"} rounded-xl ${widthClass} ${isFromMe ? "bg-blue-600 text-white" : "bg-muted/50 text-foreground border border-border"
             }`}>
+          {loadError && <span role="alert" className="text-xs break-words">{t("audio_load_failed", { defaultValue: "Unable to load audio. Click play to retry." })} {loadError}</span>}
           <div className="flex items-center gap-3 w-full">
             {audioUrl && (
                 <audio

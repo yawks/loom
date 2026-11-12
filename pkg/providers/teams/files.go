@@ -6,11 +6,13 @@ import (
 	"Loom/pkg/models"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"go.mau.fi/mautrix-teams/pkg/msteams"
 )
@@ -99,13 +101,15 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
 
 	p.fileMu.RLock()
 	sharedFile, isSharedFile := p.sharedFiles[fileURL]
 	_, isAttachment := p.attachmentURLs[fileURL]
 	p.fileMu.RUnlock()
 	if !isSharedFile && isSharePointURL(fileURL) {
-		sharedFile, isSharedFile = p.restoreSharedFile(client, fileURL)
+		sharedFile, isSharedFile = p.restoreSharedFile(ctx, client, fileURL)
 	}
 	if !isSharedFile && !isAttachment && !isMicrosoftFileURL(fileURL) {
 		return "", fmt.Errorf("%s: URL is not a Teams attachment", providerID)
@@ -114,15 +118,15 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 	var data []byte
 	var contentType string
 	if isSharedFile && sharedFile.ItemID != "" {
-		data, contentType, err = client.FetchSharedFile(context.Background(), sharedFile)
+		data, contentType, err = downloadTeamsSharedFile(ctx, sharedFile, client.FetchSharedFile, client.FetchSharedLink)
 	} else if isSharedFile {
 		// Some Teams video shares omit the SharePoint item ID while still
 		// providing an authenticated file/share URL. The UniqueId endpoint cannot
 		// serve those files, so use SharePoint's direct download flow instead.
 		sharedURL := firstNonEmptySharedFileURL(sharedFile.ShareURL, sharedFile.FileURL, fileURL)
-		data, contentType, err = client.FetchSharedLink(context.Background(), sharedURL)
+		data, contentType, err = client.FetchSharedLink(ctx, sharedURL)
 	} else if isSharePointURL(fileURL) {
-		data, contentType, err = client.FetchSharedLink(context.Background(), fileURL)
+		data, contentType, err = client.FetchSharedLink(ctx, fileURL)
 	} else {
 		// Legacy rows stored the AMS /imgo rendition as URL before the
 		// canonical model distinguished preview and original sources. Upgrade
@@ -130,9 +134,9 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 		// also open at source quality. Fall back when an older AMS object does
 		// not expose the original view.
 		fetchURL, _ := teamsImageAttachmentURLs(fileURL, "image")
-		data, contentType, err = client.FetchAttachment(context.Background(), fetchURL)
+		data, contentType, err = client.FetchAttachment(ctx, fetchURL)
 		if err != nil && fetchURL != fileURL {
-			data, contentType, err = client.FetchAttachment(context.Background(), fileURL)
+			data, contentType, err = client.FetchAttachment(ctx, fileURL)
 		}
 	}
 	if err != nil {
@@ -145,6 +149,59 @@ func (p *Provider) GetTeamsFileData(fileURL string) (string, error) {
 		return "", fmt.Errorf("%s: server returned HTML instead of file data", providerID)
 	}
 	return fmt.Sprintf("data:%s;base64,%s", contentType, base64.StdEncoding.EncodeToString(data)), nil
+}
+
+// Teams sometimes supplies a drive item ID where download.aspx expects a
+// SharePoint UniqueId. Retry through the sharing URL when that endpoint fails.
+func downloadTeamsSharedFile(ctx context.Context, file msteams.SharedFile,
+	fetchFile func(context.Context, msteams.SharedFile) ([]byte, string, error),
+	fetchLink func(context.Context, string) ([]byte, string, error),
+) ([]byte, string, error) {
+	data, contentType, err := fetchFile(ctx, file)
+	if err == nil || ctx.Err() != nil {
+		return data, contentType, err
+	}
+	if uniqueID, ok := teamsDriveItemUniqueID(file.ItemID); ok {
+		converted := file
+		converted.ItemID = uniqueID
+		var convertedErr error
+		data, contentType, convertedErr = fetchFile(ctx, converted)
+		if convertedErr == nil {
+			return data, contentType, nil
+		}
+		err = fmt.Errorf("%v; decoded UniqueId: %w", err, convertedErr)
+	}
+	if file.ShareURL == "" || ctx.Err() != nil {
+		return nil, "", err
+	}
+	data, contentType, linkErr := fetchLink(ctx, file.ShareURL)
+	if linkErr != nil {
+		return nil, "", fmt.Errorf("direct download: %v; sharing link: %w", err, linkErr)
+	}
+	return data, contentType, nil
+}
+
+// OneDrive business item IDs encode a SharePoint GUID in the final 26
+// base32 characters, preceded by two non-GUID bits. GUID fields are little-endian.
+func teamsDriveItemUniqueID(itemID string) (string, bool) {
+	if len(itemID) != 34 || !strings.HasPrefix(itemID, "01") {
+		return "", false
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	var guid [16]byte
+	for i, ch := range itemID[8:] {
+		value := strings.IndexRune(alphabet, ch)
+		if value < 0 {
+			return "", false
+		}
+		for bit := 0; bit < 5; bit++ {
+			position := i*5 + bit - 2
+			if position >= 0 && position < 128 && value&(1<<(4-bit)) != 0 {
+				guid[position/8] |= 1 << (7 - uint(position%8))
+			}
+		}
+	}
+	return fmt.Sprintf("%08x-%04x-%04x-%x-%x", binary.LittleEndian.Uint32(guid[0:4]), binary.LittleEndian.Uint16(guid[4:6]), binary.LittleEndian.Uint16(guid[6:8]), guid[8:10], guid[10:]), true
 }
 
 func firstNonEmptySharedFileURL(urls ...string) string {
@@ -181,12 +238,12 @@ func (p *Provider) ForwardAttachment(conversationID, fileURL, filename, mimeType
 // restoreSharedFile reloads the non-public SharePoint identifiers that Teams
 // supplied with the original message. Attachment JSON intentionally stores
 // only display fields, so these credentials must be recovered after restart.
-func (p *Provider) restoreSharedFile(client *msteams.Client, fileURL string) (msteams.SharedFile, bool) {
-	if db.DB == nil {
+func (p *Provider) restoreSharedFile(ctx context.Context, client *msteams.Client, fileURL string) (msteams.SharedFile, bool) {
+	if db.DB == nil || strings.TrimSpace(p.instance) == "" {
 		return msteams.SharedFile{}, false
 	}
 	var candidates []models.Message
-	if err := db.DB.Where("attachments LIKE ?", "%"+fileURL+"%").
+	if err := db.ForProvider(db.DB, p.instance).Messages().WithContext(ctx).Where("attachments LIKE ?", "%"+fileURL+"%").
 		Order("timestamp DESC").Limit(20).Find(&candidates).Error; err != nil {
 		return msteams.SharedFile{}, false
 	}
@@ -206,7 +263,7 @@ func (p *Provider) restoreSharedFile(client *msteams.Client, fileURL string) (ms
 			continue
 		}
 		remote, err := client.FetchMessage(
-			context.Background(), core.StripConvID(stored.ProtocolConvID), stored.ProtocolMsgID,
+			ctx, core.StripConvID(stored.ProtocolConvID), stored.ProtocolMsgID,
 		)
 		if err != nil {
 			continue
