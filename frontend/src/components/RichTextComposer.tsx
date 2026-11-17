@@ -8,6 +8,7 @@ import { BackgroundColor, Color, FontSize, TextStyle } from "@tiptap/extension-t
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { composerInputMarkdown, composerMarkdown } from "../lib/composerMarkdown";
 import { clipboardTableEditorInput } from "../lib/clipboardTable";
+import { normalizeComposerPasteHTML } from "../lib/composerPaste";
 
 const SAFE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
 const SAFE_SIZE = /^[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|%)$/i;
@@ -141,6 +142,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
     contentType: "markdown",
     editable: !disabled,
     editorProps: {
+      transformPastedHTML: (html) => normalizeComposerPasteHTML(html, features),
       handlePaste: (_view, event) => {
         if (!features.has("table") || !event.clipboardData || event.clipboardData.files.length > 0) return false;
         // Native HTML paste retains headings, lists, marks and actual tables.

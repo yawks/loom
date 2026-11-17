@@ -50,7 +50,7 @@ func TestProviderFormatting(t *testing.T) {
 		got  string
 		want []string
 	}{
-		{"slack", Slack(sample), []string{"*bold*", "_italic_", "_under_", "~gone~", "<https://example.com|site>", "- one", "1. first"}},
+		{"slack", Slack(sample), []string{"*bold*", "_italic_", "_under_", "~gone~", "<https://example.com|site>", "• one", "1. first"}},
 		{"whatsapp", WhatsApp(sample), []string{"*bold*", "_italic_", "_under_", "~gone~", "site (https://example.com)"}},
 		{"google chat", GoogleChat(sample), []string{"**bold**", "*italic*", "under", "~~gone~~", "[site](https://example.com)", "- one", "1. first"}},
 		{"plain", PlainText(sample), []string{"bold", "italic", "_under_", "~gone~", "site (https://example.com)", "* one", "1. first"}},

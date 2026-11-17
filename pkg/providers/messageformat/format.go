@@ -25,16 +25,34 @@ var (
 	loomStyleAttributePattern = regexp.MustCompile(`(?i)(color|background|size)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 )
 
-// Slack returns Slack mrkdwn while keeping lists readable as ASCII.
+// Slack returns Slack mrkdwn, retaining nested lists as visible bullet text.
 func Slack(markdown string) string {
 	out := stripCanonicalStyles(markdown)
+	prefix := "LOOMSLACKCODETOKEN"
+	for strings.Contains(out, prefix) {
+		prefix += "X"
+	}
+	var code []string
+	protect := func(fragment string) string {
+		token := prefix + strconv.Itoa(len(code)) + "END"
+		code = append(code, fragment)
+		return token
+	}
+	out = fencedCodePattern.ReplaceAllStringFunc(out, protect)
+	out = inlineCodePattern.ReplaceAllStringFunc(out, protect)
 	out = linkPattern.ReplaceAllString(out, `<$2|$1>`)
 	out = underlinePattern.ReplaceAllString(out, `_${1}_`)
 	out = italicPattern.ReplaceAllString(out, `${1}_${2}_`)
 	out = boldPattern.ReplaceAllString(out, `*${1}*`)
 	out = strikePattern.ReplaceAllString(out, `~${1}~`)
+	out = slackBulletPattern.ReplaceAllString(out, `${1}• `)
+	for index, fragment := range code {
+		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", fragment)
+	}
 	return out
 }
+
+var slackBulletPattern = regexp.MustCompile(`(?m)^([ \t]*)[-+*][ \t]+`)
 
 // WhatsApp returns the lightweight formatting syntax accepted by WhatsApp.
 func WhatsApp(markdown string) string {

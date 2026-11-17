@@ -1589,6 +1589,7 @@ func (p *SlackProvider) GetCapabilities() core.Capabilities {
 		MessageFormatting: strings.Join([]string{
 			core.MessageFormatBold, core.MessageFormatItalic, core.MessageFormatStrikethrough,
 			core.MessageFormatInlineCode, core.MessageFormatCodeBlock, core.MessageFormatLink,
+			core.MessageFormatBulletedList, core.MessageFormatNumberedList,
 		}, ","),
 	}
 }
