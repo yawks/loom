@@ -93,6 +93,7 @@ func TeamsHTML(markdown string) string {
 		parts := inlineCodePattern.FindStringSubmatch(match)
 		return protect("<code>" + html.EscapeString(parts[1]) + "</code>")
 	})
+	markdown = protectTeamsTables(markdown, protect)
 	markdown = teamsLinkPattern.ReplaceAllStringFunc(markdown, func(match string) string {
 		label, target, suffix := match, match, ""
 		if parts := linkPattern.FindStringSubmatch(match); parts != nil {
@@ -188,8 +189,8 @@ func TeamsHTML(markdown string) string {
 	}
 	closeList()
 	out = result.String()
-	for index, fragment := range fragments {
-		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", fragment)
+	for index := len(fragments) - 1; index >= 0; index-- {
+		out = strings.ReplaceAll(out, prefix+strconv.Itoa(index)+"END", fragments[index])
 	}
 	return out
 }

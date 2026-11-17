@@ -80,6 +80,11 @@ func teamsHTMLToMarkdown(input string) string {
 		}
 		if tag == "table" {
 			blockBoundary()
+			// A table cannot interrupt a list item's lazy continuation.
+			// Separate it from preceding prose/list content before its header.
+			if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n\n") {
+				out.WriteByte('\n')
+			}
 			table := tableToMarkdown(node, func(cell *html.Node) string {
 				previousOut := out
 				out = &strings.Builder{}

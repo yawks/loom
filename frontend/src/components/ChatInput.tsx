@@ -93,6 +93,9 @@ const extractPathsFromText = (text: string | null): string[] => {
 const clipboardImageSource = (html: string): string | null => {
   if (!html) return null;
   const document = new DOMParser().parseFromString(html, "text/html");
+  // Rich documents can contain inline icons/emoji alongside a table. They
+  // must be pasted as content, not mistaken for a standalone image upload.
+  if (document.querySelector("table") || document.body.textContent?.trim()) return null;
   return document.querySelector("img[src]")?.getAttribute("src") || null;
 };
 

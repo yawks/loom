@@ -411,6 +411,7 @@ const (
 	MessageFormatTextColor       = "text_color"
 	MessageFormatBackgroundColor = "background_color"
 	MessageFormatFontSize        = "font_size"
+	MessageFormatTable           = "table"
 )
 
 // PollVotingProvider is implemented by providers that can submit or replace

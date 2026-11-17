@@ -3,9 +3,11 @@ import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import Link from "@tiptap/extension-link";
 import Underline from "@tiptap/extension-underline";
+import { TableKit } from "@tiptap/extension-table";
 import { BackgroundColor, Color, FontSize, TextStyle } from "@tiptap/extension-text-style";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { composerInputMarkdown, composerMarkdown } from "../lib/composerMarkdown";
+import { clipboardTableEditorInput } from "../lib/clipboardTable";
 
 const SAFE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,% ]+\)|[a-z]+)$/i;
 const SAFE_SIZE = /^[0-9]+(?:\.[0-9]+)?(?:px|pt|em|rem|%)$/i;
@@ -126,6 +128,7 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
         underline: false,
       }),
       ...(features.has("underline") ? [CanonicalUnderline] : []),
+      ...(features.has("table") ? [TableKit] : []),
       ...(features.has("link") ? [Link.configure({ openOnClick: false, autolink: true })] : []),
       ...(features.has("text_color") || features.has("background_color") || features.has("font_size")
         ? [CanonicalTextStyle] : []),
@@ -138,6 +141,17 @@ export const RichTextComposer = forwardRef<RichTextComposerHandle, RichTextCompo
     contentType: "markdown",
     editable: !disabled,
     editorProps: {
+      handlePaste: (_view, event) => {
+        if (!features.has("table") || !event.clipboardData || event.clipboardData.files.length > 0) return false;
+        // Native HTML paste retains headings, lists, marks and actual tables.
+        if (event.clipboardData.getData("text/html")) return false;
+        const text = event.clipboardData.getData("text/plain");
+        const markdown = clipboardTableEditorInput(text);
+        if (markdown === null || !editor?.markdown) return false;
+        event.preventDefault();
+        editor.commands.insertContent(editor.markdown.parse(markdown).content ?? []);
+        return true;
+      },
       attributes: {
         class: "rich-message-composer min-h-[38px] max-h-[198px] overflow-y-auto px-3 py-2 text-sm leading-5 outline-none",
         "aria-label": placeholder,

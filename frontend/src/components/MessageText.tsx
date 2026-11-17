@@ -17,6 +17,7 @@ import { rehypeCanonicalBreaks, remarkCanonicalBlankLines } from "../lib/markdow
 import { rehypeCanonicalUnderline } from "../lib/markdownUnderline";
 import { rehypeCanonicalStyle } from "../lib/markdownStyle";
 import { outsideMarkdownCode, repairLegacyCodeFences } from "../lib/markdownCode";
+import { repairLegacyTableBoundaries } from "../lib/markdownTables";
 import { emojiShortcodePattern } from "../lib/emojiShortcodes";
 import type { PluggableList } from "unified";
 import type { models } from "../../wailsjs/go/models";
@@ -345,6 +346,7 @@ export const MessageText = memo(function MessageText({
       processedText = fixCodeBlocks(processedText);
       return processedText;
     });
+    processedText = repairLegacyTableBoundaries(processedText);
     processedText = annotateUnlabeledCodeFences(processedText);
     processedText = outsideMarkdownCode(processedText, (prose) => cleanEmoji(prose).replace(
       emojiShortcodePattern(),

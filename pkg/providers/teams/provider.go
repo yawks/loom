@@ -1178,6 +1178,7 @@ func (p *Provider) GetCapabilities() core.Capabilities {
 			core.MessageFormatStrikethrough, core.MessageFormatInlineCode, core.MessageFormatCodeBlock,
 			core.MessageFormatLink, core.MessageFormatBulletedList, core.MessageFormatNumberedList,
 			core.MessageFormatTextColor, core.MessageFormatBackgroundColor, core.MessageFormatFontSize,
+			core.MessageFormatTable,
 		}, ","),
 	}
 }

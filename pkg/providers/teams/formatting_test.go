@@ -150,9 +150,43 @@ func TestTeamsTableBoundaryAfterInlineText(t *testing.T) {
 	input := `<p>PI</p>EUREXO-WB-PB : deux décrochages successifs` +
 		`<table><tr><th>Période</th><th>Sans humain</th></tr>` +
 		`<tr><td>Octobre</td><td>8 %</td></tr></table><p><strong>Conclusion :</strong> baisse.</p>`
-	want := "PI\nEUREXO-WB-PB : deux décrochages successifs\n| Période | Sans humain |\n| --- | --- |\n| Octobre | 8 % |\n\n**Conclusion :** baisse."
+	want := "PI\nEUREXO-WB-PB : deux décrochages successifs\n\n| Période | Sans humain |\n| --- | --- |\n| Octobre | 8 % |\n\n**Conclusion :** baisse."
 	if got := teamsHTMLToMarkdown(input); got != want {
 		t.Fatalf("table boundary = %q, want %q", got, want)
+	}
+}
+
+func TestTeamsReportingTableAfterListAndCaption(t *testing.T) {
+	input := "<p><strong>En bref</strong></p><ul><li>Trois sorties d'alerte.</li>" +
+		"<li>Dydu : +23,4 k€.</li></ul><p><strong>Chiffres clés</strong></p>" +
+		"<table><tr><th>Indicateur</th><th>S45-46</th><th>vs S43-44</th></tr>" +
+		"<tr><td>🔴 Critique</td><td>1 compte · 1,7 k€ MRR</td><td>=</td></tr>" +
+		"<tr><td>Churn</td><td>0</td><td>1 · 1,33 k€</td></tr></table>" +
+		"<p><strong>🙋 CODIR</strong> : aucune nouvelle décision.</p>"
+	want := "**En bref**\n- Trois sorties d'alerte.\n- Dydu : +23,4 k€.\n**Chiffres clés**\n\n" +
+		"| Indicateur | S45-46 | vs S43-44 |\n| --- | --- | --- |\n" +
+		"| 🔴 Critique | 1 compte · 1,7 k€ MRR | = |\n| Churn | 0 | 1 · 1,33 k€ |\n\n" +
+		"**🙋 CODIR** : aucune nouvelle décision."
+	if got := teamsHTMLToMarkdown(input); got != want {
+		t.Fatalf("reporting = %q, want %q", got, want)
+	}
+}
+
+func TestTeamsOutgoingReportingTableRoundTrip(t *testing.T) {
+	input := "Chiffres clés\n\n| Indicateur | S45-46 | vs S43-44 |\n| --- | --- | --- |\n" +
+		"| 🔴 Critique | 1 compte · 1,7 k€ MRR | = |\n| Churn | 0 | 1 · 1,33 k€ |\n\nCODIR : suivi."
+	remote := msteams.MatrixToTeamsHTML(messageformat.TeamsHTML(input))
+	if !strings.Contains(remote, "<table>") {
+		t.Fatalf("outgoing table was flattened: %s", remote)
+	}
+	got := teamsHTMLToMarkdown(remote)
+	for _, want := range []string{
+		"| Indicateur | S45-46 | vs S43-44 |", "| --- | --- | --- |",
+		"| 🔴 Critique | 1 compte · 1,7 k€ MRR | = |", "| Churn | 0 | 1 · 1,33 k€ |", "CODIR : suivi.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("round trip %q missing %q", got, want)
+		}
 	}
 }
 
@@ -170,11 +204,11 @@ func TestTeamsAnalysisPreservesHeadingsRulesAndTableEmphasis(t *testing.T) {
 		"<ul><li>Conclusion.</li></ul>\r\n<hr>\r\n" +
 		"<h3>3. QPARK-WB : DMC</h3>\r\n" +
 		"<table><tr><th>&nbsp;</th><th>2 nov.</th></tr><tr><td>DMC</td><td><strong>45 s</strong></td></tr></table>"
-	want := "Analyse\n- Trois ruptures.\n\n---\n\n### 1. FREEPRO-WB-IDENT : qualification\n" +
+	want := "Analyse\n- Trois ruptures.\n\n---\n\n### 1. FREEPRO-WB-IDENT : qualification\n\n" +
 		"|  | 1–15 oct. | 3 nov. |\n| --- | --- | --- |\n| Appels / jour | 1 752 | **3 213** |\n| Qualification | 92 % | **80 %** |\n\n" +
-		"**Lecture**\n- **Le volume augmente.**\n\n---\n\n### 2. MERCER-WB-SVI : afflux\n" +
+		"**Lecture**\n- **Le volume augmente.**\n\n---\n\n### 2. MERCER-WB-SVI : afflux\n\n" +
 		"|  | 2 nov. |\n| --- | --- |\n| Automatisation | **9 %** |\n\n" +
-		"- Conclusion.\n\n---\n\n### 3. QPARK-WB : DMC\n" +
+		"- Conclusion.\n\n---\n\n### 3. QPARK-WB : DMC\n\n" +
 		"|  | 2 nov. |\n| --- | --- |\n| DMC | **45 s** |"
 	if got := teamsHTMLToMarkdown(input); got != want {
 		t.Fatalf("analysis markdown:\n%s\nwant:\n%s", got, want)

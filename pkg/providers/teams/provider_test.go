@@ -359,6 +359,7 @@ func TestCapabilities(t *testing.T) {
 			core.MessageFormatStrikethrough, core.MessageFormatInlineCode, core.MessageFormatCodeBlock,
 			core.MessageFormatLink, core.MessageFormatBulletedList, core.MessageFormatNumberedList,
 			core.MessageFormatTextColor, core.MessageFormatBackgroundColor, core.MessageFormatFontSize,
+			core.MessageFormatTable,
 		}, ","),
 	}
 	if got != want {
