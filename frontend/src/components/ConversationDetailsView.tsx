@@ -230,15 +230,15 @@ export function ConversationDetailsView({
   return (
     <div
       className={cn(
-        "flex flex-col h-full transition-colors",
-        isDragging && "bg-muted/50"
+        "flex flex-col h-full text-sidebar-foreground transition-colors",
+        isDragging ? "bg-sidebar-hover" : "bg-sidebar-right"
       )}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      <div className="p-4 border-b flex justify-between items-center shrink-0">
+      <div className="conversation-details__header p-4 border-b flex justify-between items-center shrink-0">
         <h3 className="text-md font-semibold">{t("conversation_details")}</h3>
         <Button variant="ghost" size="icon" onClick={handleClose}>
           <X className="h-4 w-4" />

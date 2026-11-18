@@ -59,8 +59,8 @@ export function PinnedMessagesPanel({ pins, loading, onClose, onOpen, onUnpin }:
   };
   return (
     <>
-    <aside className="absolute inset-y-0 right-0 z-40 flex w-[min(380px,90%)] flex-col border-l bg-background shadow-xl">
-      <div className="flex h-[73px] shrink-0 items-center justify-between border-b px-4">
+    <aside className="absolute inset-y-0 right-0 z-40 flex w-[min(380px,90%)] flex-col border-l border-sidebar-border bg-sidebar-right text-sidebar-foreground shadow-xl">
+      <div className="pinned-messages__header flex items-center justify-between border-b px-4">
         <div><h3 className="font-semibold">{t("pinned_messages")}</h3><p className="text-xs text-muted-foreground">{t("pinned_messages_help")}</p></div>
         <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
       </div>

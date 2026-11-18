@@ -45,8 +45,8 @@ export function AttachmentsPanel({ messages, loading, onClose }: {
   let previousDate = "";
 
   return (
-    <aside className="absolute bottom-0 right-0 top-[73px] z-40 flex w-[min(420px,90%)] flex-col border-l bg-background shadow-xl">
-      <div className="flex h-[73px] shrink-0 items-center justify-between border-b px-4">
+    <aside className="absolute inset-y-0 right-0 z-40 flex w-[min(420px,90%)] flex-col border-l border-sidebar-border bg-sidebar-right text-sidebar-foreground shadow-xl">
+      <div className="attachments-panel__header flex items-center justify-between border-b px-4">
         <div>
           <h3 className="font-semibold">{t("attachments")}</h3>
           <p className="text-xs text-muted-foreground">{t("attachments_help")}</p>
@@ -72,7 +72,7 @@ export function AttachmentsPanel({ messages, loading, onClose }: {
               {showDate && (
                 <div className="relative my-5 flex items-center" role="separator">
                   <hr className="w-full border-t-2 border-border" />
-                  <span className="absolute left-1/2 -translate-x-1/2 bg-background px-3 text-xs font-semibold text-muted-foreground">
+                  <span className="absolute left-1/2 -translate-x-1/2 bg-sidebar-right px-3 text-xs font-semibold text-sidebar-muted-foreground">
                     {dateFormatter.format(entry.timestamp)}
                   </span>
                 </div>

@@ -1,6 +1,16 @@
 @import "tailwindcss";
 @import "highlight.js/styles/atom-one-light.css";
 
+/* Match the two contact-list rows, their spacing and the bottom border. */
+.contact-list__header,
+.message-header,
+.conversation-details__header,
+.pinned-messages__header,
+.attachments-panel__header {
+  height: calc(5.25rem + 1px);
+  flex-shrink: 0;
+}
+
 /* New reactions retain a halo until they have been visible in the focused
    window for a few seconds. Reduced motion keeps the same static outline. */
 .message-reaction--new {
@@ -66,6 +76,7 @@
     --sidebar-rail-foreground: 215 20% 40%;
     /* Sidebar nav (conversation list) */
     --sidebar: 210 20% 97%;
+    --sidebar-right: 210 20% 95%;
     --sidebar-foreground: 215 25% 25%;
     --sidebar-muted-foreground: 215 16% 47%;
     --sidebar-active: 213 20% 89%;
@@ -108,6 +119,7 @@
     --sidebar-rail: 222 47% 7%;
     --sidebar-rail-foreground: 215 20% 60%;
     --sidebar: 217 30% 13%;
+    --sidebar-right: 217 30% 9%;
     --sidebar-foreground: 213 31% 91%;
     --sidebar-muted-foreground: 215 16% 55%;
     --sidebar-active: 215 25% 21%;
@@ -146,6 +158,7 @@
   --color-sidebar-rail: hsl(var(--sidebar-rail));
   --color-sidebar-rail-foreground: hsl(var(--sidebar-rail-foreground));
   --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-right: hsl(var(--sidebar-right));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-muted-foreground: hsl(var(--sidebar-muted-foreground));
   --color-sidebar-active: hsl(var(--sidebar-active));
