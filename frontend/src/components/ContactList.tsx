@@ -607,7 +607,11 @@ export function ContactList({ onOpenSearch }: { onOpenSearch: () => void }) {
           ))}
         </div>
       )}
-      <div className="contact-list__scroll flex-1 min-h-0 overflow-hidden scroll-area">
+      <div className={cn(
+        "contact-list__scroll flex-1 min-h-0 scroll-area",
+        // Contact tabs use Virtuoso's own scroller; the watchlist needs a native one.
+        sortBy === "highlighted" ? "overflow-y-auto" : "overflow-hidden"
+      )}>
         {sortBy === "highlighted" ? (
           <HighlightedMessagesInbox />
         ) : (
