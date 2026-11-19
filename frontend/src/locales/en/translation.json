@@ -16,6 +16,7 @@
   "pin_message": "Pin message",
   "unpin_message": "Unpin message",
   "pinned_messages": "Pinned messages",
+  "pinned_message": "Pinned message",
   "attachments": "Attachments",
   "attachments_help": "Browse files and media shared in this conversation",
   "no_attachments": "No attachments in this conversation",

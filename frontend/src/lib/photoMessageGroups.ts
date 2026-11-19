@@ -62,13 +62,15 @@ function isWithinFiveMinutes(previous: models.Message, current: models.Message):
   return gapMilliseconds >= 0 && gapMilliseconds <= 5 * 60 * 1000;
 }
 
-export function groupConsecutivePhotoMessages(messages: models.Message[]): PhotoMessageGroup[] {
+export function groupConsecutivePhotoMessages(messages: models.Message[], standaloneIds?: ReadonlySet<string>): PhotoMessageGroup[] {
   const groups: PhotoMessageGroup[] = [];
 
   for (const message of messages) {
     const previous = groups.at(-1);
     if (
       previous &&
+      !standaloneIds?.has(previous.message.protocolMsgId) &&
+      !standaloneIds?.has(message.protocolMsgId) &&
       isSingleVisualMediaMessage(message) &&
       previous.messages.every(isSingleVisualMediaMessage) &&
       senderKey(previous.message) === senderKey(message) &&

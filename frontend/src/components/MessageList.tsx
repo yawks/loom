@@ -40,7 +40,7 @@ import { MessageHeader } from "./MessageHeader";
 import { PinnedMessagesPanel } from "./PinnedMessagesPanel";
 import { AttachmentsPanel } from "./AttachmentsPanel";
 import { MessageIRCItem } from "./MessageIRCItem";
-import { CalendarClock, ChevronDown, ChevronUp, Trash2, UploadCloud } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronUp, Pin, Trash2, UploadCloud } from "lucide-react";
 import { cn, timeToDate } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
 import { openingMessageScrollTop } from "@/lib/messageScroll";
@@ -162,9 +162,11 @@ export function MessageList({
   const [showPins, setShowPins] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
   const [historicalContext, setHistoricalContext] = useState(false);
+  const [pendingPinId, setPendingPinId] = useState<string | null>(null);
 
   useEffect(() => {
     setHistoricalContext(false);
+    setPendingPinId(null);
     setShowPins(false);
     setShowAttachments(false);
   }, [conversationId]);
@@ -307,8 +309,8 @@ export function MessageList({
   }, [conversationId, conversationReadState, markUnreadLocationAsRead, unreadMessageLocations]);
 
   const displayedMessageGroups = useMemo(
-    () => groupConsecutivePhotoMessages(mainMessages),
-    [mainMessages]
+    () => groupConsecutivePhotoMessages(mainMessages, pinnedMessageIds),
+    [mainMessages, pinnedMessageIds]
   );
   const displayIndexByMessageId = useMemo(() => {
     const indexes = new Map<string, number>();
@@ -827,6 +829,26 @@ export function MessageList({
     else restoreVisibleAnchor();
   }, [displayedMessageGroups, correctBottomImmediately, restoreVisibleAnchor]);
 
+  // Wait for the context row to mount, then replace live-edge following
+  // with an anchor on the pin before the timeline is painted.
+  useLayoutEffect(() => {
+    if (!pendingPinId || !historicalContext) return;
+    const index = displayIndexByMessageId.get(pendingPinId);
+    const row = nativeListRef.current?.querySelector<HTMLElement>(`[data-message-group-index="${index}"]`);
+    const scroller = scrollerElementRef.current;
+    if (!row || !scroller) return;
+    isStabilizingRef.current = false;
+    atBottomRef.current = false;
+    setIsStabilizing(false);
+    setAtBottom(false);
+    row.scrollIntoView({ block: "center", behavior: "instant" });
+    pendingAnchorRef.current = {
+      messageId: pendingPinId,
+      viewportOffset: row.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+    };
+    setPendingPinId(null);
+  }, [pendingPinId, historicalContext, displayIndexByMessageId, isLoading, isFetching]);
+
   useLayoutEffect(() => {
     if (!hasWindowFocus || separatorDismissed || !displayedFirstUnreadMessageId) return;
     const positionKey = `${conversationId}:${displayedFirstUnreadMessageId}:${unreadMessageCount}`;
@@ -1000,17 +1022,18 @@ export function MessageList({
   const openPinnedMessage = useCallback(async (pin: models.MessagePin) => {
     try {
       const context = await GetPinnedMessageContext(conversationId, pin.protocolMsgId);
+      if (presentedConversationRef.current !== conversationId) return;
       queryClient.setQueryData<InfiniteData<models.Message[]>>(["messages", conversationId], {
         pages: [context.messages],
         pageParams: [undefined],
       });
       setHistoricalContext(true);
       setShowPins(false);
-      setMessageSearchTargetId(pin.protocolMsgId);
+      setPendingPinId(pin.protocolMsgId);
     } catch (error) {
       showToast(String(error), "error");
     }
-  }, [conversationId, queryClient, setMessageSearchTargetId, showToast]);
+  }, [conversationId, queryClient, showToast]);
 
   const closeHistoricalContext = useCallback(async () => {
     setHistoricalContext(false);
@@ -1213,13 +1236,20 @@ export function MessageList({
               {displayedMessageGroups.map((group, groupIndex) => {
                 const message = group.message;
                 const messageId = getMessageDomId(message);
+                const pinned = pinnedMessageIds.has(messageId);
                 return (
                   <div
                     key={messageId}
                     data-message-group-index={groupIndex}
                     data-anchor-message-id={messageId}
-                    className="message-list__native-item overflow-x-clip px-4"
+                    className={cn("message-list__native-item overflow-x-clip px-4", pinned && "mx-4 my-1 rounded-md border-s-2 border-primary/70 bg-primary/10 py-1")}
                   >
+                    {pinned && (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+                        <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t("pinned_message")}
+                      </div>
+                    )}
                     {messageLayout === "bubble" ? (
                       <MessageBubbleItem
                         message={message}
