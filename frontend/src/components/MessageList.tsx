@@ -9,6 +9,7 @@ import {
   GetPinnedMessages,
   GetScheduledMessages,
   GetUnreadMessageLocations,
+  IsWindowActive,
   PinMessage,
   RemoveReaction,
   UnpinMessage,
@@ -31,6 +32,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatInput } from "./ChatInput";
 import { canReadVisibleMessages } from "@/lib/windowFocus";
+import { watchQueryActivity } from "@/lib/queryActivity";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { FileUploadModal } from "./FileUploadModal";
 import { ForwardMessageModal } from "./ForwardMessageModal";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -43,7 +46,7 @@ import { MessageIRCItem } from "./MessageIRCItem";
 import { CalendarClock, ChevronDown, ChevronUp, Pin, Trash2, UploadCloud } from "lucide-react";
 import { cn, timeToDate } from "@/lib/utils";
 import { getMessageDomId } from "@/lib/messageUtils";
-import { openingMessageScrollTop } from "@/lib/messageScroll";
+import { isAtMessageListBottom, openingMessageScrollTop } from "@/lib/messageScroll";
 import { models } from "../../wailsjs/go/models";
 import { normalizeReaction, reactionMatches } from "@/lib/reactionUtils";
 import { sameUserId } from "@/lib/userIdentity";
@@ -117,8 +120,6 @@ export function MessageList({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const nativeListRef = useRef<HTMLDivElement>(null);
   const pendingAnchorRef = useRef<{ messageId: string; viewportOffset: number } | null>(null);
-  const openingUnreadNodeRef = useRef<HTMLElement | null>(null);
-  const positionedUnreadBoundaryRef = useRef<string>("");
   const liveEdgeSnapshotRef = useRef<{ conversationId: string; lastMessageId: string } | null>(null);
   const presentedConversationRef = useRef<string>("");
   const scrollInitializedRef = useRef<string>('');
@@ -443,6 +444,9 @@ export function MessageList({
   }, [conversationId]);
 
   useEffect(() => {
+    // Compare against the state rendered by this component, not a fresh DOM
+    // reading: focus may have changed between render and effect installation.
+    let active = hasWindowFocus;
     const handleFocus = () => {
       setHasWindowFocus(true);
       setFocusReturnReadDeadline(Date.now() + FOCUS_RETURN_READ_DELAY_MS);
@@ -451,18 +455,19 @@ export function MessageList({
       setHasWindowFocus(false);
       setUnreadBoundary(null);
       setSeparatorDismissed(false);
-      positionedUnreadBoundaryRef.current = "";
-      openingUnreadNodeRef.current = null;
       if (readMarkTimerRef.current) {
         clearTimeout(readMarkTimerRef.current);
         readMarkTimerRef.current = null;
       }
     };
-    window.addEventListener("focus", handleFocus);
-    window.addEventListener("blur", handleBlur);
+    const stopWatching = watchQueryActivity((nextActive) => {
+      if (nextActive === active) return;
+      active = nextActive;
+      if (active) handleFocus();
+      else handleBlur();
+    }, EventsOn, IsWindowActive);
     return () => {
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("blur", handleBlur);
+      stopWatching();
       if (readMarkTimerRef.current) clearTimeout(readMarkTimerRef.current);
     };
   }, []);
@@ -638,8 +643,6 @@ export function MessageList({
     if (presentedConversationRef.current !== conversationId) {
       presentedConversationRef.current = conversationId;
       scrollInitializedRef.current = "";
-      positionedUnreadBoundaryRef.current = "";
-      openingUnreadNodeRef.current = null;
       pendingAnchorRef.current = null;
       atBottomRef.current = true;
       isStabilizingRef.current = true;
@@ -677,7 +680,6 @@ export function MessageList({
     if (lastIndex < 0) return;
     // Sending a message always means returning to the live edge. Keep that
     // intent through both the optimistic and confirmed render.
-    openingUnreadNodeRef.current = null;
     isStabilizingRef.current = true;
     atBottomRef.current = true;
     setIsStabilizing(true);
@@ -730,7 +732,6 @@ export function MessageList({
     if (isStabilizingRef.current) correctBottomImmediately();
 
     const stopFollowingBottom = () => {
-      openingUnreadNodeRef.current = null;
       // Record the user's intent immediately, before the browser dispatches
       // the resulting scroll event. An incoming message can otherwise land
       // between wheel/touch input and scroll and incorrectly pull the user
@@ -751,21 +752,17 @@ export function MessageList({
       // interactions. Clicking a message, link, or reaction must not unpin it.
       if (event.target === el) stopFollowingBottom();
     };
+    const handlePointerUp = () => {
+      // Clicking empty timeline space to focus the app also targets the
+      // scroller. If no scrollbar movement occurred, restore the live edge;
+      // otherwise this click leaves read receipts blocked indefinitely.
+      if (!isAtMessageListBottom(el.scrollHeight, el.scrollTop, el.clientHeight)) return;
+      atBottomRef.current = true;
+      isStabilizingRef.current = true;
+      setAtBottom(true);
+      setIsStabilizing(true);
+    };
     const resizeObserver = new ResizeObserver(() => {
-      const unreadNode = openingUnreadNodeRef.current;
-      if (isStabilizingRef.current && unreadNode?.isConnected) {
-        const unreadTop = el.scrollTop + unreadNode.getBoundingClientRect().top - el.getBoundingClientRect().top;
-        const targetTop = openingMessageScrollTop(el.scrollHeight, el.clientHeight, unreadTop);
-        if (targetTop < openingMessageScrollTop(el.scrollHeight, el.clientHeight)) {
-          // An initially small unread block can grow when its media loads.
-          isStabilizingRef.current = false;
-          atBottomRef.current = false;
-          setIsStabilizing(false);
-          setAtBottom(false);
-          el.scrollTop = targetTop;
-          saveVisibleAnchor();
-        }
-      }
       if (isStabilizingRef.current) correctBottomImmediately();
       else restoreVisibleAnchor();
     });
@@ -778,6 +775,7 @@ export function MessageList({
     el.addEventListener("wheel", handleWheel, { passive: true });
     el.addEventListener("touchmove", stopFollowingBottom, { passive: true });
     el.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    window.addEventListener("pointerup", handlePointerUp, { passive: true });
     el.addEventListener("keydown", handleKeyDown);
 
     scrollerCleanupRef.current = () => {
@@ -786,6 +784,7 @@ export function MessageList({
       el.removeEventListener("wheel", handleWheel);
       el.removeEventListener("touchmove", stopFollowingBottom);
       el.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointerup", handlePointerUp);
       el.removeEventListener("keydown", handleKeyDown);
     };
   }, [correctBottomImmediately, restoreVisibleAnchor, saveVisibleAnchor]);
@@ -815,7 +814,6 @@ export function MessageList({
     // genuine live-edge update: follow it only if the user was already at the
     // bottom before React committed the new message.
     if (!liveEdgeChanged || !wasFollowingLiveEdge) return;
-    openingUnreadNodeRef.current = null;
     pendingAnchorRef.current = null;
     isStabilizingRef.current = true;
     atBottomRef.current = true;
@@ -849,58 +847,6 @@ export function MessageList({
     setPendingPinId(null);
   }, [pendingPinId, historicalContext, displayIndexByMessageId, isLoading, isFetching]);
 
-  useLayoutEffect(() => {
-    if (!hasWindowFocus || separatorDismissed || !displayedFirstUnreadMessageId) return;
-    const positionKey = `${conversationId}:${displayedFirstUnreadMessageId}:${unreadMessageCount}`;
-    if (positionedUnreadBoundaryRef.current === positionKey) return;
-
-    const scroller = scrollerElementRef.current;
-    const groupIndex = displayIndexByMessageId.get(displayedFirstUnreadMessageId);
-    if (!scroller || groupIndex === undefined) return;
-    const firstUnreadNode = nativeListRef.current?.querySelector<HTMLElement>(
-      `[data-message-group-index="${groupIndex}"]`
-    );
-    if (!firstUnreadNode) return;
-
-    openingUnreadNodeRef.current = firstUnreadNode;
-    positionedUnreadBoundaryRef.current = positionKey;
-    const viewportTop = scroller.getBoundingClientRect().top;
-    const unreadTop = scroller.scrollTop + firstUnreadNode.getBoundingClientRect().top - viewportTop;
-    const targetTop = openingMessageScrollTop(scroller.scrollHeight, scroller.clientHeight, unreadTop);
-
-    if (targetTop === openingMessageScrollTop(scroller.scrollHeight, scroller.clientHeight)) {
-      // All unread content fits: expose the latest message and eliminate any
-      // residual empty space below it.
-      pendingAnchorRef.current = null;
-      atBottomRef.current = true;
-      isStabilizingRef.current = true;
-      setAtBottom(true);
-      setIsStabilizing(true);
-      correctBottomImmediately();
-      return;
-    }
-
-    // More than one viewport of unread content: put the divider at the top and
-    // retain it as the fixed anchor while asynchronous media settles.
-    isStabilizingRef.current = false;
-    atBottomRef.current = false;
-    setIsStabilizing(false);
-    setAtBottom(false);
-    scroller.scrollTop = targetTop;
-    pendingAnchorRef.current = {
-      messageId: displayedFirstUnreadMessageId,
-      viewportOffset: 0,
-    };
-  }, [
-    conversationId,
-    correctBottomImmediately,
-    displayIndexByMessageId,
-    displayedFirstUnreadMessageId,
-    hasWindowFocus,
-    separatorDismissed,
-    unreadMessageCount,
-  ]);
-
   // Handlers
   const handleStartReached = useCallback(() => {
     if (!hasNextPage || isFetchingNextPage || historyFetchInFlightRef.current) return;
@@ -914,7 +860,10 @@ export function MessageList({
   const handleNativeScroll = useCallback(() => {
     const el = scrollerElementRef.current;
     if (!el) return;
-    const isNowAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+    // A growing preview can fire scroll before ResizeObserver runs. Only an
+    // explicit user gesture cancels bottom-following; layout changes must not.
+    if (isStabilizingRef.current) correctBottomImmediately();
+    const isNowAtBottom = isAtMessageListBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
     atBottomRef.current = isNowAtBottom;
     setAtBottom(isNowAtBottom);
     if (isNowAtBottom) {
@@ -926,7 +875,7 @@ export function MessageList({
       saveVisibleAnchor();
     }
     if (el.scrollTop <= el.clientHeight) handleStartReached();
-  }, [handleStartReached, saveVisibleAnchor]);
+  }, [correctBottomImmediately, handleStartReached, saveVisibleAnchor]);
 
   const handleToggleThreads = () => {
     setShowPins(false);
@@ -1337,7 +1286,6 @@ export function MessageList({
               className="message-list__scroll-to-bottom absolute bottom-4 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition-opacity hover:opacity-90"
               title={t("scroll_to_bottom")}
               onClick={() => {
-                openingUnreadNodeRef.current = null;
                 pendingAnchorRef.current = null;
                 isStabilizingRef.current = true;
                 setIsStabilizing(true);

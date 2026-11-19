@@ -23,7 +23,18 @@ export function watchQueryActivity(
       if (!disposed && current === revision) { nativeActive = active; publish(); }
     }).catch(() => { if (!disposed && current === revision) { nativeActive = undefined; publish(); } });
   };
-  const blur = () => { revision++; nativeActive = false; publish(); };
+  const blur = () => {
+    // A WebView can dispatch blur during an internal focus transition while
+    // the native window remains active. Treating it as a native deactivation
+    // leaves activity false forever if no subsequent window focus event fires.
+    if (checkNative) refresh();
+    else { revision++; nativeActive = false; publish(); }
+  };
+  // A click in an already-active window is also an opportunity to reconcile a
+  // stale native deactivation when WebKit did not dispatch another focus event.
+  const pointerDown = () => {
+    if (nativeActive === false && doc.visibilityState === "visible") refresh();
+  };
   const unsubscribe = eventsOn("window-activity", (active: boolean) => {
     revision++;
     nativeActive = active === true;
@@ -31,6 +42,7 @@ export function watchQueryActivity(
   });
   win.addEventListener("focus", refresh);
   win.addEventListener("blur", blur);
+  win.addEventListener("pointerdown", pointerDown);
   doc.addEventListener("visibilitychange", refresh);
   publish();
   refresh();
@@ -40,6 +52,7 @@ export function watchQueryActivity(
     unsubscribe();
     win.removeEventListener("focus", refresh);
     win.removeEventListener("blur", blur);
+    win.removeEventListener("pointerdown", pointerDown);
     doc.removeEventListener("visibilitychange", refresh);
   };
 }

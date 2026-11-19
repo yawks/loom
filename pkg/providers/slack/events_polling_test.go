@@ -146,3 +146,47 @@ func TestSlackFallbackEmitsNewMainMessagesAndThreadReplies(t *testing.T) {
 		t.Fatalf("empty instance must fail closed: %v, %v", got, err)
 	}
 }
+
+func TestSlackFallbackDoesNotRediscoverMessagesMovedFromLegacyDMAlias(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Add(-60 * 24 * time.Hour)
+	rows := []models.Message{
+		{ProtocolConvID: "slack-1::U123", ProtocolMsgID: "old-main", Timestamp: since},
+		{ProtocolConvID: "slack-1::D123", ProtocolMsgID: "already-stored", Timestamp: since.Add(time.Hour)},
+		{ProtocolConvID: "slack-2::U123", ProtocolMsgID: "foreign", Timestamp: time.Now()},
+	}
+	if err := database.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	boundary, err := slackStoredMessageHighWatermark(database, "slack-1")
+	if err != nil || boundary != rows[1].ID {
+		t.Fatalf("provider boundary = %d, %v; want %d", boundary, err, rows[1].ID)
+	}
+	// History normalization updates this old row, but must not announce it as
+	// recovered unread activity merely because it now belongs to the user ID.
+	if err := database.Model(&models.Message{}).Where("id = ?", rows[1].ID).
+		Update("protocol_conv_id", "slack-1::U123").Error; err != nil {
+		t.Fatal(err)
+	}
+	fresh := models.Message{ProtocolConvID: "slack-1::U123", ProtocolMsgID: "actually-new", Timestamp: time.Now()}
+	if err := database.Create(&fresh).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, err := slackNewlyStoredMessages(database, "slack-1", "slack-1::U123", since, boundary)
+	if err != nil || len(got) != 1 || got[0].ProtocolMsgID != fresh.ProtocolMsgID {
+		t.Fatalf("recovered messages = %#v, %v; want only actually-new", got, err)
+	}
+	var foreign models.Message
+	if err := database.First(&foreign, rows[2].ID).Error; err != nil || foreign.ProtocolConvID != rows[2].ProtocolConvID {
+		t.Fatalf("foreign row changed: %#v, %v", foreign, err)
+	}
+	if boundary, err := slackStoredMessageHighWatermark(database, ""); err != nil || boundary != 0 {
+		t.Fatalf("empty instance must fail closed: %d, %v", boundary, err)
+	}
+}

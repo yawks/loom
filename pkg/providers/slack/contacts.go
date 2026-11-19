@@ -836,12 +836,9 @@ func (p *SlackProvider) normalizeDMConversationID(conversationID string) string 
 		return convInfo.User
 	}
 
-	// Cache the identity mapping so we don't retry failed lookups repeatedly
-	p.dmChannelCacheMu.Lock()
-	p.dmChannelCache[conversationID] = conversationID
-	p.dmChannelCacheMu.Unlock()
-
-	// If we can't resolve, return original (might be a MPIM or already a User ID)
+	// A failed/incomplete lookup is not a durable identity mapping. Retrying on
+	// the next event lets a transient API failure recover instead of permanently
+	// splitting a DM between its channel ID and user ID.
 	return conversationID
 }
 

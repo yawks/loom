@@ -825,6 +825,9 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 			return 0
 		}
 		actualChannelID = ch.ID
+		p.dmChannelCacheMu.Lock()
+		p.dmChannelCache[actualChannelID] = rawConvID
+		p.dmChannelCacheMu.Unlock()
 	}
 
 	var allReplies []models.Message
@@ -860,7 +863,8 @@ func (p *SlackProvider) refreshThreadReplies(ctx context.Context, convID string)
 	}
 	var existingIDs []string
 	if len(messageIDs) > 0 {
-		scope.MessagesForConversation(convID).
+		// Legacy DM aliases may still own an already-stored reply.
+		scope.Messages().
 			Where("protocol_msg_id IN ?", messageIDs).
 			Pluck("protocol_msg_id", &existingIDs)
 	}

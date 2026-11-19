@@ -4,13 +4,15 @@ import type { models } from "../../wailsjs/go/models";
 import { timeToDate } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { mergeInFlightLastMessages } from "@/lib/lastMessageRefresh";
 import { useReactionActivities } from "./useReactionActivities";
 
 
 type SortOption = "alphabetical" | "last_message" | "unread" | "highlighted";
 
 export function useSortedContacts(sortBy: SortOption = "last_message") {
+  const queryClient = useQueryClient();
   const reactionActivities = useReactionActivities();
   const metaContacts = useAppStore((state) => state.metaContacts);
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
@@ -52,19 +54,21 @@ export function useSortedContacts(sortBy: SortOption = "last_message") {
   const { data: allLastMessages = {}, isFetched: areLastMessagesFetched } = useQuery<Record<string, models.Message | null>, Error>({
     queryKey: ["allLastMessages"],
     queryFn: async () => {
+      const before = queryClient.getQueryData<Record<string, models.Message | null>>(["allLastMessages"]);
       try {
         const messages = await GetAllLastMessages();
         const result: Record<string, models.Message | null> = {};
         for (const [conversationId, message] of Object.entries(messages)) {
           result[conversationId] = message || null;
         }
-        return result;
+        return mergeInFlightLastMessages(before, queryClient.getQueryData<Record<string, models.Message | null>>(["allLastMessages"]), result);
       } catch (error) {
         console.error("Error fetching all last messages:", error);
-        return {};
+        throw error;
       }
     },
     staleTime: 30000, // Cache pendant 30 secondes
+    refetchInterval: 60000,
     placeholderData: (previousData) => previousData,
   });
 

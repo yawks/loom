@@ -44,3 +44,46 @@ test("browser activity works without a native implementation", () => {
   assert.equal(active, true);
   stop();
 });
+
+test("a spurious WebView blur does not strand an active native window", async () => {
+  const win = new EventTarget();
+  const doc = Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true });
+  let active = false;
+  let nativeActive = true;
+  const stop = watchQueryActivity((value) => { active = value; }, () => () => {},
+    async () => nativeActive, doc as Document, win as Window);
+  await Promise.resolve();
+  assert.equal(active, true);
+  win.dispatchEvent(new Event("blur"));
+  await Promise.resolve();
+  assert.equal(active, true);
+  nativeActive = false;
+  win.dispatchEvent(new Event("blur"));
+  await Promise.resolve();
+  assert.equal(active, false);
+  stop();
+});
+
+test("a click reconciles a missed native reactivation", async () => {
+  const win = new EventTarget();
+  const doc = Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true });
+  let notify!: (active: boolean) => void;
+  let active = false;
+  let nativeActive = false;
+  const stop = watchQueryActivity((value) => { active = value; }, (_name, callback) => {
+    notify = callback;
+    return () => {};
+  }, async () => nativeActive, doc as Document, win as Window);
+  await Promise.resolve();
+  assert.equal(active, false);
+  nativeActive = true;
+  win.dispatchEvent(new Event("pointerdown"));
+  await Promise.resolve();
+  assert.equal(active, true);
+  notify(false);
+  nativeActive = false;
+  win.dispatchEvent(new Event("pointerdown"));
+  await Promise.resolve();
+  assert.equal(active, false);
+  stop();
+});

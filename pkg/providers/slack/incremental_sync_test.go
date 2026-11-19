@@ -297,3 +297,59 @@ func TestHistoryFallbackRecoversReplyOlderThanMainCursor(t *testing.T) {
 		t.Fatalf("foreign row changed: %#v %v", foreign, err)
 	}
 }
+
+func TestHistoryOpenDMRepairsLegacyIdentityCacheBeforeConversion(t *testing.T) {
+	previousDB := db.DB
+	db.DB = nil
+	t.Cleanup(func() { db.DB = previousDB })
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/conversations.open":
+			fmt.Fprint(w, `{"ok":true,"channel":{"id":"D123"}}`)
+		case "/conversations.history":
+			fmt.Fprint(w, `{"ok":true,"messages":[{"ts":"1790778892.653679","user":"U123","text":"old DM"}],"has_more":false}`)
+		case "/users.info":
+			_ = r.ParseForm()
+			fmt.Fprintf(w, `{"ok":true,"user":{"id":%q,"name":%q}}`, r.Form.Get("user"), r.Form.Get("user"))
+		default:
+			t.Errorf("unnecessary API lookup: %s", r.URL.Path)
+			fmt.Fprint(w, `{"ok":false,"error":"ratelimited"}`)
+		}
+	})
+	p.dmChannelCache["D123"] = "D123"
+	since := time.Now().Add(-90 * 24 * time.Hour)
+	messages, err := p.GetConversationHistory("slack-1::U123", 100, nil, &since)
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("history = %#v, %v", messages, err)
+	}
+	if messages[0].ProtocolConvID != "slack-1::U123" {
+		t.Fatalf("noncanonical DM history: %s", messages[0].ProtocolConvID)
+	}
+	if got := p.normalizeDMConversationID("D123"); got != "U123" {
+		t.Fatalf("DM mapping = %s, want U123", got)
+	}
+}
+
+func TestNormalizeDMRetriesFailedLookup(t *testing.T) {
+	calls := 0
+	p := membershipTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/conversations.info" {
+			t.Errorf("unexpected API %s", r.URL.Path)
+		}
+		calls++
+		if calls == 1 {
+			fmt.Fprint(w, `{"ok":false,"error":"internal_error"}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"channel":{"id":"D123","is_im":true,"user":"U123"}}`)
+	})
+	if got := p.normalizeDMConversationID("D123"); got != "D123" {
+		t.Fatalf("failed lookup = %s, want original ID", got)
+	}
+	if got := p.normalizeDMConversationID("D123"); got != "U123" {
+		t.Fatalf("retry = %s, want U123", got)
+	}
+	if got := p.normalizeDMConversationID("D123"); got != "U123" || calls != 2 {
+		t.Fatalf("resolved mapping not cached: %s, %d lookups", got, calls)
+	}
+}

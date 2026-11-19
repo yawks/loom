@@ -494,11 +494,11 @@ export namespace models {
 	    conversationId?: string;
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LinkedAccount(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -516,7 +516,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -542,11 +542,11 @@ export namespace models {
 	    linkedAccounts: LinkedAccount[];
 	    createdAt: time.Time;
 	    updatedAt: time.Time;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MetaContact(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -556,7 +556,7 @@ export namespace models {
 	        this.createdAt = this.convertValues(source["createdAt"], time.Time);
 	        this.updatedAt = this.convertValues(source["updatedAt"], time.Time);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -580,11 +580,11 @@ export namespace models {
 	    reset: boolean;
 	    contacts?: MetaContact[];
 	    removedIds?: number[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ContactChanges(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.revision = source["revision"];
@@ -592,7 +592,7 @@ export namespace models {
 	        this.contacts = this.convertValues(source["contacts"], MetaContact);
 	        this.removedIds = source["removedIds"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1763,3 +1763,4 @@ export namespace time {
 	}
 
 }
+

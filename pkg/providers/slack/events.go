@@ -48,6 +48,13 @@ func slackNewlyStoredMessages(database *gorm.DB, instanceID, conversationID stri
 	return messages, err
 }
 
+func slackStoredMessageHighWatermark(database *gorm.DB, instanceID string) (uint, error) {
+	var lastID uint
+	err := db.ForProvider(database, instanceID).Messages().
+		Select("COALESCE(MAX(id), 0)").Scan(&lastID).Error
+	return lastID, err
+}
+
 func slackFallbackMessageQuery(database *gorm.DB, instanceID string) *gorm.DB {
 	return db.ForProvider(database, instanceID).Messages().
 		// The generic deleted_at/conversation index makes SQLite fetch every
@@ -414,15 +421,15 @@ func (p *SlackProvider) pollKnownConversationHistoryFallback(ctx context.Context
 			// notifications for legacy thread replies.
 			lastTimestamp = time.Now().Add(-slackConversationBootstrapLookback)
 		}
-		// Snapshot the last local row ID rather than enumerating all existing
-		// replies since the last main message on every five-second poll.
-		var lastID uint
-		if err := db.ForProvider(db.DB, instanceID).MessagesForConversation(conversation.ProtocolConvID).
-			Select("COALESCE(MAX(id), 0)").Scan(&lastID).Error; err != nil {
+		// Snapshot the provider-wide row boundary: history may move an existing
+		// DM message from its legacy channel ID to the canonical user ID.
+		// A conversation-local MAX(id) would mistake that move for a new arrival.
+		lastID, err := slackStoredMessageHighWatermark(db.DB, instanceID)
+		if err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed reading last ID for %s: %v\n", conversation.ProtocolConvID, err)
 			continue
 		}
-		_, err := p.GetConversationHistory(conversation.ProtocolConvID, 100, nil, &lastTimestamp)
+		_, err = p.GetConversationHistory(conversation.ProtocolConvID, 100, nil, &lastTimestamp)
 		if err != nil {
 			p.log("SlackProvider.pollKnownConversationHistoryFallback: failed fetching %s: %v\n", conversation.ProtocolConvID, err)
 			continue

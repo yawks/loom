@@ -884,6 +884,12 @@ func (p *SlackProvider) GetConversationHistory(conversationID string, limit int,
 			return nil, fmt.Errorf("failed to get DM channel ID for user %s", rawConvID)
 		}
 		actualChannelID = channel.ID
+		// Opening a DM already gives us the authoritative channel/user mapping.
+		// Seed it before conversion so a failed conversations.info lookup cannot
+		// split persisted messages and emitted batches across two conversation IDs.
+		p.dmChannelCacheMu.Lock()
+		p.dmChannelCache[actualChannelID] = rawConvID
+		p.dmChannelCacheMu.Unlock()
 		p.log("SlackProvider.GetConversationHistory: Opened DM conversation, user ID %s -> channel ID %s\n", rawConvID, actualChannelID)
 	} else if len(rawConvID) > 0 && rawConvID[0] == 'D' {
 		// For DM channel IDs, ensure the conversation is open

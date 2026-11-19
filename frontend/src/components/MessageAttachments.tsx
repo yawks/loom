@@ -1124,10 +1124,10 @@ export function MessageAttachments({
     </div>
   );
   const galleryActions = selectedGalleryMessage && selectedGalleryAttachment && messageHandlers
-    ? renderMediaActions(selectedGalleryMessage, selectedGalleryAttachment, "message-attachment__gallery-actions absolute left-1/2 top-3 z-30 -translate-x-1/2", true)
+    ? renderMediaActions(selectedGalleryMessage, selectedGalleryAttachment, "message-attachment__gallery-actions", true)
     : null;
   const galleryReactions = selectedGalleryMessage?.reactions?.length ? (
-    <div className="message-attachment__gallery-reactions absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg bg-black/65 px-2 py-1 shadow-lg backdrop-blur-sm">
+    <div className="message-attachment__gallery-reactions rounded-lg bg-black/65 px-2 py-1 shadow-lg backdrop-blur-sm">
       <MessageReactions
         message={selectedGalleryMessage}
         reactions={selectedGalleryMessage.reactions}
@@ -1473,7 +1473,7 @@ export function MessageAttachments({
 
       <Dialog open={selectedImage !== null} onOpenChange={() => { setSelectedImage(null); setSelectedImageIndex(null); resetView(); }}>
         <DialogContent
-          className="h-[85vh] w-[85vw] max-w-[85vw] max-h-[85vh] p-0 overflow-hidden"
+          className={`h-[85vh] w-[85vw] max-w-[85vw] max-h-[85vh] p-0 ${galleryActions || galleryReactions ? "top-[calc(50%+45px)] h-[min(85vh,calc(100vh-110px))]" : ""}`}
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft") {
               if (selectedImageIndex === null) return;
@@ -1496,9 +1496,13 @@ export function MessageAttachments({
           }}
         >
           <DialogTitle className="sr-only">Image Preview</DialogTitle>
+          <div className="absolute bottom-full left-1/2 z-30 mb-2 flex max-w-full -translate-x-1/2 flex-col items-center gap-2">
+            {galleryActions}
+            {galleryReactions}
+          </div>
           {selectedImage && (
             <div
-              className="relative overflow-hidden"
+              className="relative h-full overflow-hidden"
               style={{ cursor: zoomLevel > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
               onMouseDown={handlePanMouseDown}
               onMouseMove={handlePanMouseMove}
@@ -1514,14 +1518,6 @@ export function MessageAttachments({
                 });
               }}
             >
-              {galleryActions}
-              {galleryReactions}
-              <button
-                onClick={() => { setSelectedImage(null); setSelectedImageIndex(null); resetView(); }}
-                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
-              >
-                <X className="h-5 w-5" />
-              </button>
               <div className="flex h-full items-center justify-center overflow-hidden">
                 <img
                   src={selectedImage}
@@ -1600,7 +1596,7 @@ export function MessageAttachments({
 
       <Dialog open={selectedVideo !== null} onOpenChange={() => { setSelectedVideo(null); setSelectedImageIndex(null); }}>
         <DialogContent
-          className="max-w-5xl max-h-[90vh] p-0 bg-black border-0"
+          className={`max-w-5xl max-h-[90vh] p-0 bg-black border-0 [&>button]:text-white ${galleryActions || galleryReactions ? "top-[calc(50%+45px)] max-h-[calc(100vh-110px)]" : ""}`}
           onKeyDown={(event) => {
             if (selectedImageIndex === null) return;
             if (event.key === "ArrowLeft") {
@@ -1613,20 +1609,16 @@ export function MessageAttachments({
           }}
         >
           <DialogTitle className="sr-only">Video Preview</DialogTitle>
+          <div className="absolute bottom-full left-1/2 z-30 mb-2 flex max-w-full -translate-x-1/2 flex-col items-center gap-2">
+            {galleryActions}
+            {galleryReactions}
+          </div>
           {selectedVideo && (
             <div className="relative">
-              {galleryActions}
-              {galleryReactions}
-              <button
-                onClick={() => { setSelectedVideo(null); setSelectedImageIndex(null); }}
-                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white rounded-full p-2"
-              >
-                <X className="h-5 w-5" />
-              </button>
               <video
                 autoPlay
                 controls
-                className="w-full max-h-[90vh] object-contain"
+                className={`w-full object-contain ${galleryActions || galleryReactions ? "max-h-[calc(100vh-110px)]" : "max-h-[90vh]"}`}
                 src={selectedVideo}
                 onEnded={() => { if (selectedImageIndex === null) setSelectedVideo(null); }}
               >
