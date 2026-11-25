@@ -22,7 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Loader2, X } from "lucide-react";
+import { ArrowLeft, LocateFixed, Loader2, X } from "lucide-react";
 import { FileUploadModal } from "./FileUploadModal";
 import { useFileUpload } from "@/hooks/useFileUpload";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -62,6 +62,7 @@ interface ThreadListItemProps {
   replies: models.Message[];
   replyCount: number;
   onClick: () => void;
+  onViewInConversation: () => void;
   onAvatarClick: (url: string | undefined, name?: string) => void;
   onContactAvatarClick: (message: models.Message, name: string) => void;
   unreadCount: number;
@@ -77,7 +78,27 @@ function deduplicateMessages(messages: models.Message[]): models.Message[] {
   });
 }
 
-function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarClick, onContactAvatarClick, unreadCount }: ThreadListItemProps) {
+function ThreadTargetButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-7 w-7 shrink-0 text-muted-foreground"
+      title={t("view_in_conversation")}
+      aria-label={t("view_in_conversation")}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+    >
+      <LocateFixed className="h-4 w-4" />
+    </Button>
+  );
+}
+
+function ThreadListItem({ parentMessage, replies, replyCount, onClick, onViewInConversation, onAvatarClick, onContactAvatarClick, unreadCount }: ThreadListItemProps) {
   const { t } = useTranslation();
   const displayName = getSenderDisplayName(parentMessage.senderName, parentMessage.senderId, parentMessage.isFromMe, t);
   const timestamp = timeToDate(parentMessage.timestamp);
@@ -93,7 +114,7 @@ function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarC
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           onClick();
         }
@@ -116,6 +137,7 @@ function ThreadListItem({ parentMessage, replies, replyCount, onClick, onAvatarC
         </button>
         <span className="text-sm font-medium truncate">{displayName}</span>
         <span className="text-xs text-muted-foreground ml-auto shrink-0">{timeStr}</span>
+        <ThreadTargetButton onClick={onViewInConversation} />
         {unreadCount > 0 && (
           <span className="inline-flex min-w-5 justify-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground" aria-label={t("unread_badge_aria", { count: unreadCount })}>
             {unreadCount > 99 ? "99+" : unreadCount}
@@ -219,6 +241,7 @@ export function ThreadView() {
   const selectedThreadId = useAppStore((state) => state.selectedThreadId);
   const setSelectedThreadId = useAppStore((state) => state.setSelectedThreadId);
   const setShowThreads = useAppStore((state) => state.setShowThreads);
+  const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
   const messageLayout = useAppStore((state) => state.messageLayout);
   const selectedThreadParentMessage = useAppStore((state) => state.selectedThreadParentMessage);
   const setSelectedThreadParentMessage = useAppStore((state) => state.setSelectedThreadParentMessage);
@@ -438,6 +461,11 @@ export function ThreadView() {
     setShowThreads(false);
     setThreadOpenedFromList(false);
     setReplyingToMessage(null);
+  };
+
+  const viewInConversation = (messageId: string) => {
+    handleClose();
+    setMessageSearchTargetId(messageId, "center", true);
   };
 
   const handleOpenThread = (messageId: string) => {
@@ -804,6 +832,7 @@ export function ThreadView() {
                   replies={replies}
                   replyCount={replyCount}
                   onClick={() => handleOpenThread(parentMessage.protocolMsgId!)}
+                  onViewInConversation={() => viewInConversation(parentMessage.protocolMsgId!)}
                   onAvatarClick={handleAvatarClick}
                   onContactAvatarClick={handleContactAvatarClick}
                   unreadCount={unreadCountByThread[parentMessage.protocolMsgId!] ?? 0}
@@ -827,6 +856,7 @@ export function ThreadView() {
               </Button>
             )}
             <h3 className="thread-view__title font-semibold text-base">Thread</h3>
+            <ThreadTargetButton onClick={() => viewInConversation(selectedThreadId)} />
           </div>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleClose}>
             <X className="h-4 w-4" />
@@ -870,6 +900,7 @@ export function ThreadView() {
             </Button>
           )}
           <h3 className="thread-view__title font-semibold text-base">Thread</h3>
+          <ThreadTargetButton onClick={() => viewInConversation(selectedThreadId)} />
         </div>
         <Button
           variant="ghost"
@@ -888,7 +919,7 @@ export function ThreadView() {
       >
         <div ref={threadContentRef}>
         {selectedThreadParentMessage && (
-          <div className="thread-view__parent mb-4 pb-4 border-b">
+          <div className="thread-view__parent mb-4">
             <ThreadParentMessage
               message={selectedThreadParentMessage}
               layout={messageLayout}

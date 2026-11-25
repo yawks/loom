@@ -47,7 +47,8 @@ interface AppState {
   setSelectedProviderFilter: (providerInstanceId: string | null) => void;
   messageSearchTargetId: string | null;
   messageSearchTargetAlign: "start" | "center";
-  setMessageSearchTargetId: (messageId: string | null, align?: "start" | "center") => void;
+  highlightMessageSearchTarget: boolean;
+  setMessageSearchTargetId: (messageId: string | null, align?: "start" | "center", highlight?: boolean) => void;
   unreadNavigationTarget: { conversationId: string; messageId: string; threadId?: string; align?: "start" | "center" } | null;
   setUnreadNavigationTarget: (target: { conversationId: string; messageId: string; threadId?: string; align?: "start" | "center" } | null) => void;
   contactSortBy: ContactSortOption;
@@ -167,8 +168,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   messageSearchTargetId: null,
   messageSearchTargetAlign: "center",
-  setMessageSearchTargetId: (messageId, align = "center") => set({
+  highlightMessageSearchTarget: false,
+  setMessageSearchTargetId: (messageId, align = "center", highlight = false) => set({
     messageSearchTargetId: messageId,
+    highlightMessageSearchTarget: highlight,
     messageSearchTargetAlign: messageId ? align : "center",
   }),
   unreadNavigationTarget: null,

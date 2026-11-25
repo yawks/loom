@@ -32,6 +32,7 @@
   "shared_pin": "Pinned for everyone",
   "unpin": "Unpin",
   "view_pinned_message": "View message",
+  "view_in_conversation": "View in conversation",
   "opening_pinned_message": "Loading…",
   "unpin_message_confirm_title": "Unpin this message?",
   "unpin_message_confirm_description": "The message will be removed from the pinned messages list.",

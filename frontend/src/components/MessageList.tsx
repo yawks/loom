@@ -79,6 +79,7 @@ export function MessageList({
 
   const selectedProviderFilter = useAppStore((state) => state.selectedProviderFilter);
   const messageSearchTargetId = useAppStore((state) => state.messageSearchTargetId);
+  const highlightMessageSearchTarget = useAppStore((state) => state.highlightMessageSearchTarget);
   const messageSearchTargetAlign = useAppStore((state) => state.messageSearchTargetAlign);
   const setMessageSearchTargetId = useAppStore((state) => state.setMessageSearchTargetId);
 
@@ -164,10 +165,24 @@ export function MessageList({
   const [showAttachments, setShowAttachments] = useState(false);
   const [historicalContext, setHistoricalContext] = useState(false);
   const [pendingPinId, setPendingPinId] = useState<string | null>(null);
+  const [highlightedTargetRow, setHighlightedTargetRow] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    const root = scrollerElementRef.current;
+    if (!highlightedTargetRow || !root) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => !entry.isIntersecting)) {
+        setHighlightedTargetRow((current) => current === highlightedTargetRow ? null : current);
+      }
+    }, { root });
+    observer.observe(highlightedTargetRow);
+    return () => observer.disconnect();
+  }, [highlightedTargetRow]);
 
   useEffect(() => {
     setHistoricalContext(false);
     setPendingPinId(null);
+    setHighlightedTargetRow(null);
     setShowPins(false);
     setShowAttachments(false);
   }, [conversationId]);
@@ -346,19 +361,13 @@ export function MessageList({
   }, [scrollToNativeIndex]);
 
   useEffect(() => {
-    if (!messageSearchTargetId || isFetchingNextPage) return;
-    const index = displayedMessageGroups.findIndex((group) => group.messages.some((message) => message.protocolMsgId === messageSearchTargetId));
-    if (index >= 0) {
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index, align: messageSearchTargetAlign, behavior: "auto" });
-        setMessageSearchTargetId(null);
-      });
-    } else if (hasNextPage) {
+    if (!messageSearchTargetId || displayIndexByMessageId.has(messageSearchTargetId) || isFetching || isLoading) return;
+    if (hasNextPage) {
       void fetchNextPage();
     } else {
       setMessageSearchTargetId(null);
     }
-  }, [messageSearchTargetId, messageSearchTargetAlign, displayedMessageGroups, hasNextPage, isFetchingNextPage, fetchNextPage, setMessageSearchTargetId]);
+  }, [messageSearchTargetId, displayIndexByMessageId, hasNextPage, isFetching, isLoading, fetchNextPage, setMessageSearchTargetId]);
 
   const currentUserName = useMemo(() => {
     if (currentUserId && participantNames.get(currentUserId)) return participantNames.get(currentUserId);
@@ -827,11 +836,14 @@ export function MessageList({
     else restoreVisibleAnchor();
   }, [displayedMessageGroups, correctBottomImmediately, restoreVisibleAnchor]);
 
-  // Wait for the context row to mount, then replace live-edge following
-  // with an anchor on the pin before the timeline is painted.
+  // Release live-edge following before scrolling, or the scroll handler
+  // immediately pulls the viewport back to the latest message.
   useLayoutEffect(() => {
-    if (!pendingPinId || !historicalContext) return;
-    const index = displayIndexByMessageId.get(pendingPinId);
+    const pinId = historicalContext ? pendingPinId : null;
+    const messageId = pinId ?? messageSearchTargetId;
+    if (!messageId) return;
+    const index = displayIndexByMessageId.get(messageId);
+    if (index === undefined) return;
     const row = nativeListRef.current?.querySelector<HTMLElement>(`[data-message-group-index="${index}"]`);
     const scroller = scrollerElementRef.current;
     if (!row || !scroller) return;
@@ -839,13 +851,15 @@ export function MessageList({
     atBottomRef.current = false;
     setIsStabilizing(false);
     setAtBottom(false);
-    row.scrollIntoView({ block: "center", behavior: "instant" });
+    row.scrollIntoView({ block: pinId ? "center" : messageSearchTargetAlign, behavior: "instant" });
+    setHighlightedTargetRow(!pinId && highlightMessageSearchTarget ? row : null);
     pendingAnchorRef.current = {
-      messageId: pendingPinId,
+      messageId,
       viewportOffset: row.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
     };
-    setPendingPinId(null);
-  }, [pendingPinId, historicalContext, displayIndexByMessageId, isLoading, isFetching]);
+    if (pinId) setPendingPinId(null);
+    else setMessageSearchTargetId(null);
+  }, [pendingPinId, historicalContext, messageSearchTargetId, messageSearchTargetAlign, highlightMessageSearchTarget, setMessageSearchTargetId, displayIndexByMessageId, isLoading, isFetching]);
 
   // Handlers
   const handleStartReached = useCallback(() => {
@@ -1191,7 +1205,7 @@ export function MessageList({
                     key={messageId}
                     data-message-group-index={groupIndex}
                     data-anchor-message-id={messageId}
-                    className={cn("message-list__native-item overflow-x-clip px-4", pinned && "mx-4 my-1 rounded-md border-s-2 border-primary/70 bg-primary/10 py-1")}
+                    className={cn("message-list__native-item overflow-x-clip px-4", (pinned || highlightedTargetRow?.dataset.anchorMessageId === messageId) && "mx-4 my-1 rounded-md border-s-2 border-primary/70 bg-primary/10 py-1")}
                   >
                     {pinned && (
                       <div className="flex items-center gap-1.5 text-xs font-medium text-primary">

@@ -32,6 +32,7 @@
   "shared_pin": "Épinglé pour tous",
   "unpin": "Désépingler",
   "view_pinned_message": "Voir le message",
+  "view_in_conversation": "Voir dans la conversation",
   "opening_pinned_message": "Chargement…",
   "unpin_message_confirm_title": "Désépingler ce message ?",
   "unpin_message_confirm_description": "Le message sera retiré de la liste des messages épinglés.",
