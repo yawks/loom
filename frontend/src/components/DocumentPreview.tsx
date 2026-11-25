@@ -67,26 +67,14 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
           setPage((current) => ({ ...current, index }));
         };
       } else {
-        // Auto margins center the complete viewer (canvas and text/link layers).
-        // When zoomed wider than the viewport, margins collapse to zero so the
-        // left edge remains reachable through horizontal scrolling.
-        mount.style.display = "flex";
-        mount.style.flexDirection = "column";
-        const canvas = document.createElement("canvas");
-        mount.appendChild(canvas);
-        const { PptxViewer } = await import("@silurus/ooxml/pptx");
+        const { PptxScrollViewer } = await import("@silurus/ooxml/pptx");
         if (disposed) return;
-        const slides = new PptxViewer(canvas, { ...options, width: mount.clientWidth, onSlideChange: changed });
+        const slides = new PptxScrollViewer(mount, { ...options, onVisibleSlideChange: changed });
         viewer = slides;
-        navigateRef.current = (index) => slides.goToSlide(index);
-      }
-      if (format === "pptx") {
-        const page = mount.firstElementChild as HTMLElement | null;
-        if (page) {
-          page.style.marginInline = "auto";
-          page.style.flexShrink = "0";
-          page.style.alignSelf = "flex-start";
-        }
+        navigateRef.current = (index) => {
+          slides.scrollToSlide(index);
+          setPage((current) => ({ ...current, index }));
+        };
       }
       viewerRef.current = viewer;
       await viewer.load(bytes);
@@ -116,7 +104,7 @@ export default function DocumentPreview({ url, format, providerInstanceId }: {
       </div>
       {format === "xlsx" && <p className="text-xs text-muted-foreground">{t("office_formula_note")}</p>}
       <div className="relative min-h-0 flex-1 overflow-hidden rounded border bg-white text-black">
-        <div ref={hostRef} className="h-full w-full" />
+        <div ref={hostRef} className="h-full w-full select-text" />
         {status === "loading" && <div className="absolute inset-0 flex items-center justify-center bg-background/80" role="status" aria-label={t("loading")}><Loader2 className="animate-spin" /></div>}
         {status === "error" && <div className="absolute inset-0 flex items-center justify-center bg-background p-6 text-center text-foreground" role="alert">{t("office_preview_error")}</div>}
       </div>

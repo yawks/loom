@@ -19,7 +19,8 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
+import { AnnotationEditorType, AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import type { PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import { GetAttachmentData, GetProviderAttachmentData, OpenFile, SaveAttachmentDimensions, SaveAttachmentToFile } from "../../wailsjs/go/main/App";
@@ -255,84 +256,77 @@ function PdfPreview({
   onError: (error: unknown) => void;
 }) {
   const { t } = useTranslation();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<PDFViewer | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageCount, setPageCount] = useState(0);
 
   useEffect(() => {
-    let active = true;
+    const container = containerRef.current!;
+    const controller = new AbortController();
+    const { signal } = controller;
     const loadingTask = getDocument({ data: dataUrlToBytes(dataUrl) });
-    loadingTask.promise
-      .then((pdf) => {
-        if (!active) {
-          void pdf.destroy();
-          return;
-        }
-        setDocument(pdf);
+    let style: HTMLStyleElement | undefined;
+    Promise.all([loadingTask.promise, import("pdfjs-dist/web/pdf_viewer.mjs"), import("pdfjs-dist/web/pdf_viewer.css?inline")])
+      .then(([pdf, { PDFViewer, EventBus }, css]) => {
+        if (signal.aborted) return;
+        style = document.createElement("style");
+        // Keep PDF.js's root color scheme and layout variables inside the preview.
+        style.textContent = css.default.replaceAll(":root", ".loom-pdf-preview");
+        container.appendChild(style);
+        const eventBus = new EventBus();
+        const options = {
+          container, eventBus, abortSignal: signal,
+          annotationMode: AnnotationMode.DISABLE,
+          annotationEditorMode: AnnotationEditorType.DISABLE,
+        };
+        const viewer = new PDFViewer(options);
+        viewerRef.current = viewer;
+        eventBus.on("pagesinit", () => { viewer.currentScaleValue = "page-width"; });
+        eventBus.on("pagechanging", ({ pageNumber }: { pageNumber: number }) => setPageNumber(pageNumber));
+        eventBus.on("pagerendered", ({ error }: { error?: unknown }) => {
+          if (!signal.aborted) {
+            if (error) onError(error);
+            else onReady();
+          }
+        });
         setPageCount(pdf.numPages);
+        viewer.setDocument(pdf);
+        return viewer.pagesPromise;
       })
-      .catch((error) => { if (active) onError(error); });
+      .catch((error) => { if (!signal.aborted) onError(error); });
 
     return () => {
-      active = false;
+      controller.abort();
+      // PDF.js accepts null to unload the document, despite its type declaration.
+      viewerRef.current?.setDocument(null!);
+      viewerRef.current = null;
+      style?.remove();
       void loadingTask.destroy();
     };
-  }, [dataUrl, onError]);
+  }, [dataUrl, onError, onReady]);
 
-  useEffect(() => {
-    if (!document || !canvasRef.current) return;
-    let active = true;
-    let renderTask: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | undefined;
-
-    document.getPage(pageNumber)
-      .then((page) => {
-        if (!active || !canvasRef.current) return;
-        const viewport = page.getViewport({ scale: 1.5 });
-        const pixelRatio = window.devicePixelRatio || 1;
-        const canvas = canvasRef.current;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("Unable to create PDF canvas context");
-        canvas.width = Math.floor(viewport.width * pixelRatio);
-        canvas.height = Math.floor(viewport.height * pixelRatio);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-        renderTask = page.render({
-          canvas,
-          canvasContext: context,
-          viewport,
-          transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
-        });
-        return renderTask.promise;
-      })
-      .then(() => { if (active) onReady(); })
-      .catch((error) => {
-        if (!active) return;
-        if (error instanceof Error && error.name === "RenderingCancelledException") return;
-        onError(error);
-      });
-
-    return () => {
-      active = false;
-      renderTask?.cancel();
-    };
-  }, [document, onError, onReady, pageNumber]);
+  const goToPage = (number: number) => {
+    if (viewerRef.current) viewerRef.current.currentPageNumber = number;
+  };
 
   return (
     <div className="flex h-[85vh] flex-col bg-muted/40">
       {pageCount > 1 && (
         <div className="flex h-12 shrink-0 items-center justify-center gap-3 border-b bg-background px-14">
-          <button type="button" onClick={() => setPageNumber((page) => Math.max(1, page - 1))} disabled={pageNumber <= 1} className="rounded p-1 disabled:opacity-40" aria-label={t("previous_page")}>
+          <button type="button" onClick={() => goToPage(pageNumber - 1)} disabled={pageNumber <= 1} className="rounded p-1 disabled:opacity-40" aria-label={t("previous_page")}>
             <ChevronLeft className="h-5 w-5" />
           </button>
           <span className="text-sm">{t("pdf_page", { current: pageNumber, total: pageCount })}</span>
-          <button type="button" onClick={() => setPageNumber((page) => Math.min(pageCount, page + 1))} disabled={pageNumber >= pageCount} className="rounded p-1 disabled:opacity-40" aria-label={t("next_page")}>
+          <button type="button" onClick={() => goToPage(pageNumber + 1)} disabled={pageNumber >= pageCount} className="rounded p-1 disabled:opacity-40" aria-label={t("next_page")}>
             <ChevronRight className="h-5 w-5" />
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-auto p-4">
-        <canvas ref={canvasRef} className="mx-auto max-w-full bg-white shadow" />
+      <div className="relative min-h-0 flex-1">
+        <div ref={containerRef} className="loom-pdf-preview absolute inset-0 overflow-auto select-text" tabIndex={0}>
+          <div className="pdfViewer" />
+        </div>
       </div>
     </div>
   );
